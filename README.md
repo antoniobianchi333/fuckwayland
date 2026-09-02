@@ -14,7 +14,8 @@ In the box:
 
 - **wdotool** — xdotool, all 48 commands, byte-parity
 - **wwmctl** — wmctrl, for native Wayland *and* legacy X apps in one list
-- **wxprop**, **wxrandr** — xprop and xrandr, in the oven right now
+- **wxprop** — xprop, real X properties for XWayland windows and synthesized ones for native windows
+- **wxrandr** — xrandr, with first-class multimonitor: reshape crazy layouts in one atomic call
 
 ## wdotool
 
@@ -111,11 +112,53 @@ focuses, `-c` closes, `-e` moves — for X and Wayland windows alike. Symlink it
 `wmctrl` (nix does this for you) and byte-parity covers the rest: help text, list
 formats, error strings, even wmctrl 1.07's machine-column width bug.
 
+## wxprop
+
+`xprop`, dual-plane. XWayland windows report their **real** X properties, byte-for-byte
+identical to xprop 1.2.8 — the whole formatting machine is ported, down to the
+`WM_HINTS`/`WM_SIZE_HINTS` structured dumps, the dformat mini-language, 32-bit
+sign-extension quirks, and yes, the `_NET_WM_ICON` ASCII-art renderer. Native Wayland
+windows get a synthesized property set in the same grammar, so `xprop -id N WM_CLASS`
+script parsing works on every window:
+
+```console
+$ wxprop -id 0x0040000c WM_CLASS       # an XWayland window — real X property
+WM_CLASS(STRING) = "xterm", "XTerm"
+
+$ wxprop -id 5 WM_CLASS                # a native Wayland window — synthesized
+WM_CLASS(STRING) = "foot", "foot"
+```
+
+`-set`/`-remove`/`-spy` work on the X plane; `-f`/`-fs`/dformats, `-len`, `-root`,
+`-name`, click-to-select all match the real tool (including which double-dash forms it
+rejects). Verified byte-identical against the real xprop on a live XWayland server.
+
+## wxrandr
+
+`xrandr`, with the crazy multimonitor configs as the whole point, not an afterthought.
+A real pending-geometry resolver means relative-placement chains resolve in **one
+atomic invocation**:
+
+```console
+$ wxrandr --output DP-2 --right-of DP-1 --output HDMI-A-1 --below DP-2 --rotate left
+$ wxrandr --output DP-2 --scale 1.5x1.5 --output DP-1 --primary
+$ wxrandr --output HDMI-A-1 --same-as DP-1        # mirror
+```
+
+Mirroring, rotation, reflection, mixed per-output scales, portrait/landscape mixes,
+custom modelines (`--newmode` with real pixel-clock math), holes in a row, negative
+origins, `--dryrun` — all first-class, applied through sway IPC or an atomic
+wlr-output-management backend. `--brightness`/`--gamma` run over wlr gamma-control via
+a detached holder process (the control dies with its client, so we simply refuse to
+die). Query/`--listmonitors` output is byte-styled after xrandr 1.5.4, and the layout
+stays consistent with the rest of the toolbox: after any change, `wdotool
+getdisplaygeometry` and `wwmctl -d` track the new world.
+
 ## Fully vibed, fully awesome
 
 Every line of this repo was written by AI (Claude): the design contracts, the code,
 the torture rigs, the hostile fake X servers, the byte-parity oracles, the VM demo,
-this README, and yes, the meme. Fully vibed. Also fully awesome: 429 tests and
+this README, and yes, the meme. Fully vibed. Also fully awesome: 646 tests and
 counting, live-compositor integration suites, byte-for-byte output parity against
 the real tools (verbatim bugs included), and every "it works" claim proven inside a
 real Ubuntu 26.04 VM before it shipped. Vibe-check the code yourself — it can take it.
