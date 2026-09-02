@@ -1,0 +1,1035 @@
+#!/usr/bin/env python3
+"""vmctl -- host-side controller for the multi-head GNOME test VMs.
+
+Builds golden images (cloud-init + ubuntu-desktop, GDM autologin of user
+`test` on Wayland) and runs instances of them under QEMU/KVM with a
+virtio-vga whose heads are hot-plugged/resized from the host over QEMU's
+D-Bus display backend.  Screenshots come out of QMP `screendump`.
+
+Python 3 stdlib only; shells out to qemu-system-x86_64, qemu-img,
+cloud-localds, dbus-daemon, gdbus, ssh, scp, ssh-keygen.
+
+State lives under $VMDATA (default ~/vm-data):
+  golden/<flavor>.qcow2                golden image (qcow2 overlay on the
+                                       base cloud image in $VMIMAGES, by
+                                       absolute path -- the golden does NOT
+                                       depend on any build/instance dir)
+  golden/<flavor>-packages.txt         dpkg list of the finished image
+  golden/<flavor>.build.log            serial log of the build VM
+  instances/<name>/{disk.qcow2,seed.img,qmp.sock,bus,dbus.pid,
+                    qemu.pid,serial.log,meta.json}
+  keys/id_ed25519[.pub]                guest root ssh key, generated once
+See vm/README.md for the QEMU/D-Bus facts this relies on.
+"""
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent            # <repo>/vm
+FLAVORS = HERE / "flavors"
+BUILD_SCRIPT = HERE / "build-image.sh"
+VMDATA = Path(os.environ.get("VMDATA", "~/vm-data")).expanduser()
+IMAGES = Path(os.environ.get("VMIMAGES", "~/images")).expanduser()
+GOLDEN = VMDATA / "golden"
+INSTANCES = VMDATA / "instances"
+BUILDS = VMDATA / "build"
+KEYS = VMDATA / "keys"
+PORTS = range(2400, 2500)
+MAX_HEADS = 4                     # virtio-vga max_outputs
+DEFAULT_HEAD = "1920x1080"        # size given to heads 1..N-1 by `start --heads N`
+GPU = "gpu0"
+BUS_NAME = "org.qemu"             # what QEMU 8.2's dbus display owns (not org.qemu.Display1)
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,40}$")
+
+
+class Fail(Exception):
+    """A user-facing error; printed as `vmctl: <msg>` with exit status 1."""
+
+
+def log(msg):
+    print(f"vmctl: {msg}", file=sys.stderr, flush=True)
+
+
+def run(cmd, check=True, capture=True, timeout=None, input=None):
+    """subprocess.run wrapper that turns failures into Fail with the command shown."""
+    try:
+        p = subprocess.run(cmd, check=False, text=True, input=input, timeout=timeout,
+                           stdout=subprocess.PIPE if capture else None,
+                           stderr=subprocess.PIPE if capture else None)
+    except FileNotFoundError:
+        raise Fail(f"required tool not found: {cmd[0]}")
+    except subprocess.TimeoutExpired:
+        raise Fail(f"timed out after {timeout}s: {shlex.join(cmd)}")
+    if check and p.returncode != 0:
+        err = (p.stderr or "").strip() if capture else ""
+        raise Fail(f"command failed ({p.returncode}): {shlex.join(cmd)}" + (f"\n{err}" if err else ""))
+    return p
+
+
+def need_tools(*tools):
+    missing = [t for t in tools if shutil.which(t) is None]
+    if missing:
+        raise Fail("missing host tools: " + ", ".join(missing))
+
+
+def parse_size(s):
+    m = re.fullmatch(r"(\d{2,5})x(\d{2,5})", s)
+    if not m:
+        raise Fail(f"bad size {s!r}; want WIDTHxHEIGHT, e.g. 1920x1080")
+    return int(m[1]), int(m[2])
+
+
+def parse_mem(s):
+    """Validate a QEMU -m argument like 4G / 4096M / 4096."""
+    if not re.fullmatch(r"\d+[GgMm]?", s):
+        raise Fail(f"bad memory size {s!r}; want e.g. 4G or 4096M")
+    return s
+
+
+def check_name(name):
+    if not NAME_RE.match(name):
+        raise Fail(f"bad instance name {name!r} (letters, digits, . _ -; max 41 chars)")
+    return name
+
+
+def pid_alive(pid, must_contain="qemu-system"):
+    """True if pid exists and its cmdline contains must_contain (stale-pidfile guard)."""
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return must_contain.encode() in cmdline
+
+
+def read_pid(path):
+    try:
+        return int(Path(path).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def kill_pid(pid, grace=5.0):
+    """SIGTERM, then SIGKILL after `grace` seconds."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < grace:
+        if not Path(f"/proc/{pid}").exists():
+            return
+        time.sleep(0.2)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def port_free(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def ports_in_use():
+    used = set()
+    for meta in list(INSTANCES.glob("*/meta.json")) + list(BUILDS.glob("*/meta.json")):
+        try:
+            used.add(int(json.loads(meta.read_text()).get("port", 0)))
+        except (OSError, ValueError):
+            pass
+    return used
+
+
+@contextlib.contextmanager
+def port_lock():
+    """Serialises port allocation + reservation (meta.json) across concurrent vmctl runs."""
+    VMDATA.mkdir(parents=True, exist_ok=True)
+    with open(VMDATA / ".ports.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def alloc_port():
+    """Next ssh port not reserved by any instance/build meta.json and not bound.
+    Call inside port_lock() and write the reservation before leaving it."""
+    used = ports_in_use()
+    for p in PORTS:
+        if p not in used and port_free(p):
+            return p
+    raise Fail(f"no free ssh port in {PORTS.start}-{PORTS.stop - 1}")
+
+
+# ---------------------------------------------------------------- ssh key
+
+def root_key():
+    """Path to the guest root private key, generated on first use."""
+    KEYS.mkdir(parents=True, exist_ok=True)
+    key = KEYS / "id_ed25519"
+    if not key.exists():
+        need_tools("ssh-keygen")
+        # generate under a private name and link it into place atomically, so
+        # two concurrent vmctl processes (e.g. parallel builds) share one key
+        tmp = KEYS / f".id_ed25519.{os.getpid()}"
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "vmctl-guest-root", "-f", str(tmp)])
+        try:
+            os.link(tmp, key)
+        except FileExistsError:
+            pass
+        else:
+            os.replace(tmp.with_suffix(".pub"), key.with_suffix(".pub"))
+            log(f"generated guest root ssh key {key}")
+        tmp.unlink(missing_ok=True)
+        tmp.with_suffix(".pub").unlink(missing_ok=True)
+        for _ in range(50):
+            if key.with_suffix(".pub").exists():
+                break
+            time.sleep(0.1)
+    return key
+
+
+def root_pubkey():
+    return (root_key().with_suffix(".pub")).read_text().strip()
+
+
+def ssh_cmd(port, connect_timeout=5, tty=False, extra=()):
+    cmd = ["ssh", "-p", str(port), "-i", str(root_key()),
+           "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+           "-o", "LogLevel=ERROR", "-o", f"ConnectTimeout={connect_timeout}",
+           "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15"]
+    if tty:
+        cmd.append("-t")
+    cmd += list(extra)
+    cmd.append("root@127.0.0.1")
+    return cmd
+
+
+def scp_base(port):
+    return ["scp", "-P", str(port), "-i", str(root_key()),
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+
+
+def ssh_script(port, script, timeout=60, connect_timeout=5):
+    """Run a bash script (given as text) as root in the guest; returns CompletedProcess."""
+    return run(ssh_cmd(port, connect_timeout) + ["bash", "-s"], check=False,
+               input=script, timeout=timeout)
+
+
+def wait_ssh(port, timeout, what="guest"):
+    t0 = time.monotonic()
+    while True:
+        p = run(ssh_cmd(port, 5) + ["true"], check=False, timeout=20)
+        if p.returncode == 0:
+            return time.monotonic() - t0
+        if time.monotonic() - t0 > timeout:
+            raise Fail(f"{what}: ssh on 127.0.0.1:{port} did not come up within {timeout}s")
+        time.sleep(2)
+
+
+# ---------------------------------------------------------------- QMP / D-Bus
+
+def qmp(sock_path, command, arguments=None, timeout=15):
+    """Execute one QMP command over the unix socket; returns the `return` value."""
+    sock_path = Path(sock_path)
+    if not sock_path.exists():
+        raise Fail(f"QMP socket {sock_path} missing -- is the VM running?")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(str(sock_path))
+    except OSError as e:
+        raise Fail(f"cannot connect to QMP socket {sock_path}: {e}")
+    f = s.makefile("rb")
+
+    def send(obj):
+        s.sendall((json.dumps(obj) + "\n").encode())
+
+    def reply():
+        while True:
+            line = f.readline()
+            if not line:
+                raise Fail("QMP connection closed")
+            msg = json.loads(line)
+            if "return" in msg or "error" in msg:
+                return msg
+            # events and the greeting are skipped
+
+    try:
+        greeting = json.loads(f.readline() or b"{}")
+        if "QMP" not in greeting:
+            raise Fail("unexpected QMP greeting")
+        send({"execute": "qmp_capabilities"})
+        reply()
+        send({"execute": command, "arguments": arguments or {}})
+        r = reply()
+        if "error" in r:
+            raise Fail(f"QMP {command}: {r['error'].get('desc', r['error'])}")
+        return r["return"]
+    except socket.timeout:
+        raise Fail(f"QMP {command}: timed out after {timeout}s")
+    finally:
+        s.close()
+
+
+def gdbus(bus, *args, timeout=15):
+    need_tools("gdbus")
+    return run(["gdbus"] + list(args[:1]) + ["--address", f"unix:path={bus}", "--dest", BUS_NAME]
+               + list(args[1:]), timeout=timeout)
+
+
+def console_path(idx):
+    return f"/org/qemu/Display1/Console_{idx}"
+
+
+def set_ui_info(bus, idx, width, height):
+    """SetUIInfo(width_mm, height_mm, xoff, yoff, width, height) on head idx.
+    width=height=0 unplugs the head (head 0 cannot be unplugged, only resized)."""
+    gdbus(bus, "call", "--object-path", console_path(idx),
+          "--method", "org.qemu.Display1.Console.SetUIInfo",
+          "0", "0", "0", "0", str(width), str(height))
+
+
+def console_props(bus, idx):
+    """{'Label': 'gpu0.1', 'Head': 1, 'Width': 1920, 'Height': 1080, ...} or None."""
+    p = run(["gdbus", "call", "--address", f"unix:path={bus}", "--dest", BUS_NAME,
+             "--object-path", console_path(idx), "--method",
+             "org.freedesktop.DBus.Properties.GetAll", "org.qemu.Display1.Console"],
+            check=False, timeout=15)
+    if p.returncode != 0:
+        return None
+    props = {}
+    for k, v in re.findall(r"'(\w+)': <(?:uint32 |int32 )?'?([^'>,]*)'?>", p.stdout):
+        props[k] = int(v) if v.isdigit() else v
+    return props
+
+
+def list_consoles(bus):
+    p = run(["gdbus", "introspect", "--address", f"unix:path={bus}", "--dest", BUS_NAME,
+             "--object-path", "/org/qemu/Display1"], check=False, timeout=15)
+    if p.returncode != 0:
+        return []
+    return sorted(int(n) for n in re.findall(r"node Console_(\d+)", p.stdout))
+
+
+# ---------------------------------------------------------------- instances
+
+class Instance:
+    def __init__(self, name):
+        self.name = check_name(name)
+        self.dir = INSTANCES / name
+        self.disk = self.dir / "disk.qcow2"
+        self.seed = self.dir / "seed.img"
+        self.qmp_sock = self.dir / "qmp.sock"
+        self.bus = self.dir / "bus"
+        self.dbus_pid = self.dir / "dbus.pid"
+        self.qemu_pid = self.dir / "qemu.pid"
+        self.serial = self.dir / "serial.log"
+        self.meta_path = self.dir / "meta.json"
+        self.meta = {}
+        if self.meta_path.exists():
+            try:
+                self.meta = json.loads(self.meta_path.read_text())
+            except ValueError as e:
+                raise Fail(f"{self.meta_path}: corrupt: {e}")
+
+    def exists(self):
+        return self.meta_path.exists()
+
+    def require(self):
+        if not self.exists():
+            raise Fail(f"no instance {self.name!r} (see `vmctl list`; create with `vmctl start`)")
+        return self
+
+    def save(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.meta_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.meta, indent=2, sort_keys=True) + "\n")
+        tmp.replace(self.meta_path)
+
+    @property
+    def port(self):
+        return int(self.meta["port"])
+
+    def pid(self):
+        """Live QEMU pid or None (removes a stale pidfile)."""
+        pid = read_pid(self.qemu_pid)
+        if pid and pid_alive(pid):
+            return pid
+        if self.qemu_pid.exists():
+            log(f"{self.name}: removing stale pidfile {self.qemu_pid}")
+            self.qemu_pid.unlink(missing_ok=True)
+        return None
+
+    def require_running(self):
+        self.require()
+        if self.pid() is None:
+            raise Fail(f"instance {self.name!r} is not running (start it with `vmctl start {self.name}`)")
+        return self
+
+    def heads(self):
+        """{idx: 'WxH' | 'default' | 'off'} as last applied by vmctl."""
+        return {int(k): v for k, v in self.meta.get("heads", {"0": "default"}).items()}
+
+    def active_heads(self):
+        return sorted(i for i, v in self.heads().items() if v != "off")
+
+
+def user_data_common(hostname):
+    """cloud-config fragment shared by golden builds and instances: root key + user test."""
+    return f"""#cloud-config
+hostname: {hostname}
+manage_etc_hosts: true
+disable_root: false
+ssh_pwauth: false
+ssh_authorized_keys:
+  - {root_pubkey()}
+users:
+  - name: test
+    uid: 1000
+    gecos: Test User
+    groups: [adm, sudo]
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: test
+    sudo: ALL=(ALL) NOPASSWD:ALL
+"""
+
+
+def make_seed(dir_, user_data, instance_id, hostname):
+    need_tools("cloud-localds")
+    (dir_ / "user-data").write_text(user_data)
+    (dir_ / "meta-data").write_text(f"instance-id: {instance_id}\nlocal-hostname: {hostname}\n")
+    run(["cloud-localds", str(dir_ / "seed.img"), str(dir_ / "user-data"), str(dir_ / "meta-data")])
+    return dir_ / "seed.img"
+
+
+def qemu_common(mem, cpus, disk, seed, port, serial, pidfile, name):
+    return ["qemu-system-x86_64", "-name", name, "-enable-kvm", "-cpu", "host",
+            "-m", mem, "-smp", str(cpus), "-daemonize", "-pidfile", str(pidfile),
+            "-drive", f"file={disk},if=virtio,format=qcow2",
+            "-drive", f"file={seed},if=virtio,format=raw,readonly=on",
+            "-device", "virtio-rng-pci",
+            "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-:22",
+            "-device", "virtio-net-pci,netdev=n0",
+            "-serial", f"file:{serial}"]
+
+
+# ---------------------------------------------------------------- build
+
+def flavor_file(flavor):
+    f = FLAVORS / f"{flavor}.yaml"
+    if not f.exists():
+        have = ", ".join(sorted(p.stem for p in FLAVORS.glob("*.yaml"))) or "none"
+        raise Fail(f"unknown flavor {flavor!r}; available: {have}")
+    return f
+
+
+def flavor_base(flavor):
+    text = flavor_file(flavor).read_text()
+    m = re.search(r"^#\s*vmctl-base:\s*(\S+)", text, re.M)
+    if not m:
+        raise Fail(f"{flavor_file(flavor)}: missing '# vmctl-base: <image>' header")
+    base = Path(m[1]).expanduser()
+    if not base.is_absolute():
+        base = IMAGES / base
+    if not base.exists():
+        raise Fail(f"base image {base} not found (set VMIMAGES or download it)")
+    return base.resolve()
+
+
+def golden_path(flavor):
+    return GOLDEN / f"{flavor}.qcow2"
+
+
+def render_flavor(flavor):
+    """Flavor yaml with @@ROOT_PUBKEY@@ and the (indented) @@BUILD_SCRIPT@@ filled in."""
+    text = flavor_file(flavor).read_text()
+    if not BUILD_SCRIPT.exists():
+        raise Fail(f"{BUILD_SCRIPT} missing")
+    script = BUILD_SCRIPT.read_text().rstrip("\n").split("\n")
+    out = []
+    for line in text.split("\n"):
+        if line.strip() == "@@BUILD_SCRIPT@@":
+            indent = line[: len(line) - len(line.lstrip())]
+            out.extend((indent + s) if s else "" for s in script)
+        else:
+            out.append(line.replace("@@ROOT_PUBKEY@@", root_pubkey()))
+    return "\n".join(out)
+
+
+def tail_file(path, n=25):
+    try:
+        lines = Path(path).read_text(errors="replace").replace("\r", "").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-n:])
+
+
+def cmd_build(a):
+    need_tools("qemu-system-x86_64", "qemu-img", "cloud-localds")
+    flavor = a.flavor
+    base = flavor_base(flavor)
+    golden = golden_path(flavor)
+    if golden.exists() and not a.force:
+        raise Fail(f"{golden} exists; use --force to rebuild (instances based on it would break)")
+    bdir = BUILDS / flavor
+    if bdir.exists():
+        pid = read_pid(bdir / "qemu.pid")
+        if pid and pid_alive(pid):
+            raise Fail(f"a build of {flavor} is already running (pid {pid}, {bdir})")
+        shutil.rmtree(bdir)
+    bdir.mkdir(parents=True)
+    GOLDEN.mkdir(parents=True, exist_ok=True)
+    with port_lock():
+        port = alloc_port()
+        (bdir / "meta.json").write_text(json.dumps({"port": port, "flavor": flavor, "build": True}) + "\n")
+    disk = bdir / "disk.qcow2"
+    run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", str(base), str(disk), a.size])
+    seed = make_seed(bdir, render_flavor(flavor), f"{flavor}-golden", flavor)
+    serial = bdir / "serial.log"
+    pidfile = bdir / "qemu.pid"
+    cmd = qemu_common(a.mem, a.cpus, disk, seed, port, serial, pidfile, f"build-{flavor}") + ["-display", "none"]
+    t0 = time.monotonic()
+    log(f"build {flavor}: base {base.name}, {a.cpus} vCPU/{a.mem}, ssh 127.0.0.1:{port} (root, debugging only)")
+    run(cmd, capture=False)
+    pid = read_pid(pidfile)
+    if not pid:
+        raise Fail("QEMU did not write its pidfile")
+    log(f"build {flavor}: QEMU pid {pid}; serial log {serial}")
+    offset = 0
+    ok = False
+    try:
+        while True:
+            alive = pid_alive(pid)
+            try:
+                with open(serial, "rb") as f:
+                    f.seek(offset)
+                    chunk = f.read()
+                    offset += len(chunk)
+            except OSError:
+                chunk = b""
+            for line in chunk.decode(errors="replace").replace("\r", "").splitlines():
+                if line.startswith("vmctl-build:"):
+                    log(f"[{int(time.monotonic() - t0):4d}s] {line}")
+            if not alive:
+                break
+            if time.monotonic() - t0 > a.timeout:
+                log(f"build {flavor}: timed out after {a.timeout}s, killing QEMU")
+                kill_pid(pid)
+                raise Fail(f"build {flavor} timed out; serial log tail:\n{tail_file(serial)}")
+            time.sleep(5)
+        text = serial.read_text(errors="replace").replace("\r", "")
+        if "VMCTL-BUILD-OK" not in text:
+            raise Fail(f"build {flavor}: no VMCTL-BUILD-OK marker in {serial}; tail:\n{tail_file(serial, 40)}")
+        m = re.search(r"VMCTL-PACKAGES-BEGIN\n(.*?)\nVMCTL-PACKAGES-END", text, re.S)
+        pkgs = [l for l in (m[1].splitlines() if m else []) if re.fullmatch(r"[a-z0-9][a-z0-9+.:-]*", l)]
+        pkgs = sorted(set(pkgs))
+        n = re.search(r"vmctl-build: (\d+) packages installed", text)
+        if len(pkgs) < 200 or not n or int(n[1]) != len(pkgs):
+            raise Fail(f"build {flavor}: package list from serial looks wrong "
+                       f"({len(pkgs)} entries parsed, guest reported {n[1] if n else '?'})")
+        golden.unlink(missing_ok=True)
+        shutil.move(str(disk), str(golden))
+        (GOLDEN / f"{flavor}-packages.txt").write_text("\n".join(pkgs) + "\n")
+        shutil.copy(serial, GOLDEN / f"{flavor}.build.log")
+        ok = True
+    finally:
+        if ok and not a.keep:
+            shutil.rmtree(bdir, ignore_errors=True)
+    mins = (time.monotonic() - t0) / 60
+    log(f"build {flavor}: done in {mins:.1f} min -> {golden} ({len(pkgs)} packages listed in "
+        f"{GOLDEN / (flavor + '-packages.txt')})")
+    print(golden)
+
+
+# ---------------------------------------------------------------- start / stop
+
+def start_dbus(inst):
+    """Private session bus for QEMU's dbus display. Returns when the socket exists."""
+    need_tools("dbus-daemon")
+    old = read_pid(inst.dbus_pid)
+    if old and pid_alive(old, "dbus-daemon"):
+        kill_pid(old)
+    inst.bus.unlink(missing_ok=True)
+    inst.dbus_pid.unlink(missing_ok=True)
+    p = run(["dbus-daemon", "--session", "--fork", "--nopidfile", "--print-pid=1",
+             f"--address=unix:path={inst.bus}"])
+    try:
+        pid = int(p.stdout.strip())
+    except ValueError:
+        raise Fail(f"dbus-daemon printed no pid: {p.stdout!r}")
+    inst.dbus_pid.write_text(f"{pid}\n")
+    for _ in range(50):
+        if inst.bus.exists() and pid_alive(pid, "dbus-daemon"):
+            return
+        time.sleep(0.1)
+    raise Fail(f"dbus-daemon did not create {inst.bus}")
+
+
+def stop_dbus(inst):
+    pid = read_pid(inst.dbus_pid)
+    if pid and pid_alive(pid, "dbus-daemon"):
+        kill_pid(pid)
+    inst.dbus_pid.unlink(missing_ok=True)
+    inst.bus.unlink(missing_ok=True)
+
+
+def apply_heads(inst, heads):
+    """heads: {idx: 'WxH'|'off'|'default'}; calls SetUIInfo for every non-default entry."""
+    for idx in sorted(heads):
+        spec = heads[idx]
+        if spec == "default":
+            continue
+        if spec == "off":
+            set_ui_info(inst.bus, idx, 0, 0)
+        else:
+            w, h = parse_size(spec)
+            set_ui_info(inst.bus, idx, w, h)
+
+
+def cmd_start(a):
+    need_tools("qemu-system-x86_64", "qemu-img", "cloud-localds", "gdbus", "ssh")
+    inst = Instance(a.name)
+    if inst.exists() and inst.pid():
+        raise Fail(f"instance {inst.name!r} is already running (pid {inst.pid()}, ssh port {inst.port})")
+    flavor = a.flavor or inst.meta.get("flavor")
+    if not flavor:
+        raise Fail("--flavor is required for a new instance")
+    if inst.exists() and inst.meta.get("flavor") not in (None, flavor):
+        raise Fail(f"instance {inst.name!r} is a {inst.meta['flavor']} instance; "
+                   f"use --fresh together with --flavor {flavor}, or destroy it")
+    golden = golden_path(flavor)
+    if not golden.exists():
+        raise Fail(f"no golden image for flavor {flavor!r} ({golden}); run `vmctl build {flavor}` first")
+    inst.dir.mkdir(parents=True, exist_ok=True)
+    # leftovers from a crashed run
+    stop_dbus(inst)
+    inst.qmp_sock.unlink(missing_ok=True)
+
+    if a.fresh or not inst.disk.exists():
+        inst.disk.unlink(missing_ok=True)
+        run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", str(golden), str(inst.disk)])
+        inst.meta["instance_id"] = f"{inst.name}-{secrets.token_hex(4)}"
+        inst.meta.pop("heads", None)
+        log(f"{inst.name}: new overlay disk on {golden}")
+    if a.fresh or not inst.seed.exists() or "instance_id" not in inst.meta:
+        inst.meta.setdefault("instance_id", f"{inst.name}-{secrets.token_hex(4)}")
+        make_seed(inst.dir, user_data_common(inst.name), inst.meta["instance_id"], inst.name)
+    with port_lock():
+        if "port" not in inst.meta or not port_free(inst.meta["port"]):
+            inst.meta["port"] = alloc_port()
+        inst.save()
+    mem = parse_mem(a.mem or inst.meta.get("mem", "4G"))
+    cpus = a.cpus or inst.meta.get("cpus", 3)
+    nheads = a.heads if a.heads is not None else inst.meta.get("nheads", 1)
+    if not 1 <= nheads <= MAX_HEADS:
+        raise Fail(f"--heads must be 1..{MAX_HEADS}")
+    heads = {0: "default"}
+    saved = inst.heads() if a.heads is None else {}
+    for i in range(1, MAX_HEADS):
+        heads[i] = (saved.get(i) if i < nheads and saved.get(i) not in (None, "off") else
+                    DEFAULT_HEAD if i < nheads else "off")
+    inst.meta.update({"name": inst.name, "flavor": flavor, "mem": mem, "cpus": cpus,
+                      "nheads": nheads, "heads": {str(k): v for k, v in heads.items()},
+                      "golden": str(golden), "started": time.strftime("%Y-%m-%dT%H:%M:%S")})
+    inst.save()
+
+    start_dbus(inst)
+    inst.serial.unlink(missing_ok=True)
+    cmd = qemu_common(mem, cpus, inst.disk, inst.seed, inst.port, inst.serial, inst.qemu_pid, inst.name) + [
+        "-device", f"virtio-vga,id={GPU},max_outputs={MAX_HEADS},edid=on",
+        "-display", f"dbus,addr=unix:path={inst.bus},p2p=no",
+        "-qmp", f"unix:{inst.qmp_sock},server,nowait"]
+    inst.meta["qemu_cmd"] = cmd
+    inst.save()
+    try:
+        run(cmd, capture=False)
+    except Fail:
+        stop_dbus(inst)
+        raise
+    pid = inst.pid()
+    if not pid:
+        stop_dbus(inst)
+        raise Fail("QEMU exited immediately; check the command line in meta.json")
+    log(f"{inst.name}: QEMU pid {pid}, flavor {flavor}, {cpus} vCPU/{mem}, ssh port {inst.port}, "
+        f"bus {inst.bus}")
+    if a.no_wait:
+        print(inst.port)
+        return
+    t = wait_ssh(inst.port, a.timeout, inst.name)
+    log(f"{inst.name}: ssh up after {t:.0f}s")
+    apply_heads(inst, heads)
+    active = [f"Virtual-{i + 1}" for i in sorted(heads) if heads[i] != "off"]
+    log(f"{inst.name}: heads: " + ", ".join(f"{i}={heads[i]}" for i in sorted(heads) if heads[i] != "off")
+        + f"  (guest connectors {', '.join(active)})")
+    print(inst.port)
+
+
+def cmd_stop(a):
+    inst = Instance(a.name).require()
+    pid = inst.pid()
+    if pid is None:
+        stop_dbus(inst)
+        inst.qmp_sock.unlink(missing_ok=True)
+        log(f"{inst.name}: not running")
+        return
+    # GNOME's session inhibits logind's power-key handling, so an ACPI power
+    # button (QMP system_powerdown) only pops up a dialog in a logged-in desktop.
+    # Ask the guest over ssh first, then fall back to the ACPI button, then kill.
+    p = run(ssh_cmd(inst.port, 3) + ["systemctl", "poweroff"], check=False, timeout=15)
+    if p.returncode != 0:
+        log(f"{inst.name}: ssh poweroff failed; sending ACPI power button")
+        try:
+            qmp(inst.qmp_sock, "system_powerdown")
+        except Fail as e:
+            log(f"{inst.name}: {e}")
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < a.timeout:
+        if not pid_alive(pid):
+            break
+        time.sleep(0.5)
+    if pid_alive(pid):
+        log(f"{inst.name}: guest did not power off within {a.timeout}s; quitting QEMU")
+        try:
+            qmp(inst.qmp_sock, "quit", timeout=5)
+        except Fail:
+            pass
+        kill_pid(pid)
+    stop_dbus(inst)
+    inst.qemu_pid.unlink(missing_ok=True)
+    inst.qmp_sock.unlink(missing_ok=True)
+    log(f"{inst.name}: stopped")
+
+
+def cmd_destroy(a):
+    inst = Instance(a.name)
+    if not inst.dir.exists():
+        raise Fail(f"no instance {inst.name!r}")
+    if inst.exists() and inst.pid():
+        a.timeout = 60
+        cmd_stop(a)
+    else:
+        stop_dbus(inst)
+    shutil.rmtree(inst.dir)
+    log(f"{inst.name}: destroyed ({inst.dir})")
+
+
+def cmd_list(a):
+    rows = []
+    for meta in sorted(INSTANCES.glob("*/meta.json")):
+        inst = Instance(meta.parent.name)
+        pid = inst.pid()
+        rows.append((inst.name, inst.meta.get("flavor", "?"), "running" if pid else "stopped",
+                     str(pid or "-"), str(inst.meta.get("port", "-")),
+                     ",".join(f"{i}={v}" for i, v in sorted(inst.heads().items()) if v != "off")))
+    for meta in sorted(BUILDS.glob("*/meta.json")):
+        pid = read_pid(meta.parent / "qemu.pid")
+        rows.append((f"(build) {meta.parent.name}", meta.parent.name,
+                     "building" if pid and pid_alive(pid) else "stale", str(pid or "-"),
+                     str(json.loads(meta.read_text()).get("port", "-")), ""))
+    if not rows:
+        log(f"no instances under {INSTANCES}")
+        return
+    hdr = ("NAME", "FLAVOR", "STATE", "PID", "SSH", "HEADS")
+    widths = [max(len(r[i]) for r in rows + [hdr]) for i in range(len(hdr))]
+    for r in [hdr] + rows:
+        print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+
+
+def cmd_status(a):
+    inst = Instance(a.name).require()
+    pid = inst.pid()
+    print(f"name:      {inst.name}")
+    print(f"flavor:    {inst.meta.get('flavor')}  (golden {inst.meta.get('golden')})")
+    print(f"state:     {'running (pid %d)' % pid if pid else 'stopped'}")
+    print(f"resources: {inst.meta.get('cpus')} vCPU / {inst.meta.get('mem')}")
+    print(f"ssh:       root@127.0.0.1 port {inst.meta.get('port')}  (key {root_key()})")
+    print(f"dir:       {inst.dir}")
+    print(f"bus:       {inst.bus}   qmp: {inst.qmp_sock}")
+    print(f"heads:     " + "  ".join(f"{i}={v}" for i, v in sorted(inst.heads().items())))
+    if pid:
+        for idx in list_consoles(inst.bus):
+            pr = console_props(inst.bus, idx) or {}
+            print(f"  Console_{idx}: label={pr.get('Label')} head={pr.get('Head')} "
+                  f"{pr.get('Width')}x{pr.get('Height')}  (guest connector Virtual-{idx + 1})")
+
+
+# ---------------------------------------------------------------- guest access
+
+def cmd_ssh(a):
+    inst = Instance(a.name).require_running()
+    cmd = ssh_cmd(inst.port, 5, tty=False) + list(a.cmd)
+    os.execvp("ssh", cmd)
+
+
+def cmd_scp(a):
+    inst = Instance(a.name).require_running()
+    args = []
+    for x in a.args:
+        if x.startswith(f"{inst.name}:"):
+            x = "root@127.0.0.1:" + x[len(inst.name) + 1:]
+        args.append(x)
+    if not any(x.startswith("root@127.0.0.1:") for x in args):
+        raise Fail(f"one side must be {inst.name}:<path>")
+    os.execvp("scp", scp_base(inst.port) + args)
+
+
+def cmd_head(a):
+    inst = Instance(a.name).require_running()
+    if not 0 <= a.idx < MAX_HEADS:
+        raise Fail(f"head index must be 0..{MAX_HEADS - 1}")
+    heads = inst.heads()
+    if a.size == "off":
+        if a.idx == 0:
+            raise Fail("head 0 (Virtual-1) is always connected; it can only be resized")
+        set_ui_info(inst.bus, a.idx, 0, 0)
+        heads[a.idx] = "off"
+        log(f"{inst.name}: head {a.idx} (Virtual-{a.idx + 1}) unplugged")
+    else:
+        w, h = parse_size(a.size)
+        set_ui_info(inst.bus, a.idx, w, h)
+        heads[a.idx] = f"{w}x{h}"
+        log(f"{inst.name}: head {a.idx} (Virtual-{a.idx + 1}) -> {w}x{h}")
+    inst.meta["heads"] = {str(k): v for k, v in heads.items()}
+    inst.meta["nheads"] = max(i for i, v in heads.items() if v != "off") + 1
+    inst.save()
+
+
+HEADS_SCRIPT = r"""
+shopt -s nullglob
+for c in /sys/class/drm/card*-Virtual-*; do echo detect > "$c/status" 2>/dev/null; done
+sleep 0.3
+for c in /sys/class/drm/card*-Virtual-*; do
+  n=${c##*/}; n=${n#card*-}
+  printf '%-10s %-12s enabled=%-8s preferred=%s\n' "$n" "$(cat $c/status)" "$(cat $c/enabled)" "$(head -1 $c/modes 2>/dev/null || echo -)"
+done
+"""
+
+
+def cmd_heads(a):
+    inst = Instance(a.name).require_running()
+    p = ssh_script(inst.port, HEADS_SCRIPT, timeout=30)
+    if p.returncode != 0:
+        raise Fail(f"guest query failed: {p.stderr.strip()}")
+    sys.stdout.write(p.stdout)
+
+
+def cmd_shot(a):
+    inst = Instance(a.name).require_running()
+    out = Path(a.out).expanduser()
+    if a.all:
+        if a.idx is not None:
+            raise Fail("give either <idx> or --all")
+        idxs = inst.active_heads()
+        stem = out.with_suffix("") if out.suffix.lower() == ".png" else out
+        targets = [(i, stem.parent / f"{stem.name}-{i}.png") for i in idxs]
+    else:
+        if a.idx is None:
+            raise Fail("head index required (or --all)")
+        targets = [(a.idx, out)]
+    for idx, path in targets:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path = path.resolve()
+        qmp(inst.qmp_sock, "screendump",
+            {"filename": str(path), "device": GPU, "head": idx, "format": "png"}, timeout=30)
+        if not path.exists() or path.stat().st_size == 0:
+            raise Fail(f"screendump of head {idx} produced no file at {path}")
+        print(path)
+
+
+SESSION_SCRIPT = r"""
+for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+  unset S_Name S_Type S_State S_Class
+  eval "$(loginctl show-session "$s" -p Name -p Type -p State -p Class 2>/dev/null | sed 's/^/S_/')"
+  [ "$S_Name" = test ] || continue
+  if [ "$S_Type" = wayland ] && [ "$S_State" = active ] && [ -S /run/user/1000/wayland-0 ]; then
+    echo "OK $s"; exit 0
+  fi
+  echo "PARTIAL session=$s type=$S_Type state=$S_State class=$S_Class wayland-0=$([ -S /run/user/1000/wayland-0 ] && echo yes || echo no)"
+done
+echo "WAIT"
+"""
+
+
+def cmd_session(a):
+    inst = Instance(a.name).require_running()
+    t0 = time.monotonic()
+    last = ""
+    while True:
+        p = ssh_script(inst.port, SESSION_SCRIPT, timeout=30)
+        line = (p.stdout.strip().splitlines() or [""])[-1] if p.returncode == 0 else "ssh: " + p.stderr.strip()
+        partial = [l for l in p.stdout.splitlines() if l.startswith("PARTIAL")]
+        if line.startswith("OK "):
+            sid = line.split()[1]
+            print(f"SESSION_ID={sid}")
+            print("XDG_RUNTIME_DIR=/run/user/1000")
+            print("WAYLAND_DISPLAY=wayland-0")
+            print("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus")
+            log(f"{inst.name}: wayland session {sid} for user test active after {time.monotonic() - t0:.0f}s")
+            return
+        state = partial[-1] if partial else line
+        if state != last:
+            log(f"{inst.name}: waiting for graphical session of user test: {state}")
+            last = state
+        if time.monotonic() - t0 > a.timeout:
+            raise Fail(f"{inst.name}: no active Wayland session for user test within {a.timeout}s "
+                       f"(last: {state}); check `vmctl ssh {inst.name} -- journalctl -b -u gdm`")
+        time.sleep(3)
+
+
+USER_WRAPPER = r"""
+imp() {
+  for kv in "$@"; do
+    case "$kv" in
+      XAUTHORITY=*|DISPLAY=*|XDG_CURRENT_DESKTOP=*|XDG_SESSION_DESKTOP=*|DESKTOP_SESSION=*|XDG_SESSION_ID=*)
+        case "${kv#*=}" in *[!A-Za-z0-9_./:@,-]*) ;; *) export "$kv" ;; esac ;;
+    esac
+  done
+}
+imp $(systemctl --user show-environment 2>/dev/null)
+if [ -z "$XAUTHORITY" ]; then
+  p=$(pgrep -u "$(id -u)" -x gnome-shell 2>/dev/null | head -1)
+  [ -n "$p" ] && imp $(tr '\0' '\n' < /proc/$p/environ 2>/dev/null)
+fi
+[ -z "$DISPLAY" ] && [ -S /tmp/.X11-unix/X0 ] && export DISPLAY=:0
+cd "$HOME" 2>/dev/null
+exec "$@"
+"""
+
+
+def cmd_user(a):
+    inst = Instance(a.name).require_running()
+    # argparse.REMAINDER swallows everything after <name>, including -t and --
+    while a.cmd and a.cmd[0] in ("-t", "--tty"):
+        a.tty = True
+        a.cmd.pop(0)
+    if a.cmd[:1] == ["--"]:
+        a.cmd.pop(0)
+    if not a.cmd:
+        raise Fail("usage: vmctl user <name> [-t] -- cmd...")
+    # The X side needs more than DISPLAY: mutter's Xwayland uses an auth file
+    # (XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.*) that gnome-session
+    # exports to the systemd user manager -- import those plain-valued
+    # variables from there, with the running gnome-shell's environ as fallback.
+    wrapper = USER_WRAPPER
+    remote = ["sudo", "-u", "test", "-H", "env",
+              "XDG_RUNTIME_DIR=/run/user/1000", "WAYLAND_DISPLAY=wayland-0",
+              "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+              "XDG_SESSION_TYPE=wayland", "USER=test", "LOGNAME=test",
+              "sh", "-c", wrapper, "vmctl-user"] + list(a.cmd)
+    os.execvp("ssh", ssh_cmd(inst.port, 5, tty=a.tty) + [shlex.join(remote)])
+
+
+# ---------------------------------------------------------------- main
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="vmctl", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="command", metavar="COMMAND", required=True)
+
+    p = sub.add_parser("build", help="build the golden image of a flavor (vm/flavors/<flavor>.yaml)")
+    p.add_argument("flavor")
+    p.add_argument("--cpus", type=int, default=4)
+    p.add_argument("--mem", default="6G", type=parse_mem)
+    p.add_argument("--size", default="30G", help="overlay disk size (default 30G)")
+    p.add_argument("--timeout", type=int, default=3600, help="seconds before the build is killed")
+    p.add_argument("--force", action="store_true", help="replace an existing golden image")
+    p.add_argument("--keep", action="store_true", help="keep the build dir after success")
+    p.set_defaults(fn=cmd_build)
+
+    p = sub.add_parser("start", help="create/reuse an instance and boot it")
+    p.add_argument("name")
+    p.add_argument("--flavor", help="golden image to use (required for a new instance)")
+    p.add_argument("--heads", type=int, default=None, help=f"number of monitors, 1..{MAX_HEADS} (default 1)")
+    p.add_argument("--mem", default=None, help="QEMU memory (default 4G)")
+    p.add_argument("--cpus", type=int, default=None, help="vCPUs (default 3)")
+    p.add_argument("--fresh", action="store_true", help="recreate the overlay disk and cloud-init seed")
+    p.add_argument("--timeout", type=int, default=240, help="seconds to wait for ssh")
+    p.add_argument("--no-wait", action="store_true", help="do not wait for ssh / apply heads")
+    p.set_defaults(fn=cmd_start)
+
+    p = sub.add_parser("stop", help="power the guest off (ssh poweroff, ACPI, then kill)")
+    p.add_argument("name")
+    p.add_argument("--timeout", type=int, default=60)
+    p.set_defaults(fn=cmd_stop)
+
+    p = sub.add_parser("destroy", help="stop and delete an instance")
+    p.add_argument("name")
+    p.set_defaults(fn=cmd_destroy)
+
+    sub.add_parser("list", help="list instances").set_defaults(fn=cmd_list)
+
+    p = sub.add_parser("status", help="show one instance, including QEMU's console sizes")
+    p.add_argument("name")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("ssh", help="ssh as root into the guest: vmctl ssh <name> [-- cmd...]")
+    p.add_argument("name")
+    p.add_argument("cmd", nargs="*")
+    p.set_defaults(fn=cmd_ssh)
+
+    p = sub.add_parser("scp", help="scp to/from the guest; write the guest side as <name>:<path>")
+    p.add_argument("name")
+    p.add_argument("args", nargs="+")
+    p.set_defaults(fn=cmd_scp)
+
+    p = sub.add_parser("head", help="resize/plug/unplug a head: vmctl head <name> <idx> <WxH>|off")
+    p.add_argument("name")
+    p.add_argument("idx", type=int, help="0-based head index (0 = Virtual-1)")
+    p.add_argument("size", help="WIDTHxHEIGHT or off")
+    p.set_defaults(fn=cmd_head)
+
+    p = sub.add_parser("heads", help="list guest DRM connectors after a re-probe")
+    p.add_argument("name")
+    p.set_defaults(fn=cmd_heads)
+
+    p = sub.add_parser("shot", help="QMP screendump: vmctl shot <name> <idx> out.png | vmctl shot <name> --all out")
+    p.add_argument("name")
+    p.add_argument("idx", nargs="?", type=int)
+    p.add_argument("out")
+    p.add_argument("--all", action="store_true", help="every active head -> <out>-<idx>.png")
+    p.set_defaults(fn=cmd_shot)
+
+    p = sub.add_parser("session", help="wait for user test's Wayland session and print its env")
+    p.add_argument("name")
+    p.add_argument("--timeout", type=int, default=180)
+    p.set_defaults(fn=cmd_session)
+
+    p = sub.add_parser("user", help="run a command in the guest as user test with the session env")
+    p.add_argument("name")
+    p.add_argument("-t", "--tty", action="store_true", help="allocate a tty (may also follow <name>)")
+    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    p.set_defaults(fn=cmd_user)
+
+    a = ap.parse_args(argv)
+    try:
+        a.fn(a)
+    except Fail as e:
+        print(f"vmctl: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()
