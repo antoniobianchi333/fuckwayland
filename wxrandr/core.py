@@ -27,9 +27,10 @@ small state file keyed by compositor socket:
     $XDG_RUNTIME_DIR/wxrandr-state.json  (else /tmp/wxrandr-state-<uid>.json)
 """
 
+import copy
 import dataclasses
+import fcntl
 import json
-import math
 import os
 import re
 import socket
@@ -274,6 +275,13 @@ class SwayIPC:
                             % (command, r.get("error", "unknown error")))
         return results
 
+    def run_collect(self, command: str):
+        """RUN_COMMAND without raising: sway runs every ';'-joined subcommand
+        regardless of individual failures, so the caller can act on the ones
+        that succeeded (e.g. still position outputs a partial phase-1
+        configured) before reporting the failure."""
+        return self.msg(RUN_COMMAND, command)
+
     def close(self):
         try:
             self.sock.close()
@@ -288,6 +296,34 @@ def _state_path() -> str:
     if rd and os.path.isdir(rd):
         return os.path.join(rd, "wxrandr-state.json")
     return "/tmp/wxrandr-state-%d.json" % os.getuid()
+
+
+def _merge3(base: dict, ours: dict, theirs: dict) -> dict:
+    """Three-way merge of one state key across a concurrent writer: `base` is
+    the value we loaded, `ours` our in-memory edits, `theirs` what is on disk
+    now (possibly another wxrandr's write). We start from `theirs` so a
+    sibling's changes survive, then replay only the entries WE actually
+    touched (added / changed / deleted) — so two parallel --brightness runs on
+    different outputs keep both gamma holder records instead of clobbering."""
+    result = dict(theirs)
+    for k in set(base) | set(ours):
+        if k not in ours:                       # we removed it
+            result.pop(k, None)
+        elif k not in base:                     # we first-wrote it
+            # even a key we added may already exist on disk as a dict (two
+            # procs both first-touching "gamma"): merge into it, don't clobber
+            if isinstance(ours[k], dict) and isinstance(result.get(k), dict):
+                result[k] = _merge3({}, ours[k], result[k])
+            else:
+                result[k] = ours[k]
+        elif ours[k] != base[k]:                # we changed it
+            if (isinstance(ours[k], dict) and isinstance(base[k], dict)
+                    and isinstance(result.get(k), dict)):
+                result[k] = _merge3(base[k], ours[k], result[k])
+            else:
+                result[k] = ours[k]
+        # else: untouched by us — keep the on-disk (their) value
+    return result
 
 
 class State:
@@ -308,20 +344,55 @@ class State:
             pass
         d = self._all.get(key)
         self.d = d if isinstance(d, dict) else {}
+        # snapshot of what we loaded, so save() can tell OUR edits apart from
+        # a concurrent writer's when it re-reads the file under the lock
+        self._orig = copy.deepcopy(self.d)
 
     def save(self):
-        self._all[self.key] = self.d
-        tmp = "%s.%d.tmp" % (self.path, os.getpid())
+        lockpath = self.path + ".lock"
+        lock_fd = None
         try:
-            with open(tmp, "w") as f:
-                json.dump(self._all, f)
-            os.replace(tmp, self.path)
-        except OSError as e:
-            warn("cannot persist state to %s: %s\n" % (self.path, e))
+            lock_fd = os.open(lockpath, os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except OSError:
+            lock_fd = None  # locking unavailable: proceed best-effort
+        try:
+            # re-read under the lock and merge, so a concurrent wxrandr's
+            # writes (other compositor keys, or another output's gamma record
+            # under this key) are not lost by our snapshot-then-replace
+            disk = {}
             try:
-                os.unlink(tmp)
-            except OSError:
+                with open(self.path) as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    disk = loaded
+            except (OSError, ValueError):
                 pass
+            theirs = disk.get(self.key)
+            theirs = theirs if isinstance(theirs, dict) else {}
+            merged = _merge3(self._orig, self.d, theirs)
+            disk[self.key] = merged
+            self._all = disk
+            self.d = merged
+            self._orig = copy.deepcopy(merged)
+            tmp = "%s.%d.tmp" % (self.path, os.getpid())
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(disk, f)
+                os.replace(tmp, self.path)
+            except OSError as e:
+                warn("cannot persist state to %s: %s\n" % (self.path, e))
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        finally:
+            if lock_fd is not None:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                os.close(lock_fd)
 
     # primary ----------------------------------------------------------------
     @property
@@ -346,10 +417,13 @@ class State:
         m = self.modes().get(name)
         if not m:
             return None
-        clock = m["clock"]
-        w, hss, hse, htot = m["h"]
-        h, vss, vse, vtot = m["v"]
-        flags = tuple(m.get("flags", ()))
+        try:
+            clock = m["clock"]
+            w, hss, hse, htot = m["h"]
+            h, vss, vse, vtot = m["v"]
+            flags = tuple(m.get("flags", ()))
+        except (KeyError, ValueError, TypeError):
+            return None  # corrupt / hand-edited entry: ignore, never crash
         hz = mode_refresh_hz(clock, htot, vtot, flags)
         return Mode(w=w, h=h, refresh_mhz=round(hz * 1000), custom=True,
                     name=name, clock_mhz=clock,
@@ -767,7 +841,12 @@ def build_targets(outputs: list, stanzas: list, state: State,
             t.enabled = True
         if s.auto:
             t.enabled = True
-            if t.mode is None:
+            # xrandr set_name_preferred (xrandr.c:1820): --auto on a connected
+            # output with no explicit mode switches it to the PREFERRED mode,
+            # even when it is already active on another one — so re-derive
+            # whenever the stanza carries no mode/rate/preferred (not only when
+            # t.mode happens to be unset).
+            if s.mode is None and s.rate is None and not s.preferred:
                 try:
                     t.mode = _find_mode_for(o, None, None, True)
                 except Fatal:
@@ -797,6 +876,12 @@ def build_targets(outputs: list, stanzas: list, state: State,
             if not t.output.active and t.stanza is None:
                 t.enabled = True
                 t.changed = True
+                # like per-output --auto, a globally re-enabled output comes
+                # up at its preferred mode, not sway's remembered one
+                try:
+                    t.mode = _find_mode_for(t.output, None, None, True)
+                except Fatal:
+                    t.mode = None
     return [targets[o.name] for o in outputs]
 
 
@@ -931,21 +1016,55 @@ def position_commands(targets: list, pos: dict) -> list:
     return cmds
 
 
+def _settle_modes(ipc: SwayIPC, state: State, targets: list):
+    """Wait (bounded ~1s) until the compositor's re-read logical sizes match
+    what we asked for, so resolve_positions packs against fresh geometry.
+    Replaces a fixed settle sleep that raced under load; on a mismatch that
+    never converges (a rounding quirk) it simply times out and the caller
+    falls back to whatever sway reports — no worse than the old sleep."""
+    want = {t.name: predicted_dims(t, state)
+            for t in targets if t.changed and t.enabled}
+    if not want:
+        return
+    deadline = time.monotonic() + 1.0
+    while True:
+        time.sleep(0.03)
+        fresh = {o.name: o for o in snapshot_sway(ipc, state)}
+        done = all(fresh.get(n) is not None and fresh[n].active
+                   and (fresh[n].w, fresh[n].h) == wh
+                   for n, wh in want.items())
+        if done or time.monotonic() >= deadline:
+            return
+
+
 def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
     """Two-phase apply: (1) modes/transforms/scales/enable/disable in one
     RUN_COMMAND, (2) re-read actual logical sizes, resolve positions against
     them, pin all positions in a second RUN_COMMAND. Returns the re-read
     OutputState list. Wayland has no fb concept, so unlike xrandr there is no
-    screen-resize step in between."""
+    screen-resize step in between.
+
+    Phase 1 is not raise-on-first-failure: sway runs every ';'-joined
+    subcommand regardless, so a mid-batch rejection would otherwise leave the
+    survivors re-moded but un-positioned for sway's auto-arranger to scramble.
+    We collect the results, still position everything that IS enabled, then
+    re-raise the first failure."""
     for t in targets:
         if t.changed and not t.enabled and t.output.active:
             cur = t.output.current
             if cur:
                 state.lastmodes()[t.name] = [cur.w, cur.h, cur.refresh_mhz]
     p1 = phase1_commands(targets)
+    p1_err = None
     if p1:
-        ipc.run("; ".join(p1))
-        time.sleep(0.15)  # let mode/scale changes settle before re-reading
+        results = ipc.run_collect("; ".join(p1))
+        for idx, r in enumerate(results):
+            if not r.get("success"):
+                p1_err = Fatal("compositor rejected `%s`: %s\n" % (
+                    p1[idx] if idx < len(p1) else "; ".join(p1),
+                    r.get("error", "unknown error")))
+                break
+        _settle_modes(ipc, state, targets)
     fresh = {o.name: o for o in snapshot_sway(ipc, state)}
     dims = {}
     for t in targets:
@@ -960,7 +1079,13 @@ def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
     pos = resolve_positions(targets, dims)
     p2 = position_commands(targets, pos)
     if p2:
-        ipc.run("; ".join(p2))
+        try:
+            ipc.run("; ".join(p2))
+        except Fatal:
+            if p1_err is None:
+                raise
+    if p1_err is not None:
+        raise p1_err
     return snapshot_sway(ipc, state)
 
 
@@ -1061,6 +1186,14 @@ def render_verbose_block(o: OutputState, state: State, crtc_index) -> list:
     g = state.gamma().get(o.name, {})
     gam = g.get("gamma", [1.0, 1.0, 1.0])
     bright = g.get("brightness", 1.0)
+    # only report holder values while the holder is actually alive: after it
+    # is killed externally (kill -9, compositor restart) the compositor
+    # restored the neutral ramp, so stale 0.50 would be a lie.
+    pid = g.get("pid")
+    if pid is not None:
+        from wxrandr import gamma as _gammamod
+        if _gammamod._proc_starttime(pid) != g.get("start"):
+            gam, bright = [1.0, 1.0, 1.0], 1.0
     lines = [
         "\tIdentifier: 0x%x" % o.ident,
         "\tTimestamp:  0",
@@ -1147,7 +1280,7 @@ def render_query(outputs, state: State, screen_num=0, verbose=False,
     return lines
 
 
-def render_monitors(outputs, state: State, active_only=False) -> list:
+def render_monitors(outputs, state: State) -> list:
     """RandR 1.5 monitor listing (xrandr.c:4030). Every enabled output is one
     automatic monitor; primary comes from the state file; mm are the physical
     size when known, else synthesized exactly like XWayland (96dpi,

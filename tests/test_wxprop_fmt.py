@@ -218,11 +218,40 @@ class FmtTest(unittest.TestCase):
             self.render(b"_NET_WM_PID", "CARDINAL", 32,
                         struct.pack("<I", 49189)),
             b"_NET_WM_PID(CARDINAL) = 49189\n")
-        # EWMH -1: zero-extended by 64-bit Xlib, even through 32i
+        # REGRESSION GUARD (task's concern): a CARDINAL 0xffffffff shown with
+        # its DEFAULT format (0c -> unsigned 'c') prints 4294967295, NOT -1.
+        # This is what `xprop _NET_WM_DESKTOP` and friends rely on.
+        self.assertEqual(
+            self.render(b"D", "CARDINAL", 32, struct.pack("<I", 0xFFFFFFFF)),
+            b"D(CARDINAL) = 4294967295\n")
+        # 'c' and 'x' stay unsigned regardless
+        self.assertEqual(
+            self.render(b"D", "CARDINAL", 32,
+                        struct.pack("<I", 0xFFFFFFFF), fmt=b"32c"),
+            b"D(CARDINAL) = 4294967295\n")
+        # ...but an EXPLICIT 32i reads the low word SIGNED (oracle: -1), the
+        # same rule that makes a negative INTEGER dump correctly (see below)
         self.assertEqual(
             self.render(b"D", "CARDINAL", 32,
                         struct.pack("<I", 0xFFFFFFFF), fmt=b"32i"),
-            b"D(CARDINAL) = 4294967295\n")
+            b"D(CARDINAL) = -1\n")
+
+    def test_integer_negative_32bit(self):
+        # a real INTEGER property with the high bit set dumps its NEGATIVE
+        # value (oracle: _I(INTEGER) = -5 for wire 0xfffffffb) — the baseline
+        # zero-extended it to 4294967291, a bug this pass fixes. Both the
+        # default (0i -> 'i') and explicit 32i sign-extend; 32c does not.
+        self.assertEqual(
+            self.render(b"_I", "INTEGER", 32, struct.pack("<i", -5)),
+            b"_I(INTEGER) = -5\n")
+        self.assertEqual(
+            self.render(b"_I", "INTEGER", 32, struct.pack("<i", -5),
+                        fmt=b"32i"),
+            b"_I(INTEGER) = -5\n")
+        self.assertEqual(
+            self.render(b"_I", "INTEGER", 32, struct.pack("<i", -5),
+                        fmt=b"32c"),
+            b"_I(INTEGER) = 4294967291\n")
 
     def test_signed_16(self):
         self.assertEqual(
@@ -234,6 +263,37 @@ class FmtTest(unittest.TestCase):
             self.render(b"M", "CARDINAL", 32, struct.pack("<I", 0b1011),
                         fmt=b"32m"),
             b"M(CARDINAL) = {MASK: 0, 1, 3}\n")
+
+    def test_conditional_mask_bit_shift_wraps_like_c(self):
+        # C's Mask_Bit_I is `value & (1L << (int)i)`; on x86-64 the shift
+        # count is masked to 6 bits. Oracle-verified: bit0-set value ->
+        # ?m0 AND ?m64 both fire; bit2-set -> ?m66 fires (66 & 63 == 2).
+        wire = struct.pack("<I", 1)          # bit 0 set
+        self.assertEqual(
+            self.render(b"M", "CARDINAL", 32, wire, fmt=b"32m",
+                        dfmt=b"?m0(B0)?m64(B64)?m1(B1)?m65(B65)\n"),
+            b"M(CARDINAL)B0B64\n")
+        wire = struct.pack("<I", 4)          # bit 2 set
+        self.assertEqual(
+            self.render(b"M", "CARDINAL", 32, wire, fmt=b"32m",
+                        dfmt=b"?m2(B2)?m66(B66)?m64(B64)\n"),
+            b"M(CARDINAL)B2B66\n")
+
+    def test_conditional_mask_huge_count_no_oom(self):
+        # a hostile shift count must NOT build a multi-GB integer. ?m2^35:
+        # (int)2^35 == 0 -> bit 0 (set) -> fires; regression for the
+        # MemoryError the raw `1 << i` caused.
+        wire = struct.pack("<I", 1)          # bit 0 set
+        self.assertEqual(
+            self.render(b"M", "CARDINAL", 32, wire, fmt=b"32m",
+                        dfmt=b"?m34359738368(HIT)\n"),
+            b"M(CARDINAL)HIT\n")
+        # an even wilder count (more digits than fit an int) still returns
+        # cleanly rather than raising OverflowError
+        self.assertEqual(
+            self.render(b"M", "CARDINAL", 32, struct.pack("<I", 0), fmt=b"32m",
+                        dfmt=b"?m99999999999999999999(X)done\n"),
+            b"M(CARDINAL)done\n")
 
     def test_bool(self):
         self.assertEqual(

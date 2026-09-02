@@ -118,14 +118,23 @@ class CliTestBase(unittest.TestCase):
         return code, out.buffer.getvalue(), err.getvalue()
 
 
-class PreScanTest(CliTestBase):
+class VersionHelpGrammarTest(CliTestBase):
+    # The 1.2.8 RELEASE binary handles -grammar/-help/-version in the option
+    # loop (NOT a pre-scan): single dash only, in argv order, after the
+    # display would be opened. All assertions below verified against the
+    # oracle (see xprop-notes.md's correction of the master-source notes).
     def test_help_goes_to_stderr_exit_0(self):
-        for flag in ("-help", "--help"):
-            code, out, err = self.run_cli(flag)
-            self.assertEqual((code, out), (0, b""), flag)
-            self.assertTrue(err.startswith(USAGE_FIRST), err)
-            self.assertIn("    -version                       "
-                          "print program version\n", err)
+        code, out, err = self.run_cli("-help")
+        self.assertEqual((code, out), (0, b""))
+        self.assertTrue(err.startswith(USAGE_FIRST), err)
+        self.assertIn("    -version                       "
+                      "print program version\n", err)
+
+    def test_double_dash_help_is_unrecognized(self):
+        # oracle: `xprop --help` -> "unrecognized argument --help", exit 1
+        code, out, err = self.run_cli("--help")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn("xprop: unrecognized argument --help\n\n", err)
 
     def test_help_wins_over_everything(self):
         # xprop2-spy-usage: `-spy -id W -len 1 -help` -> usage, exit 0
@@ -133,6 +142,13 @@ class PreScanTest(CliTestBase):
                                       "-help")
         self.assertEqual((code, out), (0, b""))
         self.assertTrue(err.startswith(USAGE_FIRST))
+
+    def test_bad_flag_before_version_is_usage_error(self):
+        # oracle: `xprop -badflag -version` -> the option loop hits -badflag
+        # FIRST (argv order), so it's a usage error, NOT a version print
+        code, out, err = self.run_cli("-badflag", "-version")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn("xprop: unrecognized argument -badflag\n\n", err)
 
     def test_grammar_single_dash_only(self):
         code, out, err = self.run_cli("-grammar")
@@ -147,10 +163,23 @@ class PreScanTest(CliTestBase):
         self.assertIn("xprop: unrecognized argument --grammar\n\n", err)
 
     def test_version(self):
-        for flag in ("-version", "--version"):
-            code, out, err = self.run_cli(flag)
-            self.assertEqual((code, err), (0, ""), flag)
-            self.assertEqual(out, b"wxprop 0.1.0\n")
+        # byte parity with the oracle: `xprop -version` -> "xprop 1.2.8"
+        code, out, err = self.run_cli("-version")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, b"xprop 1.2.8\n")
+
+    def test_double_dash_version_is_unrecognized(self):
+        code, out, err = self.run_cli("--version")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn("xprop: unrecognized argument --version\n\n", err)
+
+    def test_version_after_root(self):
+        # -root is a select arg (consumed early); -version still fires in
+        # the option loop -> version print, exit 0 (oracle: xprop -root
+        # -version -> "xprop 1.2.8")
+        code, out, err = self.run_cli("-root", "-version", backend="fake")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, b"xprop 1.2.8\n")
 
 
 class ArgErrorsTest(CliTestBase):
@@ -443,6 +472,19 @@ class HelperTest(CliTestBase):
         self.assertEqual(cli._strtoul("089"), 0)   # octal stops at 8
         self.assertEqual(cli._strtoul("abc"), 0)
         self.assertEqual(cli._strtoul("-1"), (1 << 64) - 1)
+
+    def test_strtoul_saturates_on_overflow(self):
+        # C strtoul returns ULONG_MAX (ERANGE) on overflow, NOT a mod-2^64
+        # wrap. Verified: `-set 32c 18446744073709551617` stores 0xffffffff
+        # via the oracle (ULONG_MAX low 32 bits), where a wrap would give 1.
+        self.assertEqual(cli._strtoul("18446744073709551617"),
+                         (1 << 64) - 1)
+        self.assertEqual(cli._pack_ints([cli._strtoul(
+            "18446744073709551617")], 32), struct.pack("<I", 0xFFFFFFFF))
+        # a huge hex magnitude saturates too
+        self.assertEqual(cli._strtoul("0x1" + "0" * 20), (1 << 64) - 1)
+        # overflowing NEGATIVE wraps small (glibc: -ULONG_MAX == 1)
+        self.assertEqual(cli._strtoul("-18446744073709551617"), 1)
 
     def test_len_atoi_jank(self):
         # -len abc -> atoi 0 -> everything truncates to no fields

@@ -48,6 +48,7 @@ class MockCompositor(threading.Thread):
         self.acquires = 0
         self.refusals = 0
         self.stop = False
+        self.gamma_size = GAMMA_SIZE  # advertised LUT size (override to test)
 
     def run(self):
         while not self.stop:
@@ -140,7 +141,7 @@ class MockCompositor(threading.Thread):
                                 controls[cid] = True
                                 self.acquires += 1
                                 self._event(conn, cid, 0,
-                                            struct.pack("<I", GAMMA_SIZE))
+                                            struct.pack("<I", self.gamma_size))
                             else:
                                 self.refusals += 1
                                 self._event(conn, cid, 1)  # failed
@@ -256,6 +257,42 @@ class GammaHolderTest(unittest.TestCase):
             "brightness": 0.5, "gamma": [1, 1, 1]}
         # must NOT kill us (starttime mismatch), just drop the record
         self.assertFalse(gammamod.stop_holder(self.state, "HEADLESS-1"))
+        self.assertNotIn("HEADLESS-1", self.state.gamma())
+
+    def test_07_question_start_kills_by_name(self):
+        # a record whose starttime was unavailable ('?') must still be
+        # stoppable (never an unstoppable orphan) — kill-by-pid + name check
+        import subprocess
+        p = subprocess.Popen([sys.executable, "-c",
+                              "import time; time.sleep(60)"])
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        self.state.gamma()["HEADLESS-1"] = {
+            "pid": p.pid, "start": "?", "brightness": 0.5, "gamma": [1, 1, 1]}
+        self.assertTrue(gammamod.stop_holder(self.state, "HEADLESS-1"))
+        p.wait(timeout=5)
+        self.assertIsNotNone(p.returncode)  # actually killed
+
+    def test_08_question_start_spares_non_holder(self):
+        # a '?' record pointing at an unrelated (non-python) pid is left alone
+        import subprocess
+        p = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        self.state.gamma()["HEADLESS-1"] = {
+            "pid": p.pid, "start": "?", "brightness": 0.5, "gamma": [1, 1, 1]}
+        self.assertFalse(gammamod.stop_holder(self.state, "HEADLESS-1"))
+        self.assertIsNone(p.poll())  # still alive
+        p.kill()
+
+    def test_09_implausible_lut_size_refused(self):
+        # a bogus/hostile gamma_size must be rejected, not turned into a
+        # multi-GB compute_ramp allocation
+        self.mock.gamma_size = 10_000_000
+        self.assertEqual(self.set_gamma(0.5), "refused")
+
+    def test_10_failed_holder_leaves_no_record(self):
+        # an explicit failure exits the holder; no orphan, so no record
+        self.mock.gamma_size = 10_000_000
+        self.set_gamma(0.5)
         self.assertNotIn("HEADLESS-1", self.state.gamma())
 
 

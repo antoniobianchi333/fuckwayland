@@ -202,6 +202,23 @@ class X11ExtTest(unittest.TestCase):
         self.assertIsNone(conn.next_event(timeout=0.2))
         self.assertLess(time.monotonic() - t0, 2)
 
+    def test_next_event_zero_timeout_drains_buffered(self):
+        # timeout=0 is a true non-blocking poll: it must still drain an
+        # event already sitting in the socket buffer. Regression: the old
+        # code returned None before ever polling when wait <= 0.
+        srv = self.server
+        atom = srv.intern("BUF")
+        conn = self.connect()
+        conn.select_input(0x10, 0x420000)
+        srv.push_event(property_notify(5, 0x10, atom, state=1))
+        time.sleep(0.3)  # let the bytes reach our socket buffer
+        ev = conn.next_event(timeout=0)
+        self.assertIsNotNone(ev)
+        self.assertEqual((ev["type"], ev["atom"]),
+                         ("PropertyNotify", atom))
+        # and with nothing buffered, timeout=0 returns None promptly
+        self.assertIsNone(conn.next_event(timeout=0))
+
     def test_next_event_wire_delivery(self):
         srv = self.server
         atom = srv.intern("LIVE")

@@ -1,21 +1,26 @@
 """OWNER: wxprop builder. xprop-compatible option parsing and dispatch.
 
 xprop has a hand-rolled parser (xprop.c main + dsimple.c) and order
-matters; this is a straight port:
+matters; this is a straight port of the 1.2.8 RELEASE binary (verified
+against the oracle — it differs from post-1.2.8 git master, which added a
+pre-scan that accepts --help/--version; the release does NOT):
 
-1. pre-scan: -grammar (exact, stdout, exit 0), -help/--help (usage text to
-   STDERR, exit 0), -version/--version (stdout, exit 0);
-2. Get_Display_Name: -display/-d consumed anywhere before a lone "-";
-3. Select_Window_Args: -root/-id/-name consumed anywhere (later wins,
+1. Get_Display_Name: -display/-d consumed anywhere before a lone "-";
+2. Select_Window_Args: -root/-id/-name consumed anywhere (later wins,
    -name resolved immediately, a lone "-" stops the scan);
-4. the option loop, stopping at the first argument not starting with "-";
-5. trailing `[format [dformat]] atom` spec groups.
+3. the option loop, stopping at the first argument not starting with "-":
+   -grammar/-help/-version act HERE, in argv order (single dash only) —
+   so `xprop -badflag -version` is a usage error, and on a dead display
+   even `xprop -version` fails to open it first (both oracle-verified);
+4. trailing `[format [dformat]] atom` spec groups.
 
 Program name: like xprop we use basename(argv[0]) in messages (WXPROP_ARGV0
 overrides it for `python -m wxprop` runs, where argv[0] is __main__.py).
-Deliberate deviations, documented in tests: -version prints our own
-identity; a missing X server degrades to the native plane instead of
-"unable to open display" (unless -display was explicit); -font prints the
+Deliberate deviations, documented in tests: -version prints "xprop 1.2.8"
+for drop-in version-sniffing (like wwmctl prints wmctrl's "1.07"); a
+missing X server degrades to the native plane instead of "unable to open
+display" (unless -display was explicit), so `wxprop -version` with no
+server still prints (the option loop reaches it); -font prints the
 open-failure error (no core fonts on this X plane worth speaking of); and
 click-to-select is the compositor next-focus wait with a stderr hint.
 """
@@ -25,12 +30,16 @@ import re
 import struct
 import sys
 
-import wxprop
 from wxprop import core
 from wxprop import fmt as fmtmod
 from wxprop.fmt import FatalError
 
 MAXSTR = fmtmod.MAXSTR
+
+# what -version prints: byte parity with the oracle binary (xprop.c does
+# puts(PACKAGE_STRING)), so version-sniffing scripts keep working. The
+# package identity lives in wxprop.VERSION.
+XPROP_VERSION = "xprop 1.2.8"
 
 HELP_MESSAGE = """\
 where options include:
@@ -142,7 +151,12 @@ def _atoi(s: str) -> int:
 
 
 def _strtoul(s: str) -> int:
-    """strtoul(s, NULL, 0): C number syntax, invalid -> 0, wraps u64."""
+    """strtoul(s, NULL, 0): C number syntax, invalid -> 0. Overflow
+    SATURATES the magnitude at ULONG_MAX (glibc's ERANGE return) before the
+    sign is applied in unsigned arithmetic — so "-1" is ULONG_MAX, an
+    overflowing positive is ULONG_MAX (verified: -set 32c
+    18446744073709551617 stores 0xffffffff, not 1), and an overflowing
+    negative wraps small, exactly like glibc."""
     m = re.match(r"[ \t\n\v\f\r]*([+-]?)(0[xX][0-9a-fA-F]+|[0-9]+)", s)
     if not m:
         return 0
@@ -153,6 +167,8 @@ def _strtoul(s: str) -> int:
         val = int(re.match(r"0[0-7]*", digits).group(0), 8)
     else:
         val = int(digits, 10)
+    if val > 0xFFFFFFFFFFFFFFFF:  # strtoul saturates the magnitude first
+        val = 0xFFFFFFFFFFFFFFFF
     if sign == "-":
         val = -val
     return val & 0xFFFFFFFFFFFFFFFF
@@ -316,7 +332,7 @@ def _pack_ints(vals, size: int) -> bytes:
     return struct.pack(code % len(vals), *[v & mask for v in vals])
 
 
-def _parse_int_list(value: str, prog: str):
+def _parse_int_list(value: str):
     toks = [t for t in value.split(",") if t != ""]
     if not toks:
         return [0]  # real xprop segfaults on strtoul(NULL); we don't
@@ -359,11 +375,11 @@ def _set_property(formatter, target, prog: str, utf8_locale: bool,
                     return
             target.set_prop(name_b, "STRING", 8, raw)
     elif char in (0x63, 0x78):  # c x -> CARDINAL
-        vals = _parse_int_list(value_s, prog)
+        vals = _parse_int_list(value_s)
         target.set_prop(name_b, "CARDINAL", size, _pack_ints(vals, size)
                         if size in (8, 16, 32) else b"")
     elif char == 0x69:  # i -> INTEGER
-        vals = _parse_int_list(value_s, prog)
+        vals = _parse_int_list(value_s)
         target.set_prop(name_b, "INTEGER", size, _pack_ints(vals, size)
                         if size in (8, 16, 32) else b"")
     elif char == 0x62:  # b -> INTEGER True/False
@@ -377,11 +393,9 @@ def _set_property(formatter, target, prog: str, utf8_locale: bool,
         eff = size if size in (8, 16, 32) else 32  # C: case 32: default:
         target.set_prop(name_b, "INTEGER", eff, _pack_ints([v], eff))
     elif char == 0x61:  # a -> ATOM
-        conn = getattr(target, "conn", None)
-        if conn is not None:
-            atom = conn.atom(value_s)
-        else:
-            atom = 0
+        # only reached on the X plane (step 5 fataled for any other), so
+        # target always has a live .conn — no None fallback needed
+        atom = target.conn.atom(value_s)
         data = struct.pack("<Q", atom)[:size // 8] if size in (8, 16, 32) \
             else b""
         target.set_prop(name_b, "ATOM", size, data)
@@ -447,20 +461,9 @@ def _out_write(data: bytes):
 def _main(prog: str, args) -> int:
     utf8_locale = _setup_locale()
 
-    # 1. args that don't need any session (xprop.c:1967)
-    for a in args:
-        argn = a[1:] if a.startswith("--") else a
-        if a == "-grammar":  # single dash only, like the original
-            print_grammar(prog)
-            return 0
-        if argn == "-help":
-            print_help(prog)
-            return 0
-        if argn == "-version":
-            print(wxprop.VERSION)
-            return 0
-
-    # 2. display selection
+    # 1. display selection (Get_Display_Name). The 1.2.8 release has no
+    # pre-scan for -grammar/-help/-version — they live in the option loop
+    # below, after the display is opened, so a dead -display fails first.
     display, args = _extract_display(args)
     sess = core.Session(display)
     if display is not None and sess.x11() is None:
@@ -468,7 +471,7 @@ def _main(prog: str, args) -> int:
                          % (prog, display))
         return 1
 
-    # 3. window selection args
+    # 2. window selection args
     spec, args = _select_window_args(sess, args)
 
     formatter = fmtmod.Formatter(
@@ -480,7 +483,9 @@ def _main(prog: str, args) -> int:
     if xpropformats:
         _read_mappings_file(formatter, xpropformats)
 
-    # 4. the option loop (xprop.c:2009) — stops at the first non-'-' arg
+    # 3. the option loop (xprop.c:2009) — stops at the first non-'-' arg;
+    # -grammar/-help/-version act HERE, in argv order (release behavior,
+    # single dash only — --grammar/--help/--version are unrecognized)
     spy = False
     frame = False  # accepted, no reparenting frames on wlroots
     removes = []
@@ -492,6 +497,15 @@ def _main(prog: str, args) -> int:
         i += 1
         if a == "-":
             continue
+        if a == "-grammar":
+            print_grammar(prog)
+            return 0
+        if a == "-help":
+            print_help(prog)
+            return 0
+        if a == "-version":
+            print(XPROP_VERSION)
+            return 0
         if a == "-notype":
             formatter.notype = True
             continue
@@ -562,7 +576,7 @@ def _main(prog: str, args) -> int:
                          % (prog, specs_args[0]))
         raise UsageError(None)
 
-    # 5. resolve the target window
+    # 4. resolve the target window
     if spec is None:
         target = core.select_target(sess, prog)
     elif spec[0] == "root":
@@ -575,7 +589,7 @@ def _main(prog: str, args) -> int:
     for name in pending_interns:  # -f's Parse_Atom(name, False)
         target.intern(os.fsencode(name), create=True)
 
-    # 6. -remove / -set: apply and exit 0, printing nothing on success
+    # 5. -remove / -set: apply and exit 0, printing nothing on success
     if removes or sets:
         if target.plane == "missing":
             target.intern(b"", create=False)  # raises does-not-exists
@@ -591,7 +605,7 @@ def _main(prog: str, args) -> int:
             _set_property(formatter, target, prog, utf8_locale, name, value)
         return 0
 
-    # 7. property requests (Handle_Prop_Requests) — written per property,
+    # 6. property requests (Handle_Prop_Requests) — written per property,
     # like printf, so a Fatal mid-list keeps the output printed so far
     specs = None
     if specs_args:
@@ -622,7 +636,7 @@ def _main(prog: str, args) -> int:
             core.show_prop(formatter, target, seg, None, None, name_b)
             _out_write(bytes(seg))
 
-    # 8. -spy
+    # 7. -spy
     if spy:
         sys.stdout.buffer.flush()
         if target.plane == "x":

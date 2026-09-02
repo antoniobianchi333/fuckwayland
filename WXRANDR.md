@@ -19,6 +19,12 @@ the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
   xrandr's gamma math, passed over an fd). The control dies with its client, so a
   non-1.0 brightness forks a tiny detached holder process per output (pattern: the
   wdotool daemon fork, simplified); brightness 1.0 kills the holder. Insane, works.
+  Headless outputs (WLR_BACKENDS=headless sway) have no gamma LUT, so the
+  compositor refuses the control immediately — `--brightness`/`--gamma` there exit
+  1 with `xrandr: Gamma size is 0.` (verified live). The holder lifecycle is
+  therefore proven against a wire-level mock (tests/test_wxrandr_gamma.py), not a
+  headless session. A typo'd `--output NAME --brightness` prints only the bare
+  not-found warning and exits 0, like real xrandr (no holder is spawned).
 - KWin/GNOME: out of scope for this pass (CmdError with a one-line hint).
 
 ## Command surface (byte-parity target: xrandr 1.5.x)

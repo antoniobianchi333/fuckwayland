@@ -34,7 +34,10 @@ def compute_ramp(size: int, brightness: float, gamma_rgb) -> bytes:
             if g == 1.0 and brightness == 1.0:
                 v = frac
             else:
-                v = min(pow(frac, shift) * brightness, 1.0)
+                # clamp BOTH ends: xrandr accepts a negative --brightness and
+                # applies the (black) ramp, exit 0 — without the low clamp
+                # struct.pack("=H") would raise on a negative value.
+                v = min(max(pow(frac, shift) * brightness, 0.0), 1.0)
             out += struct.pack("=H", int(v * 65535.0))
     return bytes(out)
 
@@ -51,6 +54,19 @@ def _proc_starttime(pid: int) -> str | None:
         return None
 
 
+def _looks_like_holder(pid: int) -> bool:
+    """Best-effort identity check for a holder whose starttime we never
+    captured (a '?' record): the process must still exist and run a Python
+    interpreter (dist/wxrandr is a zipapp under `env python3`), which loosely
+    guards against pid reuse before we kill by pid alone."""
+    try:
+        with open("/proc/%d/comm" % pid) as f:
+            comm = f.read().strip()
+    except OSError:
+        return False
+    return "python" in comm.lower()
+
+
 def stop_holder(state, output: str) -> bool:
     """Kill the recorded holder for `output` (verifying starttime so a
     recycled pid is never killed). Returns True if one was running."""
@@ -58,21 +74,38 @@ def stop_holder(state, output: str) -> bool:
     if not rec or not rec.get("pid"):
         return False
     pid = rec["pid"]
-    if _proc_starttime(pid) != rec.get("start"):
+    start = rec.get("start")
+    if start == "?":
+        # starttime was unavailable when the record was written: fall back to
+        # kill-by-pid with a name check rather than never matching (which used
+        # to strand the holder holding the gamma control forever).
+        if not _looks_like_holder(pid):
+            return False
+    elif _proc_starttime(pid) != start:
         return False
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
         return False
-    for _ in range(50):
-        if _proc_starttime(pid) != rec.get("start"):
-            return True
-        time.sleep(0.02)
+    if _wait_gone(pid, start):
+        return True
     try:
         os.kill(pid, signal.SIGKILL)
     except OSError:
-        pass
+        return True
+    _wait_gone(pid, start)  # confirm the SIGKILL took (bounded), not fire-and-forget
     return True
+
+
+def _wait_gone(pid: int, start, tries: int = 50) -> bool:
+    """Poll (bounded) until `pid` is gone / recycled. With a real starttime we
+    detect recycle too; for a '?' record we can only watch for disappearance."""
+    for _ in range(tries):
+        cur = _proc_starttime(pid)
+        if cur is None or (start != "?" and cur != start):
+            return True
+        time.sleep(0.02)
+    return False
 
 
 def set_output_gamma(state, output: str, brightness: float, gamma_rgb,
@@ -80,10 +113,23 @@ def set_output_gamma(state, output: str, brightness: float, gamma_rgb,
     """Kill any existing holder, then (unless identity) spawn a fresh one.
     Returns None on success, else an error string ("refused" when the
     compositor rejected the gamma control — headless outputs have no LUT)."""
-    stop_holder(state, output)
+    had_holder = stop_holder(state, output)
     identity = (brightness == 1.0 and tuple(gamma_rgb) == (1.0, 1.0, 1.0))
     if identity:
         return None
+    err = _spawn_holder(state, output, brightness, gamma_rgb, wayland_socket)
+    if err == "refused" and had_holder:
+        # a replaced holder's socket-close may not have reached the compositor
+        # before the new control asked for the LUT (two independent client
+        # fds, no ordering): give it a moment and try once more.
+        time.sleep(0.2)
+        err = _spawn_holder(state, output, brightness, gamma_rgb,
+                            wayland_socket)
+    return err
+
+
+def _spawn_holder(state, output: str, brightness: float, gamma_rgb,
+                  wayland_socket: str | None) -> str | None:
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:  # child: detach, grandchild holds the gamma control
@@ -103,27 +149,50 @@ def set_output_gamma(state, output: str, brightness: float, gamma_rgb,
             os._exit(0)
     os.close(w)
     os.waitpid(pid, 0)
-    status = b""
-    deadline = time.monotonic() + 10.0
     import select
-    while b"\n" not in status and time.monotonic() < deadline:
+    deadline = time.monotonic() + 10.0
+    buf = b""
+    hpid = None
+    hstart = None
+    status = None
+    while status is None and time.monotonic() < deadline:
         ready, _, _ = select.select([r], [], [], 0.2)
         if not ready:
             continue
         chunk = os.read(r, 4096)
         if not chunk:
             break
-        status += chunk
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            line = line.decode(errors="replace").strip()
+            if line.startswith("pid "):
+                # the grandchild reports its identity BEFORE acquiring the
+                # control, so even a later failure/timeout leaves a record a
+                # future wxrandr can stop — no unstoppable orphan.
+                parts = line.split()
+                if len(parts) == 3:
+                    hpid, hstart = int(parts[1]), parts[2]
+                    state.gamma()[output] = {
+                        "pid": hpid, "start": hstart,
+                        "brightness": brightness, "gamma": list(gamma_rgb)}
+            else:
+                status = line
+                break
     os.close(r)
-    line = status.decode(errors="replace").strip()
-    if line.startswith("ok "):
-        _, hpid, start = line.split()
+    if status == "ok":
+        return None                       # early record already stands
+    if status is not None:                # explicit failure: holder is exiting
+        state.gamma().pop(output, None)
+        if status.startswith("failed "):
+            return status[len("failed "):]
+        return "gamma holder did not report status"
+    # no terminal status within the deadline: the grandchild may still be
+    # alive holding the control — keep the early record so it stays stoppable.
+    if hpid is not None:
         state.gamma()[output] = {
-            "pid": int(hpid), "start": start,
+            "pid": hpid, "start": hstart,
             "brightness": brightness, "gamma": list(gamma_rgb)}
-        return None
-    if line.startswith("failed "):
-        return line[len("failed "):]
     return "gamma holder did not report status"
 
 
@@ -134,13 +203,22 @@ def holder_main(output: str, brightness: float, gamma_rgb,
     ramp, report over status_fd, then keep the connection alive forever.
     Exits when the compositor closes the connection or on SIGTERM."""
 
-    def report(msg: str):
+    def emit(msg: str, close: bool = False):
         if status_fd is not None:
             try:
                 os.write(status_fd, (msg + "\n").encode())
-                os.close(status_fd)
+                if close:
+                    os.close(status_fd)
             except OSError:
                 pass
+
+    def report(msg: str):  # terminal status (closes the pipe)
+        emit(msg, close=True)
+
+    # tell the parent who we are before touching the control, so a failure or
+    # timeout past this point still leaves a stoppable record (finding: no
+    # unstoppable orphan holder)
+    emit("pid %d %s" % (os.getpid(), _proc_starttime(os.getpid()) or "?"))
 
     try:
         from wdotool import session
@@ -191,7 +269,9 @@ def holder_main(output: str, brightness: float, gamma_rgb,
         conn.on(gid, gh)
         conn.send(mid, 0, [("u", gid), ("u", target)])  # get_gamma_control
         conn.roundtrip()
-        if st["failed"] or not st["size"]:
+        # a real LUT is 256-4096 entries; reject a bogus/hostile size before
+        # compute_ramp turns it into a multi-GB allocation.
+        if st["failed"] or not st["size"] or st["size"] > 65536:
             report("failed refused")
             return 1
 
@@ -210,7 +290,7 @@ def holder_main(output: str, brightness: float, gamma_rgb,
         if st["failed"]:
             report("failed refused")
             return 1
-        report("ok %d %s" % (os.getpid(), _proc_starttime(os.getpid()) or "?"))
+        report("ok")  # identity (pid/start) was sent up front
         signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
         while True:  # a compositor may resend gamma_size; resubmit then
             before = st["size"]

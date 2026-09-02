@@ -9,9 +9,14 @@ notable bug-for-bug ports (all verified against oracle captures):
   32-bit item (Xlib hands xprop an array of longs), so `-len 8` yields one
   atom of a list and `-len 12` yields two. There is no "..." ellipsis;
   truncation just yields fewer/shorter fields.
-- 32-bit values are ZERO-extended (64-bit Xlib stores CARD32s into longs),
-  so `32i` of 0xFFFFFFFF prints 4294967295, not -1. 16/8-bit `i` really
-  sign-extends.
+- 32-bit values carry the format char's signedness: Xlib's _XRead32
+  sign-extends each wire CARD32 into a long, and Extract_Value returns
+  `*(long*)` for `i` but masks `& 0xffffffff` otherwise — so `32i` of
+  0xFFFFFFFF prints -1 and of 0xfffffffb prints -5 (a real INTEGER dumps
+  its negatives), while `c`/`x`/`a` stay unsigned (0xFFFFFFFF -> 4294967295
+  / 0xffffffff). A CARDINAL's DEFAULT format is `0c` (unsigned), so a
+  0xffffffff CARDINAL still prints 4294967295 unless you force `32i`. 16/8-
+  bit `i` sign-extends the same way. All oracle-verified.
 - out-of-range $n inside a ?(...) conditional reads one past the thunk list
   in C (heap garbage). We use a sentinel that is nonzero and equal to no
   small constant, which reproduces the observable behavior of every real
@@ -34,6 +39,17 @@ Deliberate divergences (documented here, unreachable in normal use):
 - `t` conversion supports STRING, UTF8_STRING (UTF-8 locales) and the
   latin-1 subset of COMPOUND_TEXT; anything else falls back to the quoted
   `s` rendering, which is also what Xlib's XConverterNotFound path does.
+- a `\\<octal>` escape requires an immediate [0-7] digit; C's Scan_Octal
+  uses sscanf("%lo"), which also skips leading whitespace and accepts a
+  sign, so absurd dformats like `\\0 17` or `\\0-7` diverge (verified). Our
+  form covers every real dformat character-for-character.
+- conditional nesting past the interpreter recursion limit (a dformat like
+  `?` + "("*100000) is a clean fatal ("maximum recursion depth exceeded"),
+  where C recurses on the machine stack and only segfaults far deeper.
+- the ?m<n> mask term shifts by an int whose count x86-64 masks to 6 bits
+  (?m64 tests bit 0, ?m66 bit 2 — oracle-verified); a raw 1<<n would build
+  a multi-gigabyte integer for a hostile n and OOM (CVE-shaped), so the
+  count is truncated to (int) then &63, matching the C UB byte for byte.
 """
 
 import re
@@ -182,6 +198,11 @@ WINDOW_PROP_TABLE = (
 
 def _msg(b: bytes) -> str:
     return b.decode("latin-1")
+
+
+def _to_int32(v: int) -> int:
+    """C's (int) cast of a long: wrap to signed 32-bit."""
+    return ((v & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000
 
 
 def _scan_long(s: bytes, pos: int):
@@ -427,8 +448,17 @@ class Formatter:
                     v = int.from_bytes(buffer[pos:pos + 2], "little",
                                        signed=signed)
                     step = 2
-                else:  # 32: Xlib zero-extends into longs — never negative
-                    v = int.from_bytes(buffer[pos:pos + 8], "little")
+                else:  # 32: Xlib's _XRead32 SIGN-extends the wire CARD32
+                    # into a long (it reads through an `int *`), and
+                    # Extract_Value returns *(long*) for 'i' but masks
+                    # `& 0xffffffff` otherwise — i.e. the low 32 bits read
+                    # with the format char's signedness. So 32i of 0xffffffff
+                    # is -1 and of 0xfffffffb is -5 (a real INTEGER dumps its
+                    # negatives), while 32c/32x/32a stay unsigned. All
+                    # oracle-verified; the buffer's high 4 bytes are the
+                    # zero padding xlib_shape added, so slice the low 4.
+                    v = int.from_bytes(buffer[pos:pos + 4], "little",
+                                       signed=signed)
                     step = 8
                 thunks.append(Thunk(v))
                 pos += step
@@ -705,7 +735,12 @@ class Formatter:
         if pos < len(dfmt) and dfmt[pos] == 0x6D:  # 'm'
             i, pos = _scan_long(dfmt, pos + 1)
             word = self._mask_word(thunks, fmt)
-            return (1 if word & (1 << i) else 0), pos
+            # C's Mask_Bit_I: `value & (1L << (int)i)`. On x86-64 the shift
+            # count is masked to 6 bits, so ?m64 tests bit 0 and ?m66 bit 2
+            # (oracle-verified). A raw `1 << i` would build a multi-GB int
+            # for a hostile i (?m34359738368 -> MemoryError); bounding the
+            # count keeps it cheap AND byte-identical to the C UB.
+            return (1 if word & (1 << (_to_int32(i) & 63)) else 0), pos
         raise FatalError("Bad term: %s." % _msg(dfmt[pos:]))
 
     def _scan_exp(self, dfmt: bytes, pos: int, thunks, fmt: bytes):

@@ -25,6 +25,15 @@ import sys
 
 from wxprop.fmt import FatalError
 
+try:  # the X error classes, for narrow catches in the -name DFS
+    from wwmctl.x11_mini import X11Error, XUnavailable
+except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
+    class X11Error(Exception):
+        pass
+
+    class XUnavailable(Exception):
+        pass
+
 # PropertyChangeMask | StructureNotifyMask
 SPY_EVENT_MASK = 0x420000
 
@@ -484,10 +493,13 @@ def resolve_root(sess: Session):
 
 
 def _x_fetch_name(x, win: int):
-    """XFetchName: WM_NAME only when its type is STRING (format 8)."""
+    """XFetchName: WM_NAME only when its type is STRING (format 8). A
+    BadWindow (the window died between the tree read and this fetch) is a
+    normal DFS miss; a lost connection (XUnavailable) propagates so main
+    reports the real fault instead of a misleading 'no window' verdict."""
     try:
         r = x.read_property(win, "WM_NAME")
-    except Exception:
+    except X11Error:
         return None
     if r is None or r[0] != "STRING" or r[1] != 8:
         return None
@@ -496,14 +508,16 @@ def _x_fetch_name(x, win: int):
 
 def _window_with_name(x, top: int, name: bytes, depth: int = 0):
     """dsimple.c's Window_With_Name: pre-order DFS, exact strcmp on
-    WM_NAME, first match wins. Depth-bounded against a lying server."""
+    WM_NAME, first match wins. Depth-bounded against a lying server. A
+    window vanishing mid-search (BadWindow from query_tree) prunes that
+    subtree; only a lost connection escapes."""
     if depth > 64:
         return 0
     if _x_fetch_name(x, top) == name:
         return top
     try:
         children = x.query_tree(top)
-    except Exception:
+    except X11Error:
         return 0
     for ch in children:
         w = _window_with_name(x, ch, name, depth + 1)

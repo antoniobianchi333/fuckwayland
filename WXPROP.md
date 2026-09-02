@@ -39,10 +39,12 @@ toolchain, byte-parity oracles, agents never commit.
   per-type default formats (0s/8s/32x/32c/32a...), dformats, the built-in fallback
   table (WM_HINTS and WM_SIZE_HINTS structured dumps, ATOM lists, WINDOW
   "window id # 0x%x", quoted strings with escape rules, COMPOUND_TEXT, multi-value
-  comma joins, `-len` truncation with trailing "...", _NET_WM_ICON's ASCII-art icon
+  comma joins, `-len` truncation (Xlib word-cap + an 8-byte-per-32-bit-item byte
+  budget — NO "..." ellipsis; it just yields fewer/shorter fields, verified against
+  the oracle and xprop.c), _NET_WM_ICON's ASCII-art icon
   renderer — yes, really, xprop draws the icon; copy the algorithm from xprop.c).
 - `wwmctl/x11_mini.py` — ADDITIVE-ONLY extensions allowed (it is shared with
-  wwmctl; all 429 existing tests must stay green): `list_properties(win)`,
+  wwmctl; the full suite must stay green): `list_properties(win)`,
   `get_atom_name(atom)`, `read_property(win, name) -> (type_name, format, bytes) | None`,
   `delete_property(win, name)`, `change_property(...)` generalization if needed,
   `select_input(win, event_mask)` + `next_event(timeout) -> parsed PropertyNotify`.

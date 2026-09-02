@@ -645,7 +645,9 @@ class X11Conn:
         {"type": <code>}), or None when `timeout` seconds pass without one.
         timeout=None blocks indefinitely (xprop -spy semantics), but a
         mid-packet stall still hits the connection timeout and poisons the
-        connection — a trickling server cannot wedge us forever."""
+        connection — a trickling server cannot wedge us forever. timeout=0
+        is a true non-blocking poll: kernel-buffered events are drained
+        before None is returned."""
         if getattr(self, "_events", None) is None:
             self._events = []
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -654,12 +656,11 @@ class X11Conn:
                 return self._parse_event(self._events.pop(0))
             if self._sock is None:
                 raise XUnavailable("X connection is closed")
-            if deadline is None:
-                wait = None
-            else:
-                wait = deadline - time.monotonic()
-                if wait <= 0:
-                    return None
+            # clamp (never a negative select timeout); a zero timeout still
+            # polls the socket once before giving up, so a buffered event is
+            # never missed on the deadline boundary
+            wait = None if deadline is None \
+                else max(0.0, deadline - time.monotonic())
             try:
                 ready, _, _ = select.select([self._sock], [], [], wait)
             except (OSError, ValueError):

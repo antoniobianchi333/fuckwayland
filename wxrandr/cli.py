@@ -125,13 +125,6 @@ def _number(s: str) -> float:
         raise ArgErr("failed to parse '%s' as a number\n" % s)
 
 
-def _int(s: str) -> int:
-    try:
-        return int(s, 0)
-    except ValueError:
-        raise ArgErr("failed to parse '%s' as a number\n" % s)
-
-
 def parse(argv: list) -> Opts:
     o = Opts()
     cur: Stanza | None = None
@@ -448,16 +441,20 @@ class Session:
             self.backend = "sway" if sway_sock else "wlr"
         self.ipc = None
         self.wlr = None
+        # OSError as well as Fatal: WlConn's connect() can raise
+        # ConnectionRefusedError on a stale-but-present socket, and sway IPC
+        # can drop mid-handshake — both must read as "Can't open display",
+        # never a traceback.
         if self.backend == "sway":
             try:
                 self.ipc = core.SwayIPC(sway_sock)
-            except Fatal:
+            except (Fatal, OSError):
                 self._cant_open()
             self.wlr = core.wlr_snapshot_safe()
         else:
             try:
                 self.wlr = core.WlrOutputs()
-            except Fatal:
+            except (Fatal, OSError):
                 self._cant_open()
         # state is keyed by the compositor's wayland socket so both backends
         # share one primary/custom-mode store per session
@@ -608,14 +605,40 @@ def _check_fb(opts: Opts, targets, dims, pos):
                       " %s (%dx%d+%d+%d)\n" % (fw, fh, t.name, w, h, x, y))
 
 
-def _apply_gamma(sess: Session, opts: Opts):
+def _check_screen_size(opts: Opts, targets, dims, pos):
+    """xrandr's set_screen_size bound (xrandr.c:2109): the resolved layout (or
+    an explicit --fb) may not exceed maxWidth/maxHeight. Guards against a
+    far-flung --pos/--fb being handed to the compositor (and, on the wlr
+    backend, against the out-of-range struct pack it would otherwise trip)."""
+    if opts.fb:
+        desired_w, desired_h = opts.fb
+    else:
+        xs = [pos[t.name][0] + dims[t.name][0]
+              for t in targets if t.enabled and t.name in pos]
+        ys = [pos[t.name][1] + dims[t.name][1]
+              for t in targets if t.enabled and t.name in pos]
+        desired_w = max(xs) if xs else 0
+        desired_h = max(ys) if ys else 0
+    if desired_w > core.MAX_WIDTH or desired_h > core.MAX_HEIGHT:
+        raise Fatal("screen cannot be larger than %dx%d (desired size "
+                    "%dx%d)\n" % (core.MAX_WIDTH, core.MAX_HEIGHT,
+                                  desired_w, desired_h))
+
+
+def _apply_gamma(sess: Session, opts: Opts, outputs):
     from wxrandr import gamma as gammamod
     from wdotool import session as wsession
     hit = wsession.find_wayland_socket()
     sock = hit[2] if hit else None
+    known = {o.name for o in outputs}
     changed = False
     for s in opts.stanzas:
         if s.brightness is None and s.gamma is None:
+            continue
+        if s.name not in known:
+            # build_targets already printed the bare not-found warning and
+            # xrandr keeps exit 0 for a typo'd --output; don't spawn a holder
+            # against a name the compositor has never heard of.
             continue
         rec = sess.state.gamma().get(s.name, {})
         brightness = (s.brightness if s.brightness is not None
@@ -654,6 +677,7 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
             for t in targets if t.enabled}
     pos = core.resolve_positions(targets, dims)
     _check_fb(opts, targets, dims, pos)
+    _check_screen_size(opts, targets, dims, pos)
     if opts.verbose:
         _print_plan(opts, outputs, targets, dims, pos)
     if opts.noprimary:
@@ -672,7 +696,7 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
     if sess.state.primary and sess.state.primary not in still:
         sess.state.primary = None
     sess.state.save()
-    _apply_gamma(sess, opts)
+    _apply_gamma(sess, opts, outputs)
     return fresh
 
 
@@ -833,3 +857,9 @@ def main(argv=None) -> int:
         return 1
     except KeyboardInterrupt:
         return 130
+    except Exception as e:
+        # never a traceback: an out-of-range --pos/--rate/--scale that trips a
+        # struct pack, a lost compositor connection mid-apply, malformed IPC —
+        # all become one-line xrandr: fatals, like the real thing.
+        sys.stderr.write("xrandr: %s\n" % e)
+        return 1

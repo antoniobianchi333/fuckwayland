@@ -338,6 +338,66 @@ class Resolver(unittest.TestCase):
                          (777, 555, True))
 
 
+class AutoMode(unittest.TestCase):
+    """--auto must switch to the PREFERRED mode, not no-op / remembered mode
+    (review finding: build_targets --auto)."""
+
+    def test_auto_switches_active_output_to_preferred(self):
+        o = mk_output("A", 800, 600,
+                      modes=[(800, 600, 59860), (1280, 720, 59860)])
+        o.modes[0].preferred = False   # active at 800x600 ...
+        o.modes[1].preferred = True    # ... but preferred is 1280x720
+        o.current = o.modes[0]
+        t = build_targets([o], [Stanza(name="A", auto=True)], mk_state())
+        self.assertTrue(t[0].enabled)
+        self.assertEqual((t[0].mode.w, t[0].mode.h), (1280, 720))
+
+    def test_auto_keeps_explicit_mode(self):
+        o = mk_output("A", 800, 600,
+                      modes=[(800, 600, 59860), (1280, 720, 59860)])
+        t = build_targets([o], [Stanza(name="A", auto=True, mode="800x600")],
+                          mk_state())
+        self.assertEqual((t[0].mode.w, t[0].mode.h), (800, 600))
+
+    def test_global_auto_reenables_disabled_at_preferred(self):
+        o = mk_output("A", 1280, 720, active=False,
+                      modes=[(1280, 720, 59860)])
+        ts = build_targets([o], [], mk_state(), global_auto=True)
+        self.assertTrue(ts[0].enabled)
+        self.assertTrue(ts[0].changed)
+        self.assertEqual((ts[0].mode.w, ts[0].mode.h), (1280, 720))
+
+
+class ScreenBound(unittest.TestCase):
+    """xrandr's `screen cannot be larger than` fatal (set_screen_size)."""
+
+    def _t(self, name):
+        return type("T", (), {"name": name, "enabled": True})()
+
+    def test_layout_too_wide_is_fatal(self):
+        opts = cli.Opts()
+        with self.assertRaises(core.Fatal) as cm:
+            cli._check_screen_size(opts, [self._t("A")], {"A": (1280, 720)},
+                                   {"A": (100000, 0)})
+        self.assertEqual(cm.exception.args[0],
+                         "screen cannot be larger than 32767x32767 "
+                         "(desired size 101280x720)\n")
+
+    def test_fb_too_large_is_fatal(self):
+        opts = cli.Opts()
+        opts.fb = (40000, 40000)
+        with self.assertRaises(core.Fatal) as cm:
+            cli._check_screen_size(opts, [], {}, {})
+        self.assertEqual(cm.exception.args[0],
+                         "screen cannot be larger than 32767x32767 "
+                         "(desired size 40000x40000)\n")
+
+    def test_within_bounds_ok(self):
+        opts = cli.Opts()
+        cli._check_screen_size(opts, [self._t("A")], {"A": (1280, 720)},
+                               {"A": (0, 0)})  # no raise
+
+
 class Rendering(unittest.TestCase):
     """Byte checks against the oracle captures (the 3-output L-shape)."""
 
@@ -445,6 +505,28 @@ class Rendering(unittest.TestCase):
                          "        v: height  720 start  723 end  728 total "
                          " 748           clock  59.86Hz")
 
+    def test_verbose_gamma_falls_back_when_holder_stale(self):
+        # a holder record whose starttime no longer matches (killed/recycled)
+        # must not keep reporting the old brightness — the compositor restored
+        # the neutral ramp (review finding: render_verbose_block gamma record)
+        st = mk_state()
+        o = mk_output("H", 1280, 720)
+        st.gamma()["H"] = {"pid": os.getpid(), "start": "0",
+                           "brightness": 0.5, "gamma": [1.2, 1.0, 0.9]}
+        lines = core.render_verbose_block(o, st, 0)
+        self.assertIn("\tGamma:      1.0:1.0:1.0", lines)
+        self.assertIn("\tBrightness: 1.0", lines)
+
+    def test_verbose_gamma_reports_live_holder(self):
+        from wxrandr import gamma as g
+        st = mk_state()
+        o = mk_output("H", 1280, 720)
+        pid = os.getpid()
+        st.gamma()["H"] = {"pid": pid, "start": g._proc_starttime(pid),
+                           "brightness": 0.5, "gamma": [1.0, 1.0, 1.0]}
+        lines = core.render_verbose_block(o, st, 0)
+        self.assertIn("\tBrightness: 0.50", lines)
+
     def test_providers(self):
         lines = core.render_providers(self.l_shape(), "sway")
         self.assertEqual(lines[0], "Providers: number : 1")
@@ -494,6 +576,65 @@ class StateFile(unittest.TestCase):
         st = State("k", path=f.name)
         self.assertIsNone(st.primary)
 
+    def _tmp(self):
+        f = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        f.close()
+        os.unlink(f.name)
+        self.addCleanup(lambda: os.path.exists(f.name) and os.unlink(f.name))
+        self.addCleanup(lambda: os.path.exists(f.name + ".lock")
+                        and os.unlink(f.name + ".lock"))
+        return f.name
+
+    def test_concurrent_same_key_writes_merge(self):
+        # two "processes" writing different outputs' gamma under one key must
+        # not drop each other's record (read-modify-write race fix)
+        path = self._tmp()
+        a = State("k", path=path)
+        b = State("k", path=path)          # both loaded the (empty) file
+        a.gamma()["A"] = {"pid": 1, "start": "sa"}
+        b.gamma()["B"] = {"pid": 2, "start": "sb"}
+        a.save()
+        b.save()                           # must merge onto A's write
+        c = State("k", path=path)
+        self.assertIn("A", c.gamma())
+        self.assertIn("B", c.gamma())
+
+    def test_concurrent_delete_survives_merge(self):
+        path = self._tmp()
+        seed = State("k", path=path)
+        seed.gamma()["A"] = {"pid": 1, "start": "sa"}
+        seed.save()
+        a = State("k", path=path)          # sees A
+        b = State("k", path=path)          # sees A
+        b.gamma()["B"] = {"pid": 2, "start": "sb"}
+        b.save()                           # disk now A + B
+        a.gamma().pop("A")                 # a removes A
+        a.save()                           # A gone, B kept
+        c = State("k", path=path)
+        self.assertNotIn("A", c.gamma())
+        self.assertIn("B", c.gamma())
+
+    def test_other_key_preserved_across_writers(self):
+        path = self._tmp()
+        a = State("k1", path=path)
+        a.primary = "OUT-1"
+        a.save()
+        b = State("k2", path=path)
+        b.primary = "OUT-2"
+        b.save()
+        self.assertEqual(State("k1", path=path).primary, "OUT-1")
+        self.assertEqual(State("k2", path=path).primary, "OUT-2")
+
+    def test_corrupt_custom_mode_returns_none(self):
+        st = mk_state()
+        st.modes()["empty"] = {}
+        st.modes()["short"] = {"clock": 1.0, "h": [1, 2], "v": [3, 4, 5, 6]}
+        st.modes()["wrongtype"] = {"clock": 1.0, "h": 5, "v": 6}
+        self.assertIsNone(st.custom_mode("empty"))
+        self.assertIsNone(st.custom_mode("short"))
+        self.assertIsNone(st.custom_mode("wrongtype"))
+        self.assertIsNone(st.custom_mode("missing"))
+
 
 class VersionAndMisc(unittest.TestCase):
     def test_version_program_line(self):
@@ -518,6 +659,14 @@ class VersionAndMisc(unittest.TestCase):
         ramp = compute_ramp(4, 1.0, (2.0, 1.0, 1.0))
         vals = st.unpack("=12H", ramp)
         self.assertEqual(vals[1], int((1 / 3) ** 0.5 * 65535))
+
+    def test_negative_brightness_clamps_to_black(self):
+        # xrandr accepts a negative --brightness and applies the (black) ramp,
+        # exit 0; without the low clamp struct.pack('=H') would raise
+        from wxrandr.gamma import compute_ramp
+        import struct as st
+        ramp = compute_ramp(4, -0.5, (1.0, 1.0, 1.0))
+        self.assertEqual(st.unpack("=12H", ramp)[:4], (0, 0, 0, 0))
 
 
 if __name__ == "__main__":
