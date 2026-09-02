@@ -148,6 +148,83 @@ KEYSYM_KEYS["F12"] = (88, False)
 for _n in range(13, 25):
     KEYSYM_KEYS[f"F{_n}"] = (170 + _n, False)  # KEY_F13=183 .. KEY_F24=194
 
+# XF86 multimedia keysyms -> evdev KEY_* codes, hand-curated (they have no
+# unicode, so the fallback can never reach them). Codes follow XF86keysym.h's
+# "Use:" annotations and xkeyboard-config's evdev keycode->keysym mapping, so
+# injecting the code makes the compositor's XKB map report the same XF86
+# keysym that was requested. Newer names defined as _EVDEVK(code) resolve
+# automatically in _keysym_value_to_key and need no entry here.
+for _name, _code in {
+    "XF86AudioMute": 113,           # KEY_MUTE
+    "XF86AudioLowerVolume": 114,    # KEY_VOLUMEDOWN
+    "XF86AudioRaiseVolume": 115,    # KEY_VOLUMEUP
+    "XF86AudioMicMute": 248,        # KEY_MICMUTE
+    "XF86AudioPlay": 164,           # KEY_PLAYPAUSE
+    "XF86AudioPause": 201,          # KEY_PAUSECD
+    "XF86AudioNext": 163,           # KEY_NEXTSONG
+    "XF86AudioPrev": 165,           # KEY_PREVIOUSSONG
+    "XF86AudioStop": 166,           # KEY_STOPCD
+    "XF86AudioRecord": 167,         # KEY_RECORD
+    "XF86AudioRewind": 168,         # KEY_REWIND
+    "XF86AudioForward": 208,        # KEY_FASTFORWARD
+    "XF86AudioMedia": 226,          # KEY_MEDIA
+    "XF86MonBrightnessUp": 225,     # KEY_BRIGHTNESSUP
+    "XF86MonBrightnessDown": 224,   # KEY_BRIGHTNESSDOWN
+    "XF86MonBrightnessCycle": 243,  # KEY_BRIGHTNESS_CYCLE
+    "XF86KbdBrightnessUp": 230,     # KEY_KBDILLUMUP
+    "XF86KbdBrightnessDown": 229,   # KEY_KBDILLUMDOWN
+    "XF86KbdLightOnOff": 228,       # KEY_KBDILLUMTOGGLE
+    "XF86Back": 158,                # KEY_BACK
+    "XF86Forward": 159,             # KEY_FORWARD
+    "XF86Refresh": 173,             # KEY_REFRESH
+    "XF86Reload": 173,              # KEY_REFRESH
+    "XF86Stop": 128,                # KEY_STOP
+    "XF86Search": 217,              # KEY_SEARCH
+    "XF86HomePage": 172,            # KEY_HOMEPAGE
+    "XF86WWW": 150,                 # KEY_WWW
+    "XF86Mail": 155,                # KEY_MAIL
+    "XF86Calculator": 140,          # KEY_CALC
+    "XF86Explorer": 144,            # KEY_FILE
+    "XF86Tools": 171,               # KEY_CONFIG
+    "XF86Favorites": 156,           # KEY_BOOKMARKS
+    "XF86MyComputer": 157,          # KEY_COMPUTER
+    "XF86PowerOff": 116,            # KEY_POWER
+    "XF86Sleep": 142,               # KEY_SLEEP
+    "XF86Suspend": 205,             # KEY_SUSPEND
+    "XF86WakeUp": 143,              # KEY_WAKEUP
+    "XF86ScreenSaver": 152,         # KEY_COFFEE / KEY_SCREENLOCK
+    "XF86Display": 227,             # KEY_SWITCHVIDEOMODE
+    "XF86Eject": 162,               # KEY_EJECTCLOSECD
+    "XF86Phone": 169,               # KEY_PHONE
+    "XF86ScrollUp": 177,            # KEY_SCROLLUP
+    "XF86ScrollDown": 178,          # KEY_SCROLLDOWN
+    "XF86New": 181,                 # KEY_NEW
+    "XF86Close": 206,               # KEY_CLOSE
+    "XF86Save": 234,                # KEY_SAVE
+    "XF86Documents": 235,           # KEY_DOCUMENTS
+    "XF86Send": 231,                # KEY_SEND
+    "XF86Reply": 232,               # KEY_REPLY
+    "XF86MailForward": 233,         # KEY_FORWARDMAIL
+    "XF86Messenger": 216,           # KEY_CHAT
+    "XF86WebCam": 212,              # KEY_CAMERA
+    "XF86Finance": 219,             # KEY_FINANCE
+    "XF86Shop": 221,                # KEY_SHOP
+    "XF86Battery": 236,             # KEY_BATTERY
+    "XF86Bluetooth": 237,           # KEY_BLUETOOTH
+    "XF86WLAN": 238,                # KEY_WLAN
+    "XF86RFKill": 247,              # KEY_RFKILL
+    "XF86Copy": 133,                # KEY_COPY
+    "XF86Cut": 137,                 # KEY_CUT
+    "XF86Paste": 135,               # KEY_PASTE
+    "XF86Open": 134,                # KEY_OPEN
+    "XF86Launch1": 148,             # KEY_PROG1
+    "XF86Launch2": 149,             # KEY_PROG2
+    "XF86Launch3": 202,             # KEY_PROG3
+    "XF86Launch4": 203,             # KEY_PROG4
+    "XF86LaunchB": 204,             # KEY_DASHBOARD
+}.items():
+    KEYSYM_KEYS[_name] = (_code, False)
+
 # Case-insensitive aliases, from xdotool's symbol_map plus win/lock.
 ALIASES = {
     "alt": "Alt_L",
@@ -176,8 +253,15 @@ def char_to_key(ch: str) -> tuple[int, bool] | None:
     return CHAR_TO_KEY.get(ch)
 
 
+_EVDEVK_BASE = 0x10081000  # XF86keysym.h: _EVDEVK(v) == 0x10081000 + evdev code
+
+
 def _keysym_value_to_key(ks: int) -> tuple[int, bool] | None:
-    """Resolve a raw keysym number to (keycode, shifted) via unicode."""
+    """Resolve a raw keysym number to (keycode, shifted) via unicode (or, for
+    _EVDEVK-range XF86 keysyms, the evdev code embedded in the keysym)."""
+    if 0 < ks - _EVDEVK_BASE < 0x1000:
+        code = ks - _EVDEVK_BASE
+        return (code, False) if code < 256 else None
     cp = KEYSYM_TO_UNICODE.get(ks)
     if cp is None:
         if 0x20 <= ks <= 0xFF:

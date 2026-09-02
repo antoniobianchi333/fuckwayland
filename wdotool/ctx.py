@@ -48,11 +48,14 @@ class Context:
                 n = int(ref)
             except ValueError:
                 raise CmdError(f"Invalid window stack reference '{arg}'") from None
-            if n == 0 or n > len(self.stack):
+            # Negative refs count from the end, like xdotool's window_list():
+            # index = len(stack) + n, valid when it lands in [1, len(stack)].
+            idx = len(self.stack) + n if n < 0 else n
+            if idx <= 0 or idx > len(self.stack):
                 raise CmdError(
                     f"Invalid window stack reference '{arg}' (stack has {len(self.stack)} windows)"
                 )
-            return self.stack[n - 1]
+            return self.stack[idx - 1]
         try:
             return int(arg, 0)
         except ValueError:
@@ -60,16 +63,15 @@ class Context:
 
     def resolve_window(self, arg: str | None = None) -> int:
         """Resolve an optional window argument like xdotool: explicit arg (decimal,
-        0x-hex, or %N/%@ stack ref), else %1 if a stack exists, else the currently
-        focused window."""
+        0x-hex, or %N/%@ stack ref), else %1. Like xdotool, an omitted window
+        argument with an empty window stack is an error (the real tool validates
+        the implicit "%1" against the stack and refuses; being lenient here made
+        `wdotool windowclose` close the focused window where xdotool errors)."""
         if arg is not None:
             return self._resolve_one(arg)
         if self.stack:
             return self.stack[0]
-        for w in self.backend().list():
-            if w.focused:
-                return w.id
-        raise CmdError("Cannot find focused window")
+        raise CmdError("There are no windows on the stack")
 
     def resolve_windows(self, arg: str | None = None) -> list[int]:
         """Like resolve_window, but %@ expands to the entire stack."""

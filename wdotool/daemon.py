@@ -23,7 +23,31 @@ from wdotool.ctx import CmdError
 # leak into) another user's daemon spawn.
 LOG_PATH = ("/tmp/wdotool-daemon.log" if os.geteuid() == 0
             else f"/tmp/wdotool-daemon-{os.geteuid()}.log")
-FALLBACK_GEOMETRY = (1920, 1080)
+FALLBACK_GEOMETRY = (0, 0, 1920, 1080)  # (min_x, min_y, width, height)
+
+# Per-request sanity bounds: one malicious/buggy request must not hold the
+# global injection lock for hours or overflow C int fields downstream.
+MAX_REPEAT = 1_000_000
+MAX_DELAY_MS = 300_000
+_I32_MIN, _I32_MAX = -(2**31), 2**31 - 1
+_MAX_REQUEST = 16 << 20  # bytes per request line
+
+
+def _num(val, what: str, lo: int, hi: int) -> int:
+    """Validate one numeric request field: JSON numbers only (bool excluded),
+    truncated to int, bounds-checked. Raises RuntimeError -> {"ok":false}."""
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        raise RuntimeError(f"invalid {what}: {val!r} (expected a number)")
+    v = int(val)
+    if not lo <= v <= hi:
+        raise RuntimeError(f"{what} {v} out of range [{lo}, {hi}]")
+    return v
+
+
+def _text(val, what: str) -> str:
+    if not isinstance(val, str):
+        raise RuntimeError(f"invalid {what}: {val!r} (expected a string)")
+    return val
 
 
 def socket_path() -> str:
@@ -35,9 +59,19 @@ def socket_path() -> str:
     return f"/tmp/wdotool-{os.getuid()}.sock"
 
 
-def _wayland_bbox() -> tuple[int, int]:
-    """Bounding box (w, h) of all outputs, queried over the Wayland wire.
-    Prefers zxdg_output_manager_v1 logical size/position."""
+def _bbox_of(boxes) -> tuple[int, int, int, int]:
+    """(min_x, min_y, width, height) of a list of (x, y, w, h) output boxes.
+    Multi-output layouts can have non-zero or negative origins."""
+    minx = min(x for x, _y, _w, _h in boxes)
+    miny = min(y for _x, y, _w, _h in boxes)
+    maxx = max(x + w for x, _y, w, _h in boxes)
+    maxy = max(y + h for _x, y, _w, h in boxes)
+    return (minx, miny, maxx - minx, maxy - miny)
+
+
+def _wayland_bbox() -> tuple[int, int, int, int]:
+    """Bounding box (min_x, min_y, w, h) of all outputs, queried over the
+    Wayland wire. Prefers zxdg_output_manager_v1 logical size/position."""
     from wdotool import session
     from wdotool.wayland_mini import WlConn
 
@@ -45,6 +79,9 @@ def _wayland_bbox() -> tuple[int, int]:
     if hit is None:
         raise RuntimeError("no wayland socket found")
     conn = WlConn(hit[2])
+    # A wedged compositor must fall back to the warned default, not hang the
+    # daemon forever while it holds the global lock.
+    conn.sock.settimeout(3.0)
     try:
         outs = []
         for name, (iface, ver) in sorted(conn.get_registry().items()):
@@ -99,7 +136,7 @@ def _wayland_bbox() -> tuple[int, int]:
                 boxes.append((o["x"], o["y"], w // s, h // s))
         if not boxes:
             raise RuntimeError("no wl_output geometry advertised")
-        return (max(x + w for x, y, w, h in boxes), max(y + h for x, y, w, h in boxes))
+        return _bbox_of(boxes)
     finally:
         conn.close()
 
@@ -149,21 +186,37 @@ class _Daemon:
         except OSError as e:
             import errno
 
+            # A partial set (e.g. keyboard created, mouse raced EPERM) must not
+            # leak devices: close what exists so a later retry starts clean.
+            for dev in (self.kb, self.mouse, self.tablet):
+                if dev is not None:
+                    dev.close()
+            self.kb = self.mouse = self.tablet = None
             hint = ""
             if e.errno in (errno.EACCES, errno.EPERM):
                 hint = " (wdotool injects input via /dev/uinput; run it as root)"
             elif e.errno == errno.ENOENT:
                 hint = " (/dev/uinput missing; is the uinput kernel module loaded?)"
-            self.dev_error = f"cannot create uinput devices: {e}{hint}"
-            print(self.dev_error, file=sys.stderr, flush=True)
+            err = f"cannot create uinput devices: {e}{hint}"
+            if err != self.dev_error:  # don't spam the log on every retry
+                print(err, file=sys.stderr, flush=True)
+            self.dev_error = err
 
     def _need_devices(self):
+        if self.dev_error:
+            # Retry: the failure may be transient (uinput module loaded after
+            # boot, devices raced). Cheap when it fails again — the 600ms
+            # hotplug settle is only paid on success.
+            self.create_devices()
         if self.dev_error:
             raise RuntimeError(self.dev_error)
 
     # -- geometry / pointer ------------------------------------------------
 
-    def geometry(self, warnings=None):
+    def geometry(self, warnings=None) -> tuple[int, int, int, int]:
+        """Cached layout bounding box (min_x, min_y, w, h). The origin can be
+        non-zero/negative on multi-output layouts; pointer coordinates are
+        tracked in these global layout coordinates."""
         if self.geom:
             return self.geom
         try:
@@ -173,7 +226,7 @@ class _Daemon:
             if not self.geom_warned:
                 self.geom_warned = True
                 msg = (f"wdotool: cannot query Wayland output geometry ({e}); "
-                       f"assuming {FALLBACK_GEOMETRY[0]}x{FALLBACK_GEOMETRY[1]}")
+                       f"assuming {FALLBACK_GEOMETRY[2]}x{FALLBACK_GEOMETRY[3]}")
                 print(msg, file=sys.stderr, flush=True)
                 if warnings is not None:
                     warnings.append(msg)
@@ -181,19 +234,22 @@ class _Daemon:
 
     def op_mousemove_abs(self, x, y, warnings):
         self._need_devices()
-        w, h = self.geometry(warnings)
-        x = min(max(x, 0), w - 1)
-        y = min(max(y, 0), h - 1)
-        self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, x * 32767 // max(w - 1, 1))
-        self.tablet.emit(uinput.EV_ABS, uinput.ABS_Y, y * 32767 // max(h - 1, 1))
+        gx, gy, w, h = self.geometry(warnings)
+        x = min(max(x, gx), gx + w - 1)
+        y = min(max(y, gy), gy + h - 1)
+        # The compositor maps the tablet's 0..32767 axes across the FULL output
+        # layout, so scale the offset from the layout origin, not the raw
+        # (possibly negative) global coordinate.
+        self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, (x - gx) * 32767 // max(w - 1, 1))
+        self.tablet.emit(uinput.EV_ABS, uinput.ABS_Y, (y - gy) * 32767 // max(h - 1, 1))
         self.tablet.syn()
         self.px, self.py = x, y
 
     def op_mousemove_rel(self, dx, dy, warnings):
         self._need_devices()
-        w, h = self.geometry(warnings)
-        self.px = min(max(self.px + dx, 0), w - 1)
-        self.py = min(max(self.py + dy, 0), h - 1)
+        gx, gy, w, h = self.geometry(warnings)
+        self.px = min(max(self.px + dx, gx), gx + w - 1)
+        self.py = min(max(self.py + dy, gy), gy + h - 1)
         if dx:
             self.mouse.emit(uinput.EV_REL, uinput.REL_X, dx)
         if dy:
@@ -299,30 +355,44 @@ class _Daemon:
 
     # -- protocol ----------------------------------------------------------
 
-    def handle(self, req: dict) -> dict:
+    def handle(self, req) -> dict:
+        if not isinstance(req, dict):
+            return {"ok": False, "error": f"invalid request: {req!r} (expected an object)"}
         op = req.get("op")
         warnings: list[str] = []
         with self.lock:
             if op == "type":
-                warnings = self.op_type(req["text"], req.get("delay_ms", 12),
-                                        req.get("clearmods", False))
+                warnings = self.op_type(
+                    _text(req.get("text"), "text"),
+                    _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
+                    req.get("clearmods", False))
             elif op == "key":
-                warnings = self.op_key(req["spec"], req.get("direction", "press"),
-                                       req.get("delay_ms", 12), req.get("clearmods", False))
+                warnings = self.op_key(
+                    _text(req.get("spec"), "spec"),
+                    req.get("direction", "press"),
+                    _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
+                    req.get("clearmods", False))
             elif op == "mousemove_abs":
-                self.op_mousemove_abs(int(req["x"]), int(req["y"]), warnings)
+                self.op_mousemove_abs(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
+                                      _num(req.get("y"), "y", _I32_MIN, _I32_MAX),
+                                      warnings)
             elif op == "mousemove_rel":
-                self.op_mousemove_rel(int(req["dx"]), int(req["dy"]), warnings)
+                self.op_mousemove_rel(_num(req.get("dx"), "dx", _I32_MIN, _I32_MAX),
+                                      _num(req.get("dy"), "dy", _I32_MIN, _I32_MAX),
+                                      warnings)
             elif op == "button":
-                self.op_button(int(req["btn"]), bool(req["down"]))
+                self.op_button(_num(req.get("btn"), "button", 0, 255),
+                               bool(req.get("down")))
             elif op == "click":
-                self.op_click(int(req["btn"]), int(req.get("repeat", 1)),
-                              int(req.get("delay_ms", 100)))
+                self.op_click(_num(req.get("btn"), "button", 0, 255),
+                              _num(req.get("repeat", 1), "repeat", 0, MAX_REPEAT),
+                              _num(req.get("delay_ms", 100), "delay_ms", 0, MAX_DELAY_MS))
             elif op == "pointer":
                 return {"ok": True, "x": self.px, "y": self.py}
             elif op == "geometry":
-                w, h = self.geometry(warnings)
-                return {"ok": True, "w": w, "h": h, "warnings": warnings}
+                gx, gy, w, h = self.geometry(warnings)
+                return {"ok": True, "x": gx, "y": gy, "w": w, "h": h,
+                        "warnings": warnings}
             elif op == "ping":
                 return {"ok": True, "pid": os.getpid()}
             else:
@@ -332,13 +402,28 @@ class _Daemon:
     def serve_client(self, conn: socket.socket):
         rfile = conn.makefile("r", encoding="utf-8")
         try:
-            for line in rfile:
-                if not line.strip():
+            while True:
+                line = rfile.readline(_MAX_REQUEST + 1)
+                if not line:
+                    break
+                if len(line) > _MAX_REQUEST and not line.endswith("\n"):
+                    # Oversized request: drain the rest of the line so framing
+                    # survives, then answer with an error.
+                    while True:
+                        chunk = rfile.readline(_MAX_REQUEST)
+                        if not chunk or chunk.endswith("\n"):
+                            break
+                    resp = {"ok": False, "error": "request too large"}
+                elif not line.strip():
                     continue
-                try:
-                    resp = self.handle(json.loads(line))
-                except (ValueError, RuntimeError, OSError, KeyError) as e:
-                    resp = {"ok": False, "error": str(e) or repr(e)}
+                else:
+                    # Catch-all per-request boundary: a malformed request (bad
+                    # JSON, wrong types, bare non-object) must produce an
+                    # {"ok":false} reply, never kill the connection thread.
+                    try:
+                        resp = self.handle(json.loads(line))
+                    except Exception as e:
+                        resp = {"ok": False, "error": str(e) or repr(e)}
                 conn.sendall((json.dumps(resp) + "\n").encode())
         except OSError:
             pass
@@ -378,7 +463,17 @@ def daemon_main() -> int:
             pass
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(path)
+    # Owner-only socket regardless of the spawning client's umask: the root
+    # daemon serves root clients only (a world-connectable root socket would be
+    # an input-injection privilege escalation). Non-root users get their own
+    # per-user daemon, which fails with the clean "/dev/uinput ... run it as
+    # root" error. chmod after bind closes the umask race belt-and-braces.
+    old_umask = os.umask(0o177)
+    try:
+        srv.bind(path)
+    finally:
+        os.umask(old_umask)
+    os.chmod(path, 0o600)
     srv.listen(16)
     print(f"wdotool daemon (pid {os.getpid()}) listening on {path}", flush=True)
 
@@ -489,7 +584,12 @@ class DaemonClient:
             raise CmdError(f"wdotool daemon connection lost: {e}") from None
         if not line:
             raise CmdError("wdotool daemon connection lost")
-        resp = json.loads(line)
+        try:
+            resp = json.loads(line)
+        except ValueError:
+            raise CmdError("wdotool daemon sent an invalid reply") from None
+        if not isinstance(resp, dict):
+            raise CmdError("wdotool daemon sent an invalid reply")
         for warning in resp.get("warnings") or []:
             print(warning, file=sys.stderr)
         if not resp.get("ok"):
@@ -522,3 +622,9 @@ class DaemonClient:
     def geometry(self) -> tuple[int, int]:
         resp = self._rpc(op="geometry")
         return (resp["w"], resp["h"])
+
+    def geometry_full(self) -> tuple[int, int, int, int]:
+        """(min_x, min_y, w, h) of the output layout — the origin matters on
+        multi-output layouts with non-zero/negative origins."""
+        resp = self._rpc(op="geometry")
+        return (resp.get("x", 0), resp.get("y", 0), resp["w"], resp["h"])

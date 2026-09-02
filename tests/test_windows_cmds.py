@@ -217,8 +217,14 @@ class QueryTest(unittest.TestCase):
             out, "QWINDOW=22\nQX=7\nQY=8\nQWIDTH=300\nQHEIGHT=400\nQSCREEN=0\n"
         )
 
-    def test_default_window_is_focused_without_stack(self):
-        self.assertEqual(run(["getwindowclassname"])[1], "alpha\n")
+    def test_default_window_without_stack_errors(self):
+        # Real xdotool: an omitted window argument defaults to %1, and an
+        # empty stack makes that an error ("These would error: xdotool
+        # windowactivate" -- manpage, COMMAND CHAINING).
+        rc, out, err, _ = run(["getwindowclassname"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("no windows on the stack", err)
 
 
 class ActionTest(unittest.TestCase):

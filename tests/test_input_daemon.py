@@ -32,11 +32,11 @@ class RecorderDev:
         pass
 
 
-def make_daemon():
+def make_daemon(geom=(0, 0, 1920, 1080)):
     d = daemon._Daemon()
     d.kb, d.mouse, d.tablet = RecorderDev(), RecorderDev(), RecorderDev()
     d.dev_error = None
-    d.geom = (1920, 1080)
+    d.geom = geom
     return d
 
 
@@ -181,10 +181,16 @@ class TestInjectionLogic(unittest.TestCase):
         ])
 
     def test_no_devices_error(self):
+        # _need_devices retries create_devices; point it at a missing node so
+        # the retry deterministically fails no matter where the tests run.
+        os.environ["WDOTOOL_UINPUT_PATH"] = "/nonexistent/wdotool-uinput"
+        self.addCleanup(os.environ.pop, "WDOTOOL_UINPUT_PATH", None)
         d = daemon._Daemon()
-        d.geom = (1920, 1080)
-        with self.assertRaises(RuntimeError):
-            d.op_button(1, True)
+        d.geom = (0, 0, 1920, 1080)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(RuntimeError):
+                d.op_button(1, True)
 
 
 class TestProtocol(unittest.TestCase):
@@ -210,7 +216,13 @@ class TestProtocol(unittest.TestCase):
         stale.bind(daemon.socket_path())
         stale.close()
 
-        cls.client = daemon.DaemonClient.connect_or_spawn()
+        # spawn under a fully permissive umask: the daemon must still bind an
+        # owner-only (0600) socket
+        old_umask = os.umask(0o000)
+        try:
+            cls.client = daemon.DaemonClient.connect_or_spawn()
+        finally:
+            os.umask(old_umask)
         cls.pid = cls.client._rpc(op="ping")["pid"]
 
     @classmethod
@@ -229,6 +241,29 @@ class TestProtocol(unittest.TestCase):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             self.assertEqual(self.client.geometry(), (1920, 1080))
+
+    def test_geometry_full_carries_origin(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(self.client.geometry_full(), (0, 0, 1920, 1080))
+
+    def test_socket_mode_is_0600(self):
+        # owner-only regardless of the spawning client's umask
+        mode = os.stat(daemon.socket_path()).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_malformed_json_values_keep_connection(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(daemon.socket_path())
+        self.addCleanup(sock.close)
+        rfile = sock.makefile("r")
+        for req in (b"5\n",
+                    b'{"op": "mousemove_abs", "x": null, "y": null}\n',
+                    b'{"op": "click", "btn": 1, "repeat": 99999999999}\n'):
+            sock.sendall(req)
+            self.assertFalse(json.loads(rfile.readline())["ok"])
+        sock.sendall(b'{"op": "ping"}\n')
+        self.assertEqual(json.loads(rfile.readline())["pid"], self.pid)
 
     def test_pointer_tracking_roundtrip(self):
         stderr = io.StringIO()

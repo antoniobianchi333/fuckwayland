@@ -100,27 +100,44 @@ class DaemonClient:
     def button(self, btn: int, down: bool): ...   # 1=L 2=M 3=R 4..7=wheel 8..12=side/extra/fwd/back/task
     def click(self, btn: int, repeat: int, delay_ms: int): ...
     def pointer(self) -> tuple[int, int]: ...
-    def geometry(self) -> tuple[int, int]: ...    # bounding box of all outputs
+    def geometry(self) -> tuple[int, int]: ...    # (w, h) of the full output layout
+    def geometry_full(self) -> tuple[int, int, int, int]: ...  # (min_x, min_y, w, h)
 def daemon_main() -> int: ...
 ```
 
 Daemon notes (B):
 - uinput via pure stdlib (`fcntl.ioctl` + `struct`; the legacy `uinput_user_dev`
-  write-based setup is the portable path). Devices: keyboard (KEY_ 1..=248), relative
+  write-based setup is the portable path). Devices: keyboard (KEY_ 1..=255 —
+  everything the keymap can emit, numeric X keycodes included), relative
   mouse (REL_X/Y/WHEEL/HWHEEL + BTN_LEFT/MIDDLE/RIGHT/SIDE/EXTRA/FORWARD/BACK/TASK,
   the last three giving X buttons 10..12), absolute pointer
   (ABS_X/ABS_Y 0..=32767 + buttons + wheel — the QEMU usb-tablet shape every compositor
   maps across the whole output layout). Sleep ~600ms once after creation for hotplug.
 - `key` spec: modifier aliases ctrl/control/alt/meta/super/shift + any keysym name;
   keysym names via `keysyms.py` — GENERATE a full name→keysym→unicode table from
-  xorgproto `keysymdef.h` (curl once, commit the generated file; no network at build).
+  xorgproto `keysymdef.h` + `XF86keysym.h` (curl once, commit the generated file;
+  no network at build). XF86 keysyms resolve through a hand-curated XF86→evdev
+  table in `keymap.py` (they have no unicode); `_EVDEVK`-range keysyms
+  (0x10081000+code) carry their own evdev code.
 - char → keycode: static US-QWERTY table (char → keycode, shifted?). Unreachable chars:
   stderr warning, skip. `clearmods`: inject key-up for all 8 modifier keys first.
 - geometry: Wayland client via `wayland_mini` (wl_output geometry+mode; prefer
-  zxdg_output logical size/position when advertised). Cache. Fallback 1920x1080 + warn.
-  Abs scaling: `x * 32767 // max(w - 1, 1)`.
-- pointer position: track injected position (abs sets, rel adds, clamp to geometry).
-  Authoritative for scripting; physical-mouse drift is out of scope.
+  zxdg_output logical size/position when advertised), with a 3s socket timeout so a
+  wedged compositor falls back instead of hanging the daemon. Cache is the full
+  layout box `(min_x, min_y, w, h)` — multi-output layouts can have non-zero or
+  negative origins. Fallback (0, 0, 1920, 1080) + warn. Abs scaling maps offsets
+  from the layout origin: `(x - min_x) * 32767 // max(w - 1, 1)`. The `geometry`
+  op returns `x y w h`; `DaemonClient.geometry()` keeps returning `(w, h)`,
+  `geometry_full()` adds the origin.
+- pointer position: track injected position in layout coordinates (abs sets, rel
+  adds, clamp to the layout box — so it hit-tests directly against backend window
+  rects). Authoritative for scripting; physical-mouse drift is out of scope.
+- hardening: the socket is bound under umask 0o177 and chmod 0600 (root daemon
+  serves root only; non-root users spawn their own per-user daemon and hit the
+  clean "/dev/uinput ... run it as root" error). Per-request catch-all keeps a
+  malformed request from killing the connection; repeat ≤ 1e6, delays ≤ 300s,
+  coordinates int32, request lines ≤ 16MB. Partially-created uinput devices are
+  closed on failure and creation is retried on the next request.
 - Protocol: one JSON object per line each way; `{"ok":true,...}` /
   `{"ok":false,"error":"..."}`. Ops mirror the client API 1:1.
 

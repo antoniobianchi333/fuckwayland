@@ -162,6 +162,16 @@ class SwayBackend(WindowBackend):
         (decoration included) while we report/take the content rect."""
         return (node.get("deco_rect") or {}).get("height", 0)
 
+    @staticmethod
+    def _refuse_fullscreen(node, what: str):
+        """sway silently ignores move/resize of fullscreen containers, which
+        would make --sync spin forever; refuse up front instead."""
+        if node.get("fullscreen_mode"):
+            raise CmdError(
+                "sway: cannot %s a fullscreen window "
+                "(windowstate --remove FULLSCREEN first)" % what
+            )
+
     def move_window(self, wid: int, x: int, y: int):
         node, _w, floating, _ws = self._node(wid)
         if not floating:
@@ -169,13 +179,21 @@ class SwayBackend(WindowBackend):
                 "sway: cannot move a tiled window to an absolute position "
                 "(floating enable it first)"
             )
+        self._refuse_fullscreen(node, "move")
         self.run("[con_id=%d] move absolute position %d %d"
                  % (wid, x, y - self._deco_h(node)))
 
     def resize(self, wid: int, w: int, h: int):
-        node = self._node(wid)[0]
+        node, win, floating, _ws = self._node(wid)
+        self._refuse_fullscreen(node, "resize")
         self.run("[con_id=%d] resize set %d px %d px"
                  % (wid, w, h + self._deco_h(node)))
+        if floating:
+            # sway resizes floating windows around their center; xdotool (X11)
+            # keeps the top-left corner fixed. Move it back where it was.
+            node2 = self._node(wid)[0]
+            self.run("[con_id=%d] move absolute position %d %d"
+                     % (wid, win.x, win.y - self._deco_h(node2)))
 
     def minimize(self, wid: int):
         self.unmap(wid)
@@ -189,6 +207,12 @@ class SwayBackend(WindowBackend):
         _n, _win, _f, ws_name = self._node(wid)
         if ws_name != SCRATCHPAD_WS:
             self.run("[con_id=%d] move scratchpad" % wid)
+
+    def is_mapped(self, wid: int) -> bool:
+        """Mapped = not stashed in the scratchpad. A window on an unfocused
+        workspace (or a background tab) is mapped but not visible; X11's
+        map state is what windowmap/windowunmap --sync must wait on."""
+        return self._node(wid)[3] != SCRATCHPAD_WS
 
     def raise_(self, wid: int):
         _n, _win, floating, _ws = self._node(wid)
@@ -265,13 +289,20 @@ class SwayBackend(WindowBackend):
             s.close()
 
     def display_size(self) -> tuple[int, int]:
-        w = h = 0
+        boxes = []
         for o in self._msg(GET_OUTPUTS):
             if not o.get("active"):
                 continue
             rect = o.get("rect") or {}
-            w = max(w, rect.get("x", 0) + rect.get("width", 0))
-            h = max(h, rect.get("y", 0) + rect.get("height", 0))
+            boxes.append((rect.get("x", 0), rect.get("y", 0),
+                          rect.get("width", 0), rect.get("height", 0)))
+        if not boxes:
+            raise CmdError("sway backend: no active outputs")
+        # Bounding box of the full layout; origins can be non-zero/negative.
+        minx = min(x for x, _y, _w, _h in boxes)
+        miny = min(y for _x, y, _w, _h in boxes)
+        w = max(x + w for x, _y, w, _h in boxes) - minx
+        h = max(y + h for _x, y, _w, h in boxes) - miny
         if not w or not h:
             raise CmdError("sway backend: no active outputs")
         return w, h

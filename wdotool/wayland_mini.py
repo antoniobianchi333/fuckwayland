@@ -169,7 +169,10 @@ class WlConn:
         while len(self.buf) >= 8:
             obj_id, sizeop = struct.unpack_from("<II", self.buf)
             size, opcode = sizeop >> 16, sizeop & 0xFFFF
-            if size < 8 or len(self.buf) < size:
+            if size < 8:
+                # never valid; breaking without consuming would spin forever
+                raise RuntimeError("malformed wayland message (size < 8)")
+            if len(self.buf) < size:
                 break
             payload = self.buf[8:size]
             self.buf = self.buf[size:]

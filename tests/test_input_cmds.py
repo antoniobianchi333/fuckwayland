@@ -41,6 +41,9 @@ class FakeDaemon:
     def geometry(self):
         return (1920, 1080)
 
+    def geometry_full(self):
+        return (0, 0, 1920, 1080)
+
 
 class FakeBackend(WindowBackend):
     name = "fake"

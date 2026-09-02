@@ -42,11 +42,23 @@ class _EvalBlocked(Exception):
     pass
 
 
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f",
+            "a": "\a", "v": "\v", "0": "\0"}
+_UNQUOTE_RE = re.compile(r"\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)")
+
+
 def _unquote(s: str) -> str:
-    """Undo GVariant single-quoted string escaping (the common cases)."""
-    return (s.replace("\\'", "'").replace('\\"', '"')
-             .replace("\\n", "\n").replace("\\t", "\t")
-             .replace("\\\\", "\\"))
+    """Undo GVariant single-quoted string escaping in one left-to-right pass
+    (ordered str.replace chains mangle titles containing literal backslashes,
+    e.g. '\\\\n' on the wire must decode to backslash+n, not a newline)."""
+
+    def repl(m):
+        e = m.group(1)
+        if e[0] in "uU" and len(e) > 1:
+            return chr(int(e[1:], 16))
+        return _ESCAPES.get(e, e)
+
+    return _UNQUOTE_RE.sub(repl, s)
 
 
 class GnomeBackend(WindowBackend):

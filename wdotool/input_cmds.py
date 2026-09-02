@@ -9,41 +9,12 @@ import math
 import sys
 import time
 
+from wdotool import commands
 from wdotool.cli import ChainAbort
 from wdotool.ctx import CmdError
 
 # ---------------------------------------------------------------------------
 # option parsing, via cli.py's glibc getopt_long_only clone
-
-_FALLBACK_COMMANDS = {
-    "getactivewindow", "getwindowfocus", "getwindowname", "getwindowclassname",
-    "getwindowpid", "getwindowgeometry", "getdisplaygeometry", "search",
-    "selectwindow", "help", "version", "behave", "behave_screen_edge", "click",
-    "getmouselocation", "key", "keydown", "keyup", "mousedown", "mousemove",
-    "mousemove_relative", "mouseup", "set_window", "type", "windowactivate",
-    "windowfocus", "windowkill", "windowclose", "windowquit", "windowmap",
-    "windowminimize", "windowmove", "windowraise", "windowlower",
-    "windowreparent", "windowsize", "windowstate", "windowunmap",
-    "set_num_desktops", "get_num_desktops", "set_desktop", "get_desktop",
-    "set_desktop_for_window", "get_desktop_for_window", "get_desktop_viewport",
-    "set_desktop_viewport", "exec", "sleep",
-}
-_command_names = None
-
-
-def _is_command(tok: str) -> bool:
-    """True if tok is an xdotool command name (dispatch is case-insensitive)."""
-    global _command_names
-    try:
-        from wdotool import commands
-
-        if callable(getattr(commands, "is_command", None)):
-            return bool(commands.is_command(tok))
-    except Exception:
-        pass
-    if _command_names is None:
-        _command_names = _FALLBACK_COMMANDS
-    return tok.lower() in _command_names
 
 
 def _parse(cmdname, args, usage, shortopts, longopts, shortmap=None):
@@ -169,7 +140,7 @@ def _key_common(ctx, args, default_name, direction):
 
     seqs = []
     j = i
-    while j < len(args) and not _is_command(args[j]):
+    while j < len(args) and not commands.is_command(args[j]):
         seqs.append(args[j])
         j += 1
 
@@ -433,8 +404,8 @@ def cmd_mousemove(ctx, args):
                 win = ctx.backend().find(wid)
                 origin = (win.x + win.w // 2, win.y + win.h // 2)
             else:
-                gw, gh = daemon.geometry()
-                origin = (gw // 2, gh // 2)
+                gx, gy, gw, gh = daemon.geometry_full()
+                origin = (gx + gw // 2, gy + gh // 2)
             tx, ty = _polar_to_xy(x, y, *origin)
         elif wid is not None:
             win = ctx.backend().find(wid)

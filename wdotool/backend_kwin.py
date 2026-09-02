@@ -8,6 +8,7 @@ capture with dbus-monitor (KWin scripts have no other stdout)."""
 
 import json
 import os
+import re
 import select
 import subprocess
 import tempfile
@@ -88,11 +89,14 @@ class KwinBackend(WindowBackend):
         try:
             if collect:
                 try:
+                    # NOTE: no text=True — _read_monitor reads the raw fd
+                    # (a buffered TextIO would hide complete lines from
+                    # select(), stalling replies until the timeout).
                     mon = subprocess.Popen(
                         ["dbus-monitor", "--session",
                          "type='method_call',interface='%s'" % _IFACE],
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                        env=self.env, text=True,
+                        env=self.env,
                     )
                 except OSError:
                     raise CmdError(
@@ -139,19 +143,28 @@ class KwinBackend(WindowBackend):
 
     @staticmethod
     def _read_monitor(mon, timeout=5.0):
-        """Scan dbus-monitor output for our method call's string argument."""
+        """Scan dbus-monitor output for our method call's string argument.
+
+        Reads the raw pipe fd (os.read + own line splitting): select() on a
+        buffered file object misses lines already sitting in its buffer."""
         deadline = time.monotonic() + timeout
+        fd = mon.stdout.fileno()
+        buf = b""
         saw_call = False
         while True:
-            remain = deadline - time.monotonic()
-            if remain <= 0:
-                raise CmdError("kwin backend: no reply from KWin script")
-            r, _w, _x = select.select([mon.stdout], [], [], remain)
-            if not r:
-                continue
-            line = mon.stdout.readline()
-            if not line:
-                raise CmdError("kwin backend: dbus-monitor exited early")
+            while b"\n" not in buf:
+                remain = deadline - time.monotonic()
+                if remain <= 0:
+                    raise CmdError("kwin backend: no reply from KWin script")
+                r, _w, _x = select.select([fd], [], [], remain)
+                if not r:
+                    continue
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    raise CmdError("kwin backend: dbus-monitor exited early")
+                buf += chunk
+            raw, _nl, buf = buf.partition(b"\n")
+            line = raw.decode("utf-8", "replace")
             if "interface=%s" % _IFACE in line and "member=result" in line:
                 saw_call = True
             elif saw_call:
@@ -160,7 +173,9 @@ class KwinBackend(WindowBackend):
                     payload = s[len('string "'):]
                     if payload.endswith('"'):
                         payload = payload[:-1]
-                    return payload.replace('\\"', '"').replace("\\\\", "\\")
+                    # single left-to-right unescape pass: ordered str.replace
+                    # chains corrupt payloads with literal backslashes
+                    return re.sub(r"\\(.)", r"\1", payload)
 
     def _act(self, wid: int, js_action: str):
         """Run js_action with `w` bound to the window whose _wid == wid."""

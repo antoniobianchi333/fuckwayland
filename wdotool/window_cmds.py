@@ -202,7 +202,10 @@ def cmd_search(ctx, args):
     if pattern is not None:
         try:
             rx = re.compile(pattern, re.IGNORECASE)
-        except re.error as e:
+        except (re.error, RecursionError, OverflowError) as e:
+            # re.compile can also raise RecursionError (deeply nested groups)
+            # and OverflowError (huge repetition counts); C regcomp fails
+            # gracefully on those, so treat them all as a bad regex.
             sys.stderr.write(
                 "Failed to compile regex: '%s'; error %s\n" % (pattern, e)
             )
@@ -412,6 +415,18 @@ def _wait_until(pred, interval=0.03):
         time.sleep(interval)
 
 
+def _is_mapped(ctx, wid) -> bool:
+    """X11 map state, as close as the backend can tell. Backends that track
+    it (sway: not in the scratchpad) beat the visibility flag: a window on
+    an unfocused workspace or background tab is mapped but not visible, and
+    waiting on visibility would hang windowmap --sync forever."""
+    b = ctx.backend()
+    fn = getattr(b, "is_mapped", None)
+    if fn is not None:
+        return fn(wid)
+    return b.find(wid).visible
+
+
 def _simple_action(ctx, args, cmdname, usage_body, act, sync_pred=None,
                    has_sync=False):
     """Shared skeleton for [options] [window=%1] action commands."""
@@ -483,7 +498,7 @@ def cmd_windowmap(ctx, args):
     return _simple_action(
         ctx, args, cmd, usage,
         lambda c, wid: c.backend().map(wid),
-        sync_pred=lambda c, wid: c.backend().find(wid).visible,
+        sync_pred=_is_mapped,
         has_sync=True,
     )
 
@@ -498,7 +513,7 @@ def cmd_windowunmap(ctx, args):
     return _simple_action(
         ctx, args, cmd, usage,
         lambda c, wid: c.backend().unmap(wid),
-        sync_pred=lambda c, wid: not c.backend().find(wid).visible,
+        sync_pred=lambda c, wid: not _is_mapped(c, wid),
         has_sync=True,
     )
 
@@ -513,7 +528,7 @@ def cmd_windowminimize(ctx, args):
     return _simple_action(
         ctx, args, cmd, usage,
         lambda c, wid: c.backend().minimize(wid),
-        sync_pred=lambda c, wid: not c.backend().find(wid).visible,
+        sync_pred=lambda c, wid: not _is_mapped(c, wid),
         has_sync=True,
     )
 

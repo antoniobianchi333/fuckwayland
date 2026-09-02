@@ -113,7 +113,9 @@ class UinputDevice:
 
 
 def keyboard() -> UinputDevice:
-    return UinputDevice("wdotool virtual keyboard", keys=range(1, 249))
+    # 1..255: keymap accepts numeric evdev codes up to 255 (X keycodes 9..263);
+    # every accepted code must be registered or the kernel drops it silently.
+    return UinputDevice("wdotool virtual keyboard", keys=range(1, 256))
 
 
 def rel_mouse() -> UinputDevice:
