@@ -1,4 +1,22 @@
-# wdotool
+# fuckwayland
+
+The X11 power tools — `xdotool`, `wmctrl`, `xprop`, `xrandr` — reborn as no-bullshit
+drop-in clones that work on Wayland. Same commands, same flags, same output bytes,
+same scripts, bugs faithfully included. Symlink them over the originals and your
+muscle memory never finds out the compositor changed underneath it.
+
+![reject modernity, embrace tradition](meme.svg)
+
+(Yes, we see the irony: these tools embrace tradition *on top of* modernity. That's
+the point — the tradition was better, so it came along.)
+
+In the box:
+
+- **wdotool** — xdotool, all 48 commands, byte-parity
+- **wwmctl** — wmctrl, for native Wayland *and* legacy X apps in one list
+- **wxprop**, **wxrandr** — xprop and xrandr, in the oven right now
+
+## wdotool
 
 xdotool, but it works on Wayland. Drop-in: same commands, same flags, same output
 bytes, same chaining, same scripts. Symlink it as `xdotool` and your scripts don't
@@ -69,7 +87,7 @@ Wayland forces a few honest approximations:
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
 scratchpad on sway.
 
-## Also in the box: wwmctl
+## wwmctl
 
 `wmctrl`, same treatment — and it handles **both** native Wayland apps and legacy X
 apps (XWayland) in one list. The compositor exposes XWayland windows with their real
@@ -92,6 +110,15 @@ an urgency hint. wwmctl routes every action through the compositor, so `-a`
 focuses, `-c` closes, `-e` moves — for X and Wayland windows alike. Symlink it as
 `wmctrl` (nix does this for you) and byte-parity covers the rest: help text, list
 formats, error strings, even wmctrl 1.07's machine-column width bug.
+
+## Fully vibed, fully awesome
+
+Every line of this repo was written by AI (Claude): the design contracts, the code,
+the torture rigs, the hostile fake X servers, the byte-parity oracles, the VM demo,
+this README, and yes, the meme. Fully vibed. Also fully awesome: 429 tests and
+counting, live-compositor integration suites, byte-for-byte output parity against
+the real tools (verbatim bugs included), and every "it works" claim proven inside a
+real Ubuntu 26.04 VM before it shipped. Vibe-check the code yourself — it can take it.
 
 ## Testing
 

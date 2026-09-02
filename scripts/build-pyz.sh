@@ -1,38 +1,23 @@
 #!/bin/sh
-# Build dist/wdotool and dist/wwmctl: single-file, stdlib-only executable zipapps.
+# Build dist/<tool>: single-file, stdlib-only executable zipapps.
 set -eu
 cd "$(dirname "$0")/.."
 
-# dist/wdotool
-rm -rf dist/.stage
-mkdir -p dist/.stage
-cp -r wdotool dist/.stage/wdotool
-find dist/.stage -name __pycache__ -type d -exec rm -rf {} +
-cat > dist/.stage/__main__.py <<'EOF'
-import sys
-from wdotool.cli import main
+build() { # name entry_module packages...
+  name=$1; entry=$2; shift 2
+  rm -rf dist/.stage
+  mkdir -p dist/.stage
+  for p in "$@"; do cp -r "$p" "dist/.stage/$p"; done
+  find dist/.stage -name __pycache__ -type d -exec rm -rf {} +
+  printf 'import sys\nfrom %s import main\n\nsys.exit(main())\n' "$entry" > dist/.stage/__main__.py
+  python3 -m zipapp dist/.stage -p "/usr/bin/env python3" -o "dist/$name"
+  rm -rf dist/.stage
+  chmod +x "dist/$name"
+  echo "built dist/$name ($(wc -c < "dist/$name") bytes)"
+}
 
-sys.exit(main())
-EOF
-python3 -m zipapp dist/.stage -p "/usr/bin/env python3" -o dist/wdotool
-rm -rf dist/.stage
-chmod +x dist/wdotool
-echo "built dist/wdotool ($(wc -c < dist/wdotool) bytes)"
-
-# dist/wwmctl (wwmctl.core reuses the wdotool backend machinery, so both
-# packages ride along; entry point is wwmctl.cli:main)
-rm -rf dist/.stage
-mkdir -p dist/.stage
-cp -r wdotool dist/.stage/wdotool
-cp -r wwmctl dist/.stage/wwmctl
-find dist/.stage -name __pycache__ -type d -exec rm -rf {} +
-cat > dist/.stage/__main__.py <<'EOF'
-import sys
-from wwmctl.cli import main
-
-sys.exit(main())
-EOF
-python3 -m zipapp dist/.stage -p "/usr/bin/env python3" -o dist/wwmctl
-rm -rf dist/.stage
-chmod +x dist/wwmctl
-echo "built dist/wwmctl ($(wc -c < dist/wwmctl) bytes)"
+# wwmctl/wxprop ride with the packages they import (wdotool backends, x11_mini)
+build wdotool wdotool.cli wdotool
+build wwmctl  wwmctl.cli  wdotool wwmctl
+build wxprop  wxprop.cli  wdotool wwmctl wxprop
+build wxrandr wxrandr.cli wdotool wxrandr

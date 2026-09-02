@@ -1,5 +1,5 @@
 {
-  description = "wdotool - drop-in xdotool clone for Wayland";
+  description = "fuckwayland - the X11 power tools (xdotool, wmctrl, xprop, xrandr) as drop-in clones for Wayland";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -11,7 +11,7 @@
     {
       packages = forAll (pkgs: rec {
         wdotool = pkgs.python3Packages.buildPythonApplication {
-          pname = "wdotool";
+          pname = "fuckwayland";
           version = "0.1.0";
           src = ./.;
           pyproject = true;
@@ -19,6 +19,8 @@
           postInstall = ''
             ln -s $out/bin/wdotool $out/bin/xdotool
             if [ -e $out/bin/wwmctl ]; then ln -s $out/bin/wwmctl $out/bin/wmctrl; fi
+            if [ -e $out/bin/wxprop ]; then ln -s $out/bin/wxprop $out/bin/xprop; fi
+            if [ -e $out/bin/wxrandr ]; then ln -s $out/bin/wxrandr $out/bin/xrandr; fi
           '';
         };
         default = wdotool;
@@ -30,7 +32,7 @@
             python3
             # in-sandbox compositor testbed (incl. XWayland legacy-app plane)
             sway foot grim jq
-            xwayland xterm xorg.xprop xorg.xwininfo xorg.xeyes
+            xwayland xterm xprop xwininfo xeyes xrandr
             # the real things, for parity reference (help text, manpage, behavior)
             xdotool wmctrl man
             # VM lifecycle + demo gif
