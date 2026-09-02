@@ -23,6 +23,7 @@ import time
 
 from wdotool import backend_detect
 from wdotool.ctx import CmdError
+from wwmctl.x11_mini import XUnavailable
 
 # _NET_WM_STATE actions (EWMH)
 STATE_REMOVE = 0
@@ -98,28 +99,39 @@ class Core:
     def windows(self) -> list[UWindow]:
         backend = self.backend()
         host = _hostname()
-        out = []
+        out = None
         nodes_fn = getattr(backend, "_nodes", None)
         if nodes_fn is not None:  # sway/i3: raw tree carries the X plane
-            for node, win, _floating, _ws in nodes_fn():
-                xid = node.get("window")
-                wp = node.get("window_properties") or {}
-                cls = _dot_class(wp.get("instance"), wp.get("class"))
-                if node.get("app_id"):
-                    cls = "%s.%s" % (node["app_id"], node["app_id"])
-                out.append(UWindow(
-                    id=xid if xid else win.id,
-                    node_id=win.id,
-                    is_x=bool(xid),
-                    title=node.get("name"),
-                    class_=cls,
-                    machine=host,
-                    pid=win.pid,
-                    x=win.x, y=win.y, w=win.w, h=win.h,
-                    desktop=win.desktop,
-                    focused=win.focused,
-                ))
-        else:
+            # _nodes() is private to wdotool.backend_sway; its tuple shape
+            # is a documented contract, but guard the unpacking so a shape
+            # drift degrades to the generic listing, not a traceback.
+            try:
+                out = []
+                for node, win, _floating, _ws in nodes_fn():
+                    xid = node.get("window")
+                    wp = node.get("window_properties") or {}
+                    cls = _dot_class(wp.get("instance"), wp.get("class"))
+                    if node.get("app_id"):
+                        cls = "%s.%s" % (node["app_id"], node["app_id"])
+                    out.append(UWindow(
+                        id=xid if xid else win.id,
+                        node_id=win.id,
+                        is_x=bool(xid),
+                        title=node.get("name"),
+                        class_=cls,
+                        machine=host,
+                        pid=win.pid,
+                        x=win.x, y=win.y, w=win.w, h=win.h,
+                        desktop=win.desktop,
+                        focused=win.focused,
+                    ))
+            except (TypeError, ValueError, KeyError) as e:
+                self.vprint("_nodes() has an unexpected shape (%s: %s); "
+                            "using the generic backend listing\n"
+                            % (type(e).__name__, e))
+                out = None
+        if out is None:
+            out = []
             for win in backend.list():
                 cls = "%s.%s" % (win.class_, win.class_) if win.class_ else None
                 out.append(UWindow(
@@ -132,7 +144,13 @@ class Core:
         return out
 
     def _enrich(self, wins: list[UWindow]):
-        """Fill X-only fields for XWayland windows from the X server."""
+        """Fill X-only fields for XWayland windows from the X server.
+
+        Per-window failures (BadWindow on a window that died mid-listing)
+        degrade field by field; a connection-level failure (XUnavailable —
+        a hung or vanished XWayland) drops the X plane for the rest of the
+        process, so the whole listing pays at most one timeout, not
+        4 calls x N windows. Compositor data stands either way."""
         if not any(w.is_x for w in wins):
             return
         x = self.x11()
@@ -142,26 +160,47 @@ class Core:
             if not w.is_x:
                 continue
             try:
-                inst, cls = x.get_wm_class(w.id)
-                if inst or cls:
-                    w.class_ = _dot_class(inst, cls)
-            except Exception:
-                pass
-            try:
-                machine = x.get_client_machine(w.id)
-                if machine:
-                    w.machine = machine
-            except Exception:
-                pass
-            try:
-                w.x, w.y, w.w, w.h = x.get_geometry(w.id)
-            except Exception:
-                pass
-            if w.pid <= 0:
+                self._enrich_one(x, w)
+            except XUnavailable:
                 try:
-                    w.pid = x.get_pid(w.id)
+                    x.close()
                 except Exception:
                     pass
+                self._x11 = None
+                return
+
+    def _enrich_one(self, x, w: UWindow):
+        """One window's X reads. XUnavailable propagates (connection dead);
+        anything else degrades to the compositor value, field by field."""
+        try:
+            inst, cls = x.get_wm_class(w.id)
+            if inst or cls:
+                w.class_ = _dot_class(inst, cls)
+        except XUnavailable:
+            raise
+        except Exception:
+            pass
+        try:
+            machine = x.get_client_machine(w.id)
+            if machine:
+                w.machine = machine
+        except XUnavailable:
+            raise
+        except Exception:
+            pass
+        try:
+            w.x, w.y, w.w, w.h = x.get_geometry(w.id)
+        except XUnavailable:
+            raise
+        except Exception:
+            pass
+        if w.pid <= 0:
+            try:
+                w.pid = x.get_pid(w.id)
+            except XUnavailable:
+                raise
+            except Exception:
+                pass
 
     # -- target selection (wmctrl <WIN> argument) ---------------------------
 
@@ -185,6 +224,9 @@ class Core:
                     return w
             return None
         if param_window == SELECT_WINDOW_MAGIC:
+            # real wmctrl shows a crosshair cursor; the closest we can do
+            # is say what the blocking wait (next focus change) is for
+            _warn("focus the target window to select it")
             node = self.backend().select_window()
             for w in self.windows():
                 if w.node_id == node:
@@ -216,14 +258,35 @@ class Core:
         self.backend().close(w.node_id)
 
     def to_desktop(self, w: UWindow, desktop: int) -> int:
+        backend = self.backend()
         if desktop == -1:
-            desktop = self.backend().get_desktop()
-        self.backend().set_window_desktop(w.node_id, desktop)
+            # -R / -t -1: the current desktop. sway can say this directly,
+            # which also works when the focused workspace is named (no
+            # number — get_desktop() would return -1 and the numeric route
+            # would mis-file the window on a workspace called "0").
+            run = getattr(backend, "run", None)
+            if run is not None and getattr(backend, "_nodes", None):
+                backend.window_desktop(w.node_id)  # gone -> CmdError, exit 1
+                run("[con_id=%d] move container to workspace current"
+                    % w.node_id)
+                return 0
+            desktop = backend.get_desktop()
+        if desktop < 0:
+            # negative desktops cannot exist; wmctrl would fire the request
+            # into the void and exit 0 — warn instead of passing sway a
+            # confusing off-by-one workspace number
+            _warn("desktop %d does not exist; ignoring" % desktop)
+            return 0
+        backend.set_window_desktop(w.node_id, desktop)
         return 0
 
     def to_current_and_activate(self, w: UWindow) -> int:  # -R
         self.to_desktop(w, -1)
-        time.sleep(0.1)  # wmctrl: give the WM time to move the window
+        if getattr(self.backend(), "_nodes", None) is None:
+            # wmctrl sleeps to give an asynchronous WM time to move the
+            # window; the sway IPC round-trip above is synchronous, so
+            # only non-sway backends need the grace period
+            time.sleep(0.1)
         self.activate(w)
         return 0
 
@@ -338,10 +401,11 @@ class Core:
         # wmctrl 1.07 quirk kept for byte parity: the machine column width is
         # the length of the LAST window's WM_CLIENT_MACHINE, not the longest
         # (all-local XWayland/Wayland clients share one hostname anyway).
+        # Widths count BYTES like printf's %*s, not characters.
         machine_len = 0
         for w in wins:
             if w.machine:
-                machine_len = len(w.machine)
+                machine_len = _blen(w.machine)
         for w in wins:
             line = "0x%08x %2d" % (w.id, w.desktop)
             if show_pid:
@@ -349,10 +413,12 @@ class Core:
             if show_geometry:
                 line += " %-4d %-4d %-4d %-4d" % (w.x, w.y, w.w, w.h)
             if show_class:
-                line += " %-20s " % (w.class_ if w.class_ is not None
-                                     else "N/A")
-            line += " %s %s" % ((w.machine or "N/A").rjust(machine_len),
-                                w.title if w.title is not None else "N/A")
+                cls = w.class_ if w.class_ is not None else "N/A"
+                line += " %s%s " % (cls, " " * max(0, 20 - _blen(cls)))
+            machine = w.machine or "N/A"
+            line += " %s%s %s" % (" " * max(0, machine_len - _blen(machine)),
+                                  machine,
+                                  w.title if w.title is not None else "N/A")
             sys.stdout.write(line + "\n")
         return 0
 
@@ -375,20 +441,24 @@ class Core:
                 workspaces = msg(GET_WORKSPACES)
             except Exception:
                 workspaces = None
+        # VP: like wmctrl under EWMH — a single _NET_DESKTOP_VIEWPORT pair
+        # applies to the current desktop only, the others print N/A.
         if workspaces is not None:
             for ws in workspaces:
                 num = ws.get("num", -1)
+                cur = bool(ws.get("focused"))
                 rect = ws.get("rect") or {}
                 wa = "%d,%d %dx%d" % (rect.get("x", 0), rect.get("y", 0),
                                       rect.get("width", 0),
                                       rect.get("height", 0))
                 rows.append((num - 1 if num > 0 else -1,
-                             bool(ws.get("focused")), dg, "0,0", wa,
+                             cur, dg, "0,0" if cur else "N/A", wa,
                              ws.get("name") or "N/A"))
         else:
             cur = backend.get_desktop()
             for i in range(backend.num_desktops()):
-                rows.append((i, i == cur, dg, "0,0", "N/A", "N/A"))
+                rows.append((i, i == cur, dg, "0,0" if i == cur else "N/A",
+                             "N/A", "N/A"))
         return rows
 
     def list_desktops(self) -> int:
@@ -449,7 +519,10 @@ class Core:
 
     def switch_desktop(self, param: str) -> int:  # -s
         target = _atoi(param)
-        if target == -1:
+        if target < 0:
+            # wmctrl only rejects exactly -1 (other negatives go into the
+            # void, exit 0); negative desktops cannot exist here, so reject
+            # them all with the same message instead of confusing sway
             sys.stderr.write("Invalid desktop ID.\n")
             return 1
         self.backend().set_desktop(target)
@@ -481,7 +554,7 @@ class Core:
         return 0
 
     def change_number_of_desktops(self, param: str) -> int:  # -n
-        if re.match(r"\s*\+?\d+", param or "") is None:
+        if re.match(r"\s*[+-]?\d+", param or "") is None:
             sys.stderr.write("The -n option expects an integer.\n")
             return 1
         _warn("Wayland workspaces are managed by the compositor; ignoring")
@@ -527,7 +600,14 @@ def _hostname() -> str | None:
 
 
 def _dot_class(instance: str | None, class_: str | None) -> str | None:
-    """WM_CLASS "inst\\0cls\\0" printed the wmctrl way: "inst.cls"."""
+    """WM_CLASS "inst\\0cls\\0" printed the wmctrl way: "inst.cls".
+
+    A class of "" means "absent" (degenerate single-string WM_CLASS, where
+    get_wm_class cannot express absence in its str return): print just
+    "inst" with no trailing dot, like the wmctrl oracle. An empty INSTANCE
+    is kept — b"\\0cls\\0" really prints ".cls"."""
+    if class_ == "":
+        class_ = None
     if instance is not None and class_ is not None:
         return "%s.%s" % (instance, class_)
     if class_ is not None:
@@ -555,9 +635,15 @@ def _atoi(s: str) -> int:
 
 
 def _parse_two_uints(s: str):
-    """sscanf(s, "%lu,%lu") == 2"""
-    m = re.match(r"\s*\+?(\d+),\s*\+?(\d+)", s or "")
+    """sscanf(s, "%lu,%lu") == 2 (%lu accepts a sign — strtoul wraps
+    negatives, so "-1,-1" parses; the oracle exits 0 on it)"""
+    m = re.match(r"\s*[+-]?(\d+),\s*[+-]?(\d+)", s or "")
     return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _blen(s: str) -> int:
+    """printf column widths count bytes, not characters."""
+    return len(s.encode("utf-8", "replace"))
 
 
 def _xtry(fn):

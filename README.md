@@ -69,8 +69,33 @@ Wayland forces a few honest approximations:
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
 scratchpad on sway.
 
+## Also in the box: wwmctl
+
+`wmctrl`, same treatment — and it handles **both** native Wayland apps and legacy X
+apps (XWayland) in one list. The compositor exposes XWayland windows with their real
+X11 window ids, so wwmctl prints ids that `xprop` and your old scripts can actually
+use, enriched straight from the XWayland server over a built-in X11 wire client.
+Native windows ride along with compositor node ids:
+
+```console
+$ wwmctl -lGpx
+0x00000005  0 31496  0    23   640  697  foot.foot             host yans@host: ~
+0x0040000c  0 31526  642  23   636  695  xterm.XTerm           host yans@host: ~
+
+$ wmctrl -lGpx        # the real one, on the same desktop
+0x0040000c  0 31526  1284 46   636  695  xterm.XTerm           host yans@host: ~
+```
+
+Real wmctrl on Wayland can't see the foot window at all, prints doubled coordinates
+(a non-reparenting-xwm quirk), its `-c` silently closes nothing, and `-a` only sets
+an urgency hint. wwmctl routes every action through the compositor, so `-a`
+focuses, `-c` closes, `-e` moves — for X and Wayland windows alike. Symlink it as
+`wmctrl` (nix does this for you) and byte-parity covers the rest: help text, list
+formats, error strings, even wmctrl 1.07's machine-column width bug.
+
 ## Testing
 
 Developed against a real Ubuntu 26.04 VM driving headless sway through the full
 uinput path — see `vm/` for the whole rig (`mkvm.sh`, `run.sh`, `compositor.sh`) and
-`tests/` for the suite (unit + live-compositor integration).
+`tests/` for the suite: unit, live-compositor integration, hostile fake X servers,
+and byte-parity oracles against the real xdotool and wmctrl binaries.

@@ -94,6 +94,7 @@ class SwayBackend(WindowBackend):
 
     def _nodes(self):
         """[(node, Window, floating, ws_name)] for every view in the tree."""
+        # wwmctl.core.windows() unpacks this exact tuple shape; keep in sync.
         tree = self._msg(GET_TREE)
         out = []
 

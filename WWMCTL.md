@@ -27,8 +27,12 @@ and `swaymsg -t get_tree` exposes XWayland clients with their **real X11 window 
   The X plane is for identity/properties, not for actions (wlroots' xwm honors some
   EWMH root messages, but the compositor route is strictly more reliable).
 - No X server around (pure Wayland, xwayland disabled)? Everything still works;
-  X-enrichment silently degrades (class from window_properties, host "N/A"-style
-  fallbacks matching what wmctrl prints when properties are missing).
+  X-enrichment silently degrades (class comes from window_properties).
+- **Machine column rule** (both planes): WM_CLIENT_MACHINE when the X plane can
+  read it, else the local hostname (XWayland and Wayland clients are local by
+  construction); "N/A" only when gethostname() itself fails. This is *more*
+  filled-in than real wmctrl, which prints "N/A" whenever the property is
+  missing — deliberate, since the hostname is always correct here.
 
 ## Files (all new; nothing outside these except pyproject/flake already done)
 
@@ -80,6 +84,14 @@ reference dumps (workflow stage 1 produces both; sandbox devshell has the real
 `wmctrl` binary). Desktop semantics map exactly like wdotool's desktop commands
 (sway workspaces, 0-based). `-k`/`-o`/`-n`: warn+succeed style where Wayland can't
 (match wdotool's philosophy; document).
+
+**Known desktop-id mapping hole**: sway workspace *number* N prints as desktop
+N-1, but a workspace literally numbered 0 and *named* (numberless) workspaces
+both print as desktop `-1` — colliding with wmctrl's `-1` = sticky/all-desktops
+notation, and unreachable via `-s`/`-t` (which count 0-based and so address sway
+numbers 1+ only). This is inherent to mapping wmctrl's dense 0-based desktop
+list onto sway's sparse/named workspaces; `-R`/`-t -1` sidestep it by using
+sway's own "workspace current".
 
 ## Testbed
 

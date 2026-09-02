@@ -26,7 +26,8 @@ sys.path.insert(0, ROOT)
 
 from wdotool.backend import Window  # noqa: E402
 from wdotool.ctx import CmdError  # noqa: E402
-from wwmctl import VERSION, cli, core  # noqa: E402
+from wwmctl import cli, core  # noqa: E402
+from wwmctl.cli import WMCTRL_VERSION  # noqa: E402
 
 
 class FakeSwayBackend:
@@ -231,9 +232,11 @@ class UsageTest(unittest.TestCase):
             self.assertEqual((rc, out, err), (0, cli.HELP, ""))
 
     def test_version(self):
+        # byte parity with the oracle: exactly "1.07", not an identity string
         for argv in (["-V"], ["--version"]):
             rc, out, _e, _b = run(argv)
-            self.assertEqual((rc, out), (0, VERSION + "\n"))
+            self.assertEqual((rc, out), (0, WMCTRL_VERSION + "\n"))
+            self.assertEqual(out, "1.07\n")
 
     def test_invalid_option(self):
         rc, out, err, _b = run(["-q"])
@@ -246,9 +249,10 @@ class UsageTest(unittest.TestCase):
                          (1, "wmctrl: option requires an argument -- 'a'\n"))
 
     def test_unknown_long_option(self):
+        # plain getopt in the oracle: "--anything" is unknown option '-'
         rc, _o, err, _b = run(["--frob", "x"])
         self.assertEqual((rc, err),
-                         (1, "wmctrl: unrecognized option '--frob'\n"))
+                         (1, "wmctrl: invalid option -- '-'\n"))
 
     def test_unknown_workaround(self):
         rc, _o, err, _b = run(["-w", "NOPE"])
@@ -354,10 +358,12 @@ class DesktopTest(unittest.TestCase):
             ])
 
     def test_d_format(self):
+        # VP is per-current-desktop, like wmctrl under EWMH: the single
+        # viewport pair applies to the current desktop, the rest print N/A
         rc, out, _e, _b = run(["-d"], backend=self._backend())
         self.assertEqual(rc, 0)
         self.assertEqual(out.splitlines(), [
-            "0  - DG: 1280x720  VP: 0,0  WA: 0,0 1280x690  1",
+            "0  - DG: 1280x720  VP: N/A  WA: 0,0 1280x690  1",
             "1  * DG: 1280x720  VP: 0,0  WA: 0,0 1280x720  web",
         ])
 
@@ -697,7 +703,8 @@ class BuildScriptTest(unittest.TestCase):
                                 os.path.join(tmp, "dist", "wwmctl"),
                                 "--version"],
                                capture_output=True, text=True, timeout=30)
-            self.assertEqual((p.returncode, p.stdout), (0, VERSION + "\n"))
+            self.assertEqual((p.returncode, p.stdout),
+                             (0, WMCTRL_VERSION + "\n"))
             p = subprocess.run([sys.executable,
                                 os.path.join(tmp, "dist", "wwmctl"), "-h"],
                                capture_output=True, text=True, timeout=30)

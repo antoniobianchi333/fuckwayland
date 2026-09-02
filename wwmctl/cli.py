@@ -2,12 +2,15 @@
 
 Byte-parity target: wmctrl 1.07 (the binary in the devshell is the oracle;
 its --help output is embedded verbatim below, and error strings/exit codes
-follow main.c). Deliberate deviations, all documented in the tests:
+follow main.c). -V/--version print "1.07" exactly like the oracle so
+version-sniffing scripts keep working (wwmctl.VERSION carries the real
+identity). Deliberate deviations, all documented in the tests:
 - -h / -V / --help / --version work without a session (real wmctrl needs an
   open X display for -h and -V),
 - "Cannot open display." becomes the backend detector's actual error text,
 - acting on a window id that does not exist exits 1 silently (real wmctrl
-  fires the ClientMessage into the void and exits 0).
+  fires the ClientMessage into the void and exits 0),
+- a broken stdout pipe exits 1 quietly (real wmctrl dies of SIGPIPE).
 """
 
 import getopt
@@ -16,7 +19,10 @@ import sys
 
 from wdotool.ctx import CmdError
 
-from wwmctl import VERSION, core
+from wwmctl import core
+
+# what -V/--version print: byte parity with the oracle binary
+WMCTRL_VERSION = "1.07"
 
 # vanilla wmctrl 1.07 optstring
 OPTSTRING = "FGVvhlupidmxa:r:s:c:t:w:k:o:n:g:e:b:N:I:T:R:"
@@ -161,7 +167,9 @@ Copyright (C) 2003
 
 def _prog() -> str:
     if sys.argv and sys.argv[0]:
-        return os.path.basename(sys.argv[0])
+        name = os.path.basename(sys.argv[0])
+        if name != "__main__.py":  # `python -m wwmctl`
+            return name
     return "wwmctl"
 
 
@@ -178,6 +186,28 @@ def _envir_utf8(force: bool) -> bool:
 
 
 def main(argv=None) -> int:
+    """Entry point: _run() plus the plumbing wmctrl gets from libc for free
+    (stdout may be a closed fd or a broken pipe; wmctrl dies of SIGPIPE or
+    lets printf fail silently — we exit quietly instead of tracing back)."""
+    if sys.stdout is None:  # fd 1 was closed before Python started
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+    try:
+        rc = _run(argv)
+        sys.stdout.flush()
+        return rc
+    except (BrokenPipeError, KeyboardInterrupt):
+        # keep the interpreter's exit-time flush from raising again
+        try:
+            fd = sys.stdout.fileno()
+            os.dup2(os.open(os.devnull, os.O_WRONLY), fd)
+        except Exception:
+            pass
+        return 1
+
+
+def _run(argv=None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
@@ -187,16 +217,17 @@ def main(argv=None) -> int:
             sys.stdout.write(HELP)
             return 0
         if argv[0] == "--version":
-            print(VERSION)
+            print(WMCTRL_VERSION)
             return 0
 
     try:
         opts, _positional = getopt.gnu_getopt(argv, OPTSTRING)
     except getopt.GetoptError as e:
         opt = getattr(e, "opt", "") or ""
-        if len(opt) > 1:  # a --long option we do not know
-            sys.stderr.write("%s: unrecognized option '--%s'\n"
-                             % (_prog(), opt))
+        if len(opt) > 1:
+            # wmctrl uses plain getopt: "--anything" is the unknown short
+            # option '-' (glibc prints exactly this, verified vs the oracle)
+            sys.stderr.write("%s: invalid option -- '-'\n" % _prog())
         elif "requires argument" in str(e):
             sys.stderr.write("%s: option requires an argument -- '%s'\n"
                              % (_prog(), opt))
@@ -251,7 +282,7 @@ def main(argv=None) -> int:
         sys.stderr.write("envir_utf8: %d\n" % int(_envir_utf8(force_utf8)))
 
     if action == "V":
-        print(VERSION)
+        print(WMCTRL_VERSION)
         return 0
     if action == "h":
         sys.stdout.write(HELP)
@@ -285,6 +316,4 @@ def main(argv=None) -> int:
                                  match_by_id, match_by_cls, full_match)
     except CmdError as e:
         sys.stderr.write("%s\n" % e)
-        return 1
-    except (BrokenPipeError, KeyboardInterrupt):
         return 1

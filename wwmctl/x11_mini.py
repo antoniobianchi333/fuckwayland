@@ -20,12 +20,20 @@ first NUL exactly like wmctrl's printf("%s") does.
 import os
 import re
 import socket
+import stat
 import struct
 
 # Test seam: unit tests point this at a directory with a fake server socket.
 _SOCK_DIR = "/tmp/.X11-unix"
 
 _TIMEOUT = 5.0
+
+# Hostile-server ceilings: no sane .Xauthority is over 1MB, no core-protocol
+# reply body or property value is over 16MB (0x400000 4-byte words).
+_MAX_XAUTH_BYTES = 1 << 20
+_MAX_REPLY_WORDS = 0x400000
+_MAX_PROP_BYTES = 1 << 24
+_MAX_PROP_CHUNKS = 4096
 
 # X protocol constants used below
 _OP_INTERN_ATOM = 16
@@ -85,9 +93,25 @@ def _parse_display(d: str) -> tuple[int, int]:
 
 def _read_xauth(path: str):
     """Parse the binary .Xauthority format: a list of
-    (family, address, number, name, data) tuples, all lengths big-endian."""
-    with open(path, "rb") as f:
-        buf = f.read()
+    (family, address, number, name, data) tuples, all lengths big-endian.
+    Only regular files are read (an XAUTHORITY pointing at a FIFO must not
+    block us, /dev/zero must not OOM us) and the read is bounded at 1MB;
+    anything else raises OSError, which the caller treats as "no file"."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("XAUTHORITY is not a regular file: %s" % path)
+        chunks = []
+        got = 0
+        while got < _MAX_XAUTH_BYTES:
+            chunk = os.read(fd, _MAX_XAUTH_BYTES - got)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            got += len(chunk)
+        buf = b"".join(chunks)
+    finally:
+        os.close(fd)
     entries = []
     off = 0
     try:
@@ -143,6 +167,7 @@ class X11Conn:
     def __init__(self, display: str | None = None):
         self._sock = None
         self._seq = 0
+        self._max_req_words = 0xFFFF  # refined from the setup reply
         self._atoms: dict[str, int] = {}
         if display is None:
             display = os.environ.get("DISPLAY")
@@ -218,36 +243,61 @@ class X11Conn:
             return False, body[:head[1]].decode("latin-1", "replace")
         if status != 1:  # Authenticate: reason is the whole (padded) body
             return False, body.rstrip(b"\0").decode("latin-1", "replace")
-        (self._rid_base, self._rid_mask) = struct.unpack_from("<II", body, 4)
-        (vlen,) = struct.unpack_from("<H", body, 16)
-        nscreens, nformats = body[20], body[21]
-        p = 32 + len(_pad4(b"\0" * vlen)) + 8 * nformats
-        self._roots = []
-        for _ in range(nscreens):
-            (root,) = struct.unpack_from("<I", body, p)
-            ndepths = body[p + 39]
-            p += 40
-            for _ in range(ndepths):
-                (nvis,) = struct.unpack_from("<H", body, p + 2)
-                p += 8 + 24 * nvis
-            self._roots.append(root)
-        if not self._roots:
+        # A "success" body from a hostile/broken server can still lie about
+        # its own shape (screen counts pointing past the end): any parse
+        # failure is treated as a refusal, never a leaked struct.error.
+        try:
+            max_words, = struct.unpack_from("<H", body, 18)
+            (vlen,) = struct.unpack_from("<H", body, 16)
+            nscreens, nformats = body[20], body[21]
+            p = 32 + len(_pad4(b"\0" * vlen)) + 8 * nformats
+            roots = []
+            for _ in range(nscreens):
+                (root,) = struct.unpack_from("<I", body, p)
+                ndepths = body[p + 39]
+                p += 40
+                for _ in range(ndepths):
+                    (nvis,) = struct.unpack_from("<H", body, p + 2)
+                    p += 8 + 24 * nvis
+                roots.append(root)
+        except (struct.error, IndexError):
+            return False, "malformed setup reply"
+        if not roots:
             return False, "setup reply carries no screens"
+        self._roots = roots
+        # maximum-request-length (in 4-byte units); the protocol floor is
+        # 4096 words, so never let a nonsense advertisement go below it
+        self._max_req_words = max(4096, max_words)
         return True, ""
 
     # -- wire plumbing -------------------------------------------------------
 
+    def _poison(self, sock) -> None:
+        """A failed receive can leave the stream mid-packet: if a stalled
+        server later resumes, the next read would misframe its bytes and
+        match replies to the wrong requests. Any receive failure on the
+        established connection therefore kills the connection for good
+        (handshake sockets are closed by _connect instead)."""
+        if sock is not None and sock is self._sock:
+            self.close()
+
     def _recv_exact(self, n: int, sock=None) -> bytes:
-        sock = sock or self._sock
+        if sock is None:
+            sock = self._sock
+        if sock is None:
+            raise XUnavailable("X connection is closed")
         chunks = []
         while n:
             try:
                 b = sock.recv(n)
             except socket.timeout:
+                self._poison(sock)
                 raise XUnavailable("X server timed out") from None
             except OSError as e:
+                self._poison(sock)
                 raise XUnavailable("X connection lost: %s" % e) from None
             if not b:
+                self._poison(sock)
                 raise XUnavailable("X connection closed by server")
             chunks.append(b)
             n -= len(b)
@@ -257,10 +307,21 @@ class X11Conn:
         """Send one request (payload already padded); returns its sequence."""
         if self._sock is None:
             raise XUnavailable("X connection is closed")
+        words = 1 + len(payload) // 4
+        # core protocol carries the request length in a u16 of 4-byte units,
+        # capped further by the server's advertised maximum-request-length;
+        # oversized payloads (huge -N titles) must fail cleanly, not as a
+        # struct.error from the 'H' pack below
+        if words > min(self._max_req_words, 0xFFFF):
+            raise XUnavailable("request exceeds the X11 maximum request "
+                               "length (big-requests unsupported)")
         try:
             self._sock.sendall(struct.pack("<BBH", opcode, data_byte,
-                                           1 + len(payload) // 4) + payload)
+                                           words) + payload)
         except OSError as e:
+            # a partial send desyncs the outbound stream just like a partial
+            # receive desyncs the inbound one: poison the connection
+            self.close()
             raise XUnavailable("X connection lost: %s" % e) from None
         self._seq = (self._seq + 1) & 0xFFFF
         return self._seq
@@ -277,16 +338,26 @@ class X11Conn:
                 raise X11Error(pkt[1], major, minor, bad)
             if kind == 1:
                 (pseq,) = struct.unpack_from("<H", pkt, 2)
-                (extra,) = struct.unpack_from("<I", pkt, 4)
+                extra = self._extra_words(pkt)
                 body = self._recv_exact(extra * 4) if extra else b""
                 if pseq == seq:
                     return pkt, body
                 continue  # stale reply: drop
             if kind == 35:  # GenericEvent carries extra length
-                (extra,) = struct.unpack_from("<I", pkt, 4)
+                extra = self._extra_words(pkt)
                 if extra:
                     self._recv_exact(extra * 4)
             # other events: nothing selected, but be tolerant and skip
+
+    def _extra_words(self, pkt: bytes) -> int:
+        """The u32 extra-length word of a reply/GenericEvent, sanity-capped:
+        a length claiming a body over 16MB is a lying server, not a core
+        protocol reply — never try to receive (or time out on) it."""
+        (extra,) = struct.unpack_from("<I", pkt, 4)
+        if extra > _MAX_REPLY_WORDS:
+            self.close()
+            raise XUnavailable("implausible reply length")
+        return extra
 
     def _void(self, opcode: int, data_byte: int, payload: bytes):
         """A request with no reply, followed by a GetInputFocus roundtrip so
@@ -320,6 +391,7 @@ class X11Conn:
         seq = self._send(_OP_QUERY_TREE, 0, struct.pack("<I", self._root))
         pkt, body = self._wait_reply(seq)
         (n,) = struct.unpack_from("<H", pkt, 16)
+        n = min(n, len(body) // 4)  # never trust the count past the body
         return list(struct.unpack_from("<%dI" % n, body, 0))
 
     def get_prop_ints(self, win: int, name: str) -> list[int]:
@@ -348,10 +420,19 @@ class X11Conn:
         r = self._read_property(win, "WM_CLASS")
         if r is None or r[1] != 8:
             return "", ""
-        parts = r[2].split(b"\0")
-        instance = parts[0].decode("latin-1")
-        class_ = parts[1].decode("latin-1") if len(parts) > 1 else ""
-        return instance, class_
+        data = r[2]
+        nul = data.find(b"\0")
+        if nul < 0:  # degenerate single-string WM_CLASS (b"solo")
+            return data.decode("latin-1"), ""
+        instance = data[:nul].decode("latin-1")
+        rest = data[nul + 1:]
+        if not rest:  # b"solo\0": no second string either
+            return instance, ""
+        # the class part is only what a second NUL-terminated string
+        # actually carries (callers print "" without a trailing dot, the
+        # way wmctrl prints just "inst" for a single-string WM_CLASS)
+        end = rest.find(b"\0")
+        return instance, (rest[:end] if end >= 0 else rest).decode("latin-1")
 
     def get_client_machine(self, win: int) -> str:
         return self.get_prop_string(win, "WM_CLIENT_MACHINE")
@@ -432,7 +513,9 @@ class X11Conn:
             return None
         data = b""
         offset = 0
-        while True:
+        # A server that keeps claiming bytes_after > 0 must not spin us
+        # forever (or OOM us): cap both the total size and the roundtrips.
+        for _ in range(_MAX_PROP_CHUNKS):
             type_a, fmt, chunk, after = self._get_property_chunk(
                 win, prop, offset, 0x40000)
             if type_a == 0:
@@ -440,7 +523,11 @@ class X11Conn:
             data += chunk
             if after == 0 or not chunk:  # not chunk: server misbehaving
                 return type_a, fmt, data
+            if len(data) > _MAX_PROP_BYTES:
+                break
             offset += len(chunk) // 4
+        self.close()  # the server is lying about the property: distrust it
+        raise XUnavailable("property too large or server misbehaving")
 
     def _change_property(self, win: int, prop: int, type_a: int,
                          data: bytes, fmt: int = 8):
