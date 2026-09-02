@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+result
+result-*
+*.qcow2
+*.img
+vm/keys/
+vm/qemu.pid
+vm/serial.log
+vm/user-data
+vm/meta-data
+dist/

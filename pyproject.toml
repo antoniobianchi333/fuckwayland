@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wdotool"
+version = "0.1.0"
+description = "Drop-in xdotool clone for Wayland"
+requires-python = ">=3.10"
+
+[project.scripts]
+wdotool = "wdotool.cli:main"
+
+[tool.setuptools]
+packages = ["wdotool"]

@@ -1,0 +1,277 @@
+"""sway/i3 window backend over raw i3-ipc (no external tools).
+
+Framing: b"i3-ipc" + u32 payload length + u32 message type + JSON payload.
+Window ids are sway node ids; commands address nodes with [con_id=N].
+Desktops are workspaces: xdotool desktop N == workspace number N+1."""
+
+import json
+import socket
+import struct
+import sys
+
+from wdotool import session
+from wdotool.backend import Window, WindowBackend
+from wdotool.ctx import CmdError
+
+_MAGIC = b"i3-ipc"
+RUN_COMMAND = 0
+GET_WORKSPACES = 1
+SUBSCRIBE = 2
+GET_OUTPUTS = 3
+GET_TREE = 4
+_EVENT_BIT = 0x80000000
+EVENT_WINDOW = _EVENT_BIT | 3
+
+SCRATCHPAD_WS = "__i3_scratch"
+
+
+class SwayBackend(WindowBackend):
+    name = "sway"
+
+    def __init__(self, sockpath: str | None = None):
+        self.sockpath = sockpath or session.find_sway_socket()
+        if not self.sockpath:
+            raise CmdError(
+                "sway backend: no sway/i3 IPC socket found (SWAYSOCK unset and "
+                "no sway-ipc.* socket in any runtime dir)"
+            )
+        self.sock = self._connect()
+
+    # -- wire ---------------------------------------------------------------
+
+    def _connect(self) -> socket.socket:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(self.sockpath)
+        except OSError as e:
+            s.close()
+            raise CmdError(
+                "sway backend: cannot connect to %s: %s" % (self.sockpath, e)
+            ) from None
+        return s
+
+    @staticmethod
+    def _read_exact(sock: socket.socket, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise CmdError("sway backend: IPC connection closed")
+            buf += chunk
+        return buf
+
+    @classmethod
+    def _send(cls, sock, mtype: int, payload=b""):
+        if isinstance(payload, str):
+            payload = payload.encode()
+        sock.sendall(_MAGIC + struct.pack("<II", len(payload), mtype) + payload)
+
+    @classmethod
+    def _recv(cls, sock):
+        hdr = cls._read_exact(sock, 14)
+        if hdr[:6] != _MAGIC:
+            raise CmdError("sway backend: bad IPC framing")
+        length, mtype = struct.unpack("<II", hdr[6:])
+        payload = cls._read_exact(sock, length) if length else b"null"
+        return mtype, json.loads(payload.decode("utf-8", "replace"))
+
+    def _msg(self, mtype: int, payload=b""):
+        self._send(self.sock, mtype, payload)
+        while True:
+            t, data = self._recv(self.sock)
+            if not t & _EVENT_BIT:  # we never subscribe on this socket
+                return data
+
+    def run(self, command: str):
+        results = self._msg(RUN_COMMAND, command)
+        for r in results or []:
+            if not r.get("success"):
+                raise CmdError(
+                    "sway: %s" % (r.get("error") or "command failed: %s" % command)
+                )
+
+    # -- tree ---------------------------------------------------------------
+
+    def _nodes(self):
+        """[(node, Window, floating, ws_name)] for every view in the tree."""
+        tree = self._msg(GET_TREE)
+        out = []
+
+        def walk(node, ws_num, ws_name, floating):
+            ntype = node.get("type")
+            if ntype == "workspace":
+                ws_num = node.get("num", -1)
+                ws_name = node.get("name") or ""
+            is_view = ntype in ("con", "floating_con") and (
+                node.get("app_id") is not None
+                or node.get("window_properties") is not None
+                or (node.get("pid") and not node.get("nodes"))
+            )
+            if is_view:
+                wp = node.get("window_properties") or {}
+                rect = node.get("rect") or {}
+                num = ws_num if isinstance(ws_num, int) else -1
+                out.append((
+                    node,
+                    Window(
+                        id=node["id"],
+                        title=node.get("name") or "",
+                        class_=node.get("app_id") or wp.get("class") or "",
+                        pid=node.get("pid") or 0,
+                        x=rect.get("x", 0),
+                        y=rect.get("y", 0),
+                        w=rect.get("width", 0),
+                        h=rect.get("height", 0),
+                        focused=bool(node.get("focused")),
+                        visible=bool(node.get("visible")),
+                        desktop=num - 1 if num > 0 else -1,
+                    ),
+                    floating,
+                    ws_name,
+                ))
+            for ch in node.get("nodes") or []:
+                walk(ch, ws_num, ws_name, False)
+            for ch in node.get("floating_nodes") or []:
+                walk(ch, ws_num, ws_name, True)
+
+        walk(tree, -1, "", False)
+        return out
+
+    def _node(self, wid: int):
+        for node, win, floating, ws_name in self._nodes():
+            if win.id == wid:
+                return node, win, floating, ws_name
+        raise CmdError("window %d not found" % wid)
+
+    # -- WindowBackend ------------------------------------------------------
+
+    def list(self) -> list[Window]:
+        return [win for _n, win, _f, _w in self._nodes()]
+
+    def activate(self, wid: int):
+        self._node(wid)
+        self.run("[con_id=%d] focus" % wid)
+
+    def close(self, wid: int):
+        self._node(wid)
+        self.run("[con_id=%d] kill" % wid)
+
+    @staticmethod
+    def _deco_h(node) -> int:
+        """Titlebar height: sway's move/resize address the whole container
+        (decoration included) while we report/take the content rect."""
+        return (node.get("deco_rect") or {}).get("height", 0)
+
+    def move_window(self, wid: int, x: int, y: int):
+        node, _w, floating, _ws = self._node(wid)
+        if not floating:
+            raise CmdError(
+                "sway: cannot move a tiled window to an absolute position "
+                "(floating enable it first)"
+            )
+        self.run("[con_id=%d] move absolute position %d %d"
+                 % (wid, x, y - self._deco_h(node)))
+
+    def resize(self, wid: int, w: int, h: int):
+        node = self._node(wid)[0]
+        self.run("[con_id=%d] resize set %d px %d px"
+                 % (wid, w, h + self._deco_h(node)))
+
+    def minimize(self, wid: int):
+        self.unmap(wid)
+
+    def map(self, wid: int):
+        _n, _win, _f, ws_name = self._node(wid)
+        if ws_name == SCRATCHPAD_WS:
+            self.run("[con_id=%d] scratchpad show" % wid)
+
+    def unmap(self, wid: int):
+        _n, _win, _f, ws_name = self._node(wid)
+        if ws_name != SCRATCHPAD_WS:
+            self.run("[con_id=%d] move scratchpad" % wid)
+
+    def raise_(self, wid: int):
+        _n, _win, floating, _ws = self._node(wid)
+        if floating:
+            self.run("[con_id=%d] focus" % wid)
+        else:
+            sys.stderr.write(
+                "wdotool: windowraise: tiled sway windows have no stacking "
+                "order; ignoring\n"
+            )
+
+    def lower(self, wid: int):
+        self._node(wid)
+        sys.stderr.write(
+            "wdotool: windowlower: sway cannot lower windows; ignoring\n"
+        )
+
+    def set_state(self, wid: int, state: str, action: int):
+        node, _win, _f, ws_name = self._node(wid)
+        word = {0: "disable", 1: "enable", 2: "toggle"}[action]
+        if state == "FULLSCREEN":
+            self.run("[con_id=%d] fullscreen %s" % (wid, word))
+        elif state == "STICKY":
+            self.run("[con_id=%d] sticky %s" % (wid, word))
+        elif state == "DEMANDS_ATTENTION":
+            if action == 2:
+                word = "disable" if node.get("urgent") else "enable"
+            self.run("[con_id=%d] urgent %s" % (wid, word))
+        elif state == "HIDDEN":
+            hidden = ws_name == SCRATCHPAD_WS
+            if action == 2:
+                action = 0 if hidden else 1
+            if action == 1 and not hidden:
+                self.run("[con_id=%d] move scratchpad" % wid)
+            elif action == 0 and hidden:
+                self.run("[con_id=%d] scratchpad show" % wid)
+        else:
+            raise CmdError(
+                "windowstate %s is not supported by the sway backend" % state
+            )
+
+    def window_desktop(self, wid: int) -> int:
+        return self._node(wid)[1].desktop
+
+    def set_window_desktop(self, wid: int, n: int):
+        self._node(wid)
+        self.run("[con_id=%d] move container to workspace number %d" % (wid, n + 1))
+
+    def get_desktop(self) -> int:
+        for ws in self._msg(GET_WORKSPACES):
+            if ws.get("focused"):
+                num = ws.get("num", -1)
+                return num - 1 if num > 0 else -1
+        return -1
+
+    def set_desktop(self, n: int):
+        self.run("workspace number %d" % (n + 1))
+
+    def num_desktops(self) -> int:
+        return len(self._msg(GET_WORKSPACES))
+
+    def select_window(self) -> int:
+        s = self._connect()
+        try:
+            self._send(s, SUBSCRIBE, b'["window"]')
+            t, reply = self._recv(s)
+            if t & _EVENT_BIT or not reply.get("success"):
+                raise CmdError("sway backend: subscribe to window events failed")
+            while True:
+                t, data = self._recv(s)
+                if t == EVENT_WINDOW and data.get("change") == "focus":
+                    return data["container"]["id"]
+        finally:
+            s.close()
+
+    def display_size(self) -> tuple[int, int]:
+        w = h = 0
+        for o in self._msg(GET_OUTPUTS):
+            if not o.get("active"):
+                continue
+            rect = o.get("rect") or {}
+            w = max(w, rect.get("x", 0) + rect.get("width", 0))
+            h = max(h, rect.get("y", 0) + rect.get("height", 0))
+        if not w or not h:
+            raise CmdError("sway backend: no active outputs")
+        return w, h
