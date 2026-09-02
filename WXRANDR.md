@@ -25,7 +25,80 @@ the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
   therefore proven against a wire-level mock (tests/test_wxrandr_gamma.py), not a
   headless session. A typo'd `--output NAME --brightness` prints only the bare
   not-found warning and exits 0, like real xrandr (no holder is spawned).
-- KWin/GNOME: out of scope for this pass (CmdError with a one-line hint).
+- **GNOME / Mutter**: `org.gnome.Mutter.DisplayConfig` on the session bus over the
+  pure-stdlib `wdotool.dbus_mini` — see "Mutter backend" below. Stock Ubuntu 24.04
+  (GNOME 46) and 26.04 (GNOME 50), no extension, no root.
+- KWin: out of scope (CmdError with a one-line hint).
+
+Backend selection: `WXRANDR_BACKEND=sway|wlr|mutter` (alias `gnome`); otherwise a
+sway/i3 IPC socket wins, then a session bus owning `org.gnome.Mutter.DisplayConfig`,
+then wlr. `--listproviders` names it (`name:sway`, `name:wlroots`, `name:mutter`).
+
+## Mutter backend (`wxrandr/mutter.py`)
+
+Mutter has no `zwlr_output_management`; its display API is the D-Bus object
+`/org/gnome/Mutter/DisplayConfig` (`GetCurrentState` + `ApplyMonitorsConfig`), which any
+client on the user bus may call. The bus is found like the compositor socket
+(`session.find_session_bus`: `$DBUS_SESSION_BUS_ADDRESS` when it belongs to the Wayland
+session's user, else the `bus` in the runtime dir owning the Wayland socket), so
+wxrandr works from a GNOME custom keyboard shortcut, from `sudo`, and from
+`ssh root@host` with an empty environment (root's `/run/user/0` bus is skipped; when
+dbus-daemon turns root away, `dbus_mini` reconnects as the socket's owner).
+
+What maps:
+
+| xrandr | Mutter |
+|---|---|
+| output name, make/model/serial, mm size | monitor connector, spec; mm from `width-mm`/`height-mm` when Mutter sends them, else from `wl_output.geometry` (Mutter 46/50 never emit the D-Bus keys — verified with gdbus — but give the EDID size to `wl_output`, which is what XWayland's RandR prints: 320mm x 200mm on a QEMU head, byte-identical here) |
+| mode table (`*` current, `+` preferred, `WxHi` interlaced) | the monitor's mode list; opaque ids kept verbatim (`Mode.mode_id`) |
+| enabled, `WxH+X+Y`, rotation/reflection, scale | membership of a logical monitor; its x/y, transform, scale. Mutter numbers transforms like `wl_output` with the spec's counter-clockwise 90 — through Mutter's XWayland real xrandr prints 1 as `left`, 3 as `right`, 5 as `left X axis`, 7 as `right X axis` (all eight measured on GNOME 50), whereas sway's verified table has "90" == `right`; `mutter.MUTTER_RANDR_VIEW` holds the measured words and the 1↔3 / 5↔7 permutation follows from it |
+| `--mode/--rate/--auto/--preferred` | mode id chosen by size + nearest rate |
+| `--scale S` | snapped to the nearest of the mode's `supported_scales` (warning when it changed); logical size = `roundf(px / scale)` in layout-mode 1, raw pixels in layout-mode 2 (GNOME 46 without "Fractional Scaling": integer scales only) — the dryrun plan uses the same math |
+| `--pos`, `--left-of/--right-of/--above/--below` | positions in Mutter's logical space, resolved against pending sizes like everywhere else |
+| `--same-as` | one logical monitor with several members (Mutter requires the same mode, rotation and scale: otherwise `xrandr: cannot mirror B onto A: ...`) |
+| `--primary` | the real primary flag (exactly one; what Mutter reports overrides the state file). GNOME 50 keeps a stale `primary=true` on the previous logical monitor after a temporary re-primary (until that monitor is rebuilt), so when several are flagged the legacy `GetResources` output property `primary` — which tracks the real one, as XWayland shows — breaks the tie |
+| `--off` | the connector is left out of the configuration |
+| `--listmonitors` | one RandR monitor per active output, the primary listed first (the X server orders monitors that way; verified against real xrandr on GNOME 50) |
+| several `--output` stanzas | one `ApplyMonitorsConfig` call — atomic; after it, wxrandr waits for `MonitorsChanged` (≤ 5 s) and re-reads |
+| `--newmode/--addmode/--rmmode/--delmode` | state file as on sway/wlr; *applying* a custom mode works only when a real mode with that size and rate exists, else `cannot find mode NAME` |
+
+What warns and succeeds: `--brightness`/`--gamma` (Mutter exposes no gamma LUT),
+`--noprimary` (GNOME requires a primary; the current one is kept), an output enabled
+without a position (`--auto` on a disabled output; xrandr would put it at 0,0, which
+Mutter rejects as an overlap, so it is placed right of the rightmost output), a scale
+Mutter cannot do (snapped), `--filter`/`--set`/`--transform`/`--panning` as elsewhere.
+
+What fails, one line and exit 1, with Mutter's own text: a hole (`xrandr: Logical
+monitors not adjacent` — Mutter wants every logical monitor to share an edge with
+another; note that this bites `--output A --mode SMALLER` while B keeps its old x —
+re-place B in the same call, `--output B --right-of A`), overlapping positions
+(`Logical monitors overlap`), turning everything off (`Monitors config incomplete`),
+`ApplyMonitorsConfigAllowed=false` (`Monitor configuration via D-Bus is disabled`).
+A configuration serial that went stale between our read and the apply (someone else
+changed the layout) is re-read and retried once, then
+`output configuration cancelled by a concurrent change; try again`.
+
+Persistence: by default the apply uses method 1 (temporary — xrandr semantics, no
+dialog; the layout lasts until the next hotplug/login). `--persistent` (a wxrandr
+option, not in xrandr's usage text) or `WXRANDR_PERSIST=1` uses method 2: the layout
+is applied and gnome-shell shows its "Keep changes?" dialog — wxrandr prints a
+one-line warning; confirming it makes Mutter write `~/.config/monitors.xml`, otherwise
+the previous layout comes back after 20 s (verified on GNOME 46: nothing is written
+before the confirmation, and there is no D-Bus call to confirm from outside the
+shell). `--dryrun` additionally submits the exact configuration with method 0 (verify
+only) and prints `mutter verify: ok`, or Mutter's rejection as the fatal a real run
+would give.
+
+Coordinates are Mutter's logical ones (what `wl_output`/xdg-output and GNOME
+Settings show). Real `xrandr` through XWayland agrees byte for byte on GNOME 46 and,
+at scale 1, on GNOME 50; Ubuntu 26.04 ships XWayland native scaling, so with any
+output at scale 2 real xrandr there reports every output multiplied by that integer
+factor (`Virtual-1 2560x1600+0+0` for a 1280x800 panel next to a scale-2 monitor) —
+an X-plane artefact wxrandr does not imitate.
+
+Tests: `tests/test_wxrandr_mutter.py` runs the whole CLI against a wire-level mock
+DisplayConfig service on `dbus_mini`'s mock bus that validates like mutter
+(serial, ids, scales, adjacency, overlap, primary, offset) and emits `MonitorsChanged`.
 
 ## Command surface (byte-parity target: xrandr 1.5.x)
 

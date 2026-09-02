@@ -81,3 +81,23 @@ def find_user_bus() -> tuple[int, str] | None:
     if hit:
         return hit[0], f"unix:path={hit[1]}"
     return None
+
+
+def find_session_bus() -> tuple[int, str] | None:
+    """(uid, DBUS_SESSION_BUS_ADDRESS) of the bus the *compositor* lives on.
+    Additive (GNOME): under `ssh root@host` pam_systemd hands root its own
+    /run/user/0 (with a user bus of its own, where no Mutter is), so
+    find_user_bus() lands on the wrong bus. Anchor on the runtime dir that
+    owns the Wayland socket instead; $DBUS_SESSION_BUS_ADDRESS still wins
+    when it belongs to that same user (the normal session / `sudo -E`)."""
+    hit = find_wayland_socket()
+    if hit is None:
+        return find_user_bus()
+    uid, rd, _sock = hit
+    env = find_user_bus()
+    if env is not None and env[0] == uid:
+        return env
+    p = os.path.join(rd, "bus")
+    if os.path.exists(p):
+        return os.stat(p).st_uid, f"unix:path={p}"
+    return env

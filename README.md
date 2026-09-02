@@ -160,6 +160,18 @@ die). Query/`--listmonitors` output is byte-styled after xrandr 1.5.4, and the l
 stays consistent with the rest of the toolbox: after any change, `wdotool
 getdisplaygeometry` and `wwmctl -d` track the new world.
 
+It also works on a stock GNOME desktop — Ubuntu 24.04 (GNOME 46) and 26.04 (GNOME 50)
+as installed, no shell extension, no root: wxrandr talks to
+`org.gnome.Mutter.DisplayConfig` on the session bus through the toolbox's own
+stdlib D-Bus client and submits the whole layout as one `ApplyMonitorsConfig` call.
+Relative placement, rotation, mirroring (`--same-as` becomes one logical monitor),
+scales snapped to what Mutter offers, `--primary`, `--off` and `--dryrun` (Mutter
+verifies the configuration without applying it) all map; Mutter's own validation
+errors ("Logical monitors not adjacent", "Logical monitors overlap") come back as
+one-line `xrandr:` failures. Changes are temporary like xrandr's; `--persistent`
+writes `monitors.xml` (GNOME then asks "Keep changes?"). It finds the session from a
+custom keyboard shortcut, under `sudo`, or from `ssh root@` with no environment.
+
 ## Fully vibed, fully awesome
 
 Every line of this repo was written by AI (Claude): the design contracts, the code,
