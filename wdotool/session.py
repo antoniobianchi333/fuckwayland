@@ -12,6 +12,10 @@ Additive fixes (gnome-bridge), each broken on a stock GNOME box:
   sudo/pkexec invoking user, then real users, then the rest. $XDG_RUNTIME_DIR
   still wins when it has a Wayland socket (the normal in-session case, and
   the test rigs' private runtime dirs).
+* Likewise `find_user_bus()`: root's own `DBUS_SESSION_BUS_ADDRESS`
+  (pam_systemd exports `/run/user/0/bus` to an `ssh root@` login) only wins
+  when that bus lives next to a Wayland socket; otherwise the scanned bus of
+  the graphical session is used.
 * `PKEXEC_UID` is honoured next to `SUDO_UID`.
 * The X plane of a GNOME session (Xwayland) is found with `find_x_display()`
   (DISPLAY: $DISPLAY, gnome-shell's own environment via /proc, or the
@@ -106,13 +110,27 @@ def find_sway_socket() -> str | None:
 
 
 def find_user_bus() -> tuple[int, str] | None:
-    """(uid, DBUS_SESSION_BUS_ADDRESS) of the graphical session, or None."""
+    """(uid, DBUS_SESSION_BUS_ADDRESS) of the graphical session, or None.
+
+    $DBUS_SESSION_BUS_ADDRESS wins when its socket sits next to a Wayland
+    socket (the in-session case). `ssh root@box` gets its own
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus from pam_systemd --
+    a bus with no compositor on it -- so a scanned bus that does live in the
+    graphical session's runtime dir beats an environment bus that does not.
+    With no Wayland socket anywhere the old order holds (env, then scan)."""
     addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    env_hit = None
     if addr.startswith("unix:path="):
         path = addr[len("unix:path=") :].split(",")[0]
         if os.path.exists(path):
-            return os.stat(path).st_uid, addr
+            env_hit = (os.stat(path).st_uid, addr)
+            if _has_wayland_socket(os.path.dirname(path)):
+                return env_hit
     hit = _scan(lambda n: n == "bus")
+    if hit and _has_wayland_socket(os.path.dirname(hit[1])):
+        return hit[0], f"unix:path={hit[1]}"
+    if env_hit:
+        return env_hit
     if hit:
         return hit[0], f"unix:path={hit[1]}"
     return None

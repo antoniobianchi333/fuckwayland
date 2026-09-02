@@ -190,6 +190,29 @@ stable_sequence    get_stable_sequence() (creation counter)
 * Errors: `org.fuckwayland.Bridge1.NotFound` (bad window/workspace id),
   `.Unsupported`, `.InvalidArgs`, `.Failed` (anything else, message included).
 
+## Verified live
+
+Ubuntu 24.04.4 / GNOME Shell 46.0 (gnome-shell 46.0-0ubuntu6~24.04.14, gjs
+1.80.2, Xwayland 23.2.6), fresh autologin session, xterm + gnome-text-editor +
+gnome-calculator: user install → "log out and back in" → after the reboot
+`--check` shows state 1 / name owned / version 1 and the journal only has
+`enabled`/`acquired` lines (no JS ERROR). Through `wdotool`: `search`
+(name/class/classname/pid/desktop/onlyvisible), `getactivewindow`,
+`getwindow{name,classname,pid,geometry}`, `windowactivate --sync` (switches
+workspace, unminimizes), `windowfocus`, `windowmove/windowsize --sync`
+(xterm snaps to its cell grid: 640x480 → 640x470), `windowstate`
+FULLSCREEN / MAXIMIZED_VERT (per-axis: 500x768 at y=32) / ABOVE / STICKY /
+DEMANDS_ATTENTION (SKIP_TASKBAR warns, BELOW errors), `windowminimize` /
+`windowmap --sync`, `set_desktop[_for_window]`, `get_desktop_for_window` (-1
+when sticky), `getmouselocation` window hit-test, `windowraise/lower`,
+`windowclose`, `windowkill`, `type`/`key` into xterm, `selectwindow` (returns
+on the next focus change). As `root` over ssh with no session environment the
+same commands work (bus found next to `wayland-0`, dbus_mini's fork auth,
+`x_info()` = `(':0', '/run/user/1000/.mutter-Xwaylandauth.*')`). The
+installer's live paths: re-run while loaded → "is live", `--uninstall` →
+immediate "bridge not running" error from the tools, re-install → live again
+without a logout.
+
 ## GNOME 46 vs 50 and other honest limits
 
 * **Partial maximization** works on every release: GNOME 46–48 take the
@@ -216,41 +239,59 @@ stable_sequence    get_stable_sequence() (creation counter)
 ## `/dev/uinput` without root (`--udev`)
 
 Input injection (`wdotool key/type/click/mousemove`) goes through
-`/dev/uinput`, which stock Ubuntu ships as `root:root 0600`. Instead of
-running everything as root or adding yourself to the `input` group and
-logging out, install one udev rule:
+`/dev/uinput`, which stock Ubuntu ships as `root:root 0600` with no udev rule
+of its own. Instead of running everything as root or adding yourself to the
+`input` group and logging out, install one udev rule:
 
 ```sh
-sudo sh gnome/install-bridge.sh --udev
+sudo sh gnome/install-bridge.sh --udev             # install rule + modules-load, apply now
+sudo sh gnome/install-bridge.sh --udev --uninstall
+sh gnome/install-bridge.sh --check                 # ...also prints the rule/driver/ACL state
 ```
 
-copies `gnome/60-fuckwayland-uinput.rules` to `/etc/udev/rules.d/` and
-`gnome/modules-load-uinput.conf` to `/etc/modules-load.d/fuckwayland-uinput.conf`,
-loads the module, reloads udev and re-triggers the device:
+`--udev` copies `gnome/60-fuckwayland-uinput.rules` to `/etc/udev/rules.d/`
+and `gnome/modules-load-uinput.conf` to
+`/etc/modules-load.d/fuckwayland-uinput.conf`, runs `modprobe uinput`,
+`udevadm control --reload` and `udevadm trigger --name-match=uinput`:
 
 ```
 KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", MODE="0660", GROUP="input"
 ```
 
 * `TAG+="uaccess"` makes systemd-logind put an ACL for the user of the
-  **active** seat session on the node (the same mechanism that gives you
-  your sound card and webcam). `udevadm trigger --name-match=uinput`
-  re-runs the rule immediately, so the currently logged-in user gets the
-  ACL **without logging out**; logind re-applies it at every login and VT
-  switch.
-* `OPTIONS+="static_node=uinput"` has udev create `/dev/uinput` at boot
-  from the module's devname alias, with these permissions and tags, even
-  when the module is not loaded yet (the first `open()` autoloads it). The
-  `modules-load.d` file loads it at boot anyway so nothing depends on the
-  autoload path.
+  **active** seat session on the node (the mechanism that hands you your
+  sound card and webcam). The `udevadm trigger` re-runs the rule on the
+  existing node, so the user logged in right now gets the ACL **without
+  logging out**; logind re-applies it at every login and VT switch.
+* `OPTIONS+="static_node=uinput"` has udev create `/dev/uinput` at boot from
+  the module's devname alias, with these permissions and tags, on kernels
+  where uinput is a module that is not loaded yet (the first `open()`
+  autoloads it). The `modules-load.d` file loads it at boot anyway so nothing
+  depends on the autoload path.
 * `MODE="0660", GROUP="input"` keeps the classic route (membership in
   `input` + relogin) for sessions logind does not manage (ssh, containers).
 
+Verified on Ubuntu 24.04 (GNOME 46, kernel 6.8):
+
+* uinput is **built into the Ubuntu kernel** (`modinfo -n uinput` →
+  `(builtin)`), so `/dev/uinput` exists from boot and the "module must be
+  loaded before login" worry (PLAN.md critique 11) does not arise there;
+  `systemd-modules-load` simply ignores the builtin. The `static_node` /
+  `modules-load.d` pieces are for kernels that build it as a module.
+* Installing the rule inside a running session: `getfacl /dev/uinput`
+  shows `user:test:rw-` immediately after `--udev` (the trigger did it), and
+  `wdotool type` works as the plain user in the same session, no relogin.
+* After a reboot the ACL is there right after autologin (`--check`: "uinput
+  usable by test: yes (logind ACL)"), i.e. the rule present at boot is
+  enough.
+* `--udev --uninstall` removes the files; the ACL and `root:input 0660`
+  already on the node stay until the next boot/login (udev does not undo
+  permissions it applied earlier).
+
 Check with `getfacl /dev/uinput` — expect a `user:<you>:rw-` line while your
-session is active — and `sh gnome/install-bridge.sh --check`, which reports
-the rule, the module and the ACL. Security-wise, whoever can open
-`/dev/uinput` can type as you; the rule limits that to the physically
-logged-in user, which is the X11 status quo.
+session is active. Security-wise, whoever can open `/dev/uinput` can type as
+you; the rule limits that to the physically logged-in user, which is the X11
+status quo.
 
 ## Uninstall
 

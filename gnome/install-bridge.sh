@@ -307,21 +307,39 @@ EOM
 }
 
 # --- udev rule for /dev/uinput -----------------------------------------------
+# The user whose ACL matters: the desktop user, or (plain root, no sudo)
+# whoever owns the active seat session.
+seat_user() {
+    if [ "$TARGET_UID" != 0 ]; then
+        echo "$TARGET_USER"
+        return
+    fi
+    have loginctl || return 0
+    loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" && $4 ~ /^seat/ {print $3; exit}'
+}
+
 udev_status() {
     if [ -f "$UDEV_DEST" ]; then u=yes; else u=no; fi
     if [ -f "$MODLOAD_DEST" ]; then m=yes; else m=no; fi
     if [ -e /dev/uinput ]; then n=$(stat -c '%U:%G %a' /dev/uinput 2>/dev/null || echo '?'); else n=missing; fi
-    if grep -qw '^uinput' /proc/modules 2>/dev/null; then l=loaded; else l='not loaded'; fi
+    if grep -qw '^uinput' /proc/modules 2>/dev/null; then l='module loaded'
+    elif [ "$(modinfo -n uinput 2>/dev/null)" = '(builtin)' ]; then l='driver built into the kernel'
+    else l='module not loaded'; fi
     echo "udev rule:        $u ($UDEV_DEST)"
     echo "modules-load:     $m ($MODLOAD_DEST)"
-    echo "/dev/uinput:      $n, module $l"
+    echo "/dev/uinput:      $n, $l"
     if have getfacl && [ -e /dev/uinput ]; then
         acl=$(getfacl -p /dev/uinput 2>/dev/null | sed -n 's/^user:\([^:][^:]*\):\(...\).*/\1:\2/p' | tr '\n' ' ')
         echo "uinput ACL users: ${acl:-none}"
+        su=$(seat_user)
+        [ -n "$su" ] || return 0
         case " $acl" in
-            *" $TARGET_USER:rw"*) echo "uinput usable by $TARGET_USER: yes" ;;
-            *) if [ -w /dev/uinput ] && [ "$ME" != 0 ]; then echo "uinput usable by $TARGET_USER: yes (group/mode)";
-               else echo "uinput usable by $TARGET_USER: no (run: sudo sh $0 --udev)"; fi ;;
+            *" $su:rw"*) echo "uinput usable by $su: yes (logind ACL)" ;;
+            *) if id -nG "$su" 2>/dev/null | grep -qw "$(stat -c %G /dev/uinput)" && [ "$(stat -c %a /dev/uinput)" = 660 ]; then
+                   echo "uinput usable by $su: yes (group $(stat -c %G /dev/uinput))"
+               else
+                   echo "uinput usable by $su: no (run: sudo sh $0 --udev)"
+               fi ;;
         esac
     fi
 }
