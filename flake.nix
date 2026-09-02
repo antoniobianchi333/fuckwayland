@@ -16,7 +16,10 @@
           src = ./.;
           pyproject = true;
           build-system = [ pkgs.python3Packages.setuptools ];
-          postInstall = "ln -s $out/bin/wdotool $out/bin/xdotool";
+          postInstall = ''
+            ln -s $out/bin/wdotool $out/bin/xdotool
+            if [ -e $out/bin/wwmctl ]; then ln -s $out/bin/wwmctl $out/bin/wmctrl; fi
+          '';
         };
         default = wdotool;
       });
@@ -25,10 +28,11 @@
         default = pkgs.mkShell {
           packages = with pkgs; [
             python3
-            # in-sandbox compositor testbed
+            # in-sandbox compositor testbed (incl. XWayland legacy-app plane)
             sway foot grim jq
-            # the real thing, for parity reference (help text, manpage)
-            xdotool man
+            xwayland xterm xorg.xprop xorg.xwininfo xorg.xeyes
+            # the real things, for parity reference (help text, manpage, behavior)
+            xdotool wmctrl man
             # VM lifecycle + demo gif
             qemu_kvm xorriso cloud-utils openssh curl
             ffmpeg imagemagick gifsicle

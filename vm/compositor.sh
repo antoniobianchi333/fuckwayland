@@ -16,7 +16,7 @@ rm -f "$XDG_RUNTIME_DIR"/wayland-* "$XDG_RUNTIME_DIR"/sway-ipc.*
 cat > /root/sway-headless.conf <<'CFG'
 output HEADLESS-1 mode 1280x720
 output * background #1b2028 solid_color
-xwayland disable
+xwayland enable
 default_border none
 # unaccelerated 1:1 pointer so injected REL_X/Y move by exact pixels
 input type:pointer accel_profile flat
