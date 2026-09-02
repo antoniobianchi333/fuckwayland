@@ -90,6 +90,8 @@ scratchpad on sway.
 
 ## wwmctl
 
+![wwmctl listing native and X windows in one list, then acting on them](wwmctl-demo.gif)
+
 `wmctrl`, same treatment — and it handles **both** native Wayland apps and legacy X
 apps (XWayland) in one list. The compositor exposes XWayland windows with their real
 X11 window ids, so wwmctl prints ids that `xprop` and your old scripts can actually
@@ -114,6 +116,8 @@ formats, error strings, even wmctrl 1.07's machine-column width bug.
 
 ## wxprop
 
+![wxprop rendering a _NET_WM_ICON as ASCII art, byte-identical to real xprop](wxprop-demo.gif)
+
 `xprop`, dual-plane. XWayland windows report their **real** X properties, byte-for-byte
 identical to xprop 1.2.8 — the whole formatting machine is ported, down to the
 `WM_HINTS`/`WM_SIZE_HINTS` structured dumps, the dformat mini-language, 32-bit
@@ -134,6 +138,8 @@ WM_CLASS(STRING) = "foot", "foot"
 rejects). Verified byte-identical against the real xprop on a live XWayland server.
 
 ## wxrandr
+
+![wxrandr reshaping a multi-output layout live: panels sliding, rotating, scaling](wxrandr-demo.gif)
 
 `xrandr`, with the crazy multimonitor configs as the whole point, not an afterthought.
 A real pending-geometry resolver means relative-placement chains resolve in **one
