@@ -163,6 +163,57 @@ Daemon notes (B):
   Exact output formats for search/getwindowgeometry/getmouselocation (+ `--shell`
   variants): copy from the manpage and `cmd_*.c`.
 
+## dbus_mini (shared — `wdotool/dbus_mini.py`)
+
+Pure-stdlib D-Bus client for the session bus and any `unix:` address (QEMU's
+`-display dbus` bus). No gdbus/busctl spawns, no glib, signals included. Shared like
+`wayland_mini.py`: wire-level fixes are fair game, API changes need a note.
+
+- **Wire**: `unix:path=`/`unix:abstract=` (`;` alternatives, `,` key=value, `%XX`
+  unescaped); SASL `\0AUTH EXTERNAL <hex(uid)>` → `OK` → `NEGOTIATE_UNIX_FD` (ERROR
+  tolerated) → `BEGIN` → `Hello`. Message = 12-byte fixed header + `a(yv)` fields +
+  pad 8 + body; fields written PATH, DESTINATION, INTERFACE, MEMBER, ERROR_NAME,
+  REPLY_SERIAL, SENDER, SIGNATURE, UNIX_FDS (byte-identical to libdbus's Hello). Full
+  grammar `ybnqiuxtdhsog a() a{} v`; alignment relative to message start (the pad after
+  an array length to the element alignment is not counted and is present for empty
+  arrays); reads both endians, writes `l`. struct↔tuple, array↔list (`ay`↔bytes),
+  `a{}`↔dict, `v`↔`Variant(sig, value)` on write (plain bool/int/float/str/bytes are
+  guessed), plain value on read (`wrap_variants=True` keeps `Variant`). `h` = index into
+  the SCM_RIGHTS fds of the same sendmsg (`socket.send_fds/recv_fds`), resolved to real
+  fds on read. Max message 2^27 bytes.
+- **API**: `Bus(addr=None, as_uid=None)` (addr from `session.find_user_bus()`),
+  `call(dest, path, iface, member, sig='', args=(), timeout=25.0) -> tuple`,
+  `get_property`/`set_property`/`get_all_properties`, `introspect`, `list_names`,
+  `name_has_owner`, `get_name_owner`, `request_name`, `add_match`,
+  `wait_signal(iface, member, timeout, path=None, sender=None)` (None on timeout),
+  `messages(timeout)` generator of queued signals (and calls with `serve_calls=True`),
+  `reply`/`error_reply`/`emit_signal`, `close()`/context manager. `DBusError(name,
+  message)` for ERROR replies and local failures (`org.freedesktop.DBus.Error.` +
+  `NoServer`/`AuthFailed`/`NoReply`/`Disconnected`). Method calls aimed at us get
+  UnknownMethod immediately (Peer.Ping answered) unless `serve_calls`. One `Bus` per
+  thread.
+- **Root vs the user's bus**: stock session.conf has no `<allow user="*"/>`, so
+  dbus-daemon answers root's EXTERNAL auth with `OK` and then closes the socket at the
+  policy check (Hello dies with EPIPE). `Bus(as_uid=uid)` — and the automatic retry
+  when euid 0 is turned away by a socket owned by another uid — forks a child that
+  `setgroups/setgid/setuid`s, connects, authenticates and Hellos, then hands the live
+  socket back over a socketpair with SCM_RIGHTS (`connect_as_uid`); SO_PEERCRED is
+  fixed at connect, so the bus keeps attributing the connection to that uid.
+  `bus.auth_path` is `'direct'` or `'fork'`. Verified on Ubuntu 24.04 dbus-daemon
+  1.14.10: user → direct, `sudo` → fork.
+- **CLI**: `python3 -m wdotool.dbus_mini [--address A] [--as-uid N|owner] --names |
+  --has-owner NAME | --call DEST PATH IFACE MEMBER [SIG JSON-args] | --get DEST PATH
+  IFACE PROP | --get-all DEST PATH IFACE | --introspect DEST PATH | --monitor [RULE…]
+  [--seconds N]`. Output is JSON (variants unwrapped, `ay` as int lists).
+- **Tests**: `tests/test_dbus_mini.py` — byte-exact marshalling facts, the canonical
+  128-byte Hello, big-endian parse, DisplayConfig `GetCurrentState`/`ApplyMonitorsConfig`
+  fixtures, QEMU `SetUIInfo(qqiiuu)`, an in-process mock bus (auth, names, echo of every
+  type, errors, timeouts + late replies, signals, unix fds both ways, client↔client
+  calls, fork hand-off); with `DBUS_SESSION_BUS_ADDRESS` set (`dbus-run-session --
+  python3 tests/test_dbus_mini.py`) also a real dbus-daemon incl. NameOwnerChanged from
+  a second connection. Verified against QEMU 8.2's display bus (`org.qemu`, Console
+  properties, `SetUIInfo`).
+
 ## Testing
 
 - In-sandbox (no uinput here — container blocks it): `nix develop`, then
