@@ -44,16 +44,17 @@ There is no X server to lie to, so wdotool goes underneath instead:
   keyboard, a relative mouse, and an absolute tablet (the same shape QEMU uses, which
   every compositor maps across the whole output layout). The compositor can't tell it
   from real hardware, so this works on GNOME, KDE, sway, anything. That's also why it
-  needs root — or, if you'd rather not: one udev rule
-  (`KERNEL=="uinput", GROUP="input", MODE="0660"` in
-  `/etc/udev/rules.d/60-wdotool.rules`) plus membership in the `input` group and it
-  runs as a plain user. Media keys work too (`key XF86AudioMute` and friends map
+  needs root — or, if you'd rather not: one udev rule (`sudo sh
+  gnome/install-bridge.sh --udev` installs `gnome/60-fuckwayland-uinput.rules`,
+  which tags `/dev/uinput` for the logged-in user's ACL and opens it to the `input`
+  group) and it runs as a plain user, no relogin needed. Media keys work too (`key XF86AudioMute` and friends map
   straight to their evdev codes).
 - The first invocation forks a small daemon that owns the devices (creating them
   costs ~600ms of hotplug; you pay it once) and tracks the injected pointer.
-- **Window management** talks to the compositor: sway/i3 IPC (complete), KWin
-  scripting and GNOME Shell (best-effort), and the wlr-foreign-toplevel protocol as
-  the generic fallback. Window ids are real, stable, decimal — like X window ids,
+- **Window management** talks to the compositor: sway/i3 IPC (complete), GNOME
+  Shell through the bundled bridge extension (complete, see [GNOME](#gnome)), KWin
+  scripting (best-effort), and the wlr-foreign-toplevel protocol as the generic
+  fallback. Window ids are real, stable, decimal — like X window ids,
   scripts pipe them around unchanged.
 - Runs fine under `sudo`: the graphical session's sockets are found by scanning
   `/run/user/*`.
@@ -65,6 +66,41 @@ Nix: `nix build` → `result/bin/wdotool` (with an `xdotool` symlink next to it)
 No nix: `scripts/build-pyz.sh` → `dist/wdotool`, a single self-contained file.
 Python ≥ 3.10 stdlib only, no dependencies. Copy it to `/usr/local/bin/wdotool`,
 `ln -s wdotool /usr/local/bin/xdotool`, done.
+
+### GNOME
+
+Stock GNOME Wayland sessions — Ubuntu 24.04 (GNOME 46) and 26.04 (GNOME 50) as
+installed — are supported, with one extra step: GNOME has no window-management
+protocol, so the window side needs a small GNOME Shell extension that exports
+Mutter over the session bus. Input injection needs nothing extra beyond
+`/dev/uinput` access.
+
+```sh
+sh gnome/install-bridge.sh          # copies the extension, enables it; log out/in once
+sh gnome/install-bridge.sh --check  # is it loaded? is org.fuckwayland.Bridge owned?
+sudo sh gnome/install-bridge.sh --udev   # optional: /dev/uinput for the logged-in user, no relogin
+```
+
+* **The extension** (`gnome/fuckwayland-bridge@fuckwayland`, ~1100 lines of
+  JavaScript, see `gnome/README.md`) is installed per user by default
+  (`--system` for `/usr/share/gnome-shell/extensions`). gnome-shell only scans
+  extension directories at login, so the first install needs a logout/login;
+  after that the installer can enable and disable it live. Everything
+  `wdotool`/`wwmctl`/`wxprop` do on GNOME goes through it: `search`,
+  `windowactivate`, `windowmove`, `windowstate`, desktops/workspaces,
+  `selectwindow`, `getmouselocation`'s window, X ids of XWayland windows.
+* **The udev rule** (`gnome/60-fuckwayland-uinput.rules` + a `modules-load.d`
+  file) tags `/dev/uinput` `uaccess`, so systemd-logind hands the user of the
+  active seat an ACL on it — applied immediately by the installer, and again at
+  every login. Without it, run the tools as root (`sudo`), which also works: the
+  session is found by scanning `/run/user/*`.
+* **Security note.** Any process on your session bus can then list, move,
+  close and kill your windows through the bridge, and anyone who can open
+  `/dev/uinput` can type as you. That is exactly what every X11 client could
+  always do, and it is the point of these tools; but it is a deliberate
+  widening of GNOME's default. The bridge never evaluates code and never
+  injects input; Flatpak/Snap apps without session-bus access cannot reach it.
+  Do not install either piece on a machine where that trade is wrong.
 
 ## Compatibility
 

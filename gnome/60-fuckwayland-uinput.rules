@@ -1,0 +1,15 @@
+# fuckwayland: let the active seat user open /dev/uinput (wdotool's input
+# injection) without root, groups or a relogin.
+#
+# - static_node=uinput: udev creates /dev/uinput at boot from the module's
+#   devname alias even while the uinput module is not loaded (opening it
+#   autoloads the module), and applies MODE/GROUP/TAG to that static node.
+# - TAG+="uaccess": systemd-logind puts an ACL for the user of the active
+#   session on the node at every session activation (login, VT switch),
+#   and `udevadm trigger --name-match=uinput` re-applies it right away.
+# - MODE/GROUP: the traditional `input` group route as a fallback for
+#   sessions logind does not manage (ssh + sudo -u, containers).
+#
+# Installed by gnome/install-bridge.sh --udev to /etc/udev/rules.d/, together
+# with /etc/modules-load.d/fuckwayland-uinput.conf.
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", MODE="0660", GROUP="input"

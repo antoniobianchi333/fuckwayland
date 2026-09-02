@@ -358,31 +358,6 @@ class TestSwayDisplaySize(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# gnome GVariant unescaping: one left-to-right pass
-
-
-class TestGnomeUnquote(unittest.TestCase):
-    def test_simple_escapes(self):
-        from wdotool.backend_gnome import _unquote
-
-        self.assertEqual(_unquote(r"a\'b"), "a'b")
-        self.assertEqual(_unquote(r"line\nnext"), "line\nnext")
-        self.assertEqual(_unquote(r"tab\tted"), "tab\tted")
-
-    def test_literal_backslash_n_survives(self):
-        from wdotool.backend_gnome import _unquote
-
-        # wire '\\n' is a literal backslash followed by 'n', NOT a newline
-        self.assertEqual(_unquote("back\\\\nslash"), "back\\nslash")
-        self.assertNotIn("\n", _unquote("back\\\\nslash"))
-
-    def test_unicode_escape(self):
-        from wdotool.backend_gnome import _unquote
-
-        self.assertEqual(_unquote(r"café \U0001f600"), "café \U0001f600")
-
-
-# ---------------------------------------------------------------------------
 # kwin monitor reader: raw-fd reads see buffered lines; single-pass unescape
 
 

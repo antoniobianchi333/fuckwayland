@@ -1,254 +1,450 @@
-"""GNOME Shell window backend via gdbus. Primary path: org.gnome.Shell.Eval
-(works only in unsafe mode / older shells). Fallback: the Window Calls
-extension's org.gnome.Shell.Extensions.Windows interface (reduced feature
-set). Best-effort — GNOME cannot run in this sandbox, so untested live.
+"""GNOME Shell (Mutter) window backend over the fuckwayland bridge extension.
 
-Window ids are mutter's stable sequence numbers (Window Calls uses the same),
-stable for the life of the shell."""
+GNOME has no window-management protocol and gnome-shell's own D-Bus surface
+is either read-only and sender-allowlisted (org.gnome.Shell.Introspect) or
+off by default (org.gnome.Shell.Eval outside "unsafe mode"). The only
+supported way in is code running inside the shell: gnome/fuckwayland-bridge@
+fuckwayland (see gnome/README.md) exports Mutter's window/workspace/monitor
+facts and actions on the session bus as
+
+    name  org.fuckwayland.Bridge   path /org/fuckwayland/Bridge
+    iface org.fuckwayland.Bridge1  (JSON strings for structured results)
+
+and this module is a thin client for it over dbus_mini (pure stdlib, one
+connection per process, no gdbus spawns). Window ids are Meta.Window.get_id()
+(64-bit, stable for the shell's lifetime -- the same numbers
+org.gnome.Shell.Introspect uses), printed in decimal like every backend.
+
+Field mapping (bridge object -> Window):
+  class_   wm_class, else gtk_app_id, else sandboxed_app_id (Mutter reports
+           the Wayland app_id as wm_class for native clients)
+  x,y,w,h  get_frame_rect(): logical pixels, SSD frame included, no CSD
+           shadow -- the same space the input daemon's pointer lives in
+  focused  has_focus()
+  visible  not hidden (minimized / show-desktop) AND on the active workspace
+           -- X11's IsViewable; `is_mapped` is the looser "not minimized" so
+           windowmap --sync does not hang on windows parked elsewhere
+  desktop  workspace index, -1 when on all workspaces (sticky)
+
+list() order is Mutter's stacking order bottom->top, so the generic hit-test
+picks hits[-1] = topmost; window_at() additionally skips DESKTOP/DOCK layers
+(desktop icons, docks) like a click-through X11 root window would.
+
+When the bridge name is missing but org.gnome.Shell is on the bus, the
+constructor tries once to load the installed extension through
+org.gnome.Shell.Eval -- which only works while the shell is in unsafe mode --
+and otherwise fails with the one-line install hint (_HINT)."""
 
 import json
-import re
-import subprocess
+import sys
+import time
 
-from wdotool.backend import Window, WindowBackend
+from wdotool import session
+from wdotool.backend import View, Window, WindowBackend, Workspace
 from wdotool.ctx import CmdError
+from wdotool.dbus_mini import ERR, Bus, DBusError
 
-_HINT = ("gnome backend: org.gnome.Shell.Eval is blocked (unsafe mode "
-         "disabled) and the Window Calls extension is not installed; "
-         "install one of them")
+BUS_NAME = "org.fuckwayland.Bridge"
+OBJECT_PATH = "/org/fuckwayland/Bridge"
+IFACE = "org.fuckwayland.Bridge1"
+SHELL_NAME = "org.gnome.Shell"
+EXT_UUID = "fuckwayland-bridge@fuckwayland"
 
-_EXT_PATH = "/org/gnome/Shell/Extensions/Windows"
-_EXT_IFACE = "org.gnome.Shell.Extensions.Windows"
+_HINT = ("gnome backend: the fuckwayland bridge extension is not running in "
+         "GNOME Shell; run gnome/install-bridge.sh and restart the session "
+         "(log out and back in)")
+_GONE = ("gnome backend: the fuckwayland bridge vanished from the session bus "
+         "(extension disabled, screen locked, or shell restarting); run "
+         "gnome/install-bridge.sh --check")
 
-# JS: `_w(ID)` finds a meta window by stable sequence.
-_FIND = ("const _w = id => global.get_window_actors()"
-         ".map(a => a.meta_window).find(w => w.get_stable_sequence() === id);")
+CALL_TIMEOUT = 10.0     # every bridge call answers in milliseconds
+AUTOLOAD_WAIT = 3.0     # after a successful Eval(loadExtension)
 
-_LIST_JS = """\
-JSON.stringify(global.get_window_actors().map(a => {
-  const w = a.meta_window;
-  const r = w.get_frame_rect();
-  const ws = w.get_workspace();
-  return {id: w.get_stable_sequence(), title: w.get_title() || "",
-          cls: w.get_wm_class() || "", pid: w.get_pid(),
-          x: r.x, y: r.y, w: r.width, h: r.height,
-          focused: w.has_focus(), visible: !w.minimized,
-          desktop: w.is_on_all_workspaces() ? -1 : (ws ? ws.index() : -1)};
-}))
-"""
+# xdotool action -> bridge SetState action word
+_ACTIONS = {0: "remove", 1: "add", 2: "toggle"}
+# _NET_WM_STATE atoms Mutter has no setter for and that change nothing a
+# script can observe through these tools: warn + succeed (DESIGN.md cosmetic
+# rule). Everything else the bridge cannot apply is a real capability gap.
+_COSMETIC_STATES = {"SKIP_TASKBAR", "SKIP_PAGER", "SHADED", "MODAL"}
+# window types the pointer hit-test looks through (DING desktop icons, docks)
+_LAYER_TYPES = {"DESKTOP", "DOCK"}
 
-
-class _EvalBlocked(Exception):
-    pass
-
-
-_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f",
-            "a": "\a", "v": "\v", "0": "\0"}
-_UNQUOTE_RE = re.compile(r"\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)")
-
-
-def _unquote(s: str) -> str:
-    """Undo GVariant single-quoted string escaping in one left-to-right pass
-    (ordered str.replace chains mangle titles containing literal backslashes,
-    e.g. '\\\\n' on the wire must decode to backslash+n, not a newline)."""
-
-    def repl(m):
-        e = m.group(1)
-        if e[0] in "uU" and len(e) > 1:
-            return chr(int(e[1:], 16))
-        return _ESCAPES.get(e, e)
-
-    return _UNQUOTE_RE.sub(repl, s)
+# Best-effort: load an installed-but-not-yet-loaded copy of the extension
+# from inside the shell. Runs in shellDBus.js's module scope (Main, Gio, GLib
+# imported there on 46 and 50); only reachable in unsafe mode.
+_AUTOLOAD_JS = """\
+(() => {
+  const uuid = '%s';
+  const em = Main.extensionManager;
+  const G = (typeof GLib !== 'undefined') ? GLib : globalThis.imports.gi.GLib;
+  let ext = em.lookup(uuid);
+  let p = Promise.resolve();
+  if (!ext) {
+    const user = G.build_filenamev([G.get_user_data_dir(), 'gnome-shell', 'extensions', uuid]);
+    const dirs = [[user, 2]].concat(G.get_system_data_dirs().map(
+      d => [G.build_filenamev([d, 'gnome-shell', 'extensions', uuid]), 1]));
+    for (const [d, type] of dirs) {
+      const f = Gio.File.new_for_path(d);
+      if (!f.query_exists(null))
+        continue;
+      ext = em.createExtensionObject(uuid, f, type);
+      p = Promise.resolve(em.loadExtension(ext));
+      break;
+    }
+  }
+  if (!ext)
+    return 'missing';
+  return p.then(() => { em.enableExtension(uuid); return 'ok'; });
+})()
+""" % EXT_UUID
 
 
 class GnomeBackend(WindowBackend):
     name = "gnome"
 
-    def __init__(self):
-        from wdotool.backend_detect import dbus_env, dbus_name_has_owner
-        self.env = dbus_env()
-        if self.env is None:
-            raise CmdError("gnome backend: no session D-Bus found")
-        if not dbus_name_has_owner("org.gnome.Shell"):
-            raise CmdError(
-                "gnome backend: org.gnome.Shell is not on the session bus"
-            )
-        self._eval_ok: bool | None = None  # tri-state: unknown/yes/no
+    def __init__(self, bus: Bus | None = None, names: list[str] | None = None,
+                 settle: float = 0.5):
+        """`bus`/`names`: reuse backend_detect's connection and its ListNames
+        result (one round trip per process). `settle`: how long activate()
+        waits for the focus change to land before returning (Mutter animates
+        and may defer focus; `key --window` injects 50 ms after activate)."""
+        self.settle = settle
+        if bus is None:
+            try:
+                bus = Bus()
+            except DBusError as e:
+                raise CmdError("gnome backend: %s" % _no_bus_text(e)) from None
+        self.bus = bus
+        if names is None:
+            try:
+                names = self.bus.list_names()
+            except DBusError as e:
+                raise CmdError("gnome backend: ListNames failed: %s" % e) from None
+        if BUS_NAME not in names:
+            if SHELL_NAME not in names:
+                raise CmdError("gnome backend: %s is not on the session bus "
+                               "(no GNOME session?)" % SHELL_NAME)
+            if not self._try_autoload():
+                raise CmdError(_HINT)
 
     # -- plumbing -----------------------------------------------------------
 
-    def _gdbus(self, path, method, *args) -> str:
-        argv = ["gdbus", "call", "--session", "--dest", "org.gnome.Shell",
-                "--object-path", path, "--method", method, *args]
+    def _call(self, member: str, sig: str = "", args=(),
+              timeout: float | None = CALL_TIMEOUT) -> tuple:
         try:
-            r = subprocess.run(argv, env=self.env, capture_output=True,
-                               text=True, timeout=10)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise CmdError("gnome backend: gdbus failed: %s" % e) from None
-        if r.returncode != 0:
-            raise CmdError(
-                "gnome backend: %s failed: %s" % (method, r.stderr.strip())
-            )
-        return r.stdout.strip()
+            return self.bus.call(BUS_NAME, OBJECT_PATH, IFACE, member, sig, args,
+                                 timeout=timeout)
+        except DBusError as e:
+            raise self._map_error(member, e) from None
 
-    def _eval(self, js: str) -> str:
-        """Run JS in the shell; returns the eval result string (often JSON)."""
-        if self._eval_ok is False:
-            raise _EvalBlocked()
-        out = self._gdbus("/org/gnome/Shell", "org.gnome.Shell.Eval", js)
-        m = re.match(r"\((true|false),\s*'(.*)'\)\s*$", out, re.S)
-        if not m:
-            raise CmdError("gnome backend: unexpected Eval reply: %r" % out)
-        if m.group(1) != "true":
-            self._eval_ok = False
-            raise _EvalBlocked()
-        self._eval_ok = True
-        return _unquote(m.group(2))
+    @staticmethod
+    def _map_error(member: str, e: DBusError) -> CmdError:
+        n = e.name
+        if n.startswith(IFACE + "."):
+            kind = n[len(IFACE) + 1:]
+            if kind in ("NotFound", "Unsupported"):
+                return CmdError(e.message or "%s: %s" % (member, kind))
+            return CmdError("gnome backend: %s: %s" % (member, e.message or kind))
+        if n in (ERR + "ServiceUnknown", ERR + "NameHasNoOwner"):
+            return CmdError(_GONE)
+        if n == ERR + "NoReply":
+            return CmdError("gnome backend: %s: no reply from the bridge within "
+                            "the timeout (is gnome-shell hung?)" % member)
+        if n == ERR + "Disconnected":
+            return CmdError("gnome backend: session bus connection lost (%s)"
+                            % e.message)
+        return CmdError("gnome backend: %s failed: %s" % (member, e))
 
-    def _eval_json(self, js: str):
-        raw = self._eval(js)
-        if not raw:
-            return None
-        val = json.loads(raw)
-        if isinstance(val, str):  # our JS often JSON.stringifys itself
-            val = json.loads(val)
-        return val
+    def _try_autoload(self) -> bool:
+        """Eval-based load of an installed extension; False unless the shell
+        is in unsafe mode and the load produced the bridge name."""
+        try:
+            ok, result = self.bus.call(SHELL_NAME, "/org/gnome/Shell", SHELL_NAME,
+                                       "Eval", "s", (_AUTOLOAD_JS,), timeout=CALL_TIMEOUT)
+        except DBusError:
+            return False
+        if not ok or "ok" not in str(result):
+            return False
+        deadline = time.monotonic() + AUTOLOAD_WAIT
+        while time.monotonic() < deadline:
+            try:
+                if self.bus.name_has_owner(BUS_NAME):
+                    return True
+            except DBusError:
+                return False
+            time.sleep(0.1)
+        return False
 
-    def _ext(self, method, *args) -> str:
-        return self._gdbus(_EXT_PATH, "%s.%s" % (_EXT_IFACE, method), *args)
+    def _json(self, member: str, sig: str = "", args=()):
+        (raw,) = self._call(member, sig, args)
+        try:
+            return json.loads(raw)
+        except ValueError:
+            raise CmdError("gnome backend: %s returned malformed JSON" % member) from None
 
-    def _ext_str(self, method, *args) -> str:
-        """Extension methods return ('result',) — extract the string."""
-        out = self._ext(method, *args)
-        m = re.match(r"\('(.*)',\)\s*$", out, re.S)
-        return _unquote(m.group(1)) if m else ""
+    def _raw_list(self) -> "list[dict]":
+        data = self._json("ListWindows")
+        return data if isinstance(data, list) else []
+
+    def _raw_get(self, wid: int) -> dict:
+        return self._json("GetWindow", "t", (wid,))
+
+    @staticmethod
+    def _win(d: dict) -> Window:
+        hidden = bool(d.get("hidden", False))
+        on_active = bool(d.get("on_active_workspace", True))
+        return Window(
+            id=int(d.get("id", 0)),
+            title=d.get("title") or "",
+            class_=d.get("wm_class") or d.get("gtk_app_id")
+            or d.get("sandboxed_app_id") or "",
+            pid=int(d.get("pid") or 0),
+            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
+            w=int(d.get("width", 0)), h=int(d.get("height", 0)),
+            focused=bool(d.get("focused", False)),
+            visible=(not hidden) and on_active,
+            desktop=int(d.get("workspace", -1)),
+        )
+
+    @classmethod
+    def _view(cls, d: dict) -> View:
+        win = cls._win(d)
+        client = d.get("client_type") or "wayland"
+        wm_class = d.get("wm_class") or ""
+        app_id = d.get("gtk_app_id") or (wm_class if client == "wayland" else "")
+        return View(
+            window=win,
+            xid=int(d.get("xid") or 0),
+            instance=d.get("wm_class_instance") or wm_class or win.class_,
+            cls=wm_class or win.class_,
+            app_id=app_id,
+            fullscreen=bool(d.get("fullscreen")),
+            maximized_h=bool(d.get("maximized_h")),
+            maximized_v=bool(d.get("maximized_v")),
+            above=bool(d.get("above")),
+            sticky=bool(d.get("on_all_workspaces")),
+            urgent=bool(d.get("urgent")),
+            minimized=bool(d.get("minimized")),
+            hidden=bool(d.get("hidden")),
+            skip_taskbar=bool(d.get("skip_taskbar")),
+            floating=True,
+            ws_name="",
+            window_type=d.get("window_type") or "NORMAL",
+            client_type=client,
+            role=d.get("role") or "",
+            desktop_id=d.get("desktop_id") or "",
+            monitor=int(d.get("monitor", -1)),
+            transient_for=int(d.get("transient_for") or 0),
+            decorated=bool(d.get("decorated", True)),
+        )
+
+    def _wait_focused(self, wid: int):
+        """activate()/focus() return before Mutter has moved the focus; give
+        it `settle` seconds so `key --window` lands in the right window."""
+        deadline = time.monotonic() + self.settle
+        while time.monotonic() < deadline:
+            try:
+                if self._raw_get(wid).get("focused"):
+                    return
+            except CmdError:
+                return
+            time.sleep(0.03)
 
     # -- WindowBackend ------------------------------------------------------
 
     def list(self) -> list[Window]:
-        try:
-            data = self._eval_json(_LIST_JS)
-            return [
-                Window(id=d["id"], title=d["title"], class_=d["cls"],
-                       pid=d["pid"], x=d["x"], y=d["y"], w=d["w"], h=d["h"],
-                       focused=d["focused"], visible=d["visible"],
-                       desktop=d["desktop"])
-                for d in data or []
-            ]
-        except _EvalBlocked:
-            pass
-        try:
-            data = json.loads(self._ext_str("List"))
-        except (CmdError, ValueError):
-            raise CmdError(_HINT) from None
-        wins = []
-        for d in data:
-            wid = d.get("id", 0)
-            title = ""
-            try:
-                title = self._ext_str("GetTitle", str(wid))
-            except CmdError:
-                pass
-            wins.append(Window(
-                id=wid, title=title, class_=d.get("wm_class") or "",
-                pid=d.get("pid") or 0,
-                x=d.get("x", 0), y=d.get("y", 0),
-                w=d.get("width", 0), h=d.get("height", 0),
-                focused=bool(d.get("focus")),
-                visible=bool(d.get("in_current_workspace", True)),
-                desktop=-1,
-            ))
-        return wins
+        return [self._win(d) for d in self._raw_list()]
 
-    def _act(self, wid: int, js: str, ext=None):
-        """Eval `js` with _w(ID); fall back to a Window Calls method."""
-        try:
-            self._eval_json("(() => {%s const w = _w(%d); if (w) { %s } })()"
-                            % (_FIND, wid, js))
-            return
-        except _EvalBlocked:
-            if ext is None:
-                raise CmdError(_HINT) from None
-        method, args = ext
-        self._ext(method, str(wid), *[str(a) for a in args])
+    def find(self, wid: int) -> Window:
+        return self._win(self._raw_get(wid))
 
     def activate(self, wid: int):
-        self._act(wid, "w.activate(global.get_current_time());",
-                  ext=("Activate", ()))
+        self._call("Activate", "t", (wid,))
+        self._wait_focused(wid)
+
+    def focus(self, wid: int):
+        self._call("Focus", "t", (wid,))
+        self._wait_focused(wid)
 
     def close(self, wid: int):
-        self._act(wid, "w.delete(global.get_current_time());", ext=("Close", ()))
+        self._call("Close", "t", (wid,))
+
+    def kill(self, wid: int):
+        # Mutter kills the client itself (XKillClient for X11, SIGKILL on the
+        # pid for Wayland) -- works for any client whatever uid we run as.
+        self._call("Kill", "t", (wid,))
 
     def minimize(self, wid: int):
-        self._act(wid, "w.minimize();", ext=("Minimize", ()))
+        self._call("Minimize", "t", (wid,))
 
     def map(self, wid: int):
-        self._act(wid, "w.unminimize();", ext=("Unminimize", ()))
+        self._call("Unminimize", "t", (wid,))
 
     def unmap(self, wid: int):
-        self.minimize(wid)
+        self._call("Minimize", "t", (wid,))
+
+    def is_mapped(self, wid: int) -> bool:
+        return not self._raw_get(wid).get("minimized", False)
+
+    def raise_(self, wid: int):
+        self._call("Raise", "t", (wid,))
+
+    def lower(self, wid: int):
+        self._call("Lower", "t", (wid,))
 
     def move_window(self, wid: int, x: int, y: int):
-        self._act(wid, "w.move_frame(true, %d, %d);" % (x, y),
-                  ext=("Move", (x, y)))
+        self._call("Move", "tii", (wid, x, y))
 
     def resize(self, wid: int, w: int, h: int):
-        self._act(wid,
-                  "const r = w.get_frame_rect(); "
-                  "w.move_resize_frame(true, r.x, r.y, %d, %d);" % (w, h),
-                  ext=("Resize", (w, h)))
+        self._call("Resize", "tii", (wid, w, h))
 
     def set_state(self, wid: int, state: str, action: int):
-        if state == "FULLSCREEN":
-            js = {0: "w.unmake_fullscreen();", 1: "w.make_fullscreen();",
-                  2: "w.is_fullscreen() ? w.unmake_fullscreen() "
-                     ": w.make_fullscreen();"}[action]
-        elif state in ("MAXIMIZED_VERT", "MAXIMIZED_HORZ"):
-            js = {0: "w.unmaximize(3);", 1: "w.maximize(3);",
-                  2: "w.get_maximized() ? w.unmaximize(3) : w.maximize(3);"}[action]
-        elif state == "HIDDEN":
-            js = {0: "w.unminimize();", 1: "w.minimize();",
-                  2: "w.minimized ? w.unminimize() : w.minimize();"}[action]
-        elif state == "ABOVE":
-            js = {0: "w.unmake_above();", 1: "w.make_above();",
-                  2: "w.is_above() ? w.unmake_above() : w.make_above();"}[action]
-        elif state == "STICKY":
-            js = {0: "w.unstick();", 1: "w.stick();",
-                  2: "w.on_all_workspaces ? w.unstick() : w.stick();"}[action]
-        else:
-            self._unsupported("windowstate %s" % state)
+        word = _ACTIONS.get(action)
+        if word is None:
+            raise CmdError("windowstate: bad action %r" % (action,))
+        (applied,) = self._call("SetState", "tss", (wid, state, word))
+        if applied:
             return
-        self._act(wid, js)
+        if state in _COSMETIC_STATES:
+            sys.stderr.write("wdotool: windowstate %s: Mutter cannot set it on "
+                             "Wayland; ignoring\n" % state)
+            return
+        raise CmdError("windowstate %s is not supported by the gnome backend "
+                       "(Mutter has no API for it)" % state)
+
+    def window_desktop(self, wid: int) -> int:
+        return self.find(wid).desktop
 
     def set_window_desktop(self, wid: int, n: int):
-        self._act(wid, "w.change_workspace_by_index(%d, false);" % n)
+        self._call("MoveToWorkspace", "ti", (wid, n))
 
     def get_desktop(self) -> int:
-        try:
-            return int(self._eval_json(
-                "global.workspace_manager.get_active_workspace_index()"))
-        except _EvalBlocked:
-            raise CmdError(_HINT) from None
+        return int(self._call("GetActiveWorkspace")[0])
 
     def set_desktop(self, n: int):
-        try:
-            self._eval_json(
-                "global.workspace_manager.get_workspace_by_index(%d)"
-                ".activate(global.get_current_time())" % n)
-        except _EvalBlocked:
-            raise CmdError(_HINT) from None
+        self._call("SetActiveWorkspace", "i", (n,))
 
     def num_desktops(self) -> int:
-        try:
-            return int(self._eval_json(
-                "global.workspace_manager.get_n_workspaces()"))
-        except _EvalBlocked:
-            raise CmdError(_HINT) from None
+        return int(self._call("GetNWorkspaces")[0])
+
+    def select_window(self) -> int:
+        # SelectWindow(0) waits for the next focus change without a deadline;
+        # the reply comes when the user focuses a different window.
+        (wid,) = self._call("SelectWindow", "u", (0,), timeout=None)
+        if not wid:
+            raise CmdError("selectwindow: the bridge stopped waiting "
+                           "(extension disabled while waiting?)")
+        return int(wid)
 
     def display_size(self) -> tuple[int, int]:
+        w, h = self._call("DisplaySize")
+        if w <= 0 or h <= 0:
+            raise CmdError("gnome backend: display size unknown")
+        return int(w), int(h)
+
+    # -- optional hooks -----------------------------------------------------
+
+    def window_at(self, x: int, y: int) -> int:
+        """Topmost window under (x, y) on the active workspace; DESKTOP and
+        DOCK layers are looked through, the focused window wins among the
+        hits (the generic rule getmouselocation applies)."""
+        hits = []
+        for d in self._raw_list():
+            if d.get("window_type") in _LAYER_TYPES:
+                continue
+            if d.get("hidden") or not d.get("on_active_workspace", True):
+                continue
+            wx, wy = int(d.get("x", 0)), int(d.get("y", 0))
+            ww, wh = int(d.get("width", 0)), int(d.get("height", 0))
+            if ww > 0 and wh > 0 and wx <= x < wx + ww and wy <= y < wy + wh:
+                hits.append(d)
+        if not hits:
+            return 0
+        for d in hits:
+            if d.get("focused"):
+                return int(d["id"])
+        return int(hits[-1]["id"])
+
+    def views(self) -> "list[View]":
+        names = {}
         try:
-            d = self._eval_json(
-                "JSON.stringify({s: global.display.get_size()})")
-            return int(d["s"][0]), int(d["s"][1])
-        except _EvalBlocked:
-            raise CmdError(_HINT) from None
+            names = {w.index: w.name for w in self.workspaces()}
+        except CmdError:
+            pass
+        out = []
+        for d in self._raw_list():
+            v = self._view(d)
+            v.ws_name = names.get(v.window.desktop, "")
+            out.append(v)
+        return out
+
+    def workspaces(self) -> "list[Workspace]":
+        out = []
+        for d in self._json("ListWorkspaces") or []:
+            wa = d.get("work_area") or {}
+            out.append(Workspace(
+                index=int(d.get("index", len(out))),
+                name=d.get("name") or "",
+                active=bool(d.get("active")),
+                work_area=(int(wa.get("x", 0)), int(wa.get("y", 0)),
+                           int(wa.get("width", 0)), int(wa.get("height", 0))),
+            ))
+        return out
+
+    def x_info(self) -> tuple[str, str] | None:
+        """(DISPLAY, XAUTHORITY) of Xwayland: what gnome-shell itself has in
+        its environment (the bridge reads it), each blank filled from the
+        session scan (session.find_x_display / find_xauthority)."""
+        display, xauth = "", ""
+        try:
+            display, xauth = self._call("XInfo")
+        except CmdError:
+            pass
+        uid = None
+        try:
+            uid = self.bus._owner_uid()
+        except Exception:  # noqa: BLE001 -- diagnostics only
+            uid = None
+        display = display or session.find_x_display(uid) or ""
+        xauth = xauth or session.find_xauthority(uid) or ""
+        if not display and not xauth:
+            return None
+        return display, xauth
+
+    def events(self, timeout: float | None = None):
+        """(id, change) for every bridge WindowEvent, on a connection of its
+        own so queued signals never pile up behind the command connection."""
+        bus = Bus(self.bus.address)
+        try:
+            bus.add_match("type='signal',interface='%s',path='%s'"
+                          % (IFACE, OBJECT_PATH))
+            for m in bus.messages(timeout):
+                if m.interface == IFACE and m.member == "WindowEvent":
+                    wid, change = m.args()
+                    yield int(wid), str(change)
+        finally:
+            bus.close()
+
+    # -- extras for the other tools ---------------------------------------
+
+    def monitors(self) -> "list[dict]":
+        """[{index, x, y, width, height, scale, primary, connector}] --
+        `connector` is "" on GNOME 46 (no JS route), filled on 49+."""
+        data = self._json("ListMonitors")
+        return data if isinstance(data, list) else []
+
+    def real_pointer(self) -> tuple[int, int]:
+        """The compositor's actual pointer (not the daemon-tracked injected
+        one that getmouselocation reports by design)."""
+        x, y, _mods = self._call("GetPointer")
+        return int(x), int(y)
+
+    def bridge_version(self) -> int:
+        return int(self._call("GetVersion")[0])
+
+
+def _no_bus_text(e: DBusError) -> str:
+    if e.name == ERR + "NoServer":
+        return "no session D-Bus found (set DBUS_SESSION_BUS_ADDRESS or run " \
+               "inside the graphical session / under sudo)"
+    return "cannot connect to the session D-Bus: %s" % e

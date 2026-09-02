@@ -1,4 +1,12 @@
-"""Window-management backend interface. FROZEN — edit only if broken."""
+"""Window-management backend interface. FROZEN — edit only if broken.
+
+Additive extension (gnome-bridge): the View/Workspace dataclasses and the
+optional hooks at the end of WindowBackend (views, workspaces, x_info,
+window_at, events). They let a backend that knows more than Window carries
+(X ids of XWayland windows, WM_CLASS instance/class, workspace names) hand it
+to wwmctl/wxprop/getmouselocation without those tools reaching into backend
+privates (sway's `_nodes()` tuple). Every hook defaults to "not available";
+callers fall back to list()/find()."""
 
 import dataclasses
 import os
@@ -20,6 +28,47 @@ class Window:
     focused: bool = False
     visible: bool = True
     desktop: int = -1  # 0-based workspace index, -1 unknown/sticky
+
+
+@dataclasses.dataclass
+class View:
+    """One toplevel with everything a wmctrl/xprop clone wants to print.
+    `window` is the plain Window; the rest is extra. `xid` is 0 for native
+    Wayland toplevels; `instance`/`cls` are the WM_CLASS pair (app_id twice
+    when the compositor has no WM_CLASS); `app_id` is the Wayland app id /
+    GTK application id ("" for pure X11 clients)."""
+
+    window: Window
+    xid: int = 0
+    instance: str = ""
+    cls: str = ""
+    app_id: str = ""
+    fullscreen: bool = False
+    maximized_h: bool = False
+    maximized_v: bool = False
+    above: bool = False
+    sticky: bool = False
+    urgent: bool = False
+    minimized: bool = False
+    hidden: bool = False
+    skip_taskbar: bool = False
+    floating: bool = True  # tiling compositors only; GNOME windows all float
+    ws_name: str = ""
+    window_type: str = "NORMAL"
+    client_type: str = "wayland"  # "wayland" | "x11"
+    role: str = ""
+    desktop_id: str = ""  # .desktop file id, "" when unknown
+    monitor: int = -1
+    transient_for: int = 0
+    decorated: bool = True
+
+
+@dataclasses.dataclass
+class Workspace:
+    index: int
+    name: str = ""
+    active: bool = False
+    work_area: tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h
 
 
 class WindowBackend:
@@ -98,3 +147,32 @@ class WindowBackend:
     def select_window(self) -> int:
         """Block until the user focuses a window; return it (selectwindow)."""
         self._unsupported("selectwindow")
+
+    # optional richer views (additive, see the module docstring)
+    def views(self) -> "list[View] | None":
+        """list() with the View extras, or None when the backend has no
+        richer view than Window (callers then synthesize from list())."""
+        return None
+
+    def workspaces(self) -> "list[Workspace] | None":
+        """Named workspaces with work areas, or None (callers synthesize from
+        get_desktop()/num_desktops())."""
+        return None
+
+    def x_info(self) -> tuple[str, str] | None:
+        """(DISPLAY, XAUTHORITY) of the session's Xwayland, or None when the
+        backend cannot tell (callers fall back to session.find_x_display /
+        find_xauthority)."""
+        return None
+
+    def window_at(self, x: int, y: int) -> int | None:
+        """Backend-native pointer hit-test: the topmost window under the
+        point, skipping desktop/dock layers, 0 for none; None means "use the
+        generic hit-test over list()"."""
+        return None
+
+    def events(self, timeout: float | None = None):
+        """Iterator of (window_id, change) with sway's vocabulary (new, close,
+        focus, title, fullscreen_mode, move, urgent, workspace); stops after
+        `timeout` seconds of silence (None = never)."""
+        self._unsupported("window events")
