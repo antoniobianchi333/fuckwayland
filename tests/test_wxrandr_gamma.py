@@ -1,0 +1,271 @@
+"""wxrandr gamma holder tests against a mock Wayland compositor.
+
+Headless sway refuses zwlr_gamma_control (no LUT on virtual outputs — the
+first client gets `failed` immediately, verified live), so the success path
+machinery is proven here against a wire-level mock that implements just
+enough of wl_display/wl_registry/wl_output/zwlr_gamma_control_manager_v1:
+the holder must acquire the control, ship the xrandr-formula ramp through
+the fd, stay alive holding it, block a second acquirer, and die on demand
+(restoring gamma = the compositor seeing the disconnect)."""
+
+import os
+import socket
+import struct
+import sys
+import tempfile
+import threading
+import time
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from wxrandr import gamma as gammamod                            # noqa: E402
+from wxrandr.core import State                                   # noqa: E402
+
+GAMMA_SIZE = 256
+
+
+def _marshal_string(s: str) -> bytes:
+    b = s.encode() + b"\0"
+    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
+
+
+class MockCompositor(threading.Thread):
+    """One-thread-per-connection mock speaking the Wayland wire protocol for
+    the gamma path. Registry: wl_output v4 (name HEADLESS-1) + gamma manager.
+    Only ONE gamma control may exist at a time; extras get `failed`."""
+
+    def __init__(self, path: str):
+        super().__init__(daemon=True)
+        self.path = path
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(path)
+        self.srv.listen(8)
+        self.lock = threading.Lock()
+        self.holder_conn = None      # connection object owning the control
+        self.ramps = []              # every ramp received, in order
+        self.acquires = 0
+        self.refusals = 0
+        self.stop = False
+
+    def run(self):
+        while not self.stop:
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(conn,),
+                             daemon=True).start()
+
+    def close(self):
+        self.stop = True
+        try:
+            self.srv.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.srv.close()
+
+    # -- wire helpers --------------------------------------------------------
+
+    @staticmethod
+    def _event(conn, obj_id, opcode, payload=b""):
+        try:
+            conn.sendall(struct.pack(
+                "<II", obj_id, ((8 + len(payload)) << 16) | opcode) + payload)
+        except OSError:
+            pass
+
+    def _serve(self, conn):
+        buf = b""
+        fds = []
+        registry = None
+        outputs = {}          # obj id -> name
+        manager = set()
+        controls = {}         # control id -> is_holder(bool)
+        my_control = [None]
+        try:
+            while True:
+                try:
+                    data, anc, _fl, _ad = conn.recvmsg(65536, 4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                for lvl, typ, fddata in anc:
+                    if lvl == socket.SOL_SOCKET and typ == socket.SCM_RIGHTS:
+                        n = len(fddata) // 4
+                        fds.extend(struct.unpack(
+                            "%di" % n, fddata[:n * 4]))
+                buf += data
+                while len(buf) >= 8:
+                    obj_id, sizeop = struct.unpack_from("<II", buf)
+                    size, opcode = sizeop >> 16, sizeop & 0xFFFF
+                    if len(buf) < size:
+                        break
+                    payload = buf[8:size]
+                    buf = buf[size:]
+                    if obj_id == 1 and opcode == 0:      # sync(cb)
+                        (cb,) = struct.unpack_from("<I", payload)
+                        self._event(conn, cb, 0, struct.pack("<I", 1))
+                    elif obj_id == 1 and opcode == 1:    # get_registry
+                        (registry,) = struct.unpack_from("<I", payload)
+                        self._event(conn, registry, 0,
+                                    struct.pack("<I", 1)
+                                    + _marshal_string("wl_output")
+                                    + struct.pack("<I", 4))
+                        self._event(conn, registry, 0,
+                                    struct.pack("<I", 2) + _marshal_string(
+                                        "zwlr_gamma_control_manager_v1")
+                                    + struct.pack("<I", 1))
+                    elif obj_id == registry and opcode == 0:  # bind
+                        (gname,) = struct.unpack_from("<I", payload)
+                        (slen,) = struct.unpack_from("<I", payload, 4)
+                        rest = 8 + ((slen + 3) & ~3)
+                        (new_id,) = struct.unpack_from("<I", payload,
+                                                       rest + 4)
+                        if gname == 1:
+                            outputs[new_id] = "HEADLESS-1"
+                            # wl_output v4 name event
+                            self._event(conn, new_id, 4,
+                                        _marshal_string("HEADLESS-1"))
+                        else:
+                            manager.add(new_id)
+                    elif obj_id in manager and opcode == 0:
+                        cid, _out = struct.unpack_from("<II", payload)
+                        with self.lock:
+                            if self.holder_conn is None:
+                                self.holder_conn = conn
+                                my_control[0] = cid
+                                controls[cid] = True
+                                self.acquires += 1
+                                self._event(conn, cid, 0,
+                                            struct.pack("<I", GAMMA_SIZE))
+                            else:
+                                self.refusals += 1
+                                self._event(conn, cid, 1)  # failed
+                    elif controls.get(obj_id) and opcode == 0:  # set_gamma
+                        if fds:
+                            fd = fds.pop(0)
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            ramp = b""
+                            while True:
+                                chunk = os.read(fd, 65536)
+                                if not chunk:
+                                    break
+                                ramp += chunk
+                            os.close(fd)
+                            with self.lock:
+                                self.ramps.append(ramp)
+        finally:
+            with self.lock:
+                if self.holder_conn is conn:
+                    self.holder_conn = None  # control dies with the client
+            conn.close()
+
+
+def wait_for(pred, timeout=8.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+class GammaHolderTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="wxrandr-gamma-")
+        self.sock = os.path.join(self.dir, "wayland-mock")
+        self.mock = MockCompositor(self.sock)
+        self.mock.start()
+        self.state_path = os.path.join(self.dir, "state.json")
+        self.state = State("mock", path=self.state_path)
+
+    def tearDown(self):
+        # no holder may outlive the test
+        gammamod.stop_holder(self.state, "HEADLESS-1")
+        self.mock.close()
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def set_gamma(self, brightness, gam=(1.0, 1.0, 1.0), state=None):
+        return gammamod.set_output_gamma(state or self.state, "HEADLESS-1",
+                                         brightness, gam,
+                                         wayland_socket=self.sock)
+
+    def test_01_acquire_ramp_and_hold(self):
+        err = self.set_gamma(0.5)
+        self.assertIsNone(err)
+        rec = self.state.gamma()["HEADLESS-1"]
+        self.assertTrue(wait_for(lambda: self.mock.ramps))
+        # the exact xrandr-formula bytes went over the fd
+        self.assertEqual(self.mock.ramps[0],
+                         gammamod.compute_ramp(GAMMA_SIZE, 0.5,
+                                               (1.0, 1.0, 1.0)))
+        # holder is a live detached process still holding the control
+        self.assertTrue(os.path.exists("/proc/%d" % rec["pid"]))
+        self.assertIsNotNone(self.mock.holder_conn)
+        self.assertEqual(rec["brightness"], 0.5)
+
+    def test_02_second_acquirer_is_refused(self):
+        self.assertIsNone(self.set_gamma(0.5))
+        self.assertTrue(wait_for(lambda: self.mock.acquires == 1))
+        # a second client (fresh state that knows nothing of the holder)
+        other = State("mock2", path=os.path.join(self.dir, "s2.json"))
+        err = self.set_gamma(0.7, state=other)
+        self.assertEqual(err, "refused")
+        self.assertGreaterEqual(self.mock.refusals, 1)
+        # the original holder still owns the control
+        self.assertIsNotNone(self.mock.holder_conn)
+        self.addCleanup(gammamod.stop_holder, other, "HEADLESS-1")
+
+    def test_03_change_kills_and_replaces_holder(self):
+        self.assertIsNone(self.set_gamma(0.5))
+        pid1 = self.state.gamma()["HEADLESS-1"]["pid"]
+        self.assertTrue(wait_for(lambda: len(self.mock.ramps) == 1))
+        self.assertIsNone(self.set_gamma(0.25, (1.1, 1.0, 0.9)))
+        pid2 = self.state.gamma()["HEADLESS-1"]["pid"]
+        self.assertNotEqual(pid1, pid2)
+        self.assertTrue(wait_for(lambda: len(self.mock.ramps) == 2))
+        self.assertEqual(self.mock.ramps[1],
+                         gammamod.compute_ramp(GAMMA_SIZE, 0.25,
+                                               (1.1, 1.0, 0.9)))
+        self.assertFalse(os.path.exists("/proc/%d/cwd" % pid1)
+                         and _alive(pid1))
+
+    def test_04_identity_kills_holder_restoring_gamma(self):
+        self.assertIsNone(self.set_gamma(0.5))
+        pid = self.state.gamma()["HEADLESS-1"]["pid"]
+        self.assertIsNone(self.set_gamma(1.0, (1.0, 1.0, 1.0)))
+        # record removed, process gone, compositor saw the disconnect
+        self.assertNotIn("HEADLESS-1", self.state.gamma())
+        self.assertTrue(wait_for(lambda: not _alive(pid)))
+        self.assertTrue(wait_for(lambda: self.mock.holder_conn is None))
+        # and the control is acquirable again
+        self.assertIsNone(self.set_gamma(0.8))
+        self.assertTrue(wait_for(lambda: self.mock.acquires >= 2))
+
+    def test_05_identity_ramp_is_linear_shortcut(self):
+        ramp = gammamod.compute_ramp(3, 1.0, (1.0, 1.0, 1.0))
+        self.assertEqual(struct.unpack("=9H", ramp)[:3], (0, 32767, 65535))
+
+    def test_06_stop_holder_ignores_recycled_pid(self):
+        self.state.gamma()["HEADLESS-1"] = {
+            "pid": os.getpid(), "start": "not-the-real-starttime",
+            "brightness": 0.5, "gamma": [1, 1, 1]}
+        # must NOT kill us (starttime mismatch), just drop the record
+        self.assertFalse(gammamod.stop_holder(self.state, "HEADLESS-1"))
+        self.assertNotIn("HEADLESS-1", self.state.gamma())
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -214,15 +214,18 @@ class _Daemon:
     # -- geometry / pointer ------------------------------------------------
 
     def geometry(self, warnings=None) -> tuple[int, int, int, int]:
-        """Cached layout bounding box (min_x, min_y, w, h). The origin can be
+        """Layout bounding box (min_x, min_y, w, h), re-read from the
+        compositor on every call so output-layout changes (wxrandr, hotplug)
+        are visible immediately; the last good reading serves as the fallback
+        when the compositor can't be queried. The origin can be
         non-zero/negative on multi-output layouts; pointer coordinates are
         tracked in these global layout coordinates."""
-        if self.geom:
-            return self.geom
         try:
             self.geom = _wayland_bbox()
             return self.geom
         except Exception as e:
+            if self.geom:
+                return self.geom
             if not self.geom_warned:
                 self.geom_warned = True
                 msg = (f"wdotool: cannot query Wayland output geometry ({e}); "

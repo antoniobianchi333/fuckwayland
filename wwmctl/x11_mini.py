@@ -19,9 +19,11 @@ first NUL exactly like wmctrl's printf("%s") does.
 
 import os
 import re
+import select
 import socket
 import stat
 import struct
+import time
 
 # Test seam: unit tests point this at a directory with a fake server socket.
 _SOCK_DIR = "/tmp/.X11-unix"
@@ -36,9 +38,13 @@ _MAX_PROP_BYTES = 1 << 24
 _MAX_PROP_CHUNKS = 4096
 
 # X protocol constants used below
+_OP_CHANGE_WINDOW_ATTRIBUTES = 2
 _OP_INTERN_ATOM = 16
+_OP_GET_ATOM_NAME = 17
 _OP_CHANGE_PROPERTY = 18
+_OP_DELETE_PROPERTY = 19
 _OP_GET_PROPERTY = 20
+_OP_LIST_PROPERTIES = 21
 _OP_SEND_EVENT = 25
 _OP_GET_GEOMETRY = 14
 _OP_QUERY_TREE = 15
@@ -46,6 +52,13 @@ _OP_TRANSLATE_COORDS = 40
 _OP_GET_INPUT_FOCUS = 43
 _CLIENT_MESSAGE = 33
 _EVENT_MASK_SUBSTRUCTURE = 0x180000  # SubstructureNotify|SubstructureRedirect
+_CW_EVENT_MASK = 0x800
+_EV_DESTROY_NOTIFY = 17
+_EV_PROPERTY_NOTIFY = 28
+
+# Bounded event queue (wxprop -spy): a PropertyNotify storm racing a reply
+# wait must never grow memory without limit; oldest events are shed first.
+_MAX_EVENT_QUEUE = 4096
 
 _ERROR_NAMES = {
     1: "BadRequest", 2: "BadValue", 3: "BadWindow", 4: "BadPixmap",
@@ -335,7 +348,9 @@ class X11Conn:
             kind = pkt[0] & 0x7F
             if kind == 0:
                 bad, minor, major = struct.unpack_from("<IHB", pkt, 4)
-                raise X11Error(pkt[1], major, minor, bad)
+                err = X11Error(pkt[1], major, minor, bad)
+                err.sequence = struct.unpack_from("<H", pkt, 2)[0]
+                raise err
             if kind == 1:
                 (pseq,) = struct.unpack_from("<H", pkt, 2)
                 extra = self._extra_words(pkt)
@@ -347,7 +362,14 @@ class X11Conn:
                 extra = self._extra_words(pkt)
                 if extra:
                     self._recv_exact(extra * 4)
-            # other events: nothing selected, but be tolerant and skip
+                continue
+            # other events: queue for next_event() when select_input() armed
+            # the (bounded) queue; otherwise the old behavior — skip.
+            q = getattr(self, "_events", None)
+            if q is not None:
+                if len(q) >= _MAX_EVENT_QUEUE:
+                    q.pop(0)
+                q.append(pkt)
 
     def _extra_words(self, pkt: bytes) -> int:
         """The u32 extra-length word of a reply/GenericEvent, sanity-capped:
@@ -531,6 +553,147 @@ class X11Conn:
 
     def _change_property(self, win: int, prop: int, type_a: int,
                          data: bytes, fmt: int = 8):
+        nitems = len(data) // (fmt // 8) if fmt in (8, 16, 32) else 0
         payload = struct.pack("<IIIB3xI", win, prop, type_a, fmt,
-                              len(data) // (fmt // 8)) + _pad4(data)
+                              nitems) + _pad4(data)
         self._void(_OP_CHANGE_PROPERTY, 0, payload)  # PropModeReplace
+
+    # -- wxprop extensions (ADDITIVE ONLY; wwmctl behavior above unchanged) --
+
+    def query_tree(self, win: int) -> list[int]:
+        """Children of `win`, bottom-to-top stacking order (wire order)."""
+        seq = self._send(_OP_QUERY_TREE, 0, struct.pack("<I", win))
+        pkt, body = self._wait_reply(seq)
+        (n,) = struct.unpack_from("<H", pkt, 16)
+        n = min(n, len(body) // 4)  # never trust the count past the body
+        return list(struct.unpack_from("<%dI" % n, body, 0))
+
+    def list_properties(self, win: int) -> list[int]:
+        """Atom ids of every property on `win`, in server order (the order
+        real xprop dumps them). BadWindow raises X11Error."""
+        seq = self._send(_OP_LIST_PROPERTIES, 0, struct.pack("<I", win))
+        pkt, body = self._wait_reply(seq)
+        (n,) = struct.unpack_from("<H", pkt, 8)
+        n = min(n, len(body) // 4)
+        return list(struct.unpack_from("<%dI" % n, body, 0))
+
+    def get_atom_name(self, atom: int) -> str | None:
+        """Name of an atom id (GetAtomName), None for BadAtom. Cached both
+        ways; names decode as latin-1 so raw bytes round-trip exactly."""
+        names = getattr(self, "_atom_names", None)
+        if names is None:
+            names = self._atom_names = {v: k for k, v in self._atoms.items()}
+        if atom in names:
+            return names[atom]
+        try:
+            seq = self._send(_OP_GET_ATOM_NAME, 0,
+                             struct.pack("<I", atom & 0xFFFFFFFF))
+            pkt, body = self._wait_reply(seq)
+        except X11Error:
+            return None
+        (ln,) = struct.unpack_from("<H", pkt, 8)
+        name = body[:min(ln, len(body))].decode("latin-1")
+        names[atom] = name
+        self._atoms.setdefault(name, atom)
+        return name
+
+    def read_property(self, win: int, name: str):
+        """Full value of a property as (type_name, format, bytes), or None
+        when the atom or the property does not exist on `win`. BadWindow
+        raises X11Error; a lying server raises XUnavailable (see
+        _read_property's hardening)."""
+        r = self._read_property(win, name)
+        if r is None:
+            return None
+        type_a, fmt, data = r
+        tname = self.get_atom_name(type_a)
+        if tname is None:  # a server would have to lie about its own atom
+            tname = "undefined atom # 0x%x" % type_a
+        return tname, fmt, data
+
+    def delete_property(self, win: int, name: str) -> bool:
+        """DeleteProperty; False (and no request) when the atom does not
+        exist — the caller decides how to report that, like xprop does."""
+        prop = self.atom(name, only_if_exists=True)
+        if not prop:
+            return False
+        self._void(_OP_DELETE_PROPERTY, 0, struct.pack("<II", win, prop))
+        return True
+
+    def change_property(self, win: int, name: str, type_name: str,
+                        fmt: int, data: bytes) -> None:
+        """Generalized ChangeProperty (PropModeReplace): any property name,
+        type atom, and format 8/16/32. `data` is the little-endian wire
+        image (nitems derived from its length). A format outside 8/16/32 is
+        sent with nitems=0 so the server's BadValue answer surfaces exactly
+        like Xlib's would."""
+        self._change_property(win, self.atom(name), self.atom(type_name),
+                              data, fmt)
+
+    def select_input(self, win: int, event_mask: int) -> None:
+        """ChangeWindowAttributes(CWEventMask): start receiving events for
+        `win`; arms the bounded event queue read by next_event()."""
+        if getattr(self, "_events", None) is None:
+            self._events = []
+        self._void(_OP_CHANGE_WINDOW_ATTRIBUTES, 0,
+                   struct.pack("<III", win, _CW_EVENT_MASK,
+                               event_mask & 0xFFFFFFFF))
+
+    def next_event(self, timeout: float | None = None):
+        """Next X event as a parsed dict ({"type": "PropertyNotify",
+        "window", "atom", "state"} / {"type": "DestroyNotify", "window"} /
+        {"type": <code>}), or None when `timeout` seconds pass without one.
+        timeout=None blocks indefinitely (xprop -spy semantics), but a
+        mid-packet stall still hits the connection timeout and poisons the
+        connection — a trickling server cannot wedge us forever."""
+        if getattr(self, "_events", None) is None:
+            self._events = []
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if self._events:
+                return self._parse_event(self._events.pop(0))
+            if self._sock is None:
+                raise XUnavailable("X connection is closed")
+            if deadline is None:
+                wait = None
+            else:
+                wait = deadline - time.monotonic()
+                if wait <= 0:
+                    return None
+            try:
+                ready, _, _ = select.select([self._sock], [], [], wait)
+            except (OSError, ValueError):
+                self.close()
+                raise XUnavailable("X connection lost") from None
+            if not ready:
+                return None
+            pkt = self._recv_exact(32)
+            kind = pkt[0] & 0x7F
+            if kind == 0:
+                bad, minor, major = struct.unpack_from("<IHB", pkt, 4)
+                err = X11Error(pkt[1], major, minor, bad)
+                err.sequence = struct.unpack_from("<H", pkt, 2)[0]
+                raise err
+            if kind == 1:  # stale reply: drain its body, drop it
+                extra = self._extra_words(pkt)
+                if extra:
+                    self._recv_exact(extra * 4)
+                continue
+            if kind == 35:  # GenericEvent: drain, skip (no extensions here)
+                extra = self._extra_words(pkt)
+                if extra:
+                    self._recv_exact(extra * 4)
+                continue
+            return self._parse_event(pkt)
+
+    @staticmethod
+    def _parse_event(pkt: bytes) -> dict:
+        code = pkt[0] & 0x7F
+        if code == _EV_PROPERTY_NOTIFY:
+            window, atom, tstamp = struct.unpack_from("<III", pkt, 4)
+            return {"type": "PropertyNotify", "window": window, "atom": atom,
+                    "time": tstamp, "state": pkt[16]}
+        if code == _EV_DESTROY_NOTIFY:
+            _event, window = struct.unpack_from("<II", pkt, 4)
+            return {"type": "DestroyNotify", "window": window}
+        return {"type": code}
