@@ -4,9 +4,9 @@ included. One `Bus` per thread; not thread-safe.
 
 Wire facts (dbus-specification, "Message Format" / "Authentication Protocol"):
 
-- Address: `unix:path=/run/user/1000/bus` or `unix:abstract=NAME`; several
-  alternatives joined by `;`, key=value pairs joined by `,`, values
-  percent-escaped.
+- Address: `unix:path=/run/user/1000/bus`, `unix:abstract=NAME` or
+  `unix:runtime=yes` ($XDG_RUNTIME_DIR/bus); several alternatives joined by
+  `;`, key=value pairs joined by `,`, values percent-escaped.
 - Auth (text lines, `\\r\\n`): client sends a NUL byte, then
   `AUTH EXTERNAL <hex of the ascii uid>` -> `OK <guid>` (or `REJECTED mechs`
   / `ERROR`); `NEGOTIATE_UNIX_FD` -> `AGREE_UNIX_FD` or `ERROR`; `BEGIN`; from
@@ -26,6 +26,21 @@ Wire facts (dbus-specification, "Message Format" / "Authentication Protocol"):
 - Strings: u32 byte length + UTF-8 + NUL; signatures: u8 length + ascii + NUL.
   `b` is a u32 0/1. `h` is an index into the fds carried by SCM_RIGHTS on the
   same sendmsg; UNIX_FDS in the header says how many.
+- Header fields have fixed signatures (PATH is `o`, REPLY_SERIAL is `u`, ...)
+  and a call needs PATH+MEMBER, a signal PATH+INTERFACE+MEMBER, a reply
+  REPLY_SERIAL, an error ERROR_NAME as well: anything else is a malformed
+  frame (ValueError). Unknown field codes and unknown message types (5 and
+  up; 0 is INVALID) must be ignored -- such frames are dropped, fds closed.
+- Fds that arrive with a message belong to whoever takes it (`call()` returns
+  them, `messages()`/`wait_signal()` yield them); they are CLOEXEC. Fds on
+  frames the client discards (late replies, auto-answered calls, unknown
+  types, anything still queued at `close()`) are closed here.
+- Timeouts: `Bus(timeout=)` bounds connect, auth, Hello and every later
+  send -- the socket stays in timeout mode, and a send that times out leaves
+  a half-written frame, so the connection is closed (Disconnected).
+  `call(timeout=)` bounds the wait for the reply (NoReply). AF_UNIX connect()
+  waits in the kernel while the listener's backlog is full (a wedged
+  dbus-daemon), which SO_SNDTIMEO bounds.
 
 API sketch:
 
@@ -45,6 +60,7 @@ import json
 import os
 import re
 import select
+import signal
 import socket
 import struct
 import sys
@@ -60,6 +76,11 @@ _FIELD_SIG = {F_PATH: "o", F_INTERFACE: "s", F_MEMBER: "s", F_ERROR_NAME: "s",
               F_REPLY_SERIAL: "u", F_DESTINATION: "s", F_SENDER: "s",
               F_SIGNATURE: "g", F_UNIX_FDS: "u"}
 MAX_MESSAGE = 1 << 27
+_FORK_GRACE = 5.0  # extra seconds the parent gives the uid-switching child
+_REQUIRED_FIELDS = {METHOD_CALL: ("path", "member"),
+                    SIGNAL: ("path", "interface", "member"),
+                    METHOD_RETURN: ("reply_serial",),
+                    ERROR: ("error_name", "reply_serial")}
 DBUS_NAME, DBUS_PATH, DBUS_IFACE = ("org.freedesktop.DBus",
                                     "/org/freedesktop/DBus",
                                     "org.freedesktop.DBus")
@@ -537,14 +558,16 @@ class Message:
     @classmethod
     def from_bytes(cls, data, fds=()) -> "Message":
         """Parse one complete message (header validated, body kept for
-        `args()`); `fds` are the SCM_RIGHTS fds that came with it."""
+        `args()`); `fds` are the SCM_RIGHTS fds that came with it. Unknown
+        message types (5+) parse -- the spec says ignore them, which is the
+        receiver's job; type 0 (INVALID) and malformed headers raise."""
         e = _endian_of(data[0])
-        r = _Reader(data, e)
+        r = _Reader(data, e, wrap_variants=True)
         _endian, mtype, flags, version, body_len, serial, fields = r.read("yyyyuua(yv)")
         if version != 1:
             raise ValueError(f"unsupported protocol version {version}")
-        if mtype not in (METHOD_CALL, METHOD_RETURN, ERROR, SIGNAL):
-            raise ValueError(f"unknown message type {mtype}")
+        if mtype == 0:
+            raise ValueError("message type 0 (INVALID)")
         r.pad(8)
         if r.i + body_len != len(data):
             raise ValueError("body length does not match frame")
@@ -556,11 +579,17 @@ class Message:
             seen.add(code)
             if code not in _FIELD_SIG:
                 continue  # unknown fields must be ignored
+            if val.sig != _FIELD_SIG[code]:
+                raise ValueError(f"header field {code} has signature {val.sig!r}, "
+                                 f"expected {_FIELD_SIG[code]!r}")
             attr = {F_PATH: "path", F_INTERFACE: "interface", F_MEMBER: "member",
                     F_ERROR_NAME: "error_name", F_REPLY_SERIAL: "reply_serial",
                     F_DESTINATION: "destination", F_SENDER: "sender",
                     F_SIGNATURE: "signature", F_UNIX_FDS: "unix_fds"}[code]
-            setattr(m, attr, val)
+            setattr(m, attr, val.value)
+        for attr in _REQUIRED_FIELDS.get(mtype, ()):
+            if getattr(m, attr) is None:
+                raise ValueError(f"message type {mtype} without {attr.upper()} field")
         m.body = bytes(data[r.i:])
         m.fds = list(fds)
         if m.signature:
@@ -606,34 +635,62 @@ def parse_address(addr: str) -> list[dict[str, str]]:
     return out
 
 
-def socket_path_of(addr: str) -> str | None:
-    """Filesystem path of the first unix:path= element, else None."""
-    for kv in parse_address(addr):
-        if kv["transport"] == "unix" and "path" in kv:
-            return kv["path"]
+def _unix_path(kv: dict[str, str]) -> str | None:
+    """Filesystem path of a parsed unix: element (path= or runtime=yes)."""
+    if "path" in kv:
+        return kv["path"]
+    if kv.get("runtime") == "yes" and os.environ.get("XDG_RUNTIME_DIR"):
+        return os.path.join(os.environ["XDG_RUNTIME_DIR"], "bus")
     return None
 
 
-def _connect_socket(addr: str) -> socket.socket:
+def socket_path_of(addr: str) -> str | None:
+    """Filesystem path of the first unix:path= (or unix:runtime=yes) element,
+    else None."""
+    for kv in parse_address(addr):
+        if kv["transport"] == "unix" and _unix_path(kv):
+            return _unix_path(kv)
+    return None
+
+
+def _connect_socket(addr: str, timeout: float | None = 10.0) -> socket.socket:
+    """Connect to the first reachable element of `addr` within `timeout`
+    seconds; the returned socket stays in timeout mode so every later send
+    is bounded too."""
     last = None
     for kv in parse_address(addr):
         if kv["transport"] != "unix":
             last = ValueError(f"unsupported transport {kv['transport']!r}")
             continue
-        if "path" in kv:
-            target = kv["path"]
+        if _unix_path(kv):
+            target = _unix_path(kv)
         elif "abstract" in kv:
             target = "\0" + kv["abstract"]
+        elif kv.get("runtime") == "yes":
+            last = ValueError("unix:runtime=yes needs XDG_RUNTIME_DIR")
+            continue
         else:
-            last = ValueError("unix: address needs path= or abstract=")
+            last = ValueError("unix: address needs path=, abstract= or runtime=yes")
             continue
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if timeout is not None:
+            # AF_UNIX connect() sleeps in the kernel (unix_wait_for_peer) while
+            # the listener's backlog is full and returns EAGAIN once
+            # SO_SNDTIMEO expires; O_NONBLOCK would make it fail at once.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO,
+                         struct.pack("ll", int(timeout), int(timeout % 1 * 1e6)))
         try:
             s.connect(target)
-            return s
+        except BlockingIOError:
+            s.close()
+            last = TimeoutError(f"connect timed out after {timeout}s (listener not accepting)")
+            continue
         except OSError as e:
             s.close()
             last = e
+            continue
+        s.settimeout(timeout)
+        return s
     raise DBusError(ERR + "NoServer", f"cannot connect to {addr}: {last}")
 
 
@@ -686,12 +743,20 @@ def _drop_privileges(uid: int):
     import pwd
     if os.getuid() == uid and os.geteuid() == uid:
         return
-    gid = pwd.getpwuid(uid).pw_gid
-    os.setgroups([])
-    os.setgid(gid)
-    os.setuid(uid)
+    try:
+        gid = pwd.getpwuid(uid).pw_gid
+    except KeyError:
+        raise DBusError(ERR + "Failed", f"uid {uid} not found in the password database") from None
+    try:
+        os.setgroups([])
+        os.setgid(gid)
+        os.setuid(uid)
+    except PermissionError as e:
+        raise DBusError(ERR + "AccessDenied",
+                        f"cannot switch to uid {uid} from uid {os.geteuid()}: {e} "
+                        "(as_uid needs root)") from None
     if os.getuid() != uid or os.geteuid() != uid:
-        raise OSError(f"could not switch to uid {uid}")
+        raise DBusError(ERR + "Failed", f"could not switch to uid {uid}")
 
 
 def connect_as_uid(addr: str, uid: int, timeout: float = 10.0):
@@ -699,7 +764,11 @@ def connect_as_uid(addr: str, uid: int, timeout: float = 10.0):
     live socket back over a socketpair with SCM_RIGHTS. The bus pinned the
     child's SO_PEERCRED at connect(), so the parent (typically root) now
     holds a connection the bus attributes to `uid`. Returns
-    (socket, unique_name, fds_negotiated, leftover_bytes)."""
+    (socket, unique_name, fds_negotiated, leftover_bytes). A child failure
+    comes back as a DBusError with the child's own error name (NoServer,
+    AuthFailed, AccessDenied when not root, ...); a child that is still
+    silent `timeout + _FORK_GRACE` seconds in is killed (it holds every
+    inherited fd) and reported as NoServer."""
     parent, child = socket.socketpair()
     with warnings.catch_warnings():
         # 3.12 warns about fork() in threaded processes; the child only does
@@ -712,41 +781,61 @@ def connect_as_uid(addr: str, uid: int, timeout: float = 10.0):
         try:
             parent.close()
             _drop_privileges(uid)
-            s = _connect_socket(addr)
+            s = _connect_socket(addr, timeout)
             guid, fds_ok, leftover = authenticate(s, uid, timeout)
             unique, leftover = _hello_raw(s, leftover, timeout)
             status = json.dumps({"ok": True, "unique": unique, "fds": fds_ok,
                                  "guid": guid, "leftover": leftover.hex()}).encode()
             fds = [s.fileno()]
+        except DBusError as e:
+            status = json.dumps({"ok": False, "name": e.name, "error": e.message}).encode()
         except BaseException as e:  # noqa: BLE001 - report everything to the parent
-            status = json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}).encode()
+            status = json.dumps({"ok": False, "name": ERR + "Failed",
+                                 "error": f"{type(e).__name__}: {e}"}).encode()
         try:
             socket.send_fds(child, [status], fds)
         finally:
             os._exit(0)
     child.close()
+    data, fds, r = b"", [], []
     try:
-        r, _, _ = select.select([parent], [], [], timeout + 5)
-        if not r:
-            raise DBusError(ERR + "NoServer", "timeout waiting for the uid-switching child")
-        data, fds, _flags, _addr = socket.recv_fds(parent, 65536, 1)
+        r, _, _ = select.select([parent], [], [], timeout + _FORK_GRACE)
+        if r:
+            data, fds, _flags, _addr = socket.recv_fds(parent, 65536, 1)
+        else:
+            os.kill(pid, signal.SIGKILL)
     finally:
         parent.close()
         try:
             os.waitpid(pid, 0)
         except ChildProcessError:
             pass
+    for fd in fds:
+        os.set_inheritable(fd, False)  # recvmsg hands them over without CLOEXEC
+    if not r:
+        raise DBusError(ERR + "NoServer", f"uid-switching child did not answer within "
+                                          f"{timeout + _FORK_GRACE:g}s (killed)")
     try:
         info = json.loads(data.decode() or "{}")
     except ValueError:
         info = {}
     if not info.get("ok") or not fds:
-        for fd in fds:
-            os.close(fd)
-        raise DBusError(ERR + "AuthFailed",
-                        f"connecting as uid {uid}: {info.get('error', 'child died')}")
+        _close_fds(fds)
+        raise DBusError(info.get("name") or ERR + "Failed",
+                        f"connecting as uid {uid}: {info.get('error') or 'child died'}")
     sock = socket.socket(fileno=fds[0])
+    # O_NONBLOCK travelled with the open file description but socket(fileno=)
+    # assumes a blocking fd: make the Python-side state match.
+    sock.settimeout(timeout)
     return sock, info["unique"], info["fds"], bytearray.fromhex(info["leftover"])
+
+
+def _close_fds(fds):
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def _hello_raw(sock: socket.socket, buf: bytearray, timeout: float) -> tuple[str, bytearray]:
@@ -790,12 +879,16 @@ class Bus:
     Hello completes all trigger the retry. `auth_path` records which
     happened: 'direct' or 'fork'.
 
+    `timeout` bounds connect, auth, Hello and every later send (see the
+    module docstring); a send that times out closes the connection.
+
     Incoming messages that are not replies to our calls (signals; method
     calls aimed at our unique name) are queued for `messages()` /
-    `wait_signal()`. With `serve_calls=False` (default) method calls are
-    answered with UnknownMethod immediately (Peer.Ping with an empty return)
-    so callers never wait 25 s on us; set it to True to reply yourself via
-    `reply()` / `error_reply()`."""
+    `wait_signal()`; fds they carry belong to the caller that takes them.
+    With `serve_calls=False` (default) method calls are answered with
+    UnknownMethod immediately (Peer.Ping with an empty return) so callers
+    never wait 25 s on us; set it to True to reply yourself via `reply()` /
+    `error_reply()`."""
 
     def __init__(self, addr: str | None = None, as_uid: int | None = None,
                  timeout: float = 10.0, want_fds: bool = True):
@@ -808,6 +901,7 @@ class Bus:
                                 "graphical session / sudo)")
             _owner, addr = hit
         self.address = addr
+        self.timeout = timeout
         self.unique_name: str | None = None
         self.guid = ""
         self.fds_ok = False
@@ -849,7 +943,7 @@ class Bus:
             return None
 
     def _connect_direct(self, timeout: float, want_fds: bool):
-        s = _connect_socket(self.address)
+        s = _connect_socket(self.address, timeout)
         try:
             self.guid, self.fds_ok, self._buf = authenticate(s, None, timeout, want_fds)
         except BaseException:
@@ -866,16 +960,19 @@ class Bus:
     # -- lifecycle
 
     def close(self):
+        """Close the socket and every fd still held by unconsumed messages
+        (queued signals/calls, unclaimed replies, fds not yet framed)."""
         if self.sock is not None:
             try:
                 self.sock.close()
             finally:
                 self.sock = None
-        for fd in self._pending_fds:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        for m in list(self._queue) + list(self._replies.values()):
+            _close_fds(m.fds)
+            m.fds = []
+        self._queue.clear()
+        self._replies.clear()
+        _close_fds(self._pending_fds)
         self._pending_fds = []
 
     def __enter__(self):
@@ -885,6 +982,8 @@ class Bus:
         self.close()
 
     def fileno(self) -> int:
+        if self.sock is None:
+            raise DBusError(ERR + "Disconnected", "bus connection is closed")
         return self.sock.fileno()
 
     # -- raw send / receive
@@ -901,9 +1000,18 @@ class Bus:
             if msg.fds:
                 if not self.fds_ok:
                     raise DBusError(ERR + "NotSupported", "bus did not agree to unix fd passing")
-                socket.send_fds(self.sock, [data], msg.fds)
+                # the fds ride on the first bytes of the frame; sendmsg on a
+                # socket in timeout mode may stop short on a big body
+                n = socket.send_fds(self.sock, [data], msg.fds)
+                if n < len(data):
+                    self.sock.sendall(data[n:])
             else:
                 self.sock.sendall(data)
+        except TimeoutError:
+            self.close()  # a partial frame is on the wire: nothing after it would parse
+            raise DBusError(ERR + "Disconnected",
+                            f"send of {msg.member} timed out after {self.timeout}s "
+                            "(peer not reading); connection closed") from None
         except OSError as e:
             raise DBusError(ERR + "Disconnected", f"send failed: {e}") from None
         return self._serial
@@ -912,6 +1020,8 @@ class Bus:
         try:
             if self.fds_ok:
                 data, fds, _flags, _addr = socket.recv_fds(self.sock, 65536, 64)
+                for fd in fds:
+                    os.set_inheritable(fd, False)  # recvmsg gives them without CLOEXEC
                 self._pending_fds.extend(fds)
             else:
                 data = self.sock.recv(65536)
@@ -939,10 +1049,13 @@ class Bus:
                 self._waiting.discard(m.reply_serial)
                 self._replies[m.reply_serial] = m
             else:
-                for fd in m.fds:
-                    os.close(fd)
+                _close_fds(m.fds)  # late reply after a timeout
+            return
+        if m.type not in (METHOD_CALL, SIGNAL):
+            _close_fds(m.fds)  # unknown message types must be ignored
             return
         if m.type == METHOD_CALL and not self.serve_calls:
+            _close_fds(m.fds)
             if not m.flags & NO_REPLY_EXPECTED:
                 if m.interface == "org.freedesktop.DBus.Peer" and m.member == "Ping":
                     self.send(Message.method_return(m))
@@ -1076,7 +1189,8 @@ class Bus:
 
     def messages(self, timeout: float | None = None):
         """Yield queued messages (signals, and calls when serve_calls) as they
-        arrive; stops after `timeout` seconds of silence (None = forever)."""
+        arrive; stops after `timeout` seconds of silence (None = forever).
+        Fds in a yielded message (`m.args()`) are the caller's to close."""
         while True:
             while self._queue:
                 yield self._queue.popleft()
@@ -1088,7 +1202,9 @@ class Bus:
                     sender: str | None = None) -> Message | None:
         """Next queued/incoming signal matching the given fields (None =
         any); other messages stay queued. None on timeout. Remember to
-        `add_match` first -- the bus only routes subscribed signals."""
+        `add_match` first -- the bus only routes subscribed signals. A
+        signal's `sender` is always a unique name (`:1.42`) or
+        `org.freedesktop.DBus`, never the well-known name."""
         def match(m):
             return (m.type == SIGNAL
                     and (iface is None or m.interface == iface)
@@ -1137,21 +1253,45 @@ def _usage(out):
 
 
 def main(argv=None) -> int:
+    """`_run` plus quiet exits: Ctrl-C (how --monitor ends) and a closed
+    stdout pipe return 1 without a traceback, like wwmctl/cli.py."""
+    try:
+        rc = _run(argv)
+        sys.stdout.flush()
+        return rc
+    except KeyboardInterrupt:
+        return 1
+    except BrokenPipeError:
+        try:  # keep the interpreter's exit-time flush from raising again
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except Exception:  # noqa: BLE001
+            pass
+        return 1
+
+
+def _run(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     addr, as_uid, seconds = None, None, None
     rest = []
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == "--address" and i + 1 < len(argv):
-            addr = argv[i + 1]
+        if a in ("--address", "--as-uid", "--seconds"):
+            if i + 1 >= len(argv):
+                print(f"dbus_mini: {a} needs a value", file=sys.stderr)
+                return 2
+            val = argv[i + 1]
             i += 2
-        elif a == "--as-uid" and i + 1 < len(argv):
-            as_uid = argv[i + 1]
-            i += 2
-        elif a == "--seconds" and i + 1 < len(argv):
-            seconds = float(argv[i + 1])
-            i += 2
+            try:
+                if a == "--address":
+                    addr = val
+                elif a == "--as-uid":
+                    as_uid = val if val == "owner" else int(val)
+                else:
+                    seconds = float(val)
+            except ValueError:
+                print(f"dbus_mini: {a} wants a number, not {val!r}", file=sys.stderr)
+                return 2
         elif a in ("-h", "--help"):
             _usage(sys.stdout)
             return 0
@@ -1172,8 +1312,6 @@ def main(argv=None) -> int:
             else:
                 p = socket_path_of(addr)
                 as_uid = os.stat(p).st_uid if p else None
-        elif as_uid is not None:
-            as_uid = int(as_uid)
         cmd, args = rest[0], rest[1:]
         with Bus(addr, as_uid=as_uid) as bus:
             if cmd == "--names":
@@ -1208,6 +1346,8 @@ def main(argv=None) -> int:
     except DBusError as e:
         print(f"dbus_mini: {e}", file=sys.stderr)
         return 1
+    except BrokenPipeError:
+        raise  # stdout went away: main() exits quietly
     except (ValueError, OSError) as e:
         print(f"dbus_mini: {e}", file=sys.stderr)
         return 1

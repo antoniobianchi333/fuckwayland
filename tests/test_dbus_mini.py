@@ -21,6 +21,7 @@ import threading
 import time
 import unittest
 import warnings
+from collections import deque
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -225,6 +226,8 @@ class _Conn:
                     m.fds = self.fds[:m.unix_fds]
                     del self.fds[:m.unix_fds]
                 self.dispatch(m)
+                for fd in m.fds:  # sendmsg dup'd whatever was forwarded/echoed
+                    os.close(fd)
                 continue
             if self.fds_ok:
                 data, fds, _, _ = socket.recv_fds(self.sock, 65536, 16)
@@ -250,7 +253,8 @@ class _Conn:
             if m.destination == "org.freedesktop.DBus":
                 orig = self.pending_pings.pop(m.reply_serial, None)
                 if orig is not None:
-                    self.send(Message.method_return(orig, "b", (m.type == dbus_mini.METHOD_RETURN,)))
+                    ok = m.type == dbus_mini.METHOD_RETURN
+                    self.send(Message.method_return(orig, "b", (ok,)))
                 return
             target = self.bus.lookup(m.destination)
             if target is not None:
@@ -272,8 +276,8 @@ class _Conn:
         else:
             target = self.bus.lookup(m.destination)
             if target is None:
-                self.send(Message.error(m, ERR + "ServiceUnknown",
-                                        f"The name {m.destination} was not provided by any .service files"))
+                self.send(Message.error(m, ERR + "ServiceUnknown", f"The name {m.destination} "
+                                        "was not provided by any .service files"))
             else:
                 target.forward(m)
 
@@ -307,8 +311,8 @@ class _Conn:
             self.send(Message.method_return(m, "s", ("deadbeef0000000000000000cafe0001",)))
         else:
             self.send(Message.error(m, ERR + "UnknownMethod",
-                                    f"Method \"{mem}\" with signature \"{m.signature}\" on interface "
-                                    f"\"{m.interface}\" doesn't exist\n"))
+                                    f"Method \"{mem}\" with signature \"{m.signature}\" on "
+                                    f"interface \"{m.interface}\" doesn't exist\n"))
 
     def _test_method(self, m):
         mem = m.member
@@ -333,8 +337,8 @@ class _Conn:
         elif mem == "ApplyMonitorsConfig":
             a = m.args(wrap_variants=True)
             if a[0] != 42:
-                self.send(Message.error(m, ERR + "AccessDenied",
-                                        "The requested configuration is based on stale information"))
+                self.send(Message.error(m, ERR + "AccessDenied", "The requested configuration "
+                                        "is based on stale information"))
                 return
             self.bus.last_apply = (m.signature, a)
             self.send(Message.method_return(m))
@@ -376,6 +380,31 @@ class _Conn:
             self.send_raw(ping.to_bytes(s))
         elif mem == "Silent":
             pass  # NO_REPLY_EXPECTED callers do not want a reply
+        elif mem == "Odd":
+            # a type-5 frame carrying an fd (spec: unknown types must be
+            # ignored), then the real reply
+            r, w = os.pipe()
+            os.close(w)
+            body, fds = marshal("h", (r,))
+            odd = Message(5, path="/", member="X", destination=self.unique,
+                          signature="h", body=body, fds=fds)
+            with self.lock:
+                self.serial += 1
+                s = self.serial
+            self.send_raw(odd.to_bytes(s), fds)
+            os.close(r)
+            self.send(Message.method_return(m, "s", ("after odd",)))
+        elif mem == "FireFd":
+            r, w = os.pipe()
+            os.close(w)
+            self.send(Message.signal("/test", "test.Echo", "FiredFd", "h", (r,),
+                                     destination=self.unique))
+            os.close(r)
+            self.send(Message.method_return(m))
+        elif mem == "Stall":
+            # reply, then stop reading this connection until the test says so
+            self.send(Message.method_return(m))
+            self.bus.stall.wait(10)
         else:
             self.send(Message.error(m, ERR + "UnknownMethod", f"no {mem}"))
 
@@ -406,6 +435,7 @@ class MockBus:
         self.props = {"Count": Variant("i", 7), "Name": Variant("s", "mock"),
                       "Rate": Variant("d", 59.94), "Flags": Variant("au", [1, 2])}
         self.last_apply = None
+        self.stall = threading.Event()
         self.thread = threading.Thread(target=self._accept, daemon=True)
         self.thread.start()
 
@@ -494,6 +524,26 @@ class MockBus:
 
     def conn_of(self, unique):
         return self.lookup(unique)
+
+
+def _nfds():
+    return len(os.listdir("/proc/self/fd"))
+
+
+def _wait_nfds(n, timeout=2.0):
+    """The mock's threads close their fd copies a moment after forwarding."""
+    deadline = time.monotonic() + timeout
+    while _nfds() != n and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return _nfds()
+
+
+def _frame(mtype, fields, body=b"", flags=0):
+    w = dbus_mini._Writer()
+    w.buf += struct.pack("<BBBBII", ord("l"), mtype, flags, 1, len(body), 1)
+    w.one("a(yv)", fields)
+    w.pad(8)
+    return bytes(w.buf) + body
 
 
 # ---------------------------------------------------------------- unit tests
@@ -752,7 +802,8 @@ class Messages(unittest.TestCase):
         r = Message.from_bytes(Message.method_return(call, "i", (1,)).to_bytes(6))
         self.assertEqual((r.type, r.reply_serial, r.destination, r.args()), (2, 5, ":1.9", (1,)))
         e = Message.from_bytes(Message.error(call, "a.b.Err", "why").to_bytes(7))
-        self.assertEqual((e.type, e.error_name, e.reply_serial, e.args()), (3, "a.b.Err", 5, ("why",)))
+        self.assertEqual((e.type, e.error_name, e.reply_serial, e.args()),
+                         (3, "a.b.Err", 5, ("why",)))
         s = Message.from_bytes(Message.signal("/p", "i.f", "Sig", "b", (True,)).to_bytes(8))
         self.assertEqual((s.type, s.path, s.interface, s.member, s.args()),
                          (4, "/p", "i.f", "Sig", (True,)))
@@ -792,14 +843,56 @@ class Messages(unittest.TestCase):
         with self.assertRaises(ValueError):
             Message.from_bytes(bytes(bad))
 
+    def test_header_field_types_and_required_fields(self):
+        P, M, I, RS, EN = (Variant("o", "/"), Variant("s", "m"), Variant("s", "i.f"),
+                           Variant("u", 3), Variant("s", "a.b.E"))
+        call = Message.from_bytes(_frame(1, [(1, P), (3, M)]))
+        self.assertEqual((call.path, call.member, call.interface), ("/", "m", None))
+        self.assertEqual(Message.from_bytes(_frame(2, [(5, RS)])).reply_serial, 3)
+        self.assertEqual(Message.from_bytes(_frame(3, [(4, EN), (5, RS)])).error_name, "a.b.E")
+        self.assertEqual(Message.from_bytes(_frame(4, [(1, P), (2, I), (3, M)])).interface, "i.f")
+        for what, mtype, fields in (
+                ("PATH as u", 1, [(1, Variant("u", 5)), (3, M)]),
+                ("REPLY_SERIAL as s", 2, [(5, Variant("s", "notanint"))]),
+                ("SIGNATURE as s", 2, [(5, RS), (8, Variant("s", "i"))]),
+                ("UNIX_FDS as i", 2, [(5, RS), (9, Variant("i", 1))]),
+                ("call without MEMBER", 1, [(1, P)]),
+                ("call without PATH", 1, [(3, M)]),
+                ("return without REPLY_SERIAL", 2, []),
+                ("error without ERROR_NAME", 3, [(5, RS)]),
+                ("error without REPLY_SERIAL", 3, [(4, EN)]),
+                ("signal without INTERFACE", 4, [(1, P), (3, M)]),
+                ("type 0", 0, [(1, P), (3, M)])):
+            with self.assertRaises(ValueError, msg=what):
+                Message.from_bytes(_frame(mtype, fields))
+
+    def test_unknown_message_type_parses(self):
+        # "Unknown types must be ignored": that is the receiver's job (see the
+        # mock-bus test); the parser keeps them (no required fields) and the
+        # header validation still applies
+        m = Message.from_bytes(_frame(5, [(7, Variant("s", ":1.2"))]))
+        self.assertEqual((m.type, m.sender), (5, ":1.2"))
+        with self.assertRaises(ValueError):
+            Message.from_bytes(_frame(5, [(7, Variant("u", 1))]))
+
     def test_address_parsing(self):
         self.assertEqual(dbus_mini.parse_address("unix:path=/run/user/1000/bus"),
                          [{"transport": "unix", "path": "/run/user/1000/bus"}])
-        self.assertEqual(dbus_mini.parse_address("unix:abstract=/tmp/dbus-X,guid=ab;unix:path=/a%20b%2Cc"),
+        self.assertEqual(dbus_mini.parse_address("unix:abstract=/tmp/dbus-X,guid=ab;"
+                                                 "unix:path=/a%20b%2Cc"),
                          [{"transport": "unix", "abstract": "/tmp/dbus-X", "guid": "ab"},
                           {"transport": "unix", "path": "/a b,c"}])
         self.assertEqual(dbus_mini.socket_path_of("unix:abstract=x;unix:path=/p"), "/p")
         self.assertIsNone(dbus_mini.socket_path_of("unix:abstract=x"))
+        saved = os.environ.get("XDG_RUNTIME_DIR")
+        try:
+            os.environ["XDG_RUNTIME_DIR"] = "/run/user/7"
+            self.assertEqual(dbus_mini.socket_path_of("unix:runtime=yes"), "/run/user/7/bus")
+            del os.environ["XDG_RUNTIME_DIR"]
+            self.assertIsNone(dbus_mini.socket_path_of("unix:runtime=yes"))
+        finally:
+            if saved is not None:
+                os.environ["XDG_RUNTIME_DIR"] = saved
         for bad in ("", "nocolon", "unix:path"):
             with self.assertRaises(ValueError):
                 dbus_mini.parse_address(bad)
@@ -888,7 +981,8 @@ class MockBusTests(unittest.TestCase):
     def test_error_reply(self):
         with self.assertRaises(DBusError) as cm:
             self.bus.call("test.Echo", "/test", "test.Echo", "Fail")
-        self.assertEqual((cm.exception.name, cm.exception.message), ("test.Echo.Error.Boom", "kaboom"))
+        self.assertEqual((cm.exception.name, cm.exception.message),
+                         ("test.Echo.Error.Boom", "kaboom"))
         self.assertEqual(str(cm.exception), "test.Echo.Error.Boom: kaboom")
         with self.assertRaises(DBusError) as cm:
             self.bus.call("no.such.Service", "/", "x", "y")
@@ -910,7 +1004,8 @@ class MockBusTests(unittest.TestCase):
                          ("late",))
 
     def test_no_reply_expected(self):
-        out = self.bus.call("test.Echo", "/test", "test.Echo", "Silent", flags=dbus_mini.NO_REPLY_EXPECTED)
+        out = self.bus.call("test.Echo", "/test", "test.Echo", "Silent",
+                            flags=dbus_mini.NO_REPLY_EXPECTED)
         self.assertEqual(out, ())
         self.assertEqual(self.echo("i", 1), (1,))
 
@@ -945,7 +1040,8 @@ class MockBusTests(unittest.TestCase):
         self.assertGreaterEqual(time.monotonic() - t0, 0.09)
 
     def test_name_owner_changed_from_second_connection(self):
-        self.bus.add_match("type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged'")
+        self.bus.add_match("type='signal',interface='org.freedesktop.DBus',"
+                           "member='NameOwnerChanged'")
         other = Bus(self.mock.address)
         try:
             self.assertEqual(other.request_name("test.Second"), 1)
@@ -965,8 +1061,9 @@ class MockBusTests(unittest.TestCase):
         self.bus.set_property("test.Echo", "/test", "test.Props", "Name", "plain")
         allp = self.bus.get_all_properties("test.Echo", "/test", "test.Props")
         self.assertEqual(allp, {"Count": 8, "Name": "plain", "Rate": 59.94, "Flags": [1, 2]})
-        self.assertEqual(self.bus.get_all_properties("test.Echo", "/test", "test.Props",
-                                                     wrap_variants=True)["Name"], Variant("s", "plain"))
+        wrapped = self.bus.get_all_properties("test.Echo", "/test", "test.Props",
+                                              wrap_variants=True)
+        self.assertEqual(wrapped["Name"], Variant("s", "plain"))
         with self.assertRaises(DBusError) as cm:
             self.bus.get_property("test.Echo", "/test", "test.Props", "Nope")
         self.assertEqual(cm.exception.name, ERR + "InvalidArgs")
@@ -998,6 +1095,76 @@ class MockBusTests(unittest.TestCase):
         (ok,) = self.bus.call("test.Echo", "/test", "test.Echo", "PingMe")
         self.assertIs(ok, True)
 
+    def test_received_fds_are_not_inheritable(self):
+        # recvmsg delivers SCM_RIGHTS fds without CLOEXEC; a bus fd must not
+        # leak into swaymsg/xdotool children
+        r, w = os.pipe()
+        try:
+            (fd,) = self.echo("h", r)
+            self.assertFalse(os.get_inheritable(fd))
+            os.close(fd)
+        finally:
+            os.close(r)
+            os.close(w)
+        self.assertFalse(self.bus.sock.get_inheritable())
+
+    def test_auto_answered_calls_close_their_fds(self):
+        self.bus.wait_signal(None, "NameAcquired", 2)
+        other = Bus(self.mock.address)
+        try:
+            other.wait_signal(None, "NameAcquired", 2)
+            r, w = os.pipe()
+            base = _nfds()
+            names = []
+
+            def blast():
+                for flags in (0, 0, 0, dbus_mini.NO_REPLY_EXPECTED, dbus_mini.NO_REPLY_EXPECTED):
+                    try:
+                        other.call(self.bus.unique_name, "/", "x.y", "Nope", "h", (r,),
+                                   timeout=3, flags=flags)
+                    except DBusError as e:
+                        names.append(e.name)
+            t = threading.Thread(target=blast)
+            t.start()
+            deadline = time.monotonic() + 5
+            while t.is_alive() and time.monotonic() < deadline:
+                self.bus._pump(0.1)
+            t.join(1)
+            self.assertEqual(names, [ERR + "UnknownMethod"] * 3)
+            self.bus._pump(0.2)  # the two NO_REPLY_EXPECTED ones
+            self.assertEqual(_wait_nfds(base), base)
+            os.close(r)
+            os.close(w)
+        finally:
+            other.close()
+
+    def test_unknown_message_type_is_ignored(self):
+        self.bus.wait_signal(None, "NameAcquired", 2)
+        base = _nfds()
+        self.assertEqual(self.bus.call("test.Echo", "/test", "test.Echo", "Odd"), ("after odd",))
+        self.assertEqual(len(self.bus._queue), 0)
+        self.assertEqual(_wait_nfds(base), base)  # the fd on the dropped frame was closed
+        self.assertEqual(self.echo("s", "still fine"), ("still fine",))
+
+    def test_close_releases_queued_fds(self):
+        self.bus.wait_signal(None, "NameAcquired", 2)
+        base = _nfds()
+        self.bus.call("test.Echo", "/test", "test.Echo", "FireFd")
+        self.assertEqual(len(self.bus._queue), 1)  # FiredFd, fd unclaimed
+        self.assertEqual(_wait_nfds(base + 1), base + 1)
+        self.bus.close()
+        # the signal's fd and our socket go, and the in-process mock drops its
+        # end of the connection a moment later
+        self.assertEqual(_wait_nfds(base - 2), base - 2)
+        self.assertEqual(self.bus._queue, deque())
+
+    def test_fileno_after_close(self):
+        self.assertEqual(self.bus.fileno(), self.bus.sock.fileno())
+        self.bus.close()
+        with self.assertRaises(DBusError) as cm:
+            self.bus.fileno()
+        self.assertEqual(cm.exception.name, ERR + "Disconnected")
+
     def test_serve_calls_between_two_clients(self):
         server = Bus(self.mock.address)
         server.serve_calls = True
@@ -1015,7 +1182,8 @@ class MockBusTests(unittest.TestCase):
         t = threading.Thread(target=serve, daemon=True)
         t.start()
         try:
-            self.assertEqual(self.bus.call(server.unique_name, "/x", "test.Svc", "Add", "ii", (2, 3)), (5,))
+            self.assertEqual(self.bus.call(server.unique_name, "/x", "test.Svc", "Add",
+                                           "ii", (2, 3)), (5,))
             with self.assertRaises(DBusError) as cm:
                 self.bus.call(server.unique_name, "/x", "test.Svc", "Stop")
             self.assertEqual(cm.exception.name, "test.Svc.NoSuch")
@@ -1052,10 +1220,12 @@ class MockBusTests(unittest.TestCase):
                                  "test.Echo", "Echo", "sa{sv}(ib)ay",
                                  json.dumps(["x", {"k": 1.5, "b": True}, [1, False], [1, 2]])])
         self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(out.getvalue()), ["x", {"k": 1.5, "b": True}, [1, False], [1, 2]])
+        self.assertEqual(json.loads(out.getvalue()),
+                         ["x", {"k": 1.5, "b": True}, [1, False], [1, 2]])
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = dbus_mini.main(["--address", self.mock.address, "--has-owner", "org.freedesktop.DBus"])
+            rc = dbus_mini.main(["--address", self.mock.address, "--has-owner",
+                                 "org.freedesktop.DBus"])
         self.assertEqual((rc, out.getvalue()), (0, "true\n"))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -1070,6 +1240,28 @@ class MockBusTests(unittest.TestCase):
         self.assertIn("test.Echo.Error.Boom: kaboom", err.getvalue())
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(dbus_mini.main([]), 2)
+
+    def test_cli_bad_options(self):
+        for argv in (["--seconds", "abc", "--names"], ["--names", "--seconds"],
+                     ["--address"], ["--as-uid", "root", "--names"],
+                     ["--as-uid"]):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = dbus_mini.main(["--address", self.mock.address] + argv)
+            self.assertEqual(rc, 2, argv)
+            self.assertIn("dbus_mini: --", err.getvalue())
+        # Ctrl-C while --monitor blocks: quiet exit, no traceback
+        orig = Bus.messages
+
+        def interrupted(self, timeout=None):
+            raise KeyboardInterrupt
+        Bus.messages = interrupted
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = dbus_mini.main(["--address", self.mock.address, "--monitor"])
+        finally:
+            Bus.messages = orig
+        self.assertEqual(rc, 1)
 
 
 class MockBusVariants(unittest.TestCase):
@@ -1091,6 +1283,62 @@ class MockBusVariants(unittest.TestCase):
                 conn = mock.conn_of(bus.unique_name)
                 self.assertEqual(conn.auth_lines[1], "BEGIN")
         finally:
+            mock.close()
+
+    def test_send_timeout_when_peer_stops_reading(self):
+        mock = MockBus()
+        try:
+            bus = Bus(mock.address, timeout=0.5)
+            bus.call("test.Echo", "/test", "test.Echo", "Stall")
+            t0 = time.monotonic()
+            with self.assertRaises(DBusError) as cm:
+                bus.call("test.Echo", "/test", "test.Echo", "Echo", "ay", (bytes(4 << 20),),
+                         timeout=5)
+            self.assertEqual(cm.exception.name, ERR + "Disconnected")
+            self.assertIn("timed out", cm.exception.message)
+            self.assertLess(time.monotonic() - t0, 3)
+            self.assertIsNone(bus.sock)  # half a frame went out: connection dropped
+        finally:
+            mock.stall.set()
+            mock.close()
+
+    def test_connect_timeout_when_backlog_full(self):
+        d = tempfile.mkdtemp(prefix="dbus-mini-")
+        path = os.path.join(d, "bus")
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(0)
+        filler = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        filler.connect(path)  # occupies the whole backlog; nobody accepts
+        try:
+            for kw in ({}, {"as_uid": os.getuid()}):
+                t0 = time.monotonic()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    with self.assertRaises(DBusError) as cm:
+                        Bus("unix:path=" + path, timeout=0.3, **kw)
+                self.assertEqual(cm.exception.name, ERR + "NoServer", kw)
+                self.assertIn("timed out", cm.exception.message)
+                self.assertLess(time.monotonic() - t0, 3, kw)
+        finally:
+            filler.close()
+            srv.close()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_runtime_address(self):
+        mock = MockBus()
+        saved = os.environ.get("XDG_RUNTIME_DIR")
+        try:
+            os.environ["XDG_RUNTIME_DIR"] = mock.dir
+            with Bus("unix:runtime=yes") as bus:
+                self.assertTrue(bus.list_names())
+            del os.environ["XDG_RUNTIME_DIR"]
+            with self.assertRaises(DBusError) as cm:
+                Bus("unix:runtime=yes")
+            self.assertIn("XDG_RUNTIME_DIR", cm.exception.message)
+        finally:
+            if saved is not None:
+                os.environ["XDG_RUNTIME_DIR"] = saved
             mock.close()
 
     def test_auth_rejected(self):
@@ -1142,11 +1390,14 @@ class ForkHandoff(unittest.TestCase):
 
     def test_helper(self):
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)  # fork() in a threaded test process
-            sock, unique, fds_ok, leftover = dbus_mini.connect_as_uid(self.mock.address, os.getuid())
+            warnings.simplefilter("ignore", DeprecationWarning)  # fork() in a threaded process
+            sock, unique, fds_ok, leftover = dbus_mini.connect_as_uid(self.mock.address,
+                                                                      os.getuid())
         try:
             self.assertRegex(unique, r"^:1\.\d+$")
             self.assertTrue(fds_ok)
+            self.assertFalse(sock.get_inheritable())  # would leak into every subprocess
+            self.assertEqual(sock.gettimeout(), 10.0)  # O_NONBLOCK came along: state matches
             # NameAcquired follows the Hello reply: whatever the child had already
             # read comes back as leftover bytes, the rest is still on the socket
             buf = bytearray(leftover)
@@ -1156,7 +1407,8 @@ class ForkHandoff(unittest.TestCase):
             m = Message.from_bytes(bytes(buf[:Message.frame_length(buf)]))
             self.assertEqual((m.member, m.args()), ("NameAcquired", (unique,)))
             conn = self.mock.conn_of(unique)
-            self.assertEqual(conn.auth_lines[0], "AUTH EXTERNAL " + str(os.getuid()).encode().hex())
+            self.assertEqual(conn.auth_lines[0],
+                             "AUTH EXTERNAL " + str(os.getuid()).encode().hex())
         finally:
             sock.close()
 
@@ -1169,28 +1421,66 @@ class ForkHandoff(unittest.TestCase):
             self.assertRegex(bus.unique_name, r"^:1\.\d+$")
             self.assertIn(bus.unique_name, bus.list_names())
             self.assertEqual(bus.wait_signal(None, "NameAcquired", 2).args(), (bus.unique_name,))
-            self.assertEqual(bus.call("test.Echo", "/test", "test.Echo", "Echo", "s", ("via fork",)),
-                             ("via fork",))
+            self.assertEqual(bus.call("test.Echo", "/test", "test.Echo", "Echo", "s",
+                                      ("via fork",)), ("via fork",))
             fd, _ = bus.call("test.Echo", "/test", "test.Echo", "GetFd")
             self.assertEqual(os.read(fd, 100), b"hello fd")
+            self.assertFalse(os.get_inheritable(fd))
             os.close(fd)
+            self.assertFalse(bus.sock.get_inheritable())
 
     def test_child_failure_is_reported(self):
+        # the child's own error name and message come through, once
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             with self.assertRaises(DBusError) as cm:
                 Bus("unix:path=/nonexistent/bus", as_uid=os.getuid())
-        self.assertEqual(cm.exception.name, ERR + "AuthFailed")
+        self.assertEqual(cm.exception.name, ERR + "NoServer")
         self.assertIn("nonexistent", cm.exception.message)
+        self.assertNotIn("DBusError", cm.exception.message)
+        self.assertEqual(cm.exception.message.count("NoServer"), 0)
         mock = MockBus(reject_auth=True)
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 with self.assertRaises(DBusError) as cm:
                     Bus(mock.address, as_uid=os.getuid())
+            self.assertEqual(cm.exception.name, ERR + "AuthFailed")
             self.assertIn("REJECTED", cm.exception.message)
         finally:
             mock.close()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with self.assertRaises(DBusError) as cm:
+                Bus(self.mock.address, as_uid=4242424)
+        self.assertEqual(cm.exception.name, ERR + "Failed")
+        self.assertIn("4242424 not found", cm.exception.message)
+        if os.geteuid() != 0:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                with self.assertRaises(DBusError) as cm:
+                    Bus(self.mock.address, as_uid=0)
+            self.assertEqual(cm.exception.name, ERR + "AccessDenied")
+            self.assertIn("needs root", cm.exception.message)
+
+    def test_stuck_child_is_killed(self):
+        # the parent's backstop must not turn into waitpid() on a hung child
+        orig_connect, orig_grace = dbus_mini._connect_socket, dbus_mini._FORK_GRACE
+        dbus_mini._connect_socket = lambda addr, timeout=None: time.sleep(60)
+        dbus_mini._FORK_GRACE = 0.3
+        try:
+            t0 = time.monotonic()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                with self.assertRaises(DBusError) as cm:
+                    dbus_mini.connect_as_uid(self.mock.address, os.getuid(), timeout=0.2)
+            self.assertEqual(cm.exception.name, ERR + "NoServer")
+            self.assertIn("killed", cm.exception.message)
+            self.assertLess(time.monotonic() - t0, 2)
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(-1, os.WNOHANG)  # killed and reaped: no child left
+        finally:
+            dbus_mini._connect_socket, dbus_mini._FORK_GRACE = orig_connect, orig_grace
 
 
 # ---------------------------------------------------------------- real bus
@@ -1249,7 +1539,8 @@ class RealBus(unittest.TestCase):
     def test_name_owner_changed_via_wait_signal(self):
         name = "org.fuckwayland.DbusMiniTest%d" % os.getpid()
         self.bus.add_match(f"type='signal',sender='org.freedesktop.DBus',"
-                           f"interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='{name}'")
+                           f"interface='org.freedesktop.DBus',member='NameOwnerChanged',"
+                           f"arg0='{name}'")
         seen = {}
 
         def owner():
