@@ -17,12 +17,23 @@ on stock Ubuntu. Root is acceptable and expected (for `/dev/uinput`). No kernel 
   position, and serves JSON-lines on a unix socket: `/run/wdotool.sock` when euid==0,
   else `$XDG_RUNTIME_DIR/wdotool.sock`. Client waits for readiness on first spawn.
 - **Window management**: per-compositor backends behind `backend.WindowBackend`.
-  Detection order: sway/i3 IPC socket → KWin D-Bus → GNOME Shell → wlr
-  foreign-toplevel. Window IDs are backend-native numeric ids (sway: node id), printed
-  in decimal like xdotool.
-- **Running under sudo**: session sockets (`$XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`,
-  `SWAYSOCK`, user D-Bus) are discovered by scanning `/run/user/*`, preferring
-  `SUDO_UID` — implemented in `wdotool/session.py`.
+  Detection order (`backend_detect.py`): `WDOTOOL_BACKEND` → sway/i3 IPC socket →
+  KWin (`org.kde.KWin` owned) → GNOME (`org.gnome.Shell` owned) → wlr
+  foreign-toplevel → error; the two D-Bus checks are one `ListNames` over
+  `dbus_mini`, and the connection is reused by the GNOME backend. A GNOME session
+  without the bridge extension fails with the install hint instead of falling
+  through (Mutter has no foreign-toplevel protocol). Window IDs are backend-native
+  numeric ids (sway: node id; GNOME: `Meta.Window.get_id()`), printed in decimal
+  like xdotool.
+- **Running under sudo / as root over ssh**: session sockets (`$XDG_RUNTIME_DIR`,
+  `WAYLAND_DISPLAY`, `SWAYSOCK`, user D-Bus) are discovered by scanning `/run/user/*`
+  — implemented in `wdotool/session.py`. Candidate runtime dirs are anchored on the
+  graphical session: a dir holding a `wayland-*` socket sorts first (so `ssh root@`
+  with its own empty `/run/user/0` still finds the user's bus), then `SUDO_UID` /
+  `PKEXEC_UID`, then real users. The X plane (Xwayland) is found by
+  `session.find_x_display()` / `find_xauthority()` (`$DISPLAY`/`$XAUTHORITY`,
+  gnome-shell's own environment via `/proc`, Mutter's
+  `$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` cookie, `/tmp/.X11-unix/X*`).
 
 ## Parity references (read these!)
 
@@ -153,8 +164,39 @@ Daemon notes (B):
 - **kwin**: `org.kde.KWin` scripting over the session bus; shelling out to
   `busctl --user` / `gdbus call --session` (with the env from `session.find_user_bus`)
   is ACCEPTABLE here.
-- **gnome**: try `org.gnome.Shell.Eval` (unsafe mode); else a Window-Calls-style
-  extension interface if present; else CmdError with a one-line hint. `gdbus` fine.
+- **gnome**: the fuckwayland bridge extension (`gnome/fuckwayland-bridge@fuckwayland`,
+  installer `gnome/install-bridge.sh`) exports Mutter over the session bus — name
+  `org.fuckwayland.Bridge`, path `/org/fuckwayland/Bridge`, interface
+  `org.fuckwayland.Bridge1`, JSON strings for structured results — and
+  `backend_gnome.py` is a thin `dbus_mini` client for it (no gdbus, no Eval, no
+  Window Calls). Ids = `Meta.Window.get_id()`. `class_` = `wm_class` (Mutter reports
+  the Wayland app_id there), else `gtk_app_id`; geometry = `get_frame_rect()` in
+  logical pixels, the same space as the daemon's pointer; `visible` = not
+  minimized/show-desktop AND on the active workspace (X11 IsViewable), `is_mapped` =
+  not minimized. `list()` is stacking order bottom→top; `window_at()` looks through
+  DESKTOP/DOCK layers for `getmouselocation`. `activate` = `Meta.Window.activate`
+  (switches workspace, unminimizes, raises) and waits ≤ 0.5 s for the focus to land;
+  `focus` = `Meta.Window.focus` (no raise); `kill` = `Meta.Window.kill` (Mutter kills
+  the client, works as any uid); map/unmap = unminimize/minimize; raise/lower real.
+  `windowstate`: FULLSCREEN, MAXIMIZED_HORZ/VERT (per-axis on 46 and 49+), HIDDEN,
+  ABOVE, STICKY, DEMANDS_ATTENTION applied by Mutter; SKIP_TASKBAR/SKIP_PAGER/
+  MODAL warn+succeed (cosmetic, no Mutter setter); SHADED (observable, Mutter
+  cannot shade), BELOW and anything else CmdError. Desktops = workspaces (dynamic
+  workspaces count the trailing empty one;
+  `set_desktop_for_window -1` sticks). `selectwindow` = bridge `SelectWindow(0)`,
+  next focus change. Extras for wwmctl/wxprop: `views()` (xid, WM_CLASS
+  instance/class, app_id, states), `workspaces()`, `x_info()` (gnome-shell's own
+  DISPLAY/XAUTHORITY via the bridge, else `session.find_x_display/find_xauthority`),
+  `events()` (bridge `WindowEvent` signals), `monitors()`, `real_pointer()`
+  (diagnostic: the compositor's pointer vs the daemon's). The bridge exports no
+  hit-test; `window_at()` is client-side over `ListWindows` so it cannot drift
+  from the generic rule. Without the bridge name but with `org.gnome.Shell`
+  owned the constructor diagnoses (locked screen, disabled/broken extension, or
+  "run `gnome/install-bridge.sh` and restart the session") without touching
+  `org.gnome.Shell.Eval`; only `WDOTOOL_GNOME_AUTOLOAD=1` makes it try one Eval
+  to load the installed extension first (works in unsafe mode only). Bridge gone
+  mid-session (extension disabled, lock screen) → one clear error. The udev rule
+  is `uaccess` only (seat user's ACL, node stays `root:root 0600`; no group).
 - **wlr**: `zwlr_foreign_toplevel_management_unstable_v1` via `wayland_mini`. IDs:
   1000000 + enumeration order. list/activate/close/fullscreen/minimize only; geometry
   unknown (0,0 + output size); move/resize → CmdError.

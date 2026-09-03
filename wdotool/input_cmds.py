@@ -466,9 +466,18 @@ _USAGE_GETMOUSELOCATION = """Usage: %s [--shell] [--prefix <STR>]
 
 def _window_under_pointer(ctx, x, y) -> int:
     """Hit-test the daemon-tracked pointer against the backend's window list.
-    Focused window wins, else the topmost (last listed) hit; 0 with no backend."""
+    Focused window wins, else the topmost (last listed) hit; 0 with no backend.
+    A backend with a native hit-test (`window_at`, e.g. GNOME looking through
+    desktop-icon and dock layers) is asked first; None means "use the generic
+    rule"."""
     try:
-        wins = ctx.backend().list()
+        backend = ctx.backend()
+        native = getattr(backend, "window_at", None)
+        if native is not None:
+            hit = native(x, y)
+            if hit is not None:
+                return int(hit)
+        wins = backend.list()
     except Exception:
         return 0
     hits = [w for w in wins
