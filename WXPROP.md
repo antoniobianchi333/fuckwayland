@@ -68,3 +68,89 @@ Prep drops these in SCRATCH/reference/: xprop manpage, cloned xprop source
 - `-display`, `-fs`/`-font`, `-grammar` edge flags: -display honored for the X
   plane; font properties (-fs/-font) print xprop's error/unsupported path (no core
   fonts here) with a clean line; -grammar prints the real grammar text.
+
+## GNOME
+
+On GNOME the compositor plane is the fuckwayland bridge
+(`wdotool.backend_gnome.GnomeBackend`, `gnome/README.md`); wxprop uses its
+typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
+`select_window()` — ahead of the sway tree path, which is unchanged.
+
+* **Planes.** `views()` says which windows are XWayland (`xid ≠ 0`) and
+  which are native. `-id` takes an X id or a bridge id: an XWayland
+  window's bridge id (`wdotool search` output) redirects to its X id and
+  the real X properties, exactly as a sway node id does; a native window
+  gets the synthesized set. An id the bridge does not know is handed to
+  the X server like xprop would — but only when Xwayland is actually
+  running (a typo must not spawn a server; see below), else `window id #
+  0x… does not exists!`.
+* **Native windows** synthesize, in this order and in xprop's grammar:
+  `_NET_WM_STATE` (Mutter's own atom order: `SKIP_TASKBAR`,
+  `MAXIMIZED_HORZ`, `MAXIMIZED_VERT`, `FULLSCREEN`, `HIDDEN` (minimized or
+  show-desktop), `ABOVE`, `DEMANDS_ATTENTION`, `STICKY` — sway's
+  synthesis keeps its `FULLSCREEN, HIDDEN, STICKY` subset),
+  `_NET_WM_WINDOW_TYPE` from `Meta.WindowType` (`DESKTOP`, `DOCK`,
+  `DIALOG` (also for `MODAL_DIALOG`), `TOOLBAR`, `MENU`, `UTILITY`,
+  `SPLASH`, `DROPDOWN_MENU`, `POPUP_MENU`, `TOOLTIP`, `NOTIFICATION`,
+  `COMBO`, `DND`, else `NORMAL`), `_NET_WM_DESKTOP` (`0xFFFFFFFF` when
+  sticky), `_NET_WM_PID`, `WM_CLIENT_MACHINE` (hostname), `WM_CLASS`
+  (`app_id`, `app_id` — the same pair `wwmctl -lx` prints; a window with a
+  `WM_CLASS` pair but no app id uses that pair), `_NET_WM_NAME`, `WM_NAME`.
+  Nothing else is invented (no `_NET_FRAME_EXTENTS`, no `WM_HINTS`).
+  `-set`/`-remove` on them fail with the usual one line.
+* **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge
+  reports (`x_info()`: gnome-shell's own, else Mutter's
+  `$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` cookie found by
+  `wdotool.session`), which is what makes `ssh root@`, `sudo` and a GNOME
+  custom-shortcut process all work; `-display` still wins and then uses
+  `$XAUTHORITY`/the session cookie. Mutter spawns Xwayland **on demand**,
+  so wxprop connects only when an XWayland window is listed or an
+  `Xwayland` process exists (`session.xwayland_running()`): `wxprop -root`
+  and `-name` on a purely native desktop never start an X server. If
+  Xwayland is up but unreachable, an XWayland window degrades to the
+  bridge's view of it (`WM_CLASS` from Mutter's pair).
+* **`-root`** — the documented choice: with Xwayland up the target is the
+  **real X root** (Mutter is a full EWMH window manager for Xwayland:
+  `_NET_SUPPORTING_WM_CHECK` → the `GNOME Shell` check window,
+  `_NET_WORKAREA`, `_NET_SHOWING_DESKTOP`, `_NET_SUPPORTED`, … all real,
+  `-set`/`-remove` go there) **with six properties re-synthesized from the
+  bridge**, because the X root only ever sees X clients:
+  `_NET_CLIENT_LIST` and `_NET_CLIENT_LIST_STACKING` (every window, by the
+  id the tools print — X id for XWayland, bridge id for native — in
+  Mutter's stacking order), `_NET_ACTIVE_WINDOW` (the focus window on
+  either plane, `0x0` when none), `_NET_NUMBER_OF_DESKTOPS`,
+  `_NET_CURRENT_DESKTOP`, `_NET_DESKTOP_NAMES` (the workspace manager
+  directly; Mutter's X root tracks the same values, but only once an X
+  client exists). Without Xwayland the root is the synthesized set alone,
+  same as on sway, plus `_NET_CLIENT_LIST_STACKING` and
+  `_NET_DESKTOP_NAMES`, with `_NET_SUPPORTING_WM_CHECK` = `0x0`. Real
+  xprop on the same session would print the X-only list; the merged view
+  is the point of the tool.
+* **`-spy`** on an XWayland window is the X `PropertyNotify` loop. On a
+  native window it follows the bridge's `WindowEvent` signals
+  (`backend.events()`): `title` reprints `WM_NAME`/`_NET_WM_NAME`,
+  `fullscreen_mode`/`minimized`/`urgent` reprint `_NET_WM_STATE`,
+  `workspace` (also on stickiness changes) `_NET_WM_DESKTOP` and
+  `_NET_WM_STATE`, `close` ends with exit 0; the window is re-read from
+  the bridge before each print. On the root without Xwayland the
+  `new`/`close`/`focus` window events and the `WorkspaceEvent`s reprint
+  the synthesized set; with Xwayland the two streams are merged — the X
+  root's own `PropertyNotify`s for everything Mutter owns, the bridge for
+  the six synthesized names (an X-side update of one of those is *not*
+  reprinted: it would show the X-only view).
+* **Click-to-select** (no `-root`/`-id`/`-name`) is the bridge's
+  `SelectWindow` with the stderr hint: focus the target window (a
+  different one) and wxprop continues with it on whichever plane it lives.
+  **`-name`** keeps xprop's semantics first — pre-order `QueryTree` walk
+  from the X root, exact `WM_NAME` match, frames included (Mutter's
+  `mutter-x11-frames` windows may carry the client's title, bug-for-bug)
+  — when Xwayland is up, then exact title, then exact app id over the
+  bridge's windows.
+* **Errors** are one line, exit 1: without the bridge, click-to-select
+  says `can't select a window: gnome backend: the fuckwayland bridge
+  extension is not running in GNOME Shell; run gnome/install-bridge.sh …`,
+  `-id N` for a window the X server does not have says `cannot look up
+  window id # 0x…: gnome backend: …`, `-root` without Xwayland `cannot
+  examine the root window: gnome backend: …`; `-name` keeps `No window with
+  name … exists!`. Unit coverage: `tests/test_wxprop_gnome.py` on the
+  mock bridge plus an in-memory X server stand-in.

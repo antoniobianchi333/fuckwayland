@@ -157,6 +157,15 @@ focuses, `-c` closes, `-e` moves — for X and Wayland windows alike. Symlink it
 `wmctrl` (nix does this for you) and byte-parity covers the rest: help text, list
 formats, error strings, even wmctrl 1.07's machine-column width bug.
 
+On GNOME (with the bridge extension, see [GNOME](#gnome)) the same list mixes
+XWayland windows under their real X ids with native windows under Mutter's ids,
+`-d` prints GNOME's workspace names and work areas, `-m` says `GNOME Shell`,
+`-k` and `-n` reach the shell, and every action goes through Mutter — including
+`-b add,maximized_vert` as a real per-axis maximize. The X plane is reached with
+Mutter's own Xwayland cookie, so it works from a custom shortcut, under `sudo`
+and from `ssh root@` alike; Xwayland (which Mutter starts on demand) is never
+spawned just to be listed. Details in `WWMCTL.md` § GNOME.
+
 ## wxprop
 
 ![wxprop rendering a _NET_WM_ICON as ASCII art, byte-identical to real xprop](wxprop-demo.gif)
@@ -179,6 +188,12 @@ WM_CLASS(STRING) = "foot", "foot"
 `-set`/`-remove`/`-spy` work on the X plane; `-f`/`-fs`/dformats, `-len`, `-root`,
 `-name`, click-to-select all match the real tool (including which double-dash forms it
 rejects). Verified byte-identical against the real xprop on a live XWayland server.
+
+On GNOME (see [GNOME](#gnome)) native windows get their synthesized set from the
+bridge — states, window types, `WM_CLASS` from the app id — and `-spy` follows the
+shell's window events; `-root` is Mutter's real X root with `_NET_CLIENT_LIST`,
+`_NET_ACTIVE_WINDOW` and the desktop properties re-synthesized so they cover native
+windows too. Details in `WXPROP.md` § GNOME.
 
 ## wxrandr
 

@@ -143,31 +143,64 @@ def _read_xauth(path: str):
     return entries
 
 
-def _auth_candidates(display_num: int):
-    """(name, data) pairs to try during setup, best match first, always
-    ending with the cookie-less attempt (XWayland usually allows same-uid)."""
-    path = os.environ.get("XAUTHORITY") or os.path.expanduser("~/.Xauthority")
+def _session_xauthority() -> str | None:
+    """The graphical session's cookie file when the environment names none:
+    Mutter's $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.* (KWin's xauth_*), found
+    by wdotool.session even from `ssh root@` with an empty environment.
+    Mutter starts Xwayland with -auth, so the cookie is mandatory there --
+    the cookie-less same-uid pass only works on wlroots."""
     try:
-        entries = _read_xauth(path)
-    except OSError:
-        entries = []
+        from wdotool import session
+        return session.find_xauthority()
+    except Exception:
+        return None
+
+
+def _auth_candidates(display_num: int, xauthority: str | None = None):
+    """(name, data) pairs to try during setup, best match first, always
+    ending with the cookie-less attempt (XWayland usually allows same-uid).
+    `xauthority` (the compositor's own cookie file, e.g. from the GNOME
+    bridge's XInfo) beats $XAUTHORITY; when the named file yields no usable
+    cookie the session scan (_session_xauthority) is tried as well."""
+    paths = []
+    for p in (xauthority, os.environ.get("XAUTHORITY")
+              or os.path.expanduser("~/.Xauthority")):
+        if p and p not in paths:
+            paths.append(p)
     dnum = str(display_num).encode()
     try:
         host = socket.gethostname().encode()
     except OSError:
         host = b""
-    exact, wild, other = [], [], []
-    for family, addr, num, name, data in entries:
-        if name != b"MIT-MAGIC-COOKIE-1" or num not in (b"", dnum):
-            continue
-        if family == _FAMILY_LOCAL and addr == host:
-            exact.append((name, data))
-        elif family == _FAMILY_WILD:
-            wild.append((name, data))
-        else:
-            other.append((name, data))
+
+    def collect(path):
+        try:
+            entries = _read_xauth(path)
+        except OSError:
+            return []
+        exact, wild, other = [], [], []
+        for family, addr, num, name, data in entries:
+            if name != b"MIT-MAGIC-COOKIE-1" or num not in (b"", dnum):
+                continue
+            if family == _FAMILY_LOCAL and addr == host:
+                exact.append((name, data))
+            elif family == _FAMILY_WILD:
+                wild.append((name, data))
+            else:
+                other.append((name, data))
+        return exact + wild + other
+
+    found = []
+    for p in paths:
+        found += collect(p)
+        if found:
+            break
+    if not found:
+        p = _session_xauthority()
+        if p and p not in paths:
+            found = collect(p)
     out = []
-    for cand in exact + wild + other:
+    for cand in found:
         if cand not in out:
             out.append(cand)
     out.append((b"", b""))
@@ -177,11 +210,16 @@ def _auth_candidates(display_num: int):
 class X11Conn:
     """Synchronous X11 connection. One request in flight at a time."""
 
-    def __init__(self, display: str | None = None):
+    def __init__(self, display: str | None = None,
+                 xauthority: str | None = None):
+        """`xauthority` (additive): a cookie file to try before $XAUTHORITY
+        -- the compositor's own, as the GNOME bridge reports it, so a root
+        or empty-environment caller reaches Mutter's -auth'ed Xwayland."""
         self._sock = None
         self._seq = 0
         self._max_req_words = 0xFFFF  # refined from the setup reply
         self._atoms: dict[str, int] = {}
+        self._xauthority = xauthority
         if display is None:
             display = os.environ.get("DISPLAY")
         if display:
@@ -225,7 +263,7 @@ class X11Conn:
         # A refused setup closes the connection, so each auth candidate gets
         # a fresh socket. Transport hiccups just advance to the next one.
         reason = "no authorization accepted"
-        for name, data in _auth_candidates(num):
+        for name, data in _auth_candidates(num, self._xauthority):
             sock = self._open_socket(num)
             try:
                 ok, why = self._handshake(sock, name, data)

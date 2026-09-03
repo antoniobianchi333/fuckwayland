@@ -16,12 +16,24 @@ Two planes, per WXPROP.md:
 Window ids: an id that matches a compositor node resolves through the
 node (an XWayland node redirects to its real X window id); anything else
 goes to the X server when one is reachable, exactly like xprop would.
+
+GNOME (the bridge backend, WXPROP.md "GNOME"): the compositor list comes
+from backend.views() (X ids of XWayland windows, WM_CLASS pairs, states,
+window types), the X plane is opened with the DISPLAY/XAUTHORITY the bridge
+reports (Mutter's Xwayland needs its cookie) and only when Xwayland is
+actually running (Mutter spawns it on demand -- a speculative connect
+would start a server just to ask), -spy on native windows and the root
+rides the bridge's WindowEvent/WorkspaceEvent signals (backend.events()),
+and -root merges the real X root with the bridge's view of all windows
+(MergedRootTarget).
 """
 
 import os
+import queue
 import socket
 import struct
 import sys
+import threading
 
 from wxprop.fmt import FatalError
 
@@ -98,24 +110,27 @@ def x_error_report(err) -> str:
 # -- injection seams (unit tests monkeypatch these) --------------------------
 
 
-def _x11_connect(display):
-    """An x11_mini.X11Conn, or None. Never raises."""
+def _x11_connect(display, xauthority=None):
+    """An x11_mini.X11Conn, or None. Never raises. `xauthority`: the
+    compositor's cookie file when the backend knows it (GNOME bridge XInfo);
+    x11_mini otherwise falls back to $XAUTHORITY and the session scan."""
     if os.environ.get("WXPROP_NO_X"):
         return None
     try:
         from wwmctl import x11_mini
+        if xauthority:
+            return x11_mini.X11Conn(display, xauthority=xauthority)
         return x11_mini.X11Conn(display)
     except Exception:
         return None
 
 
 def _detect_backend():
-    """A wdotool window backend, or None. Never raises."""
-    try:
-        from wdotool import backend_detect
-        return backend_detect.detect()
-    except Exception:
-        return None
+    """A wdotool window backend, or None when there is none to be had.
+    Raises the detector's CmdError (e.g. the GNOME bridge install hint) so
+    Session can keep the reason for the error paths that need it."""
+    from wdotool import backend_detect
+    return backend_detect.detect()
 
 
 def _hostname() -> str:
@@ -125,6 +140,48 @@ def _hostname() -> str:
         return ""
 
 
+def _xwayland_running() -> bool:
+    try:
+        from wdotool import session
+        return session.xwayland_running()
+    except Exception:
+        return False
+
+
+# marker key on node dicts synthesized from backend.views(): the richer
+# state/type synthesis below keys on it so sway trees print as before
+_VIEW_KEY = "_view"
+
+
+def _node_from_view(v) -> dict:
+    """A sway-shaped node dict (the keys NativeViewTarget reads) from a
+    typed View, plus the extras only a views() backend knows."""
+    w = v.window
+    xid = int(v.xid or 0)
+    node = {
+        "id": w.id, "name": w.title, "pid": w.pid,
+        "window": xid or None,
+        "app_id": (v.app_id or None) if not xid else None,
+        "window_properties": ({"instance": v.instance, "class": v.cls,
+                               "title": w.title} if xid else None),
+        "fullscreen_mode": 1 if v.fullscreen else 0,
+        "visible": not (v.minimized or v.hidden),
+        "sticky": bool(v.sticky), "urgent": bool(v.urgent),
+        "focused": bool(w.focused),
+        "maximized_h": bool(v.maximized_h),
+        "maximized_v": bool(v.maximized_v),
+        "above": bool(v.above), "skip_taskbar": bool(v.skip_taskbar),
+        "window_type": v.window_type or "NORMAL",
+        "client_type": v.client_type, "instance": v.instance, "class": v.cls,
+        _VIEW_KEY: True,
+    }
+    if not xid and not node["app_id"] and (v.instance or v.cls):
+        # a native window without an app id but with a WM_CLASS pair
+        node["window_properties"] = {"instance": v.instance, "class": v.cls,
+                                     "title": w.title}
+    return node
+
+
 class Session:
     """Lazy handles on the two planes."""
 
@@ -132,24 +189,84 @@ class Session:
         self.display = display
         self._x = "unset"
         self._backend = "unset"
+        self._views = None  # did the backend answer views()? None = unknown
+        self.backend_error = None
+
+    def _x_info(self):
+        """(DISPLAY, XAUTHORITY) from the backend, or None."""
+        b = self.backend()
+        fn = getattr(b, "x_info", None) if b is not None else None
+        if not callable(fn):
+            return None
+        try:
+            info = fn()
+        except Exception:
+            return None
+        if not info or not (info[0] or info[1]):
+            return None
+        return info[0] or None, info[1] or None
 
     def x11(self):
         if self._x == "unset":
-            self._x = _x11_connect(self.display)
+            display, xauth = self.display, None
+            if display is None:
+                info = self._x_info()
+                if info:
+                    display, xauth = info
+            self._x = _x11_connect(display, xauth)
         return self._x
 
     def backend(self):
         if self._backend == "unset":
-            self._backend = _detect_backend()
+            try:
+                self._backend = _detect_backend()
+            except Exception as e:
+                self._backend = None
+                self.backend_error = str(e) or type(e).__name__
         return self._backend
+
+    def has_views(self) -> bool:
+        """Does the backend hand out typed views (GNOME bridge)?"""
+        if self._views is None:
+            self.nodes()
+        return bool(self._views)
+
+    def x_present(self) -> bool:
+        """May the X plane be opened without side effects? Always on sway
+        and generic backends (the old behavior: try it); on a views()
+        backend only when it lists an X window or an Xwayland process
+        exists -- Mutter spawns Xwayland on demand, and a speculative
+        connect from `wxprop -root` would start one just to look."""
+        if self._x not in ("unset", None):
+            return True
+        if self.display is not None or os.environ.get("WXPROP_NO_X"):
+            return True
+        if not self.has_views():
+            return True
+        if any(node.get("window") for node, _w in self.nodes()):
+            return True
+        return _xwayland_running()
 
     def nodes(self):
         """[(node, win)] from the compositor, [] when unavailable. `node`
         is the raw tree dict for sway (carries "window" for XWayland
-        views), or a minimal synthesized dict for generic backends."""
+        views), a dict built from a typed View (backend.views(): GNOME),
+        or a minimal synthesized dict for generic backends."""
         b = self.backend()
         if b is None:
+            self._views = False
             return []
+        views_fn = getattr(b, "views", None)
+        if callable(views_fn):
+            try:
+                views = views_fn()
+            except Exception as e:
+                self.backend_error = str(e) or type(e).__name__
+                views = None
+            if views is not None:
+                self._views = True
+                return [(_node_from_view(v), v.window) for v in views]
+        self._views = False
         nodes_fn = getattr(b, "_nodes", None)
         if nodes_fn is not None:
             try:
@@ -166,6 +283,20 @@ class Session:
                          "pid": w.pid, "fullscreen_mode": 0,
                          "visible": w.visible, "sticky": False}, w))
         return out
+
+    def workspace_names(self):
+        """Workspace names from backend.workspaces(), or None."""
+        b = self.backend()
+        fn = getattr(b, "workspaces", None) if b is not None else None
+        if not callable(fn):
+            return None
+        try:
+            ws = fn()
+        except Exception:
+            return None
+        if ws is None:
+            return None
+        return [w.name or "%d" % w.index for w in ws]
 
 
 # -- the synthesized native atom table --------------------------------------
@@ -196,7 +327,36 @@ _EXTENDED_ATOMS = (
     "_NET_SUPPORTED", "_NET_CLIENT_LIST", "_NET_CLIENT_LIST_STACKING",
     "_NET_ACTIVE_WINDOW", "_NET_SUPPORTING_WM_CHECK", "_NET_CURRENT_DESKTOP",
     "_NET_NUMBER_OF_DESKTOPS", "_NET_DESKTOP_NAMES",
+    # what a views() backend (GNOME) additionally knows
+    "_NET_WM_STATE_MAXIMIZED_HORZ", "_NET_WM_STATE_MAXIMIZED_VERT",
+    "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_SKIP_TASKBAR",
+    "_NET_WM_STATE_DEMANDS_ATTENTION", "_NET_WM_WINDOW_TYPE_DESKTOP",
+    "_NET_WM_WINDOW_TYPE_DOCK", "_NET_WM_WINDOW_TYPE_DIALOG",
+    "_NET_WM_WINDOW_TYPE_TOOLBAR", "_NET_WM_WINDOW_TYPE_MENU",
+    "_NET_WM_WINDOW_TYPE_UTILITY", "_NET_WM_WINDOW_TYPE_SPLASH",
+    "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU", "_NET_WM_WINDOW_TYPE_POPUP_MENU",
+    "_NET_WM_WINDOW_TYPE_TOOLTIP", "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+    "_NET_WM_WINDOW_TYPE_COMBO", "_NET_WM_WINDOW_TYPE_DND",
 )
+
+# Meta.WindowType name (bridge `window_type`) -> _NET_WM_WINDOW_TYPE atom
+_WINDOW_TYPES = {
+    "NORMAL": "_NET_WM_WINDOW_TYPE_NORMAL",
+    "DESKTOP": "_NET_WM_WINDOW_TYPE_DESKTOP",
+    "DOCK": "_NET_WM_WINDOW_TYPE_DOCK",
+    "DIALOG": "_NET_WM_WINDOW_TYPE_DIALOG",
+    "MODAL_DIALOG": "_NET_WM_WINDOW_TYPE_DIALOG",
+    "TOOLBAR": "_NET_WM_WINDOW_TYPE_TOOLBAR",
+    "MENU": "_NET_WM_WINDOW_TYPE_MENU",
+    "UTILITY": "_NET_WM_WINDOW_TYPE_UTILITY",
+    "SPLASHSCREEN": "_NET_WM_WINDOW_TYPE_SPLASH",
+    "DROPDOWN_MENU": "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+    "POPUP_MENU": "_NET_WM_WINDOW_TYPE_POPUP_MENU",
+    "TOOLTIP": "_NET_WM_WINDOW_TYPE_TOOLTIP",
+    "NOTIFICATION": "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+    "COMBO": "_NET_WM_WINDOW_TYPE_COMBO",
+    "DND": "_NET_WM_WINDOW_TYPE_DND",
+}
 
 
 class NativeAtoms:
@@ -354,15 +514,32 @@ class NativeViewTarget(NativeTarget):
         node, win = self.node, self.win
         props = {}
         states = []
+        rich = bool(node.get(_VIEW_KEY))  # a views() backend: more states
+        # Mutter's own _NET_WM_STATE order (window-x11.c set_net_wm_state),
+        # so native and XWayland windows on GNOME print alike; the sway
+        # subset (FULLSCREEN, HIDDEN, STICKY) keeps its relative order
+        if rich and node.get("skip_taskbar"):
+            states.append("_NET_WM_STATE_SKIP_TASKBAR")
+        if rich and node.get("maximized_h"):
+            states.append("_NET_WM_STATE_MAXIMIZED_HORZ")
+        if rich and node.get("maximized_v"):
+            states.append("_NET_WM_STATE_MAXIMIZED_VERT")
         if node.get("fullscreen_mode"):
             states.append("_NET_WM_STATE_FULLSCREEN")
         if not node.get("visible", getattr(win, "visible", True)):
             states.append("_NET_WM_STATE_HIDDEN")
+        if rich and node.get("above"):
+            states.append("_NET_WM_STATE_ABOVE")
+        if rich and node.get("urgent"):
+            states.append("_NET_WM_STATE_DEMANDS_ATTENTION")
         if node.get("sticky"):
             states.append("_NET_WM_STATE_STICKY")
         props[b"_NET_WM_STATE"] = _p_atoms(self.atoms, states)
-        props[b"_NET_WM_WINDOW_TYPE"] = _p_atoms(
-            self.atoms, ["_NET_WM_WINDOW_TYPE_NORMAL"])
+        wtype = "_NET_WM_WINDOW_TYPE_NORMAL"
+        if rich:
+            wtype = _WINDOW_TYPES.get(node.get("window_type") or "NORMAL",
+                                      wtype)
+        props[b"_NET_WM_WINDOW_TYPE"] = _p_atoms(self.atoms, [wtype])
         desktop = getattr(win, "desktop", -1)
         props[b"_NET_WM_DESKTOP"] = _p_cardinal(
             [desktop if desktop >= 0 else 0xFFFFFFFF])
@@ -403,20 +580,37 @@ class NativeRootTarget(NativeTarget):
     def _props(self):
         sess = self.sess
         props = {}
-        props[b"_NET_SUPPORTED"] = _p_atoms(self.atoms, [
+        nodes = sess.nodes()
+        rich = any(n.get(_VIEW_KEY) for n, _w in nodes)
+        supported = [
             "_NET_SUPPORTED", "_NET_CLIENT_LIST", "_NET_ACTIVE_WINDOW",
             "_NET_SUPPORTING_WM_CHECK", "_NET_CURRENT_DESKTOP",
             "_NET_NUMBER_OF_DESKTOPS", "_NET_WM_NAME", "_NET_WM_PID",
             "_NET_WM_DESKTOP", "_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN",
             "_NET_WM_STATE_HIDDEN", "_NET_WM_STATE_STICKY",
             "_NET_WM_WINDOW_TYPE",
-        ])
-        nodes = sess.nodes()
-        props[b"_NET_CLIENT_LIST"] = _p_window([w.id for _n, w in nodes])
+        ]
+        if rich:
+            supported[2:2] = ["_NET_CLIENT_LIST_STACKING"]
+            supported += ["_NET_DESKTOP_NAMES", "_NET_WM_STATE_MAXIMIZED_HORZ",
+                          "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_ABOVE",
+                          "_NET_WM_STATE_SKIP_TASKBAR",
+                          "_NET_WM_STATE_DEMANDS_ATTENTION"]
+        props[b"_NET_SUPPORTED"] = _p_atoms(self.atoms, supported)
+        # With a views() backend every window is listed by the id the
+        # tools print for it (the X id of an XWayland window, the bridge
+        # id of a native one) -- the list wwmctl -l prints. The sway tree
+        # path keeps listing node ids.
+        if rich:
+            ids = [n.get("window") or w.id for n, w in nodes]
+            props[b"_NET_CLIENT_LIST"] = _p_window(ids)
+            props[b"_NET_CLIENT_LIST_STACKING"] = _p_window(ids)
+        else:
+            props[b"_NET_CLIENT_LIST"] = _p_window([w.id for _n, w in nodes])
         active = 0
-        for _n, w in nodes:
+        for n, w in nodes:
             if w.focused:
-                active = w.id
+                active = (n.get("window") or w.id) if rich else w.id
                 break
         props[b"_NET_ACTIVE_WINDOW"] = _p_window([active])
         b = sess.backend()
@@ -431,8 +625,71 @@ class NativeRootTarget(NativeTarget):
             pass
         props[b"_NET_NUMBER_OF_DESKTOPS"] = _p_cardinal([num])
         props[b"_NET_CURRENT_DESKTOP"] = _p_cardinal([cur])
+        if rich:
+            names = sess.workspace_names()
+            if names is not None:
+                props[b"_NET_DESKTOP_NAMES"] = (
+                    "UTF8_STRING", 8,
+                    b"".join(n.encode("utf-8") + b"\0" for n in names))
         props[b"_NET_SUPPORTING_WM_CHECK"] = _p_window([0])
         return props
+
+
+# root properties the compositor knows better than Mutter's X root, which
+# only ever sees XWayland clients
+_ROOT_OVERRIDES = (b"_NET_CLIENT_LIST", b"_NET_CLIENT_LIST_STACKING",
+                   b"_NET_ACTIVE_WINDOW", b"_NET_NUMBER_OF_DESKTOPS",
+                   b"_NET_CURRENT_DESKTOP", b"_NET_DESKTOP_NAMES")
+
+
+class MergedRootTarget:
+    """-root on GNOME with Xwayland up: the real X root window (Mutter is a
+    full EWMH window manager for Xwayland: _NET_SUPPORTED,
+    _NET_SUPPORTING_WM_CHECK, _NET_WORKAREA, _NET_SHOWING_DESKTOP, ...)
+    with the window-list properties re-synthesized from the bridge, because
+    the X root lists X clients only: _NET_CLIENT_LIST(_STACKING) and
+    _NET_ACTIVE_WINDOW cover native windows too (X id or bridge id, the
+    ids the tools print), _NET_NUMBER_OF_DESKTOPS/_NET_CURRENT_DESKTOP/
+    _NET_DESKTOP_NAMES come from the workspace manager directly. Reads of
+    anything else, and -set/-remove, go to the X root untouched."""
+
+    plane = "x"
+    node_id = None
+
+    def __init__(self, xt: XTarget, native: NativeRootTarget):
+        self.xt = xt
+        self.native = native
+        self.conn = xt.conn
+        self.win = xt.win
+
+    def refresh(self):
+        return True
+
+    def intern(self, name: bytes, create: bool) -> bool:
+        return self.xt.intern(name, create) or name in _ROOT_OVERRIDES
+
+    def fetch(self, name: bytes):
+        if name in _ROOT_OVERRIDES:
+            p = self.native._props().get(name)
+            if p is not None:
+                return p
+        return self.xt.fetch(name)
+
+    def list_names(self):
+        names = self.xt.list_names()
+        for n in _ROOT_OVERRIDES:
+            if n not in names:
+                names.append(n)
+        return names
+
+    def atom_name(self, a: int):
+        return self.xt.atom_name(a)
+
+    def remove_prop(self, name: bytes) -> bool:
+        return self.xt.remove_prop(name)
+
+    def set_prop(self, name: bytes, type_name: str, size: int, data: bytes):
+        self.xt.set_prop(name, type_name, size, data)
 
 
 # -- window selection --------------------------------------------------------
@@ -446,10 +703,14 @@ class MissingWindowTarget:
 
     plane = "missing"
 
-    def __init__(self, wid: int):
+    def __init__(self, wid: int, hint: str | None = None):
         self.wid = wid
+        self.hint = hint  # why the compositor plane is missing (GNOME)
 
     def _fatal(self):
+        if self.hint:
+            raise FatalError("cannot look up window id # 0x%x: %s"
+                             % (self.wid, self.hint))
         raise FatalError("window id # 0x%x does not exists!" % self.wid)
 
     def intern(self, name, create=False):
@@ -470,23 +731,38 @@ def resolve_id(sess: Session, wid: int):
     XWayland node redirects to its real X window id); otherwise the id is
     handed to the X server, exactly like xprop. The error wording for a
     hopeless id is xprop's own (grammar and all)."""
-    x = sess.x11()
     for node, win in sess.nodes():
         xid = node.get("window")
         if win.id == wid or xid == wid:
-            if xid and x is not None:
-                return XTarget(x, xid)
+            if xid:
+                x = sess.x11()  # an X window is listed: Xwayland is up
+                if x is not None:
+                    return XTarget(x, xid)
             return NativeViewTarget(sess, NativeAtoms(), node, win)
+    # unknown to the compositor: hand it to the X server like xprop would
+    # (on GNOME only when Xwayland is running -- a typo must not spawn one)
+    x = sess.x11() if sess.x_present() else None
     if x is not None:
         return XTarget(x, wid)
-    return MissingWindowTarget(wid)
+    return MissingWindowTarget(wid, sess.backend_error)
 
 
 def resolve_root(sess: Session):
+    if sess.has_views():
+        # GNOME: the bridge knows every window; the X root (when Xwayland
+        # is up) contributes Mutter's real EWMH root properties
+        native = NativeRootTarget(sess, NativeAtoms())
+        x = sess.x11() if sess.x_present() else None
+        if x is not None:
+            return MergedRootTarget(XTarget(x, x.root()), native)
+        return native
     x = sess.x11()
     if x is not None:
         return XTarget(x, x.root())
     if sess.backend() is None:
+        if sess.backend_error:
+            raise FatalError("cannot examine the root window: %s"
+                             % sess.backend_error)
         raise FatalError("cannot examine the root window: no X server and "
                          "no compositor backend")
     return NativeRootTarget(sess, NativeAtoms())
@@ -531,7 +807,7 @@ def resolve_name(sess: Session, name: str):
     X root) so X-plane behavior is untouched; the native plane then gets
     the same courtesy (exact title, then exact app_id) for windows real
     xprop could never see."""
-    x = sess.x11()
+    x = sess.x11() if sess.x_present() else None
     if x is not None:
         w = _window_with_name(x, x.root(), os.fsencode(name))
         if w:
@@ -555,6 +831,8 @@ def select_target(sess: Session, prog: str):
     (the wwmctl pattern; there is no X pointer grab to borrow)."""
     b = sess.backend()
     if b is None:
+        if sess.backend_error:
+            raise FatalError("can't select a window: %s" % sess.backend_error)
         raise FatalError("can't select a window without a compositor "
                          "backend; use -root, -id or -name")
     sys.stderr.write("%s: focus the target window to select it\n" % prog)
@@ -673,10 +951,100 @@ _NATIVE_EVENT_PROPS = {
     "urgent": (),
 }
 
+# the same for the bridge's WindowEvent vocabulary (backend.events()):
+# `workspace` also fires when stickiness changes, `minimized`/`urgent`
+# are states the views() synthesis prints, `move` is geometry only
+_VIEW_EVENT_PROPS = {
+    "title": (b"WM_NAME", b"_NET_WM_NAME"),
+    "fullscreen_mode": (b"_NET_WM_STATE",),
+    "workspace": (b"_NET_WM_DESKTOP", b"_NET_WM_STATE"),
+    "minimized": (b"_NET_WM_STATE",),
+    "urgent": (b"_NET_WM_STATE",),
+    "move": (),
+    "focus": (),
+    "new": (),
+}
+
+# root-level: what a bridge event changes among the synthesized root props
+_ROOT_EVENT_PROPS = {
+    "new": (b"_NET_CLIENT_LIST", b"_NET_CLIENT_LIST_STACKING"),
+    "close": (b"_NET_CLIENT_LIST", b"_NET_CLIENT_LIST_STACKING",
+              b"_NET_ACTIVE_WINDOW"),
+    "focus": (b"_NET_ACTIVE_WINDOW",),
+    "workspace": (b"_NET_CURRENT_DESKTOP", b"_NET_NUMBER_OF_DESKTOPS",
+                  b"_NET_DESKTOP_NAMES"),
+}
+
+
+def _events_hook(backend):
+    """backend.events(...) when the backend really implements it (the
+    WindowBackend default only raises), else None."""
+    fn = getattr(backend, "events", None)
+    if fn is None:
+        return None
+    try:
+        from wdotool.backend import WindowBackend
+        if getattr(type(backend), "events", None) is WindowBackend.events:
+            return None
+    except Exception:
+        pass
+    return fn
+
+
+def _show_names(formatter, target, names, specs) -> bytes:
+    """Show_Prop for each name in `names` that the -spy specs (if any)
+    selected, with their format/dformat."""
+    out = bytearray()
+    for name_b in names:
+        fmt_b = dfmt_b = None
+        if specs is not None:
+            for sname, sfmt, sdfmt in specs:
+                if sname == name_b:
+                    fmt_b, dfmt_b = sfmt, sdfmt
+                    break
+            else:
+                continue
+        show_prop(formatter, target, out, fmt_b, dfmt_b, name_b)
+    return bytes(out)
+
+
+def _native_event_source(backend, root: bool):
+    """(kind, iterator): "sway" yields raw i3 (type, data) frames, "hook"
+    yields (id, change) from backend.events(). FatalError when neither
+    exists."""
+    if all(getattr(backend, n, None) for n in ("_connect", "_send", "_recv")):
+        payload = b'["window","workspace"]' if root else b'["window"]'
+        return "sway", _sway_ipc_events(backend, payload)
+    hook = _events_hook(backend)
+    if hook is None:
+        raise FatalError("-spy on a native window needs the sway backend "
+                         "or the GNOME bridge")
+    try:
+        it = hook(None, workspaces=True) if root else hook(None)
+    except TypeError:  # a hook without the workspaces flag
+        it = hook(None)
+    return "hook", it
+
 
 def spy_native_view(formatter, target: NativeViewTarget, specs):
     backend = target.sess.backend()
-    for t, data in _sway_ipc_events(backend, b'["window"]'):
+    kind, events = _native_event_source(backend, root=False)
+    if kind == "hook":
+        for wid, change in events:
+            if wid != target.node_id:
+                continue
+            if change == "close":
+                return 0
+            names = _VIEW_EVENT_PROPS.get(change)
+            if not names:
+                continue
+            if not target.refresh():
+                return 0  # gone between the event and the re-read
+            out = _show_names(formatter, target, names, specs)
+            if out:
+                _write_flush(out)
+        return 0
+    for t, data in events:
         if t != _I3_EVENT_WINDOW:
             continue
         container = data.get("container") or {}
@@ -692,24 +1060,22 @@ def spy_native_view(formatter, target: NativeViewTarget, specs):
             target.refresh()  # workspace only lives in the tree
         else:
             target.node = container
-        out = bytearray()
-        for name_b in names:
-            fmt_b = dfmt_b = None
-            if specs is not None:
-                for sname, sfmt, sdfmt in specs:
-                    if sname == name_b:
-                        fmt_b, dfmt_b = sfmt, sdfmt
-                        break
-                else:
-                    continue
-            show_prop(formatter, target, out, fmt_b, dfmt_b, name_b)
+        out = _show_names(formatter, target, names, specs)
         if out:
             _write_flush(out)
 
 
 def spy_native_root(formatter, target: NativeRootTarget, specs):
     backend = target.sess.backend()
-    for t, data in _sway_ipc_events(backend, b'["window","workspace"]'):
+    kind, events = _native_event_source(backend, root=True)
+    if kind == "hook":
+        for _wid, change in events:
+            names = _ROOT_EVENT_PROPS.get(change, ())
+            out = _show_names(formatter, target, names, specs)
+            if out:
+                _write_flush(out)
+        return 0
+    for t, data in events:
         if t == _I3_EVENT_WINDOW:
             change = data.get("change")
             names = {"new": (b"_NET_CLIENT_LIST",),
@@ -719,16 +1085,58 @@ def spy_native_root(formatter, target: NativeRootTarget, specs):
             names = (b"_NET_CURRENT_DESKTOP", b"_NET_NUMBER_OF_DESKTOPS")
         else:
             continue
-        out = bytearray()
-        for name_b in names:
-            fmt_b = dfmt_b = None
-            if specs is not None:
-                for sname, sfmt, sdfmt in specs:
-                    if sname == name_b:
-                        fmt_b, dfmt_b = sfmt, sdfmt
-                        break
-                else:
-                    continue
-            show_prop(formatter, target, out, fmt_b, dfmt_b, name_b)
+        out = _show_names(formatter, target, names, specs)
         if out:
             _write_flush(out)
+
+
+def spy_merged_root(formatter, target: MergedRootTarget, specs):
+    """-root -spy on GNOME with Xwayland up: PropertyNotify on the X root
+    for Mutter's own root properties, the bridge's events for the
+    synthesized ones (which the X root's own updates of those names are
+    NOT allowed to reprint -- they would show the X-only view). The bridge
+    stream runs on a thread of its own (one Bus per thread) and is drained
+    between X polls."""
+    x = target.conn
+    hook = _events_hook(target.native.sess.backend())
+    q: "queue.Queue" = queue.Queue()
+    stop = threading.Event()
+
+    def pump():
+        try:
+            for item in hook(None, workspaces=True):
+                q.put(item)
+                if stop.is_set():
+                    return
+        except Exception as e:  # noqa: BLE001 -- surfaced by the main loop
+            q.put(("error", str(e)))
+
+    if hook is not None:
+        threading.Thread(target=pump, daemon=True).start()
+    try:
+        x.select_input(target.win, SPY_EVENT_MASK)
+        while True:
+            sys.stdout.buffer.flush()
+            ev = x.next_event(0.25)
+            if ev is not None and ev["type"] == "PropertyNotify":
+                name = x.get_atom_name(ev["atom"])
+                if name is None:
+                    name = "undefined atom # 0x%x" % ev["atom"]
+                name_b = name.encode("latin-1")
+                if name_b not in _ROOT_OVERRIDES:
+                    out = _show_names(formatter, target, (name_b,), specs)
+                    if out:
+                        _write_flush(out)
+            while True:
+                try:
+                    wid, change = q.get_nowait()
+                except queue.Empty:
+                    break
+                if wid == "error":
+                    raise FatalError("bridge event stream failed: %s" % change)
+                names = _ROOT_EVENT_PROPS.get(change, ())
+                out = _show_names(formatter, target, names, specs)
+                if out:
+                    _write_flush(out)
+    finally:
+        stop.set()

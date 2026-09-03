@@ -106,3 +106,105 @@ sway's own "workspace current".
   demo gif.
 - Build: `scripts/build-pyz.sh` also emits `dist/wwmctl` (extend it: same zipapp
   pattern, entry `wwmctl.cli:main`).
+
+## GNOME
+
+On a stock GNOME Wayland session (Ubuntu 24.04 / GNOME 46, 26.04 / GNOME 50)
+the compositor plane is the fuckwayland bridge extension
+(`gnome/install-bridge.sh`, see `gnome/README.md`) through
+`wdotool.backend_gnome.GnomeBackend`. wwmctl never reaches into backend
+privates there: it consumes the typed hooks `views()`, `workspaces()`,
+`x_info()`, `select_window()`, `show_desktop()`, `set_num_desktops()` of
+`wdotool/backend.py`, tried *ahead of* the sway `_nodes()` path (which is
+untouched) and the generic `list()` fallback.
+
+* **Ids and the list.** `views()` carries Mutter's X11 client window id for
+  every XWayland window (`Meta.Window` → `lookup_xwindow`), so `-l` prints
+  the same `0x%08x` that `xprop -root _NET_CLIENT_LIST` and real `wmctrl -l`
+  show, and `-i` accepts either that X id or the bridge id
+  (`Meta.Window.get_id()`, the decimal id `wdotool search` prints). Native
+  windows print the bridge id. Rows are Mutter's stacking order, bottom to
+  top (real wmctrl prints `_NET_CLIENT_LIST`, i.e. creation order — the
+  ids are the same, the order is not).
+* **Columns.** `-x`: `instance.class` from the X plane's `WM_CLASS` for
+  XWayland windows (the bridge's `wm_class_instance`/`wm_class` pair stands
+  in when Xwayland cannot be reached), `app_id.app_id` for native windows
+  (Mutter reports the Wayland app id as `wm_class`; GTK apps without one
+  fall back to `gtk_app_id`). `-p`: Mutter's pid, `_NET_WM_PID` only as a
+  fallback. `-G`: the X client rectangle (GetGeometry + TranslateCoordinates,
+  root coordinates) for XWayland windows — one titlebar below the frame,
+  Mutter being a reparenting WM — and the bridge's `get_frame_rect()` for
+  native ones (logical pixels, no CSD shadows). Machine column: the
+  `WM_CLIENT_MACHINE` of X windows, the local hostname otherwise (the
+  machine-column rule above). The desktop column is the workspace index,
+  `-1` for a sticky window — Mutter's dense 0-based indices are exactly
+  wmctrl's, so GNOME has none of the sway id-mapping hole.
+* **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge
+  reports (`XInfo`: gnome-shell's own environment, else Mutter's
+  `$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` cookie found by
+  `wdotool.session`), passed to `x11_mini.X11Conn(display, xauthority=)`.
+  Mutter starts Xwayland with `-auth`, so the cookie is mandatory — the
+  cookie-less same-uid pass that works on wlroots is refused there — and
+  this is what makes `ssh root@box` with an empty environment, `sudo`, and
+  a GNOME custom-shortcut process all reach it. Xwayland is spawned **on
+  demand** by Mutter (the listening socket exists even when no server
+  does), so wwmctl only connects when an XWayland window is listed or an
+  `Xwayland` process exists (`session.xwayland_running()`); listing a
+  purely native desktop never starts an X server.
+* **`-d`** comes from `ListWorkspaces`: `DG` is `global.display.get_size()`,
+  `VP` is `0,0` for the current workspace and `N/A` for the rest (one
+  EWMH viewport pair), `WA` is the workspace's work area over all monitors
+  (what Mutter writes into `_NET_WORKAREA`: `0,32 1920x1048` under the top
+  bar), the name is `Meta.prefs_get_workspace_name(i)` (`Workspace 1`, …,
+  the strings in `_NET_DESKTOP_NAMES`; a nameless workspace prints its
+  index). With dynamic workspaces (GNOME's default) the trailing empty
+  workspace is listed too — it is real for `-s`/`-t`.
+* **`-m`** reads `_NET_SUPPORTING_WM_CHECK` → `_NET_WM_NAME` (`GNOME
+  Shell`), `WM_CLASS`/`_NET_WM_PID` (`N/A`: Mutter's check window has
+  neither) and `_NET_SHOWING_DESKTOP` (`ON`/`OFF`) from the X root when
+  Xwayland is up — byte-identical to real wmctrl there —, waiting up to 2 s
+  for a freshly started Xwayland to get its root properties. Without
+  Xwayland the name comes from the backend (`GnomeBackend.wm_name`, the
+  same string) and the showing-desktop mode is `N/A` (Mutter's real
+  show-desktop state has no public API off the X root).
+* **Actions** all go through the bridge, for XWayland and native windows
+  alike: `-a` `Activate` (switches workspace, unminimizes, raises,
+  focuses), `-c` `Close` (polite delete), `-R` `MoveToWorkspace(current)` +
+  `Activate`, `-t N` `MoveToWorkspace(N)` (`-t -1` = current; an index past
+  the last workspace is a one-line error, exit 1, where wmctrl would fire
+  the request into the void), `-s N` `SetActiveWorkspace` (same for a bad
+  index), `-b (add|remove|toggle),P1[,P2]` `SetState` per property —
+  `fullscreen`, `maximized_vert`/`maximized_horz` (real per-axis
+  maximization on every GNOME release), `hidden` (minimize), `above`,
+  `sticky`, `demands_attention` are applied by Mutter; `skip_taskbar`,
+  `skip_pager`, `modal` warn and succeed (no Mutter setter, nothing
+  observable); `shaded` and `below` warn `…; ignoring` and exit 0 like any
+  request "the WM may ignore". `-e G,X,Y,W,H`: `Resize` (keeps the frame's
+  top-left) then `Move`, both in **frame** coordinates (the rectangle `-lG`
+  prints for native windows; for XWayland windows `-lG` prints the client
+  rectangle, so a `-1` keeps the frame's own value rather than the client
+  rect's). Gravity is accepted and ignored (NorthWest semantics); a
+  maximized or fullscreen window is silently constrained by Mutter, as on
+  X11. `-k on|off` is the bridge's `ShowDesktop` (minimizes every normal
+  window on the active workspace and restores exactly those on `off` —
+  Mutter's own mode is not scriptable). `-n N` is `SetNWorkspaces`: works
+  with static workspaces, and with GNOME's default dynamic workspaces the
+  bridge refuses and wwmctl prints `wwmctl: dynamic workspaces are enabled
+  …; ignoring` (exit 0, the request the WM ignored). `-o`/`-g` warn and
+  succeed as everywhere.
+* **`-N`/`-I`/`-T`** set `WM_NAME`/`_NET_WM_NAME` (and the icon names) on
+  XWayland windows over the X plane (Mutter re-reads them at once); on
+  native windows they warn `native window; ignoring` and exit 0 — Wayland
+  has no way to rename another client's toplevel.
+* **`:SELECT:`** is the bridge's `SelectWindow`: wwmctl prints `focus the
+  target window to select it` and returns with the next window that gains
+  focus (focus a *different* window, as on sway). `:ACTIVE:` is Mutter's
+  focus window.
+* **Errors.** Every failure is one line on stderr, exit 1: the bridge not
+  installed (`gnome backend: the fuckwayland bridge extension is not
+  running in GNOME Shell; run gnome/install-bridge.sh and restart the
+  session (log out and back in)`), installed but disabled, the screen
+  locked (extensions stop behind the lock screen), the bridge gone
+  mid-session; `-a`/`-c`/… on a window that vanished exits 1 silently like
+  a no-match. Unit coverage: `tests/test_wwmctl_gnome.py` on the mock
+  bridge of `tests/test_backend_gnome.py`.
