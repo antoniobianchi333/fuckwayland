@@ -257,6 +257,26 @@ class DesktopTests(GnomeCliBase):
         self.assertEqual(rc, 1)
         self.assertEqual(self.calls("ShowDesktop"), [(True,), (False,)])
 
+    def test_k_on_twice_still_restores_the_desktop(self):
+        """wwmctl-2: `-k on` is a latch, not a stack. The bridge's scan
+        skips already-minimized windows, so a second `on` must not rescan:
+        it would replace the restore set with an empty one and leave every
+        later `-k off` a no-op."""
+        def minimized():
+            return {d["id"] for d in self.bridge.windows if d["minimized"]}
+
+        before = minimized()
+        self.assertEqual(before, {EDITOR})       # the fixture's editor
+        self.assertEqual(self.wm(["-k", "on"], x11=None)[0], 0)
+        on1 = minimized()
+        self.assertIn(XTERM, on1)                # something really went away
+        self.assertEqual(self.wm(["-k", "on"], x11=None)[0], 0)
+        self.assertEqual(minimized(), on1)       # no-op, restore set intact
+        self.assertEqual(self.wm(["-k", "off"], x11=None)[0], 0)
+        self.assertEqual(minimized(), before)    # everything came back
+        self.assertEqual(self.calls("ShowDesktop"),
+                         [(True,), (True,), (False,)])
+
     def test_n_dynamic_workspaces_warns_and_succeeds(self):
         rc, _o, err = self.wm(["-n", "5"], x11=None)
         self.assertEqual(rc, 0)
