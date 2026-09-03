@@ -68,6 +68,37 @@ No nix: `scripts/build-pyz.sh` → `dist/wdotool`, a single self-contained file.
 Python ≥ 3.10 stdlib only, no dependencies. Copy it to `/usr/local/bin/wdotool`,
 `ln -s wdotool /usr/local/bin/xdotool`, done.
 
+### X11
+
+The tools are meant to be installed **over** the originals, so they also have
+to behave when the session is a plain X11 one (Xfce, i3, GNOME-on-Xorg,
+KDE-on-Xorg): there they detect the session and hand over to the real
+`xdotool`/`wmctrl`/`xprop`/`xrandr` with `execve`, argv untouched — same exit
+status, same signals, same stdio, no extra process. One script then runs on
+both session types, and `xdotool --version` on X11 answers with the version
+that is actually installed there.
+
+```console
+$ FUCKWAYLAND_PASSTHROUGH=never xdotool key a   # our own code, whatever the session
+$ FUCKWAYLAND_PASSTHROUGH=always ...            # hand over, whatever the session
+$ WDOTOOL_REAL_XDOTOOL=/opt/bin/xdotool ...     # where the original is
+```
+
+`WDOTOOL_PASSTHROUGH`, `WWMCTL_PASSTHROUGH`, `WXPROP_PASSTHROUGH` and
+`WXRANDR_PASSTHROUGH` do the same per tool; the `*_REAL_*` variables are
+`WDOTOOL_REAL_XDOTOOL`, `WWMCTL_REAL_WMCTRL`, `WXPROP_REAL_XPROP`,
+`WXRANDR_REAL_XRANDR`. With no original installed you get exit **127** and a
+line saying which package to install — except for `--help`/`--version`, which
+still answer, and `wxprop`, which has an X11 client of its own and simply
+keeps working. Detection is Wayland-first: `$DISPLAY` is set on a Wayland
+session too (Xwayland), so only a live compositor socket — or `loginctl`'s
+own record of your session — counts.
+
+Bonus, on X11 as on Wayland: run under `sudo`, over `ssh root@box` or from
+cron and we find the session's `DISPLAY` and `XAUTHORITY` and hand them to
+the original, so `sudo xdotool key a` works *through* us where
+`sudo /usr/bin/xdotool key a` says `Can't open display`.
+
 ### GNOME
 
 Stock GNOME Wayland sessions — Ubuntu 24.04 (GNOME 46) and 26.04 (GNOME 50) as

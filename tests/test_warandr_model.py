@@ -5,6 +5,7 @@ a genuine arandr-saved script, backend selection and the --save/--command
 CLI against the fake xrandr.  No display needed."""
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -19,6 +20,12 @@ sys.path.insert(0, FIXTURES)
 import fake_xrandr                                                # noqa: E402
 from warandr import cli, model, randr, xrandr_parse              # noqa: E402
 from warandr.model import Layout, LayoutError, Mode, Output      # noqa: E402
+
+# The suite never hands a tool over to the real X11 one: see
+# tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
+# This line is what covers `python3 tests/<file>.py`, where conftest is
+# not loaded, and it reaches every subprocess a test spawns.
+os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 ARANDR_SAVED = os.path.join(FIXTURES, "arandr-saved.sh")
 ARANDR_LINE = ("xrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 "
@@ -513,22 +520,48 @@ class BackendChoice(unittest.TestCase):
                           "WARANDR_BACKEND": "wayland"})
         self.assertTrue(b.wayland)
 
+    def wayland_env(self, **extra):
+        """A Wayland session as passthrough.session_kind() sees one: the
+        variable *and* a live socket (a leftover WAYLAND_DISPLAY with no
+        compositor behind it is an X11 session, see test_x11)."""
+        rd = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, rd, ignore_errors=True)
+        open(os.path.join(rd, "wayland-1"), "w").close()
+        env = {"WAYLAND_DISPLAY": "wayland-1", "XDG_RUNTIME_DIR": rd,
+               "PATH": "/nonexist"}
+        env.update(extra)
+        return env
+
     def test_wayland_same_interpreter(self):
-        b = randr.choose({"WAYLAND_DISPLAY": "wayland-1", "PATH": "/nonexist"})
+        b = randr.choose(self.wayland_env())
         self.assertEqual(b.argv, [sys.executable, "-m", "wxrandr"])
         self.assertTrue(b.wayland)
         self.assertEqual(b.env["PYTHONPATH"].split(os.pathsep)[0], ROOT)
         self.assertEqual(b.env["WAYLAND_DISPLAY"], "wayland-1")
 
     def test_x11(self):
-        b = randr.choose({"DISPLAY": ":0"})
+        b = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11"})
         self.assertEqual(b.argv, ["xrandr"])
         self.assertFalse(b.wayland)
         b.set_display("localhost:10.0")
         self.assertEqual(b.env["DISPLAY"], "localhost:10.0")
-        w = randr.choose({"WAYLAND_DISPLAY": "wayland-0"})
+        w = randr.choose(self.wayland_env())
+        self.assertTrue(w.wayland)
         w.set_display("wayland-9")
         self.assertEqual(w.env["WAYLAND_DISPLAY"], "wayland-9")
+
+    def test_stale_wayland_display_is_x11(self):
+        """New with the passthrough: WAYLAND_DISPLAY without a socket used to
+        select wxrandr, and every Apply then said "Can't open display"."""
+        b = randr.choose({"WAYLAND_DISPLAY": "wayland-1", "PATH": "/nonexist",
+                          "XDG_SESSION_TYPE": "x11"})
+        self.assertFalse(b.wayland)
+        self.assertEqual(b.argv, ["xrandr"])
+        self.assertEqual(b.word, "xrandr")
+        # ...and the explicit overrides still win
+        b = randr.choose({"WARANDR_BACKEND": "wayland", "XDG_SESSION_TYPE": "x11",
+                          "PATH": "/nonexist"})
+        self.assertTrue(b.wayland)
 
     def test_snapshot_through_fake(self):
         env = dict(os.environ)
@@ -636,7 +669,10 @@ class BuildScript(unittest.TestCase):
             self.assertEqual((p.returncode, p.stdout.strip()),
                              (0, ARANDR_LINE), p.stderr)
             # the Wayland path resolves `-m wxrandr` from inside the pyz:
-            # without a compositor that is wxrandr's own error, not ours
+            # without a compositor that is wxrandr's own error, not ours.
+            # The socket has to exist -- passthrough.session_kind() does not
+            # believe a WAYLAND_DISPLAY with nothing behind it.
+            open(os.path.join(tmp, "wayland-nope"), "w").close()
             env = {"PATH": os.environ.get("PATH", ""), "HOME": tmp,
                    "WAYLAND_DISPLAY": "wayland-nope",
                    "XDG_RUNTIME_DIR": tmp}

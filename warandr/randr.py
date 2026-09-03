@@ -6,10 +6,13 @@ Selection (first match wins):
 1. ``$WARANDR_XRANDR`` — a command line (shlex-split) to run instead;
    its kind is Wayland when it mentions ``wxrandr``, X11 otherwise, unless
    ``$WARANDR_BACKEND`` (``x11`` / ``wayland``) says so explicitly.
-2. ``$WAYLAND_DISPLAY`` set and the ``wxrandr`` package importable
+2. a Wayland session (``passthrough.session_kind()``: ``$WAYLAND_DISPLAY``
+   with a live socket, logind, the runtime dirs -- a stale ``WAYLAND_DISPLAY``
+   with no compositor behind it is *not* one) and the ``wxrandr`` package
+   importable
    (repo checkout or the pyz that bundles it): the *same* interpreter with
    ``-m wxrandr``, PYTHONPATH pointing at wherever the package was found.
-3. ``$WAYLAND_DISPLAY`` set and ``wxrandr`` on PATH.
+3. a Wayland session and ``wxrandr`` on PATH.
 4. ``xrandr``.
 """
 
@@ -19,6 +22,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+
+from wdotool import passthrough
 
 from . import xrandr_parse
 from .model import Layout
@@ -107,7 +112,7 @@ def choose(env=None):
             raise RandrError("WARANDR_XRANDR is empty")
         wayland = any("wxrandr" in os.path.basename(a) for a in argv)
         source = "WARANDR_XRANDR"
-    elif env.get("WAYLAND_DISPLAY"):
+    elif passthrough.session_kind(env=env) == "wayland":
         root = _package_root("wxrandr")
         if root is not None:
             argv = [sys.executable, "-m", "wxrandr"]

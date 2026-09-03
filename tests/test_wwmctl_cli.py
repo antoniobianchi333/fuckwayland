@@ -29,6 +29,12 @@ from wdotool.ctx import CmdError  # noqa: E402
 from wwmctl import cli, core  # noqa: E402
 from wwmctl.cli import WMCTRL_VERSION  # noqa: E402
 
+# The suite never hands a tool over to the real X11 one: see
+# tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
+# This line is what covers `python3 tests/<file>.py`, where conftest is
+# not loaded, and it reaches every subprocess a test spawns.
+os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
+
 
 class FakeSwayBackend:
     """Sway-shaped backend: offers _nodes() (raw tree view) and _msg()."""

@@ -13,6 +13,12 @@ import tempfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+# This shim is named `xdotool` and the real xdotool is on PATH -- which on
+# an X11 session is exactly the arrangement that makes wdotool hand over to
+# it (wdotool/passthrough.py). The oracle would then compare the real xdotool
+# with itself and pass tautologically, so keep our own code in the loop.
+os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
+
 REAL = shutil.which("xdotool")
 if not REAL:
     print("test_cli_parity: SKIP (no real xdotool on PATH; run under nix develop)")

@@ -1,0 +1,645 @@
+#!/usr/bin/env python3
+"""Unit tests for wdotool.passthrough: session detection, finding the real
+tool, the argv conventions of the four main()s, help/version, environment
+repair — and the guard that keeps this very test suite from exec'ing itself
+away on an X11 development box.
+
+Everything here is hermetic: `session_kind()` reads nothing but its three
+seam directories (`_X11_SOCK_DIR`, `_LOGIND_DIR`, `_RUN_USER_DIR`) and the
+environment dict it is handed, so these results are the same on a Wayland
+box, on an X11 box and on a headless server. Nothing here execs; the real
+handover is `tests/test_passthrough_exec.py`.
+"""
+
+import contextlib
+import gc
+import io
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+import warnings
+from unittest import mock
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+
+from wdotool import cli as wdotool_cli            # noqa: E402
+from wdotool import passthrough                   # noqa: E402
+from wwmctl import cli as wwmctl_cli              # noqa: E402
+from wxprop import cli as wxprop_cli              # noqa: E402
+from wxrandr import cli as wxrandr_cli            # noqa: E402
+
+# The suite never hands a tool over to the real X11 one: see
+# tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
+# This line is what covers `python3 tests/<file>.py`, where conftest is
+# not loaded, and it reaches every subprocess a test spawns.
+os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
+
+FIXTURES = os.path.join(REPO, "tests", "fixtures")
+SHIM = os.path.join(FIXTURES, "fw_shim.py")
+FAKE = os.path.join(FIXTURES, "fake_real_tool.py")
+
+
+class ExecCalled(Exception):
+    """Raised by the stubbed os.execve instead of replacing this process."""
+
+    def __init__(self, path, argv, env):
+        super().__init__(path)
+        self.path, self.argv, self.env = path, list(argv), dict(env)
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="fw_pt_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.uid = os.getuid()
+        self.x11 = self.mkdir("x11")
+        self.logind = self.mkdir("logind")
+        self.runuser = self.mkdir("run-user")
+        for name, value in (("_X11_SOCK_DIR", self.x11),
+                            ("_LOGIND_DIR", self.logind),
+                            ("_RUN_USER_DIR", self.runuser)):
+            p = mock.patch.object(passthrough, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        passthrough.reset_cache()
+        self.addCleanup(passthrough.reset_cache)
+
+    # -- fixture helpers ---------------------------------------------------
+    def mkdir(self, *parts):
+        p = os.path.join(self.tmp, *parts)
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def touch(self, path, text=""):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def xsock(self, num):
+        """An X server socket (only its existence is ever looked at)."""
+        return self.touch(os.path.join(self.x11, "X%d" % num))
+
+    def runtime_dir(self, uid=None):
+        return self.mkdir("run-user", str(self.uid if uid is None else uid))
+
+    def wsock(self, uid=None, name="wayland-0"):
+        return self.touch(os.path.join(self.runtime_dir(uid), name))
+
+    def logind_file(self, sid="1", **fields):
+        rec = {"UID": str(self.uid), "USER": "test", "ACTIVE": "1",
+               "STATE": "active", "REMOTE": "0", "CLASS": "user"}
+        rec.update({k: str(v) for k, v in fields.items()})
+        body = "# This is private data. Do not parse.\n" + \
+            "".join("%s=%s\n" % kv for kv in rec.items())
+        self.touch(os.path.join(self.logind, sid), body)
+        # logind also keeps <id>.ref, a FIFO: reading it would block forever
+        os.mkfifo(os.path.join(self.logind, sid + ".ref"))
+        return rec
+
+    def kind(self, tool=None, **env):
+        passthrough.reset_cache()
+        return passthrough.session_kind(tool, env)
+
+    # -- a fake install tree ----------------------------------------------
+    def install_tree(self, ours=("xdotool",), real=("xdotool",)):
+        """`<tmp>/local` holds us, `<tmp>/bin` holds the originals; returns
+        the PATH. Mirrors the shipped shape: /usr/local/bin/xdotool is a
+        symlink to the clone, /usr/bin/xdotool is the distribution's."""
+        local = self.mkdir("local")
+        real_dir = self.mkdir("bin")
+        for n in ours:
+            os.symlink(SHIM, os.path.join(local, n))
+        for n in real:
+            os.symlink(FAKE, os.path.join(real_dir, n))
+        return os.pathsep.join([local, real_dir])
+
+    def stub_execve(self):
+        def fake_execve(path, argv, env):
+            raise ExecCalled(path, argv, env)
+        p = mock.patch.object(passthrough.os, "execve", fake_execve)
+        p.start()
+        self.addCleanup(p.stop)
+
+
+# ---------------------------------------------------------------------------
+
+
+class Detection(Base):
+    """The ordered rule of session_kind(). The trap this table exists for:
+    $DISPLAY is set on a Wayland session too (Xwayland), and a display
+    manager's greeter can own a Wayland socket on an X11 box."""
+
+    def test_wayland_in_session_even_with_display(self):
+        rd = self.runtime_dir()
+        self.wsock()
+        self.xsock(0)       # Xwayland: DISPLAY is set on Wayland too
+        self.assertEqual(self.kind(XDG_RUNTIME_DIR=rd, WAYLAND_DISPLAY="wayland-0",
+                                   DISPLAY=":0", XDG_SESSION_TYPE="wayland"),
+                         "wayland")
+        # ...and even when the environment lies about the type
+        self.assertEqual(self.kind(XDG_RUNTIME_DIR=rd, WAYLAND_DISPLAY="wayland-0",
+                                   DISPLAY=":0", XDG_SESSION_TYPE="x11"),
+                         "wayland")
+
+    def test_absolute_wayland_display(self):
+        sock = self.touch(os.path.join(self.tmp, "abs", "wayland-9"))
+        self.assertEqual(self.kind(WAYLAND_DISPLAY=sock), "wayland")
+
+    def test_stale_wayland_display_is_not_a_session(self):
+        """WAYLAND_DISPLAY left over in a script's environment with no socket
+        behind it: the session type decides, not the variable."""
+        rd = self.runtime_dir()
+        self.xsock(0)
+        self.assertEqual(self.kind(XDG_RUNTIME_DIR=rd, WAYLAND_DISPLAY="wayland-0",
+                                   XDG_SESSION_TYPE="x11", DISPLAY=":0"), "x11")
+
+    def test_session_type_decides(self):
+        self.assertEqual(self.kind(XDG_SESSION_TYPE="wayland"), "wayland")
+        self.assertEqual(self.kind(XDG_SESSION_TYPE="x11"), "x11")
+        self.assertIsNone(self.kind(XDG_SESSION_TYPE="tty"))
+
+    def test_sudo_ignores_a_stale_session_type(self):
+        """`sudo xdotool ...` keeps root's XDG_SESSION_TYPE from an `ssh
+        root@box` login (tty), and even XDG_RUNTIME_DIR=/run/user/0. logind's
+        record of the *target* user is the truth."""
+        self.logind_file("5", TYPE="x11", DISPLAY=":0")
+        self.assertEqual(
+            self.kind(XDG_SESSION_TYPE="tty", SUDO_UID=str(self.uid),
+                      XDG_RUNTIME_DIR=os.path.join(self.runuser, "0")),
+            "x11")
+        shutil.rmtree(self.logind)
+        os.makedirs(self.logind)
+        self.logind_file("5", TYPE="wayland")
+        self.assertEqual(
+            self.kind(XDG_SESSION_TYPE="tty", SUDO_UID=str(self.uid)),
+            "wayland")
+
+    def test_pkexec_uid_counts_as_sudo(self):
+        self.logind_file("5", TYPE="x11", DISPLAY=":0")
+        self.assertEqual(self.kind(XDG_SESSION_TYPE="wayland",
+                                   PKEXEC_UID=str(self.uid)), "x11")
+
+    def test_logind_ignores_greeters_and_ssh(self):
+        self.logind_file("1", TYPE="wayland", CLASS="greeter",
+                         UID=self.uid)
+        self.logind_file("2", TYPE="wayland", REMOTE="1")
+        self.assertIsNone(self.kind())
+        self.logind_file("3", TYPE="x11", DISPLAY=":0")
+        self.assertEqual(self.kind(), "x11")
+
+    def test_logind_prefers_the_active_session(self):
+        self.logind_file("1", TYPE="wayland", STATE="online", ACTIVE="0")
+        self.logind_file("2", TYPE="x11", STATE="active", DISPLAY=":0")
+        self.assertEqual(self.kind(), "x11")
+
+    def test_greeter_wayland_socket_of_another_user(self):
+        """An Xfce box whose display manager runs a Wayland greeter: the
+        greeter's socket exists under *its* uid; ours is an X11 session."""
+        self.wsock(uid=self.uid + 4242)     # not the target user's
+        self.xsock(0)
+        self.assertEqual(self.kind(SUDO_UID=str(self.uid)), "x11")
+
+    def test_greeter_socket_with_no_target_uid(self):
+        """Root over ssh, no SUDO_UID: only a *real user's* socket counts, so
+        a system account's (gdm, uid 125) never wins."""
+        self.wsock()
+        self.xsock(0)
+        with mock.patch.object(passthrough, "_owner", lambda p: 125):
+            self.assertIsNone(passthrough.find_wayland_socket({}, None))
+        self.assertIsNotNone(passthrough.find_wayland_socket({}, None))
+
+    def test_socket_scan_last_resort(self):
+        """cron/systemd unit: no environment at all."""
+        self.wsock()
+        self.assertEqual(self.kind(), "wayland")
+
+    def test_x_socket_last_resort(self):
+        self.xsock(1)
+        self.assertEqual(self.kind(), "x11")
+
+    def test_forwarded_display(self):
+        """`ssh -X box xdotool ...`: no local socket, but the real tool works
+        over the forwarded display, so we must hand over."""
+        self.assertEqual(self.kind(DISPLAY="localhost:10.0"), "x11")
+
+    def test_nothing_anywhere(self):
+        self.assertIsNone(self.kind())
+        self.assertIsNone(self.kind(DISPLAY=""))
+
+    def test_stale_display_is_not_a_session(self):
+        self.assertIsNone(self.kind(DISPLAY=":7"))
+
+    def test_override(self):
+        rd = self.runtime_dir()
+        self.wsock()
+        wl = dict(XDG_RUNTIME_DIR=rd, WAYLAND_DISPLAY="wayland-0")
+        self.assertEqual(self.kind(**wl), "wayland")
+        self.assertEqual(self.kind(FUCKWAYLAND_PASSTHROUGH="always", **wl), "x11")
+        self.assertEqual(self.kind(XDG_SESSION_TYPE="x11"), "x11")
+        self.assertEqual(
+            self.kind(FUCKWAYLAND_PASSTHROUGH="never", XDG_SESSION_TYPE="x11"),
+            "wayland")
+
+    def test_per_tool_override_beats_the_global_one(self):
+        env = dict(FUCKWAYLAND_PASSTHROUGH="always", WDOTOOL_PASSTHROUGH="never",
+                   XDG_SESSION_TYPE="wayland")
+        self.assertEqual(self.kind("xdotool", **env), "wayland")
+        self.assertEqual(self.kind("wdotool", **env), "wayland")
+        self.assertEqual(self.kind("wmctrl", **env), "x11")
+        self.assertEqual(self.kind("xprop", **env), "x11")
+
+    def test_cache_is_keyed_on_the_environment(self):
+        self.assertEqual(passthrough.session_kind(env={"XDG_SESSION_TYPE": "x11"}),
+                         "x11")
+        self.assertEqual(passthrough.session_kind(env={"XDG_SESSION_TYPE": "wayland"}),
+                         "wayland")
+        self.assertEqual(passthrough.session_kind(env={"XDG_SESSION_TYPE": "x11"}),
+                         "x11")
+
+
+class RealTool(Base):
+    """`real_tool()`: the next binary of that name on PATH that is not us."""
+
+    def test_path_walk_skips_us(self):
+        path = self.install_tree()
+        found = passthrough.real_tool("xdotool", {"PATH": path})
+        self.assertEqual(os.path.realpath(found), os.path.realpath(FAKE))
+        self.assertTrue(found.startswith(os.path.join(self.tmp, "bin")))
+        self.assertEqual(passthrough.real_tool("wdotool", {"PATH": path}), found)
+
+    def test_nothing_installed(self):
+        local = self.mkdir("local")
+        os.symlink(SHIM, os.path.join(local, "xdotool"))
+        self.assertIsNone(passthrough.real_tool("xdotool", {"PATH": local}))
+        self.assertIsNone(passthrough.real_tool("xprop", {"PATH": local}))
+
+    def test_override_variable(self):
+        path = self.install_tree()
+        other = self.touch(os.path.join(self.tmp, "other-xdotool"), "#!/bin/sh\n")
+        os.chmod(other, 0o755)
+        self.assertEqual(
+            passthrough.real_tool("xdotool", {"PATH": path,
+                                              "WDOTOOL_REAL_XDOTOOL": other}),
+            other)
+
+    def test_override_variable_unusable_is_an_error(self):
+        bad = self.touch(os.path.join(self.tmp, "not-exec"))
+        for value in (bad, os.path.join(self.tmp, "nope"), self.tmp):
+            with self.assertRaises(passthrough.RealToolError) as cm:
+                passthrough.real_tool("xprop", {"PATH": "", "WXPROP_REAL_XPROP": value})
+            self.assertIn("WXPROP_REAL_XPROP", str(cm.exception))
+
+    def test_is_us_guards(self):
+        # 1: the same file (a hardlink under another name)
+        link = os.path.join(self.tmp, "xdotool")
+        os.link(SHIM, link)
+        with mock.patch.object(sys, "argv", [SHIM]):
+            self.assertTrue(passthrough.is_us(link))
+        # 2: resolves to a file named like one of our tools
+        wdo = self.touch(os.path.join(self.tmp, "d2", "wdotool"), "#!/bin/sh\n:\n")
+        os.chmod(wdo, 0o755)
+        alias = os.path.join(self.tmp, "d2", "xdotool")
+        os.symlink(wdo, alias)
+        with mock.patch.object(sys, "argv", ["/nowhere/else"]):
+            self.assertTrue(passthrough.is_us(alias))
+            # 3: the head sniff (a pyz copy under a foreign name)
+            pyz = self.touch(os.path.join(self.tmp, "d3", "xdotool"),
+                             "#!/usr/bin/env python3\n# fuckwayland-clone: wdotool\n")
+            os.chmod(pyz, 0o755)
+            self.assertTrue(passthrough.is_us(pyz))
+            # a compiled binary is never us: we are pure Python
+            self.assertFalse(passthrough.is_us("/bin/true"))
+            self.assertFalse(passthrough.is_us(FAKE))
+
+    def test_built_pyz_carries_the_marker(self):
+        """scripts/build-pyz.sh must stamp the marker into the first 4 KiB —
+        the head sniff is the only guard that survives two *copies* of us
+        under two names in two PATH directories."""
+        dist = os.path.join(REPO, "dist")
+        built = [os.path.join(dist, n) for n in
+                 ("wdotool", "wwmctl", "wxprop", "wxrandr", "warandr")]
+        built = [p for p in built if os.path.exists(p)]
+        if not built:
+            self.skipTest("no dist/ build here (run scripts/build-pyz.sh)")
+        for p in built:
+            with open(p, "rb") as f:
+                head = f.read(4096)
+            self.assertIn(passthrough.MARKER, head, p)
+            self.assertTrue(passthrough.is_us(p), p)
+
+
+class ArgvConventions(Base):
+    """H2: the four main()s do NOT agree about argv. wdotool.cli.main takes
+    argv *including* argv[0]; wwmctl/wxprop/wxrandr take argv[1:]. Each hook
+    has to hand the child the same command line the user typed."""
+
+    def hook_env(self, **extra):
+        env = {"FUCKWAYLAND_PASSTHROUGH": "always", "PATH": "",
+               "WDOTOOL_REAL_XDOTOOL": FAKE, "WWMCTL_REAL_WMCTRL": FAKE,
+               "WXPROP_REAL_XPROP": FAKE, "WXRANDR_REAL_XRANDR": FAKE}
+        env.update(extra)
+        return env
+
+    def run_main(self, main, argv):
+        """Call an entry point the way a real invocation does: no argv
+        argument, the command line in sys.argv."""
+        self.stub_execve()
+        with mock.patch.dict(os.environ, self.hook_env(), clear=True), \
+                mock.patch.object(sys, "argv", list(argv)):
+            passthrough.reset_cache()
+            with self.assertRaises(ExecCalled) as cm:
+                main()
+        return cm.exception
+
+    def test_wdotool_argv_includes_argv0(self):
+        e = self.run_main(wdotool_cli.main,
+                          ["xdotool", "search", "--name", "x", "windowactivate"])
+        self.assertEqual(e.argv, ["xdotool", "search", "--name", "x",
+                                  "windowactivate"])
+        self.assertEqual(e.path, FAKE)
+
+    def test_wwmctl_argv_excludes_argv0(self):
+        e = self.run_main(wwmctl_cli.main, ["wmctrl", "-l", "-G", "-p", "-x"])
+        self.assertEqual(e.argv, ["wmctrl", "-l", "-G", "-p", "-x"])
+
+    def test_wxprop_argv_excludes_argv0(self):
+        e = self.run_main(wxprop_cli.main, ["xprop", "-root", "WM_CLASS"])
+        self.assertEqual(e.argv, ["xprop", "-root", "WM_CLASS"])
+
+    def test_wxrandr_argv_excludes_argv0(self):
+        e = self.run_main(wxrandr_cli.main,
+                          ["xrandr", "--output", "VGA-1", "--auto"])
+        self.assertEqual(e.argv, ["xrandr", "--output", "VGA-1", "--auto"])
+
+    def test_argv0_is_the_original_name(self):
+        """The original prints argv[0] in its own messages: invoked under our
+        own name (or `python3 -m`), it still has to call itself `xdotool`."""
+        e = self.run_main(wdotool_cli.main, ["wdotool", "key", "a"])
+        self.assertEqual(e.argv, ["xdotool", "key", "a"])
+        e = self.run_main(wdotool_cli.main, ["/repo/wdotool/__main__.py", "key", "a"])
+        self.assertEqual(e.argv, ["xdotool", "key", "a"])
+
+    def test_explicit_argv_is_honoured(self):
+        """A caller that does pass an argv still gets the right child command
+        line (entry=True says the process really is this invocation)."""
+        self.stub_execve()
+        with mock.patch.dict(os.environ, self.hook_env(), clear=True), \
+                mock.patch.object(sys, "argv", ["xdotool"]):
+            passthrough.reset_cache()
+            with self.assertRaises(ExecCalled) as cm:
+                passthrough.maybe_exec_real("xdotool", ["mousemove", "1", "2"])
+        self.assertEqual(cm.exception.argv, ["xdotool", "mousemove", "1", "2"])
+
+    def test_daemon_reinvocation_never_hands_over(self):
+        """`wdotool __daemon` is our own re-invocation of ourselves."""
+        self.stub_execve()
+        import wdotool.daemon as daemon
+        with mock.patch.dict(os.environ, self.hook_env(), clear=True), \
+                mock.patch.object(sys, "argv", ["xdotool", "__daemon"]), \
+                mock.patch.object(daemon, "daemon_main", lambda: 7):
+            passthrough.reset_cache()
+            self.assertEqual(wdotool_cli.main(), 7)
+
+
+class SuiteGuard(Base):
+    """H1: an unguarded hook would `execve` the test runner. Two independent
+    belts; this class proves both are live."""
+
+    def test_the_escape_hatch_is_in_effect_right_now(self):
+        self.assertEqual(os.environ.get("FUCKWAYLAND_PASSTHROUGH"), "never")
+        self.assertEqual(
+            passthrough.session_kind("xdotool", os.environ), "wayland",
+            "the suite's escape hatch is not in effect")
+
+    def test_conftest_sets_the_escape_hatch(self):
+        """pytest imports conftest.py before collection; prove it is what
+        sets the hatch, not just this file's own line."""
+        import importlib
+        sys.path.insert(0, os.path.join(REPO, "tests"))
+        self.addCleanup(os.environ.__setitem__, "FUCKWAYLAND_PASSTHROUGH",
+                        os.environ["FUCKWAYLAND_PASSTHROUGH"])
+        del os.environ["FUCKWAYLAND_PASSTHROUGH"]
+        import conftest
+        importlib.reload(conftest)
+        self.assertEqual(os.environ.get("FUCKWAYLAND_PASSTHROUGH"), "never")
+
+    def test_every_test_file_sets_the_escape_hatch(self):
+        """The suite is run file by file (`python3 tests/test_foo.py`), where
+        conftest.py never loads — so every file carries the line itself, and
+        every *new* file has to. A test that spawns one of our tools would
+        otherwise watch it hand itself over on an X11 box."""
+        tests = os.path.join(REPO, "tests")
+        missing = []
+        for name in sorted(os.listdir(tests)):
+            if not (name.startswith("test_") and name.endswith(".py")):
+                continue
+            with open(os.path.join(tests, name)) as f:
+                if 'FUCKWAYLAND_PASSTHROUGH"] = "never"' not in f.read():
+                    missing.append(name)
+        self.assertEqual(missing, [])
+
+    def test_in_process_main_never_execs(self):
+        """The ~17 in-process `cli.main([...])` callers: an explicit argv
+        means we are a library, and a library never replaces its caller's
+        process — even on a box that really is X11."""
+        self.stub_execve()
+        env = {"FUCKWAYLAND_PASSTHROUGH": "always", "PATH": "",
+               "WDOTOOL_REAL_XDOTOOL": FAKE, "WWMCTL_REAL_WMCTRL": FAKE,
+               "WXPROP_REAL_XPROP": FAKE, "WXRANDR_REAL_XRANDR": FAKE,
+               "DISPLAY": ":0", "XDG_SESSION_TYPE": "x11"}
+        calls = [(wdotool_cli.main, ["wdotool", "version"]),
+                 (wdotool_cli.main, ["wdotool", "key", "a"]),
+                 (wwmctl_cli.main, ["--help"]),
+                 (wwmctl_cli.main, ["-l"]),
+                 (wxprop_cli.main, ["-version"]),
+                 (wxprop_cli.main, ["-root", "WM_CLASS"]),
+                 (wxrandr_cli.main, ["--version"]),
+                 (wxrandr_cli.main, ["--query"])]
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(sys, "argv", ["test_passthrough.py"]), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            passthrough.reset_cache()
+            for main, argv in calls:
+                try:
+                    # must not raise ExecCalled; what our own code then does
+                    # with no session at all is beside the point
+                    rc = main(list(argv))
+                except SystemExit as e:
+                    rc = e.code
+                self.assertIn(rc, (0, 1), "%s%r -> %r" % (main, argv, rc))
+        # those runs reach real backend detection, which caches a session-bus
+        # connection; drop it here rather than at interpreter exit, where
+        # unittest's warning filter would print a ResourceWarning
+        from wdotool import backend_detect
+        backend_detect.reset()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResourceWarning)
+            gc.collect()
+
+    def test_parity_oracle_is_protected(self):
+        """tests/test_cli_parity.py shells a shim named `xdotool` while the
+        real one is on PATH: without the escape hatch, on an X11 box it would
+        compare the real xdotool with itself and pass tautologically."""
+        with open(os.path.join(REPO, "tests", "test_cli_parity.py")) as f:
+            src = f.read()
+        head = src.split("compare(")[0]
+        self.assertIn("FUCKWAYLAND_PASSTHROUGH", head)
+        self.assertIn("never", head)
+
+
+class HelpAndVersion(Base):
+    """M3: `xdotool --help` must never answer 127."""
+
+    def env(self, **extra):
+        e = {"XDG_SESSION_TYPE": "x11", "PATH": self.mkdir("empty")}
+        e.update(extra)
+        return e
+
+    def test_help_falls_back_to_our_own_when_nothing_is_installed(self):
+        for args in ([], ["--help"], ["-h"], ["--version"], ["-v"], ["version"],
+                     ["help"], ["-ver"], ["--h"], ["-hv"]):
+            self.assertIsNone(
+                passthrough.maybe_exec_real("xdotool", args, env=self.env()),
+                args)
+
+    def test_real_work_without_the_original_is_127(self):
+        err = []
+        with mock.patch.object(sys, "stderr") as fake:
+            fake.write = err.append
+            rc = passthrough.maybe_exec_real("xdotool", ["key", "a"],
+                                             env=self.env())
+        self.assertEqual(rc, 127)
+        msg = "".join(err)
+        self.assertIn("apt install xdotool", msg)
+        self.assertIn("WDOTOOL_REAL_XDOTOOL", msg)
+        self.assertIn("X11 session", msg)
+
+    def test_help_goes_to_the_original_when_there_is_one(self):
+        """Installed as `xdotool`, even the version string has to be theirs."""
+        self.stub_execve()
+        with self.assertRaises(ExecCalled) as cm:
+            passthrough.maybe_exec_real(
+                "xdotool", ["--version"],
+                env=self.env(WDOTOOL_REAL_XDOTOOL=FAKE))
+        self.assertEqual(cm.exception.argv, ["xdotool", "--version"])
+
+    def test_help_request_table(self):
+        yes = [[], ["--help"], ["-h"], ["-help"], ["--h"], ["-v"], ["--version"],
+               ["-ver"], ["-hv"], ["help"], ["VERSION"]]
+        no = [["key", "a"], ["-x"], ["search", "--help"], ["-root"], ["-"],
+              ["--sync"], ["-id", "5"]]
+        for args in yes:
+            self.assertTrue(passthrough._is_help_request("xdotool", args), args)
+        for args in no:
+            self.assertFalse(passthrough._is_help_request("xdotool", args), args)
+        # only xdotool has bare-word help/version
+        self.assertFalse(passthrough._is_help_request("wmctrl", ["help"]))
+
+    def test_wxprop_falls_back_to_its_native_x11_path(self):
+        """wxprop is the one tool with a real X11 client of its own, so a box
+        with no x11-utils installed keeps working instead of exiting 127."""
+        self.assertIsNone(passthrough.maybe_exec_real(
+            "xprop", ["-root", "WM_CLASS"], fallback_native=True,
+            env=self.env()))
+
+
+class EnvRepair(Base):
+    """The sudo/ssh/cron payoff: `sudo xdotool key a` works *through* us
+    where the original alone fails, because we inject the session's DISPLAY
+    and XAUTHORITY into the environment we exec with."""
+
+    def test_injects_display_and_xauthority(self):
+        self.xsock(99)
+        rd = self.runtime_dir()
+        cookie = self.touch(os.path.join(rd, "xauth_abc"), "cookie")
+        env = passthrough.child_env("xdotool", FAKE,
+                                    {"XDG_RUNTIME_DIR": rd, "PATH": "/bin"})
+        self.assertEqual(env["DISPLAY"], ":99")
+        self.assertEqual(env["XAUTHORITY"], cookie)
+
+    def test_logind_display_wins_over_a_guess(self):
+        self.xsock(1)
+        self.logind_file("7", TYPE="x11", DISPLAY=":0")
+        env = passthrough.child_env("xdotool", FAKE, {})
+        self.assertEqual(env["DISPLAY"], ":0")
+
+    def test_working_values_are_never_touched(self):
+        self.xsock(0)
+        self.xsock(3)
+        cookie = self.touch(os.path.join(self.tmp, "mycookie"))
+        env = passthrough.child_env("xdotool", FAKE,
+                                    {"DISPLAY": ":3", "XAUTHORITY": cookie})
+        self.assertEqual(env["DISPLAY"], ":3")
+        self.assertEqual(env["XAUTHORITY"], cookie)
+        # a forwarded display is not ours to second-guess
+        env = passthrough.child_env("xdotool", FAKE, {"DISPLAY": "otherbox:0"})
+        self.assertEqual(env["DISPLAY"], "otherbox:0")
+
+    def test_dead_display_is_replaced(self):
+        self.xsock(0)
+        env = passthrough.child_env("xdotool", FAKE, {"DISPLAY": ":42"})
+        self.assertEqual(env["DISPLAY"], ":0")
+
+    def test_guard_variable_records_the_handover(self):
+        env = passthrough.child_env("xdotool", FAKE, {})
+        self.assertEqual(env[passthrough.GUARD_VAR], os.path.realpath(FAKE))
+        env2 = passthrough.child_env("xprop", FAKE, env)
+        self.assertEqual(env2[passthrough.GUARD_VAR].split(os.pathsep),
+                         [os.path.realpath(FAKE)] * 2)
+
+    def test_guard_stops_a_loop(self):
+        """We were exec'd as somebody's "real tool": one more handover would
+        just do it again."""
+        with mock.patch.object(sys, "argv", [SHIM]):
+            self.assertTrue(passthrough._handover_loop(
+                {passthrough.GUARD_VAR: os.path.realpath(SHIM)}))
+            self.assertFalse(passthrough._handover_loop(
+                {passthrough.GUARD_VAR: os.path.realpath(FAKE)}))
+            self.assertFalse(passthrough._handover_loop({}))
+            # backstop: an identity we cannot recognise still terminates
+            self.assertTrue(passthrough._handover_loop(
+                {passthrough.GUARD_VAR: os.pathsep.join(
+                    "/nope/%d" % i for i in range(passthrough.GUARD_DEPTH))}))
+
+    def test_loop_reports_instead_of_exec(self):
+        err = []
+        self.stub_execve()
+        with mock.patch.object(sys, "argv", [SHIM]), \
+                mock.patch.object(sys, "stderr") as fake:
+            fake.write = err.append
+            rc = passthrough.maybe_exec_real(
+                "xdotool", ["key", "a"],
+                env={"XDG_SESSION_TYPE": "x11", "PATH": self.install_tree(),
+                     passthrough.GUARD_VAR: os.path.realpath(SHIM)})
+        self.assertEqual(rc, 127)
+        self.assertIn(passthrough.GUARD_VAR, "".join(err))
+
+
+class WarandrBackend(Base):
+    """warandr picks a command; it never execs (it is not a clone of an X11
+    binary we are installed over)."""
+
+    def test_choose_follows_session_kind(self):
+        from warandr import randr
+        rd = self.runtime_dir()
+        self.wsock(name="wayland-1")
+        passthrough.reset_cache()
+        b = randr.choose({"XDG_RUNTIME_DIR": rd, "WAYLAND_DISPLAY": "wayland-1",
+                          "PATH": "/nonexistent"})
+        self.assertTrue(b.wayland)
+        self.assertEqual(b.word, "wxrandr")
+        passthrough.reset_cache()
+        # the same variable with no compositor behind it: X11
+        b = randr.choose({"WAYLAND_DISPLAY": "wayland-4", "PATH": "/nonexistent",
+                          "XDG_SESSION_TYPE": "x11"})
+        self.assertFalse(b.wayland)
+        self.assertEqual(b.argv, ["xrandr"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -29,6 +29,12 @@ from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,        # noqa: E40
 from wdotool.ctx import CmdError, NoSessionError                       # noqa: E402
 from wdotool.dbus_mini import Bus, DBusError, Message, Variant         # noqa: E402
 
+# The suite never hands a tool over to the real X11 one: see
+# tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
+# This line is what covers `python3 tests/<file>.py`, where conftest is
+# not loaded, and it reaches every subprocess a test spawns.
+os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
+
 XTERM, EDITOR, CALC, DESKTOP = 4194305, 4194306, 4194307, 4194301
 XTERM_XID = 0x400005
 

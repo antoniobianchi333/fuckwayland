@@ -16,6 +16,12 @@ from wxrandr import cli, core                                   # noqa: E402
 from wxrandr.core import (Mode, OutputState, Stanza, State,     # noqa: E402
                           build_targets, resolve_positions)
 
+# The suite never hands a tool over to the real X11 one: see
+# tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
+# This line is what covers `python3 tests/<file>.py`, where conftest is
+# not loaded, and it reaches every subprocess a test spawns.
+os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
+
 
 def run_cli(*argv):
     out, err = io.StringIO(), io.StringIO()
