@@ -300,10 +300,98 @@ class ArgErrorsTest(CliTestBase):
         self.assertEqual(code, 1)
         self.assertEqual(err, "xprop: error: Bad format: s8.\n")
 
-    def test_font_is_a_clean_error(self):
+    def test_font_without_an_x_server_is_a_clean_error(self):
         code, _out, err = self.run_cli("-font", "fixed")
         self.assertEqual(code, 1)
         self.assertEqual(err, "xprop: error: Unable to open font fixed!\n")
+
+
+class FontTest(CliTestBase):
+    """wxprop-9: -font used to be an unconditional "cannot open it".
+    XWayland serves the core fonts (xfonts-base), so it is implementable:
+    OpenFont + QueryFont, xprop's FONT format table, and values with no
+    type -- so no "(TYPE)" and an unmapped property printed as bare hex.
+    Byte-identical to `xprop -font fixed` live on GNOME 46."""
+
+    FIXED = [("FONTNAME_REGISTRY", 0x59), ("FOUNDRY", 0),
+             ("PIXEL_SIZE", 13), ("POINT_SIZE", 120), ("FONT", 0)]
+
+    class _Conn:
+        def __init__(self, props):
+            self.props = props
+            self.names = {1000 + i: n for i, (n, _v) in enumerate(props)}
+            self.names[2000] = "Misc"
+            self.names[2001] = "-Misc-Fixed-Medium-R--13-120"
+            self.opened = []
+
+        def atom(self, name, only_if_exists=False):
+            for a, n in self.names.items():
+                if n == name:
+                    return a
+            return 0 if only_if_exists else 3000
+
+        def get_atom_name(self, a):
+            return self.names.get(a)
+
+        def font_properties(self, name):
+            self.opened.append(name)
+            if name != "fixed":
+                raise RuntimeError("BadName")
+            vals = {"FOUNDRY": 2000, "FONT": 2001}
+            return [(self.atom(n), vals.get(n, v)) for n, v in self.props]
+
+    def run_font(self, *args):
+        conn = self._Conn(self.FIXED)
+        with mock.patch.object(core, "_x11_connect", lambda *a, **k: conn):
+            with mock.patch.dict(os.environ, {"WXPROP_NO_X": ""}):
+                os.environ.pop("WXPROP_NO_X")
+                out = _CapStdout()
+                err = io.StringIO()
+                with mock.patch.object(core, "_detect_backend",
+                                       lambda: None), \
+                        mock.patch.object(sys, "stdout", out), \
+                        mock.patch.object(sys, "stderr", err):
+                    code = cli.main(list(args))
+        return code, out.buffer.getvalue(), err.getvalue(), conn
+
+    def test_full_dump(self):
+        code, out, err, conn = self.run_font("-font", "fixed")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(conn.opened, ["fixed"])
+        self.assertEqual(out, (
+            b"FONTNAME_REGISTRY = 0x59\n"        # unmapped: xprop's "0x"
+            b"FOUNDRY = Misc\n"                  # 32a: the atom's name
+            b"PIXEL_SIZE = 13\n"                 # 32c
+            b"POINT_SIZE = 120\n"
+            b"FONT = -Misc-Fixed-Medium-R--13-120\n"))
+
+    def test_named_properties_and_a_missing_one(self):
+        code, out, err, _c = self.run_font("-font", "fixed", "FOUNDRY",
+                                           "ZZ_NOPE", "POINT_SIZE")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, (b"FOUNDRY = Misc\n"
+                               b"ZZ_NOPE:  no such atom on any window.\n"
+                               b"POINT_SIZE = 120\n"))
+
+    def test_font_that_will_not_open(self):
+        code, _out, err, _c = self.run_font("-font", "zzznosuch")
+        self.assertEqual(code, 1)
+        self.assertEqual(err,
+                         "xprop: error: Unable to open font zzznosuch!\n")
+
+    def test_set_and_remove_are_refused(self):
+        for opt, args in (("-remove", ("-remove", "FOUNDRY")),
+                          ("-set", ("-set", "FOUNDRY", "x"))):
+            code, _out, err, _c = self.run_font("-font", "fixed", *args)
+            self.assertEqual(code, 1)
+            self.assertEqual(err, "xprop: error: %s works only on windows, "
+                                  "not fonts\n" % opt)
+
+    def test_spy_on_a_font_just_dumps(self):
+        code, out, err, _c = self.run_font("-font", "fixed", "-spy",
+                                           "FOUNDRY")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, b"FOUNDRY = Misc\n")
 
     def test_explicit_display_that_cannot_open(self):
         code, _out, err = self.run_cli("-display", ":9313", "-root")

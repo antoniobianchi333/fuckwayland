@@ -4,8 +4,10 @@ Talks straight to the XWayland server over its unix socket — enough of the
 core protocol for wmctrl-style identity/property work and nothing more:
 InternAtom, GetProperty (long properties via the offset loop), ChangeProperty,
 SendEvent (ClientMessage to root), GetGeometry + TranslateCoordinates,
-QueryTree, GetInputFocus (as the post-void-request sync). No resource ids are
-ever allocated, no extensions, no big-requests; byte order 'l' only.
+QueryTree, GetInputFocus (as the post-void-request sync), plus OpenFont /
+QueryFont / CloseFont for `wxprop -font`, the one place a resource id is
+allocated (from the setup reply's base and mask). No extensions, no
+big-requests; byte order 'l' only.
 
 Error model: XUnavailable for anything connection-level (no server, bad
 DISPLAY, auth rejected, connection lost), X11Error for errors the server
@@ -50,6 +52,9 @@ _OP_GET_GEOMETRY = 14
 _OP_QUERY_TREE = 15
 _OP_TRANSLATE_COORDS = 40
 _OP_GET_INPUT_FOCUS = 43
+_OP_OPEN_FONT = 45
+_OP_CLOSE_FONT = 46
+_OP_QUERY_FONT = 47
 _CLIENT_MESSAGE = 33
 _EVENT_MASK_SUBSTRUCTURE = 0x180000  # SubstructureNotify|SubstructureRedirect
 _CW_EVENT_MASK = 0x800
@@ -299,6 +304,7 @@ class X11Conn:
         # failure is treated as a refusal, never a leaked struct.error.
         try:
             max_words, = struct.unpack_from("<H", body, 18)
+            rid_base, rid_mask = struct.unpack_from("<II", body, 4)
             (vlen,) = struct.unpack_from("<H", body, 16)
             nscreens, nformats = body[20], body[21]
             p = 32 + len(_pad4(b"\0" * vlen)) + 8 * nformats
@@ -316,6 +322,9 @@ class X11Conn:
         if not roots:
             return False, "setup reply carries no screens"
         self._roots = roots
+        # resource ids we may allocate (fonts: xprop -font). The mask is a
+        # contiguous run of low bits the client owns.
+        self._rid_base, self._rid_mask = rid_base, rid_mask
         # maximum-request-length (in 4-byte units); the protocol floor is
         # 4096 words, so never let a nonsense advertisement go below it
         self._max_req_words = max(4096, max_words)
@@ -514,6 +523,38 @@ class X11Conn:
         pkt, _ = self._wait_reply(seq)
         x, y = struct.unpack_from("<hh", pkt, 12)
         return x, y, w, h
+
+    def _new_rid(self) -> int:
+        """One resource id out of the range the setup reply gave us."""
+        n = getattr(self, "_rid_next", 0) + 1
+        self._rid_next = n
+        mask = getattr(self, "_rid_mask", 0) or 0x1FFFFF
+        if not (n & mask):
+            raise XUnavailable("no resource ids left")
+        return (getattr(self, "_rid_base", 0) or 0) | (n & mask)
+
+    def font_properties(self, name: str) -> "list[tuple[int, int]]":
+        """[(atom id, CARD32 value)] — a core X font's FONTPROPs, the list
+        `xprop -font` prints. OpenFont's BadName (no such font) surfaces as
+        X11Error from the synchronising round trip."""
+        fid = self._new_rid()
+        raw = name.encode("latin-1", "replace")
+        self._void(_OP_OPEN_FONT, 0,
+                   struct.pack("<IHxx", fid, len(raw)) + _pad4(raw))
+        try:
+            seq = self._send(_OP_QUERY_FONT, 0, struct.pack("<I", fid))
+            pkt, body = self._wait_reply(seq)
+            # QueryFont's fixed part is 60 bytes: the FONTPROPs follow it,
+            # and their count sits at byte 46 (body offset 14).
+            (n,) = struct.unpack_from("<H", body, 14)
+            n = min(n, max(0, (len(body) - 28) // 8))
+            return [struct.unpack_from("<II", body, 28 + i * 8)
+                    for i in range(n)]
+        finally:
+            try:
+                self._void(_OP_CLOSE_FONT, 0, struct.pack("<I", fid))
+            except Exception:
+                pass
 
     def set_name(self, win: int, name: str, icon: bool, long_: bool,
                  utf8: bool = False) -> None:

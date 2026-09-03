@@ -331,11 +331,15 @@ class MaxRequestLengthTest(unittest.TestCase):
         # nothing was put on the wire: the connection stays usable
         self.assertGreater(conn.atom("_STILL_ALIVE"), 0)
 
-    def test_rid_fields_dropped_and_max_req_parsed(self):
+    def test_rid_range_and_max_req_parsed(self):
         conn = X11Conn(self.DPY)
         self.addCleanup(conn.close)
-        self.assertFalse(hasattr(conn, "_rid_base"))
-        self.assertFalse(hasattr(conn, "_rid_mask"))
+        # the setup reply's resource-id range: the only ids we allocate are
+        # the font ids `wxprop -font` needs, and they come from here
+        self.assertEqual((conn._rid_base, conn._rid_mask),
+                         (0x400000, 0x3FFFFF))
+        self.assertEqual(conn._new_rid() & ~conn._rid_mask, conn._rid_base)
+        self.assertNotEqual(conn._new_rid(), conn._new_rid())
         self.assertEqual(conn._max_req_words, 0xFFFF)  # from the fake setup
 
     def test_core_set_title_degrades_on_oversized_name(self):

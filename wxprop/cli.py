@@ -495,7 +495,13 @@ def _main(prog: str, args) -> int:
         notype=False, max_len=MAXSTR, utf8_locale=utf8_locale,
         truecolor=(os.environ.get("COLORTERM") == "truecolor"),
         term_width=_term_width())
-    formatter.setup_window_table()
+    # xprop picks its property-format table before the option loop runs,
+    # by scanning argv for -font (xprop.c:1961): the FONT table replaces
+    # the window one for the whole run.
+    if "-font" in args:
+        formatter.setup_font_table()
+    else:
+        formatter.setup_window_table()
     xpropformats = os.environ.get("XPROPFORMATS")
     if xpropformats:
         _read_mappings_file(formatter, xpropformats)
@@ -507,6 +513,7 @@ def _main(prog: str, args) -> int:
     frame = False  # accepted, no reparenting frames on wlroots
     removes = []
     sets = []
+    font_name = None
     pending_interns = []
     i = 0
     while i < len(args) and args[i].startswith("-"):
@@ -549,9 +556,9 @@ def _main(prog: str, args) -> int:
         if a == "-font":
             if i >= len(args):
                 raise UsageError("-font requires an argument")
-            # no core-font plane here: report the font as unopenable, the
-            # way xprop reports a font it cannot load (documented)
-            raise FatalError("Unable to open font %s!" % args[i])
+            font_name = args[i]
+            i += 1
+            continue
         if a == "-remove":
             if i >= len(args):
                 raise UsageError("-remove requires an argument")
@@ -598,8 +605,10 @@ def _main(prog: str, args) -> int:
                          % (prog, specs_args[0]))
         raise UsageError(None)
 
-    # 4. resolve the target window
-    if spec is None:
+    # 4. resolve the target window (or the font, which replaces it)
+    if font_name is not None:
+        target = core.resolve_font(sess, font_name)
+    elif spec is None:
         target = core.select_target(sess, prog)
     elif spec[0] == "root":
         target = core.resolve_root(sess)
@@ -613,6 +622,9 @@ def _main(prog: str, args) -> int:
 
     # 5. -remove / -set: apply and exit 0, printing nothing on success
     if removes or sets:
+        if target.plane == "font":
+            what = "-remove" if removes else "-set"
+            raise FatalError("%s works only on windows, not fonts" % what)
         if target.plane == "missing":
             target.intern(b"", create=False)  # raises does-not-exists
         if target.plane != "x":
@@ -668,6 +680,8 @@ def _main(prog: str, args) -> int:
 
     # 7. -spy
     if spy:
+        if target.plane == "font":
+            return 0   # a font has no property events; the oracle exits too
         sys.stdout.buffer.flush()
         if isinstance(target, core.MergedRootTarget):
             return core.spy_merged_root(formatter, target, specs)

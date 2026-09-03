@@ -770,6 +770,65 @@ class MergedRootTarget:
             % (_progname(), what, name.decode("latin-1", "replace")))
 
 
+class FontTarget:
+    """`xprop -font <name>`: a core X font's FONTPROPs.
+
+    xprop's Get_Font_Property_Data_And_Type hands every value back as a
+    typeless 32-bit CARD32, so the lines carry no `(TYPE)` and the format
+    comes from the font table alone (an unmapped property falls back to
+    xprop's default `0x` and prints as a bare hex number). XWayland does
+    serve the core fonts xfonts-base installs, `fixed` among them."""
+
+    plane = "font"
+    node_id = None
+    win = None
+
+    def __init__(self, conn, name: str, props):
+        self.conn = conn
+        self.name = name
+        self.props = props        # [(atom id, CARD32)] in the font's order
+
+    def refresh(self):
+        return True
+
+    def intern(self, name: bytes, create: bool) -> bool:
+        return bool(self.conn.atom(name.decode("latin-1"),
+                                   only_if_exists=not create))
+
+    def fetch(self, name: bytes):
+        atom = self.conn.atom(name.decode("latin-1"), only_if_exists=True)
+        if not atom:
+            return None
+        for a, v in self.props:
+            if a == atom:
+                return None, 32, struct.pack("<I", v & 0xFFFFFFFF)
+        return None
+
+    def list_names(self):
+        out = []
+        for a, _v in self.props:
+            n = self.conn.get_atom_name(a)
+            if n is None:
+                n = "undefined atom # 0x%x" % a
+            out.append(n.encode("latin-1"))
+        return out
+
+    def atom_name(self, a: int):
+        return self.conn.get_atom_name(a)
+
+
+def resolve_font(sess: Session, name: str):
+    """The -font target, or xprop's own "cannot load it" fatal."""
+    x = sess.x11()
+    if x is None:
+        raise FatalError("Unable to open font %s!" % name)
+    try:
+        props = x.font_properties(name)
+    except Exception:
+        raise FatalError("Unable to open font %s!" % name) from None
+    return FontTarget(x, name, props)
+
+
 # -- window selection --------------------------------------------------------
 
 

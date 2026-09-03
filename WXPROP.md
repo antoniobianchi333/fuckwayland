@@ -65,9 +65,16 @@ Prep drops these in SCRATCH/reference/: xprop manpage, cloned xprop source
   the window state first).
 - Exit codes and stderr strings per xprop source (e.g. "No such property" wording,
   usage exit 1).
-- `-display`, `-fs`/`-font`, `-grammar` edge flags: -display honored for the X
-  plane; font properties (-fs/-font) print xprop's error/unsupported path (no core
-  fonts here) with a clean line; -grammar prints the real grammar text.
+- `-display`, `-fs`, `-grammar` edge flags: -display honored for the X plane;
+  -grammar prints the real grammar text.
+- `-font <name>` is real: XWayland serves the core fonts (xfonts-base), so the
+  font plane is `OpenFont` + `QueryFont` on the X connection and the FONTPROPs
+  print through xprop's *font* format table — which replaces the window one for
+  the whole run, chosen by pre-scanning argv the way xprop.c does. Values carry
+  no type, so no `(TYPE)` is printed and a property the table does not name
+  falls back to xprop's default `0x` (bare hex). `-remove`/`-set` on a font are
+  the oracle's own `… works only on windows, not fonts`, and `-spy` dumps and
+  exits. Byte-identical to `xprop -font fixed` on GNOME 46.
 
 ## GNOME
 
