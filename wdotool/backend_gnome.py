@@ -18,6 +18,9 @@ org.gnome.Shell.Introspect uses), printed in decimal like every backend.
 Field mapping (bridge object -> Window):
   class_   wm_class, else gtk_app_id, else sandboxed_app_id (Mutter reports
            the Wayland app_id as wm_class for native clients)
+  instance wm_class_instance -- the WM_CLASS *instance* of an XWayland client
+           (`xterm -name myinst` -> "myinst"), "" for native toplevels, where
+           `search --classname` then falls back to class_ = the app_id
   x,y,w,h  get_frame_rect(): logical pixels, SSD frame included, no CSD
            shadow -- the same space the input daemon's pointer lives in
   focused  has_focus()
@@ -280,6 +283,7 @@ class GnomeBackend(WindowBackend):
             title=d.get("title") or "",
             class_=d.get("wm_class") or d.get("gtk_app_id")
             or d.get("sandboxed_app_id") or "",
+            instance=d.get("wm_class_instance") or "",
             pid=int(d.get("pid") or 0),
             x=int(d.get("x", 0)), y=int(d.get("y", 0)),
             w=int(d.get("width", 0)), h=int(d.get("height", 0)),

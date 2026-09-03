@@ -19,7 +19,11 @@ from wdotool.ctx import CmdError
 class Window:
     id: int = 0
     title: str = ""
-    class_: str = ""  # app_id on Wayland; doubles as WM_CLASS class and instance
+    class_: str = ""  # app_id on Wayland; the WM_CLASS *class* for X clients
+    # WM_CLASS *instance* of an X/XWayland client ("" when the backend cannot
+    # tell it apart from class_); `search --classname` matches this, falling
+    # back to class_ so native Wayland toplevels still match their app_id.
+    instance: str = ""
     pid: int = 0
     x: int = 0
     y: int = 0

@@ -407,8 +407,12 @@ class BackendTests(_Base):
         self.assertEqual([w.id for w in wins], [DESKTOP, EDITOR, CALC, XTERM])
         xterm = wins[-1]
         self.assertEqual(xterm, Window(id=XTERM, title="test@vm: ~", class_="XTerm",
-                                       pid=1201, x=100, y=80, w=640, h=480,
+                                       instance="xterm", pid=1201,
+                                       x=100, y=80, w=640, h=480,
                                        focused=True, visible=True, desktop=0))
+        # B4: native toplevels carry no WM_CLASS instance, so --classname
+        # falls back to class_ = the app_id for them.
+        self.assertEqual(wins[2].instance, "")
         editor = wins[1]
         self.assertEqual(editor.class_, "org.gnome.TextEditor")  # gtk_app_id fallback
         self.assertFalse(editor.visible)  # minimized

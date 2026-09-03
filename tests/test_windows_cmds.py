@@ -463,5 +463,35 @@ class BoundedSyncTest(unittest.TestCase):
         os.environ.pop("WDOTOOL_SYNC_TIMEOUT")
         self.assertEqual(window_cmds._sync_timeout(), window_cmds.SYNC_TIMEOUT)
 
+class ClassNameSearchTest(unittest.TestCase):
+    """B4: --classname matches the WM_CLASS *instance* of X/XWayland windows,
+    --class the class part; native toplevels have no instance and keep
+    matching their app_id through both."""
+
+    def backend(self):
+        return FakeBackend([
+            Window(id=11, title="xterm", class_="XTerm", instance="myinst",
+                   pid=1, x=0, y=0, w=10, h=10, visible=True),
+            Window(id=22, title="calc", class_="org.gnome.Calculator",
+                   pid=2, x=0, y=0, w=10, h=10, visible=True),
+        ])
+
+    def test_classname_finds_the_instance(self):
+        rc, out, _e, _c = run(["search", "--classname", "myinst"], self.backend())
+        self.assertEqual((rc, out), (0, "11\n"))
+
+    def test_class_does_not_match_the_instance(self):
+        rc, out, _e, _c = run(["search", "--class", "myinst"], self.backend())
+        self.assertEqual((rc, out), (1, ""))
+
+    def test_class_matches_the_class_part(self):
+        rc, out, _e, _c = run(["search", "--class", "XTerm"], self.backend())
+        self.assertEqual((rc, out), (0, "11\n"))
+
+    def test_native_toplevel_matches_app_id_through_both(self):
+        for flag in ("--class", "--classname"):
+            rc, out, _e, _c = run(["search", flag, "gnome.Calc"], self.backend())
+            self.assertEqual((rc, out), (0, "22\n"), flag)
+
 if __name__ == "__main__":
     unittest.main()

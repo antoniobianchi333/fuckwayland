@@ -229,9 +229,15 @@ def cmd_search(ctx, args):
             if want_name:
                 conds.append(rx.search(w.title or "") is not None)
             if want_class:
+                # WM_CLASS class for X clients, app_id for native toplevels.
                 conds.append(rx.search(w.class_ or "") is not None)
             if want_classname:
-                conds.append(rx.search(w.class_ or "") is not None)
+                # WM_CLASS *instance* -- `xterm -name myinst` is findable by
+                # "myinst" like it is under X11 (B4). Native Wayland
+                # toplevels have no instance, so they keep matching their
+                # app_id and --class/--classname stay equivalent there.
+                conds.append(
+                    rx.search(w.instance or w.class_ or "") is not None)
             if want_role:
                 # Window roles do not exist on Wayland; match against ""
                 # exactly like libxdo does for a window with no role set.
