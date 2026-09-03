@@ -217,6 +217,11 @@ class FakeXServer(threading.Thread):
             tname = self._names.get(typ, "?")
             self.log.append(("ChangeProperty", win, pname, tname, fmt, data))
             self.props[(win, pname)] = (tname, fmt, data)
+        elif opcode == 19:  # DeleteProperty
+            win, prop = struct.unpack("<II", payload)
+            pname = self._names.get(prop, "?")
+            self.log.append(("DeleteProperty", win, pname))
+            self.props.pop((win, pname), None)
         elif opcode == 25:  # SendEvent
             dest, mask = struct.unpack_from("<II", payload, 0)
             self.log.append(("SendEvent", dest, mask, payload[8:40]))
@@ -543,6 +548,23 @@ class FakeXServerTest(unittest.TestCase):
         self.assertEqual(set(changes()),
                          {"WM_NAME", "_NET_WM_NAME",
                           "WM_ICON_NAME", "_NET_WM_ICON_NAME"})
+
+    def test_set_name_in_a_utf8_environment_deletes_the_legacy_property(self):
+        """wwmctl-7: wmctrl's window_set_title has no locale copy of the
+        title under envir_utf8 (a UTF-8 locale, or -u), so it deletes
+        WM_NAME rather than leaving a lossy STRING behind."""
+        srv = self.serve()
+        win = 0x400001
+        conn = self.connect()
+        conn.set_name(win, "caf\u00e9 \u2713", icon=True, long_=True,
+                      utf8=True)
+        changed = {e[2]: (e[3], e[4], e[5]) for e in srv.log
+                   if e[0] == "ChangeProperty"}
+        deleted = [e[2] for e in srv.log if e[0] == "DeleteProperty"]
+        self.assertEqual(set(changed), {"_NET_WM_NAME", "_NET_WM_ICON_NAME"})
+        self.assertEqual(changed["_NET_WM_NAME"],
+                         ("UTF8_STRING", 8, "caf\u00e9 \u2713".encode("utf-8")))
+        self.assertEqual(sorted(deleted), ["WM_ICON_NAME", "WM_NAME"])
 
     def test_send_root_message_framing(self):
         srv = self.serve()

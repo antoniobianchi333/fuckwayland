@@ -232,7 +232,8 @@ NATIVE_EDITOR_DUMP = (
     b'WM_CLIENT_MACHINE(STRING) = "testhost"\n'
     b'WM_CLASS(STRING) = "org.gnome.TextEditor", "org.gnome.TextEditor"\n'
     b'_NET_WM_NAME(UTF8_STRING) = "Untitled Document 1 - Text Editor"\n'
-    b'WM_NAME(STRING) = "Untitled Document 1 - Text Editor"\n')
+    b'WM_NAME(STRING) = "Untitled Document 1 - Text Editor"\n'
+    b"WM_STATE(WM_STATE):\n\t\twindow state: Iconic\n\t\ticon window: 0x0\n")
 
 
 class NativePlaneTests(GnomeXpropBase):
@@ -266,6 +267,25 @@ class NativePlaneTests(GnomeXpropBase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out,
                          'WM_NAME(STRING) = "caf\u00e9"\n'.encode("utf-8"))
+
+    def test_focused_transient_and_wm_state(self):
+        """wxprop-11: the bridge reports transient_for, focus and
+        visibility; the native synthesis dropped all three. Mutter puts
+        _NET_WM_STATE_FOCUSED last in its own set_net_wm_state order, and
+        writes WM_STATE on every X11 window it manages."""
+        self.bridge.find(CALC).update(transient_for=EDITOR, focused=True)
+        code, out, err = self.run_cli("-id", "%d" % CALC, "_NET_WM_STATE",
+                                      "WM_TRANSIENT_FOR", "WM_STATE")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, (
+            b"_NET_WM_STATE(ATOM) = _NET_WM_STATE_FOCUSED\n"
+            b"WM_TRANSIENT_FOR(WINDOW): window id # 0x400002\n"
+            b"WM_STATE(WM_STATE):\n\t\twindow state: Normal\n"
+            b"\t\ticon window: 0x0\n"))
+        # an unfocused window with no parent carries neither
+        code, out, _e = self.run_cli("-id", "%d" % DESKTOP,
+                                     "WM_TRANSIENT_FOR")
+        self.assertEqual(out, b"WM_TRANSIENT_FOR:  not found.\n")
 
     def test_desktop_window_type_and_skip_taskbar(self):
         code, out, _e = self.run_cli("-id", "%d" % DESKTOP, "_NET_WM_STATE",

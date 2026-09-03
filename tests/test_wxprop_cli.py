@@ -236,6 +236,65 @@ class ArgErrorsTest(CliTestBase):
         self.assertEqual(cli._parse_window_id("0x40000czz"), 0x40000C)
         self.assertEqual(cli._parse_window_id(" 7"), 7)
 
+    def test_synthesized_atom_ids_cannot_be_mistaken_for_real_ones(self):
+        """wxprop-3: the native plane's atom table numbers EWMH names
+        itself. Numbered from 0x100 those ids sat inside the range a real X
+        server hands out, so an id copied out of a native window's dump and
+        fed to a real X tool named a plausible WRONG atom instead of
+        failing."""
+        atoms = core.NativeAtoms()
+        for name, a in atoms.by_name.items():
+            if a <= 68:                    # the predefined X atoms, 1..68
+                self.assertEqual(atoms.by_id[a], name)
+                continue
+            self.assertGreaterEqual(a, 0x10000000, name)
+        # ... and a name interned at runtime lands above them too
+        self.assertGreaterEqual(atoms.intern("ZZ_BRAND_NEW", True), 0x10000000)
+
+    def test_partial_property_survives_a_rendering_fatal(self):
+        """wxprop-4: xprop writes each property as it renders it, so a
+        fatal halfway through a value leaves the name line on stdout. We
+        buffered the whole segment and dropped it on the way out."""
+        code, out, err = self.run_cli("-id", "6", "32s", "_NET_WM_PID",
+                                      backend="fake")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, b"_NET_WM_PID(CARDINAL)")
+        self.assertEqual(err, "xprop: error: can't use format character "
+                              "'s' with any size except 8.\n")
+
+    def test_id_parsing_matches_sscanf_exactly(self):
+        """wxprop-8: the "0x" of sscanf("0x%lx") is a literal -- it skips
+        no whitespace and matches no uppercase X -- while the %lu fallback
+        skips whitespace and takes a sign (strtoul)."""
+        self.assertEqual(cli._parse_window_id("-5"), 0xFFFFFFFB)
+        self.assertEqual(cli._parse_window_id("+7"), 7)
+        self.assertEqual(cli._parse_window_id("  12"), 12)
+        for bad in (" 0x20", "0X20", "\t0x20"):
+            with self.assertRaises(cli.FatalError) as cm:
+                cli._parse_window_id(bad)
+            self.assertEqual(str(cm.exception),
+                             "Invalid window id format: %s." % bad)
+
+    def test_len_is_a_c_int(self):
+        """wxprop-5/6: -len goes through atoi(), which returns an int, and
+        the byte budget is compared as an unsigned long. So 4294967296
+        truncates to 0 (nothing printed) while 2147483648 truncates to
+        INT_MIN, whose negative word count reaches the server as a huge
+        unsigned one and fetches everything."""
+        empty = b"_NET_SUPPORTED(ATOM) = \n"
+        for n in ("4294967296", "-1", "-5", "0"):
+            code, out, _e = self.run_cli("-root", "-len", n, "_NET_SUPPORTED",
+                                         backend="fake")
+            self.assertEqual((code, out), (0, empty), n)
+        code, full, _e = self.run_cli("-root", "_NET_SUPPORTED",
+                                      backend="fake")
+        self.assertEqual(code, 0)
+        self.assertNotEqual(full, empty)
+        for n in ("2147483648", "-2147483648"):
+            code, out, _e = self.run_cli("-root", "-len", n, "_NET_SUPPORTED",
+                                         backend="fake")
+            self.assertEqual((code, out), (0, full), n)
+
     def test_bad_format_flag(self):
         code, _out, err = self.run_cli("-id", "0x1", "-f", "A", "s8")
         self.assertEqual(code, 1)

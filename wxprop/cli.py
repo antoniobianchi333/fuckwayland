@@ -141,6 +141,12 @@ def _term_width() -> int:
     return 144 + 8
 
 
+def _c_int(v: int) -> int:
+    """A Python int as C would keep it in an `int`."""
+    v &= 0xFFFFFFFF
+    return v - 0x100000000 if v >= 0x80000000 else v
+
+
 def _atoi(s: str) -> int:
     m = re.match(r"[ \t\n\v\f\r]*([+-]?[0-9]+)", s)
     return int(m.group(1)) if m else 0
@@ -172,13 +178,20 @@ def _strtoul(s: str) -> int:
 
 def _parse_window_id(arg: str) -> int:
     """dsimple.c: sscanf("0x%lx") else sscanf("%lu"), partial parses count,
-    0 (or nothing) is fatal."""
+    0 (or nothing) is fatal.
+
+    The literal "0x" of the first format matches no whitespace and no
+    uppercase X -- sscanf only skips whitespace for a conversion, and the
+    format has none before the 0 -- so " 0x20" and "0X20" fall through to
+    %lu, parse as 0 and are fatal (verified against the oracle). %lu is
+    strtoul, which does skip whitespace and does accept a sign: "-5" is
+    ULONG_MAX-4, wrapped into the id below."""
     w = 0
-    m = re.match(r"[ \t\n\v\f\r]*0[xX]([0-9a-fA-F]+)", arg)
+    m = re.match(r"0x([0-9a-fA-F]+)", arg)
     if m:
         w = int(m.group(1), 16)
     if not w:
-        m = re.match(r"[ \t\n\v\f\r]*\+?([0-9]+)", arg)
+        m = re.match(r"[ \t\n\v\f\r]*([-+]?[0-9]+)", arg)
         if m:
             w = int(m.group(1))
     if not w:
@@ -519,7 +532,12 @@ def _main(prog: str, args) -> int:
         if a == "-len":
             if i >= len(args):
                 raise UsageError("-len requires an argument")
-            formatter.max_len = _atoi(args[i])
+            # xprop keeps max_len in a long but parses it with atoi(),
+            # which returns an int: "-len 4294967296" is 0 there (nothing
+            # is printed), and "-len 2147483648" is INT_MIN, whose negative
+            # word count reaches the server as a huge unsigned one and
+            # fetches everything.
+            formatter.max_len = _c_int(_atoi(args[i]))
             i += 1
             continue
         if a in ("-formats", "-fs"):
@@ -632,13 +650,21 @@ def _main(prog: str, args) -> int:
             if target.intern(prop_b, create=False):
                 specs.append((prop_b, f_b, d_b))
             seg = bytearray()
-            core.show_prop(formatter, target, seg, f_b, d_b, prop_b)
-            _out_write(bytes(seg))
+            # xprop writes each property as it renders it, so a fatal
+            # halfway through a value still leaves the name line (and every
+            # property before it) on stdout. Ours built the whole segment
+            # first and dropped it on the way out.
+            try:
+                core.show_prop(formatter, target, seg, f_b, d_b, prop_b)
+            finally:
+                _out_write(bytes(seg))
     else:
         for name_b in target.list_names():
             seg = bytearray()
-            core.show_prop(formatter, target, seg, None, None, name_b)
-            _out_write(bytes(seg))
+            try:
+                core.show_prop(formatter, target, seg, None, None, name_b)
+            finally:
+                _out_write(bytes(seg))
 
     # 7. -spy
     if spy:

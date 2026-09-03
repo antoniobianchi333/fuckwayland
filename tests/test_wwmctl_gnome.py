@@ -85,8 +85,8 @@ class FakeX11:
             return "GNOME Shell"
         return ""
 
-    def set_name(self, win, name, icon, long_):
-        self.calls.append(("set_name", win, name, icon, long_))
+    def set_name(self, win, name, icon, long_, utf8=False):
+        self.calls.append(("set_name", win, name, icon, long_, utf8))
 
     def atom(self, name, only_if_exists=False):
         return self.atoms.setdefault(name, 0x180 + len(self.atoms))
@@ -218,6 +218,22 @@ class ListingTests(GnomeCliBase):
             self.assertIn(line, second.splitlines())
         # ... and the short machine really is padded out to the long one
         self.assertIn("   vmhost test@vm: ~", first)
+
+    def test_an_id_shared_by_two_windows_is_reported_once(self):
+        """wwmctl-8: bridge ids and X11 ids share one integer space --
+        Mutter seeds meta_display_generate_window_id() from g_random_int(),
+        so a native window CAN carry the id of an XWayland window. `-i`
+        resolves the X one and the other becomes unreachable by id; say so
+        rather than acting on a window the caller did not mean."""
+        self.bridge.find(CALC)["id"] = XTERM_XID
+        rc, _o, err = self.wm(["-l"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "wwmctl: two windows share the id 0x%08x; "
+                              "-i uses the X11 one\n" % XTERM_XID)
+        # ... and the X window is the one -i acts on
+        rc, _o, _e = self.wm(["-i", "-a", "0x%x" % XTERM_XID])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.calls("Activate"), [(XTERM,)])
 
     def test_no_x_windows_means_no_x_connection(self):
         self.bridge.windows = [d for d in self.bridge.windows if not d["xid"]]
@@ -671,12 +687,37 @@ class ActionTests(GnomeCliBase):
         for mode, icon, long_ in (("N", False, True), ("I", True, False),
                                   ("T", True, True)):
             x11 = FakeX11()
-            rc, _o, err = self.wm(["-r", "test@vm", "-%s" % mode, "New"],
-                                   x11=x11)
+            with mock.patch.dict(os.environ, {"LC_ALL": "C", "LC_CTYPE": "C",
+                                              "LANG": "C"}):
+                rc, _o, err = self.wm(["-r", "test@vm", "-%s" % mode, "New"],
+                                      x11=x11)
             self.assertEqual((rc, err), (0, ""), mode)
             self.assertEqual(x11.calls,
-                             [("set_name", XTERM_XID, "New", icon, long_)])
+                             [("set_name", XTERM_XID, "New", icon, long_,
+                               False)])
         self.assertEqual(self.x_calls, [(":0", XAUTH)] * 3)
+
+    def test_N_carries_the_utf8_environment(self):
+        """wwmctl-7: -u (and any UTF-8 locale) is wmctrl's envir_utf8, and
+        window_set_title has no locale copy to write there: it DELETES the
+        legacy WM_NAME instead of leaving a lossy STRING behind. The flag
+        never left cli, so both properties were always written."""
+        with mock.patch.dict(os.environ, {"LC_ALL": "C", "LC_CTYPE": "C",
+                                          "LANG": "C"}):
+            x11 = FakeX11()
+            rc, _o, err = self.wm(["-r", "test@vm", "-N", "New"], x11=x11)
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(x11.calls[0][5], False)
+            x11 = FakeX11()
+            rc, _o, err = self.wm(["-u", "-r", "test@vm", "-N", "New"],
+                                  x11=x11)
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(x11.calls[0][5], True)
+        with mock.patch.dict(os.environ, {"LC_ALL": "en_US.UTF-8"}):
+            x11 = FakeX11()
+            rc, _o, err = self.wm(["-r", "test@vm", "-T", "New"], x11=x11)
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(x11.calls[0][5], True)
 
     def test_N_on_a_native_window_warns_and_succeeds(self):
         rc, _o, err = self.wm(["-r", "Calculator", "-N", "New"], x11=FakeX11())

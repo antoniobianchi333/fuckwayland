@@ -488,8 +488,9 @@ def _run(argv=None) -> int:
         else:  # V h l d j m
             action = c
 
+    envir_utf8 = _envir_utf8(force_utf8)
     if verbose:
-        sys.stderr.write("envir_utf8: %d\n" % int(_envir_utf8(force_utf8)))
+        sys.stderr.write("envir_utf8: %d\n" % int(envir_utf8))
 
     if action == "V":
         print(WMCTRL_VERSION)
@@ -500,7 +501,7 @@ def _run(argv=None) -> int:
     if action is None:  # e.g. plain `wwmctl -p`: options but nothing to do
         return 0
 
-    ctl = core.Core(verbose=verbose)
+    ctl = core.Core(verbose=verbose, utf8=envir_utf8)
     try:
         if action == "l":
             return ctl.list_windows(show_pid, show_geometry, show_class)

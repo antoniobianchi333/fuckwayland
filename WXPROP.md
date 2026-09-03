@@ -84,6 +84,11 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   the X server like xprop would — but only when Xwayland is actually
   running (a typo must not spawn a server; see below), else `window id #
   0x… does not exists!`.
+* **Atom ids.** The native plane has no X server to allocate atoms, so it
+  numbers the EWMH names itself, from `0x40000000` — deliberately outside
+  the range any X server hands out, so a numeric id copied out of a native
+  window's dump and fed to a real X tool fails loudly instead of naming a
+  plausible wrong atom.
 * **Native windows** synthesize, in this order and in xprop's grammar:
   `_NET_WM_STATE` (Mutter's own atom order: `SKIP_TASKBAR`,
   `MAXIMIZED_HORZ`, `MAXIMIZED_VERT`, `FULLSCREEN`, `HIDDEN` (minimized or
@@ -95,7 +100,15 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   `COMBO`, `DND`, else `NORMAL`), `_NET_WM_DESKTOP` (`0xFFFFFFFF` when
   sticky), `_NET_WM_PID`, `WM_CLIENT_MACHINE` (hostname), `WM_CLASS`
   (`app_id`, `app_id` — the same pair `wwmctl -lx` prints; a window with a
-  `WM_CLASS` pair but no app id uses that pair), `_NET_WM_NAME`, `WM_NAME`.
+  `WM_CLASS` pair but no app id uses that pair), `_NET_WM_NAME`, `WM_NAME`,
+  `WM_STATE` (`Normal`/`Iconic` from the window's visibility, icon window
+  `0x0` — Mutter writes it on every X11 window it manages, so a script
+  that asks "is this minimized?" gets the same answer on both planes).
+  `WM_TRANSIENT_FOR` appears when the bridge reports a parent, and
+  `_NET_WM_STATE_FOCUSED` last in `_NET_WM_STATE`, where Mutter's own
+  `set_net_wm_state` puts it. A `WM_NAME` that does not fit latin-1 is
+  typed `UTF8_STRING`: type `STRING` *means* ISO 8859-1 and xprop re-encodes
+  it for the locale, so UTF-8 bytes typed `STRING` print as mojibake.
   Nothing else is invented (no `_NET_FRAME_EXTENTS`, no `WM_HINTS`).
   `-set`/`-remove` on them fail with the usual one line.
 * **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge

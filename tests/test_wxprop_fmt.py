@@ -522,5 +522,24 @@ class FmtTest(unittest.TestCase):
         self.assertTrue(fmtmod.is_a_dformat("8s"))
 
 
+class IconTruncationTest(unittest.TestCase):
+    """wxprop-7: xprop's Format_Icons returns NULL when the byte budget
+    cannot hold even one (width, height) pair, and glibc's printf renders
+    that as "(null)" (verified against the oracle with `-len 4` on a real
+    _NET_WM_ICON)."""
+
+    def test_budget_too_small_for_a_header_is_null(self):
+        f = Formatter()
+        self.assertEqual(f.format_icons(b""), b"(null)")
+        self.assertEqual(f.format_icons(b"\x02\0\0\0"), b"(null)")
+
+    def test_a_whole_icon_still_renders(self):
+        f = Formatter()
+        data = struct.pack("<6Q", 2, 2, 0xFF000000, 0xFFFFFFFF,
+                           0xFFFF0000, 0xFF00FF00)
+        out = f.format_icons(data)
+        self.assertTrue(out.startswith(b"\tIcon (2 x 2):\n"), out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

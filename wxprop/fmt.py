@@ -403,6 +403,10 @@ class Formatter:
             n = len(wire)
             buffer = wire
             nbytes = 1
+        # C compares the byte count against max_len as an unsigned long,
+        # so a negative max_len is a budget of ~2**64 bytes: unbounded.
+        if self.max_len < 0:
+            return buffer, n * nbytes
         return buffer, min(n * nbytes, self.max_len)
 
     def break_down(self, buffer: bytes, length: int, type_name,
@@ -590,7 +594,17 @@ class Formatter:
     # -- _NET_WM_ICON ascii art ----------------------------------------------
 
     def format_icons(self, data: bytes) -> bytes:
+        """xprop's Format_Icons. `data` is the byte budget's worth of the
+        long array, so under `-len` it can be too short to hold even one
+        (width, height) pair: C's loop then never runs, the function
+        returns NULL, and glibc's printf renders that as "(null)". Past
+        that point parity is unattainable in principle -- C keeps reading
+        the Xlib buffer beyond the budget (an unsigned comparison turns its
+        own truncation check into a no-op) and prints uninitialised heap;
+        we stop at the budget instead."""
         n = len(data) // 8
+        if n == 0:
+            return b"(null)"
         vals = struct.unpack("<%dQ" % n, data[:n * 8])
         out = bytearray()
         i = 0

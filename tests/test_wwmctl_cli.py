@@ -175,8 +175,8 @@ class FakeX11:
             return self.wm_name
         return ""
 
-    def set_name(self, win, name, icon, long_):
-        self.calls.append(("set_name", win, name, icon, long_))
+    def set_name(self, win, name, icon, long_, utf8=False):
+        self.calls.append(("set_name", win, name, icon, long_, utf8))
 
     def atom(self, name, only_if_exists=False):
         return self.atoms.setdefault(name, 0x180 + len(self.atoms))
@@ -639,10 +639,13 @@ class SetTitleTest(unittest.TestCase):
                                   ("T", True, True)):
             x11 = FakeX11()
             rc, _o, err, _b = run(["-r", "Mail", "-%s" % mode, "New"],
-                                  x11=x11)
+                                  x11=x11,
+                                  env={"LC_ALL": "C", "LC_CTYPE": "C",
+                                       "LANG": "C"})
             self.assertEqual((rc, err), (0, ""), mode)
             self.assertEqual(x11.calls,
-                             [("set_name", 0x40000C, "New", icon, long_)])
+                             [("set_name", 0x40000C, "New", icon, long_,
+                               False)])
 
     def test_title_on_native_warns_but_succeeds(self):
         rc, _o, err, _b = run(["-r", "FootWin", "-N", "New"], x11=FakeX11())

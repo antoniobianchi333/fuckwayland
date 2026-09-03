@@ -183,6 +183,7 @@ def _node_from_view(v) -> dict:
         "maximized_v": bool(v.maximized_v),
         "above": bool(v.above), "skip_taskbar": bool(v.skip_taskbar),
         "window_type": v.window_type or "NORMAL",
+        "transient_for": int(v.transient_for or 0),
         "client_type": v.client_type, "instance": v.instance, "class": v.cls,
         _VIEW_KEY: True,
     }
@@ -370,6 +371,14 @@ _WINDOW_TYPES = {
 }
 
 
+# Where the synthesized atom ids start. They must not look like ids the X
+# server could have handed out: numbered from 0x100 they sat squarely
+# inside the server's own allocated range, so a numeric id copied out of a
+# native window's dump and fed back to a real X tool named a plausible
+# WRONG atom instead of failing. No X server allocates this high.
+_SYNTH_ATOM_BASE = 0x40000000
+
+
 class NativeAtoms:
     """Fake atom table for the native plane: predefined X atoms keep their
     real ids (1..68) and EWMH names get stable synthesized ids; -f/-set
@@ -381,10 +390,10 @@ class NativeAtoms:
         for i, name in enumerate(_PREDEFINED_ATOMS, start=1):
             self.by_name[name] = i
             self.by_id[i] = name
-        for i, name in enumerate(_EXTENDED_ATOMS, start=0x100):
+        for i, name in enumerate(_EXTENDED_ATOMS, start=_SYNTH_ATOM_BASE):
             self.by_name[name] = i
             self.by_id[i] = name
-        self._next = 0x100 + len(_EXTENDED_ATOMS)
+        self._next = _SYNTH_ATOM_BASE + len(_EXTENDED_ATOMS)
 
     def intern(self, name: str, create: bool) -> int:
         a = self.by_name.get(name)
@@ -559,12 +568,18 @@ class NativeViewTarget(NativeTarget):
             states.append("_NET_WM_STATE_DEMANDS_ATTENTION")
         if node.get("sticky"):
             states.append("_NET_WM_STATE_STICKY")
+        if rich and node.get("focused"):
+            # last, where Mutter's own set_net_wm_state puts it
+            states.append("_NET_WM_STATE_FOCUSED")
         props[b"_NET_WM_STATE"] = _p_atoms(self.atoms, states)
         wtype = "_NET_WM_WINDOW_TYPE_NORMAL"
         if rich:
             wtype = _WINDOW_TYPES.get(node.get("window_type") or "NORMAL",
                                       wtype)
         props[b"_NET_WM_WINDOW_TYPE"] = _p_atoms(self.atoms, [wtype])
+        transient = node.get("transient_for") or 0
+        if transient:
+            props[b"WM_TRANSIENT_FOR"] = _p_window([transient])
         desktop = getattr(win, "desktop", -1)
         props[b"_NET_WM_DESKTOP"] = _p_cardinal(
             [desktop if desktop >= 0 else 0xFFFFFFFF])
@@ -590,6 +605,14 @@ class NativeViewTarget(NativeTarget):
         if title is not None:
             props[b"_NET_WM_NAME"] = _p_utf8(title)
             props[b"WM_NAME"] = _p_string(title)
+        if rich:
+            # ICCCM WM_STATE: 1 NormalState, 3 IconicState, and no icon
+            # window. Mutter writes it on every X11 window it manages, so a
+            # native one that answers "is this window minimized?" the same
+            # way keeps a script working across the two planes.
+            state = 1 if node.get("visible", True) else 3
+            props[b"WM_STATE"] = ("WM_STATE", 32, struct.pack("<II",
+                                                              state, 0))
         return props
 
 

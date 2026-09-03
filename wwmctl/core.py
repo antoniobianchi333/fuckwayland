@@ -96,11 +96,13 @@ class UWindow:
 
 
 class Core:
-    def __init__(self, backend=None, verbose=False):
+    def __init__(self, backend=None, verbose=False, utf8=False):
         self._backend = backend
         self._x11 = "unset"
         self._views_seen = None  # last views() outcome: True/False/None
         self.verbose = verbose
+        self.utf8 = utf8         # wmctrl's envir_utf8: a UTF-8 locale or -u
+        self._id_clash_warned = False
 
     def vprint(self, msg: str):
         if self.verbose:
@@ -191,6 +193,7 @@ class Core:
                 out = self._from_views(views, host)
                 self._views_seen = True
                 self._enrich(out)
+                self._check_id_clash(out)
                 return out
         self._views_seen = False
         nodes_fn = getattr(backend, "_nodes", None)
@@ -236,7 +239,30 @@ class Core:
                     fx=win.x, fy=win.y, fw=win.w, fh=win.h,
                 ))
         self._enrich(out)
+        self._check_id_clash(out)
         return out
+
+    def _check_id_clash(self, wins: list[UWindow]):
+        """Bridge ids and X11 ids share one integer space.
+
+        Mutter seeds meta_display_generate_window_id() from g_random_int(),
+        so a bridge id CAN land on an XWayland window's X id. `-i` then has
+        two candidates and resolves the X one (find_target); the other
+        window becomes unreachable by id. Rare enough never to have been
+        seen live, cheap enough to say out loud once."""
+        if self._id_clash_warned:
+            return
+        seen = {}
+        for w in wins:
+            other = seen.get(w.id)
+            if other is not None and other is not w:
+                self._id_clash_warned = True
+                _warn("two windows share the id 0x%08x; -i uses the X11 "
+                      "one" % w.id)
+                return
+            seen[w.id] = w
+            if w.node_id != w.id:
+                seen.setdefault(w.node_id, w)
 
     def _enrich(self, wins: list[UWindow]):
         """Fill X-only fields for XWayland windows from the X server.
@@ -613,7 +639,8 @@ class Core:
             return 0
         try:
             x.set_name(w.id, title,
-                       icon=mode in ("T", "I"), long_=mode in ("T", "N"))
+                       icon=mode in ("T", "I"), long_=mode in ("T", "N"),
+                       utf8=self.utf8)
         except Exception as e:
             _warn("cannot set the window title: %s; ignoring" % e)
         return 0

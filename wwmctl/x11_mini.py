@@ -515,11 +515,18 @@ class X11Conn:
         x, y = struct.unpack_from("<hh", pkt, 12)
         return x, y, w, h
 
-    def set_name(self, win: int, name: str, icon: bool, long_: bool) -> None:
+    def set_name(self, win: int, name: str, icon: bool, long_: bool,
+                 utf8: bool = False) -> None:
         """wmctrl -N/-I/-T semantics: long_ sets WM_NAME/_NET_WM_NAME, icon
-        sets WM_ICON_NAME/_NET_WM_ICON_NAME; the legacy property as STRING
-        (latin-1), the EWMH one as UTF8_STRING."""
-        utf8 = name.encode("utf-8")
+        sets WM_ICON_NAME/_NET_WM_ICON_NAME.
+
+        `utf8` is wmctrl's envir_utf8 (a UTF-8 locale, or -u). Set, it
+        follows main.c's window_set_title exactly: there is no locale copy
+        of the title to write, so the legacy STRING property is DELETED
+        rather than left holding a stale or lossy value, and only the EWMH
+        UTF8_STRING one is written. Clear, both are written, the legacy one
+        as STRING (latin-1)."""
+        raw = name.encode("utf-8")
         latin = name.encode("latin-1", "replace")
         pairs = []
         if long_:
@@ -527,10 +534,16 @@ class X11Conn:
         if icon:
             pairs.append(("WM_ICON_NAME", "_NET_WM_ICON_NAME"))
         for legacy, net in pairs:
-            self._change_property(win, self.atom(legacy),
-                                  self.atom("STRING"), latin)
+            if utf8:
+                # XDeleteProperty on the predefined atom: unconditional,
+                # like wmctrl's, not "only if the atom is already interned"
+                self._void(_OP_DELETE_PROPERTY, 0,
+                           struct.pack("<II", win, self.atom(legacy)))
+            else:
+                self._change_property(win, self.atom(legacy),
+                                      self.atom("STRING"), latin)
             self._change_property(win, self.atom(net),
-                                  self.atom("UTF8_STRING"), utf8)
+                                  self.atom("UTF8_STRING"), raw)
 
     def send_root_message(self, win: int, type_name: str,
                           data: list[int]) -> None:

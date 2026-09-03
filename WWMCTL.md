@@ -77,7 +77,10 @@ byte order 'l'. Keep it ~400 tight lines.
 
 `-l` (with `-p` pid, `-G` geometry, `-x` class), `-d`, `-s N`, `-a/-c/-R <STR>`,
 `-t N -r <STR>`, `-e G,X,Y,W,H -r <STR>`, `-b add/remove/toggle,P1[,P2] -r <STR>`,
-`-N/-I/-T <STR> -r <STR>`, `-i`, `-F`, `-v`, `-m`, `-k on|off|toggle`, `-o X,Y`,
+`-N/-I/-T <STR> -r <STR>` (in a UTF-8 environment — any UTF-8 locale, or `-u` —
+the legacy `WM_NAME`/`WM_ICON_NAME` is *deleted* rather than written as a lossy
+`STRING`, exactly as wmctrl's `window_set_title` does),
+`-i`, `-F`, `-v`, `-m`, `-k on|off|toggle`, `-o X,Y`,
 `-n N`, `-h`. Selection default: case-insensitive substring on title. Exact printf formats,
 column widths, error strings, and exit codes come from the real wmctrl source + the
 reference dumps (workflow stage 1 produces both; sandbox devshell has the real
