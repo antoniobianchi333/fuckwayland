@@ -88,11 +88,6 @@ const IFACE_XML = `<node>
       <arg type="u" direction="in" name="timeout_ms"/>
       <arg type="t" direction="out" name="id"/>
     </method>
-    <method name="WindowAt">
-      <arg type="i" direction="in" name="x"/>
-      <arg type="i" direction="in" name="y"/>
-      <arg type="t" direction="out" name="id"/>
-    </method>
     <!-- workspaces -->
     <method name="GetActiveWorkspace"><arg type="i" direction="out" name="index"/></method>
     <method name="SetActiveWorkspace"><arg type="i" direction="in" name="index"/></method>
@@ -458,9 +453,6 @@ const METHODS = {
             safe(() => w.unstick());
         w.change_workspace_by_index(index, false);
     }],
-    WindowAt: ['(t)', function (x, y) {
-        return [this._windowAt(x, y)];
-    }],
     // -- workspaces -------------------------------------------------------
     GetActiveWorkspace: ['(i)', function () {
         return [global.workspace_manager.get_active_workspace_index()];
@@ -488,6 +480,11 @@ const METHODS = {
         const [w, h] = global.display.get_size();
         return [w, h];
     }],
+    // Diagnostic only (GnomeBackend.real_pointer()): getmouselocation reports
+    // the daemon-tracked injected pointer by design; this is how the two are
+    // checked against each other. No hit-test method on purpose -- the client
+    // computes getmouselocation's window from ListWindows with the rule every
+    // backend shares, so nothing can drift.
     GetPointer: ['(iiu)', function () {
         const [x, y, mods] = global.get_pointer();
         return [x, y, (mods >>> 0)];
@@ -870,32 +867,6 @@ export default class FuckwaylandBridge extends Extension {
             decorated: !!safe(() => w.decorated, true),
             stable_sequence: safe(() => w.get_stable_sequence(), 0),
         };
-    }
-
-    // Topmost non-desktop window showing on the active workspace whose frame
-    // contains (x, y); 0 if none.
-    _windowAt(x, y) {
-        const active = safe(() => global.workspace_manager.get_active_workspace(), null);
-        const actors = safe(() => global.get_window_actors(), []);
-        for (let i = actors.length - 1; i >= 0; i--) {
-            const w = safe(() => actors[i].meta_window, null);
-            if (!w || this._dead.has(w))
-                continue;
-            if (safe(() => w.is_override_redirect(), false))
-                continue;
-            if (safe(() => w.get_window_type(), -1) === Meta.WindowType.DESKTOP)
-                continue;
-            if (safe(() => w.minimized, false))
-                continue;
-            if (!safe(() => w.showing_on_its_workspace(), true))
-                continue;
-            if (active && !safe(() => w.located_on_workspace(active), true))
-                continue;
-            const r = safe(() => w.get_frame_rect(), null);
-            if (r && x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
-                return this._idOf(w);
-        }
-        return 0;
     }
 
     // Returns true when the state was changed (or already as requested),

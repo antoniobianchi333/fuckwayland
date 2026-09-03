@@ -2,8 +2,9 @@
 """GNOME backend tests against a mock fuckwayland bridge served on
 dbus_mini's in-process mock bus (tests/test_dbus_mini.py MockBus): every
 GnomeBackend method, the Window/View/Workspace mapping, error mapping, the
-pointer hit-test, the Eval auto-load path, and backend_detect's order for
-each ListNames outcome. No GNOME, no real bus needed."""
+pointer hit-test, the (opt-in) Eval auto-load path, backend_detect's order
+for each ListNames outcome, and the shipped udev rule / installer /
+interface XML. No GNOME, no real bus needed."""
 
 import contextlib
 import io
@@ -83,7 +84,7 @@ class MockBridge:
 
     def __init__(self, address, own_shell=True, own_bridge=True,
                  eval_unsafe=False, select_delay=0.2, select_id=EDITOR,
-                 shell_mode="user", ext_info=None):
+                 shell_mode="user", ext_info=None, screensaver_active=False):
         self.bus = Bus(address)
         self.bus.serve_calls = True
         self.windows = fixture_windows()
@@ -93,12 +94,14 @@ class MockBridge:
         self.eval_unsafe = eval_unsafe
         self.shell_mode = shell_mode
         self.ext_info = ext_info  # None: uuid unknown to the shell
+        self.screensaver_active = screensaver_active
         self.select_delay = select_delay
         self.select_id = select_id
         self.xinfo = (":0", "/run/user/1000/.mutter-Xwaylandauth.AB12CD")
         self.pointer = (640, 400, 0)
         if own_shell:
             assert self.bus.request_name(SHELL_NAME) == 1
+            assert self.bus.request_name("org.gnome.ScreenSaver") == 1
         if own_bridge:
             assert self.bus.request_name(BUS_NAME) == 1
         self.thread = threading.Thread(target=self._serve, daemon=True)
@@ -157,6 +160,9 @@ class MockBridge:
             if a == (SHELL_NAME, "Mode"):
                 return "v", (Variant("s", self.shell_mode),)
             raise DBusError(dbus_mini.ERR + "InvalidArgs", "no such property")
+        if m.interface == "org.gnome.ScreenSaver" and m.member == "GetActive":
+            self.calls.append(("GetActive", a))
+            return "b", (bool(self.screensaver_active),)
         if m.interface == SHELL_NAME + ".Extensions" and m.member == "GetExtensionInfo":
             self.calls.append(("GetExtensionInfo", a))
             info = dict(self.ext_info or {}) if a[0] == EXT_UUID else {}
@@ -281,14 +287,6 @@ class MockBridge:
     def m_SelectWindow(self, m, timeout_ms):
         time.sleep(self.select_delay)
         return "t", (self.select_id,)
-
-    def m_WindowAt(self, m, x, y):
-        for d in reversed(self.windows):
-            if d["window_type"] == "DESKTOP" or d["hidden"]:
-                continue
-            if d["x"] <= x < d["x"] + d["width"] and d["y"] <= y < d["y"] + d["height"]:
-                return "t", (d["id"],)
-        return "t", (0,)
 
     def m_GetActiveWorkspace(self, m):
         return "i", (self.active_ws,)
@@ -515,7 +513,7 @@ class BackendTests(_Base):
         self.assertEqual(self.b.find(XTERM).desktop, -1)
 
     def test_set_state_cosmetic_warns_and_succeeds(self):
-        for state in ("SKIP_TASKBAR", "SKIP_PAGER", "SHADED", "MODAL"):
+        for state in ("SKIP_TASKBAR", "SKIP_PAGER", "MODAL"):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 self.b.set_state(XTERM, state, 1)
@@ -523,13 +521,19 @@ class BackendTests(_Base):
             self.assertIn("ignoring", err.getvalue())
         # but the window must exist
         with self.assertRaises(CmdError):
-            self.b.set_state(999, "SHADED", 1)
+            self.b.set_state(999, "SKIP_TASKBAR", 1)
 
     def test_set_state_capability_gaps_raise(self):
-        for state in ("BELOW", "FOO"):
-            with self.assertRaises(CmdError) as cm:
+        for state in ("BELOW", "SHADED", "FOO"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(CmdError) as cm:
                 self.b.set_state(XTERM, state, 1)
             self.assertIn("windowstate %s is not supported" % state, str(cm.exception))
+            self.assertEqual(err.getvalue(), "")   # an error, not a warning
+        with self.assertRaises(CmdError) as cm:
+            self.b.set_state(XTERM, "SHADED", 2)
+        # review finding 2: shading is observable, so it is a gap, never rc 0
+        self.assertIn("does not implement window shading", str(cm.exception))
         with self.assertRaises(CmdError):
             self.b.set_state(XTERM, "FULLSCREEN", 7)
 
@@ -574,6 +578,8 @@ class BackendTests(_Base):
 
     def test_window_at_skips_desktop_hidden_and_other_workspaces(self):
         self.assertEqual(self.b.window_at(150, 100), XTERM)
+        # review finding 3: one hit-test, client-side; the bridge has none
+        self.assertEqual([m for m, _ in self.bridge.calls], ["ListWindows"])
         self.assertEqual(self.b.window_at(1800, 1000), 0)     # only the desktop there
         self.assertEqual(self.b.window_at(600, 400), XTERM)   # calc is on ws 1
         self.assertEqual(self.b.window_at(-1, -1), 0)
@@ -666,7 +672,9 @@ class BackendTests(_Base):
 
 
 class ConstructorTests(_Base):
-    def test_no_bridge_no_unsafe_mode_gives_the_install_hint(self):
+    def test_no_bridge_gives_the_install_hint_without_touching_eval(self):
+        # review finding 4: the common "installed, needs a re-login" path
+        # must not probe org.gnome.Shell.Eval
         bridge = MockBridge(self.mock.address, own_bridge=False)
         try:
             with self.assertRaises(CmdError) as cm:
@@ -674,16 +682,41 @@ class ConstructorTests(_Base):
             msg = str(cm.exception)
             self.assertIn("gnome/install-bridge.sh", msg)
             self.assertIn("restart the session", msg)
-            self.assertEqual([m for m, _ in bridge.calls], ["Eval", "GetExtensionInfo"])
+            self.assertEqual([m for m, _ in bridge.calls], ["GetActive", "GetExtensionInfo"])
+        finally:
+            bridge.close()
+
+    def test_eval_autoload_is_opt_in(self):
+        # unsafe mode on, but nobody asked: still no Eval, still the hint
+        bridge = MockBridge(self.mock.address, own_bridge=False, eval_unsafe=True)
+        try:
+            for value in (None, "", "0", "no"):
+                with env(WDOTOOL_GNOME_AUTOLOAD=value):
+                    with self.assertRaises(CmdError) as cm:
+                        GnomeBackend()
+                self.assertIn("gnome/install-bridge.sh", str(cm.exception))
+            self.assertNotIn("Eval", [m for m, _ in bridge.calls])
         finally:
             bridge.close()
 
     def test_locked_screen_and_disabled_extension_are_diagnosed(self):
         cases = [
             (dict(shell_mode="unlock-dialog"), "screen locked"),
+            (dict(shell_mode="unlock-dialog", ext_info={"uuid": EXT_UUID, "state": 2}), "screen locked"),
+            (dict(shell_mode="gdm"), "GDM greeter"),
             (dict(ext_info={"uuid": EXT_UUID, "state": 2}), "installed but not enabled"),
             (dict(ext_info={"uuid": EXT_UUID, "state": 3, "error": "boom"}), "failed to load: boom"),
             (dict(ext_info={"uuid": EXT_UUID, "state": 4, "shell-version": "x"}), "out of date"),
+            # the unlocked session's mode is "ubuntu" on Ubuntu, "classic" in
+            # GNOME Classic: not a lock screen (observed live on 24.04)
+            (dict(shell_mode="ubuntu", ext_info={"uuid": EXT_UUID, "state": 2}), "installed but not enabled"),
+            (dict(shell_mode="classic", ext_info={"uuid": EXT_UUID, "state": 3, "error": "x"}), "failed to load"),
+            (dict(shell_mode="ubuntu"), "gnome/install-bridge.sh"),
+            # GNOME 46 keeps Mode at 'ubuntu' behind the lock screen and the
+            # extension shows as merely INACTIVE: org.gnome.ScreenSaver tells
+            (dict(shell_mode="ubuntu", screensaver_active=True,
+                  ext_info={"uuid": EXT_UUID, "state": 2}), "screen is locked"),
+            (dict(shell_mode="user", screensaver_active=True), "screen is locked"),
         ]
         for kw, expect in cases:
             bridge = MockBridge(self.mock.address, own_bridge=False, **kw)
@@ -691,6 +724,9 @@ class ConstructorTests(_Base):
                 with self.assertRaises(CmdError) as cm:
                     GnomeBackend()
                 self.assertIn(expect, str(cm.exception), kw)
+                if kw.get("shell_mode") not in ("unlock-dialog", "gdm") \
+                        and not kw.get("screensaver_active"):
+                    self.assertNotIn("locked", str(cm.exception), kw)
             finally:
                 bridge.close()
 
@@ -703,14 +739,27 @@ class ConstructorTests(_Base):
         finally:
             bridge.close()
 
-    def test_eval_autoload_in_unsafe_mode(self):
+    def test_eval_autoload_in_unsafe_mode_when_asked(self):
         bridge = MockBridge(self.mock.address, own_bridge=False, eval_unsafe=True)
         try:
-            b = GnomeBackend()
+            with env(WDOTOOL_GNOME_AUTOLOAD="1"):
+                b = GnomeBackend()
             self.assertEqual(b.num_desktops(), 3)
             self.assertEqual([m for m, _ in bridge.calls][:2], ["Eval", "GetNWorkspaces"])
             self.assertIn("fuckwayland-bridge@fuckwayland", bridge.calls[0][1][0])
             b.bus.close()
+        finally:
+            bridge.close()
+
+    def test_eval_autoload_asked_but_shell_not_unsafe(self):
+        bridge = MockBridge(self.mock.address, own_bridge=False)
+        try:
+            with env(WDOTOOL_GNOME_AUTOLOAD="1"):
+                with self.assertRaises(CmdError) as cm:
+                    GnomeBackend()
+            self.assertIn("gnome/install-bridge.sh", str(cm.exception))
+            self.assertEqual([m for m, _ in bridge.calls],
+                             ["Eval", "GetActive", "GetExtensionInfo"])
         finally:
             bridge.close()
 
@@ -825,6 +874,68 @@ class DetectTests(_Base):
         self.assertIn("no session D-Bus reachable", str(cm.exception))
         self.assertIsNone(backend_detect.session_names())
         self.assertFalse(backend_detect.dbus_name_has_owner(SHELL_NAME))
+
+
+class ShippedFilesTests(unittest.TestCase):
+    """Regressions on the files gnome/ ships: the udev rule grants nothing
+    beyond the seat user's ACL, the installer restores the node, and the
+    extension's embedded interface XML matches the .xml file (no WindowAt)."""
+
+    GNOME = os.path.join(ROOT, "gnome")
+    EXT = os.path.join(GNOME, "fuckwayland-bridge@fuckwayland")
+
+    def test_udev_rule_is_uaccess_only(self):
+        # review finding 1: MODE/GROUP would hand every `input` member a
+        # standing injection channel; uaccess alone is what wdotool needs
+        with open(os.path.join(self.GNOME, "60-fuckwayland-uinput.rules")) as f:
+            rules = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        self.assertEqual(len(rules), 1)
+        rule = rules[0]
+        self.assertIn('KERNEL=="uinput"', rule)
+        self.assertIn('TAG+="uaccess"', rule)
+        self.assertIn('OPTIONS+="static_node=uinput"', rule)
+        self.assertNotIn("MODE=", rule)
+        self.assertNotIn("GROUP=", rule)
+        self.assertNotIn("OWNER=", rule)
+
+    def test_installer_parses_and_restores_the_node(self):
+        import subprocess
+        path = os.path.join(self.GNOME, "install-bridge.sh")
+        self.assertEqual(subprocess.run(["sh", "-n", path]).returncode, 0)
+        with open(path) as f:
+            src = f.read()
+        body = src[src.index("restore_uinput_node() {"):]
+        body = body[:body.index("\n}\n")]
+        for needle in ("setfacl -b /dev/uinput", "chown root:root /dev/uinput",
+                       "chmod 0600 /dev/uinput"):
+            self.assertIn(needle, body)
+        uninstall = src[src.index('if [ "$MODE" = uninstall ]; then'):]
+        uninstall = uninstall[:uninstall.index("return 0")]
+        # files first, then udev forgets the node (sticky uaccess tag), then
+        # the node's ACL/permissions -- and no trigger that could re-apply it
+        self.assertLess(uninstall.index('rm -f "$UDEV_DEST"'), uninstall.index("forget_uinput_tags"))
+        self.assertLess(uninstall.index("forget_uinput_tags"), uninstall.index("restore_uinput_node"))
+        self.assertNotIn("udevadm trigger", uninstall)
+        forget = src[src.index("forget_uinput_tags() {"):]
+        forget = forget[:forget.index("\n}\n")]
+        for needle in ('"/run/udev/data/c$maj:$min"', '/run/udev/tags/*/"c$maj:$min"',
+                       "/run/udev/static_node-tags/uaccess/uinput", "udevadm info -q property"):
+            self.assertIn(needle, forget)
+
+    def test_embedded_xml_matches_file_and_has_no_hit_test(self):
+        with open(os.path.join(self.EXT, "org.fuckwayland.Bridge1.xml")) as f:
+            xml = f.read().strip()
+        with open(os.path.join(self.EXT, "extension.js")) as f:
+            js = f.read()
+        start = js.index("const IFACE_XML = `") + len("const IFACE_XML = `")
+        embedded = js[start:js.index("`;", start)].strip()
+        self.assertEqual(embedded, xml)
+        self.assertNotIn("WindowAt", xml)
+        self.assertNotIn("_windowAt", js)
+        self.assertIn('<method name="GetPointer">', xml)
+        for member in ("ListWindows", "GetWindow", "SetState", "SelectWindow",
+                       "DisplaySize", "XInfo", "GetVersion"):
+            self.assertIn('<method name="%s">' % member, xml)
 
 
 class SessionTests(unittest.TestCase):

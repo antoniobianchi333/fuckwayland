@@ -46,8 +46,8 @@ There is no X server to lie to, so wdotool goes underneath instead:
   from real hardware, so this works on GNOME, KDE, sway, anything. That's also why it
   needs root — or, if you'd rather not: one udev rule (`sudo sh
   gnome/install-bridge.sh --udev` installs `gnome/60-fuckwayland-uinput.rules`,
-  which tags `/dev/uinput` for the logged-in user's ACL and opens it to the `input`
-  group) and it runs as a plain user, no relogin needed. Media keys work too
+  which tags `/dev/uinput` for the logged-in user's ACL — no group, nobody
+  else) and it runs as a plain user, no relogin needed. Media keys work too
   (`key XF86AudioMute` and friends map straight to their evdev codes).
 - The first invocation forks a small daemon that owns the devices (creating them
   costs ~600ms of hotplug; you pay it once) and tracks the injected pointer.
@@ -93,8 +93,13 @@ sudo sh gnome/install-bridge.sh --udev   # optional: /dev/uinput for the logged-
 * **The udev rule** (`gnome/60-fuckwayland-uinput.rules` + a `modules-load.d`
   file) tags `/dev/uinput` `uaccess`, so systemd-logind hands the user of the
   active seat an ACL on it — applied immediately by the installer, and again at
-  every login. Without it, run the tools as root (`sudo`), which also works: the
-  session is found by scanning `/run/user/*`.
+  every login. Nothing else: the node stays `root:root 0600`, no `input`-group
+  route (`--udev --uninstall` restores exactly that). Without it, run the tools
+  as root (`sudo`), which also works: the session is found by scanning
+  `/run/user/*`.
+* **Hotkeys**: bind scripts to anything but `Ctrl+Alt+F1`…`F12` — Mutter owns
+  those as VT switches on Wayland, so gsd cannot grab them and injecting them
+  switches the console. `<Ctrl><Super>F7` works.
 * **Security note.** Any process on your session bus can then list, move,
   close and kill your windows through the bridge, and anyone who can open
   `/dev/uinput` can type as you. That is exactly what every X11 client could

@@ -47,11 +47,6 @@
       <arg type="u" direction="in" name="timeout_ms"/>
       <arg type="t" direction="out" name="id"/>
     </method>
-    <method name="WindowAt">
-      <arg type="i" direction="in" name="x"/>
-      <arg type="i" direction="in" name="y"/>
-      <arg type="t" direction="out" name="id"/>
-    </method>
     <!-- workspaces -->
     <method name="GetActiveWorkspace"><arg type="i" direction="out" name="index"/></method>
     <method name="SetActiveWorkspace"><arg type="i" direction="in" name="index"/></method>

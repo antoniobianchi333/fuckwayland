@@ -65,6 +65,7 @@ Usage: install-bridge.sh [--system] [--try-unsafe] [--no-enable]
   --uninstall   disable and delete the extension (with --udev: remove the rule)
   --udev        install $UDEV_RULE + $MODLOAD_DEST (needs sudo) so the
                 logged-in user can open /dev/uinput without a relogin
+                (uaccess ACL only; --udev --uninstall restores root:root 0600)
 EOU
 }
 
@@ -321,7 +322,11 @@ seat_user() {
 udev_status() {
     if [ -f "$UDEV_DEST" ]; then u=yes; else u=no; fi
     if [ -f "$MODLOAD_DEST" ]; then m=yes; else m=no; fi
-    if [ -e /dev/uinput ]; then n=$(stat -c '%U:%G %a' /dev/uinput 2>/dev/null || echo '?'); else n=missing; fi
+    if [ -e /dev/uinput ]; then
+        n=$(stat -c '%U:%G %a' /dev/uinput 2>/dev/null || echo '?')
+        # with an ACL on the node the group bits of the mode are the ACL mask
+        if have getfacl && getfacl -p /dev/uinput 2>/dev/null | grep -q '^mask::'; then n="$n (group bits = ACL mask)"; fi
+    else n=missing; fi
     if grep -qw '^uinput' /proc/modules 2>/dev/null; then l='module loaded'
     elif [ "$(modinfo -n uinput 2>/dev/null)" = '(builtin)' ]; then l='driver built into the kernel'
     else l='module not loaded'; fi
@@ -336,12 +341,44 @@ udev_status() {
         case " $acl" in
             *" $su:rw"*) echo "uinput usable by $su: yes (logind ACL)" ;;
             *) if id -nG "$su" 2>/dev/null | grep -qw "$(stat -c %G /dev/uinput)" && [ "$(stat -c %a /dev/uinput)" = 660 ]; then
-                   echo "uinput usable by $su: yes (group $(stat -c %G /dev/uinput))"
+                   echo "uinput usable by $su: yes (member of group $(stat -c %G /dev/uinput), mode 660 -- set by some other rule, not $UDEV_RULE)"
                else
                    echo "uinput usable by $su: no (run: sudo sh $0 --udev)"
                fi ;;
         esac
     fi
+}
+
+# Stock state of the node: root:root 0600, no ACL. udev preserves permissions
+# and ACLs that no rule asks it to change, so removing a rule (or replacing
+# one that set MODE/GROUP) leaves the old grants in place until the next
+# boot; this undoes them explicitly. Other rules, if any, re-apply their own
+# settings on the trigger that follows.
+restore_uinput_node() {
+    [ -e /dev/uinput ] || return 0
+    if have setfacl; then setfacl -b /dev/uinput 2>/dev/null || true; fi
+    chown root:root /dev/uinput 2>/dev/null || true
+    chmod 0600 /dev/uinput 2>/dev/null || true
+}
+
+# udev tags are sticky in its database: with the rule merely deleted, the
+# next trigger of the node still matches 73-seat-late.rules' TAG=="uaccess"
+# (systemd 255 matches the sticky set; TAG-= only drops the *current* tag)
+# and the uaccess builtin puts the ACL back -- observed on 24.04. Dropping
+# the node's database entry and tag index links (plus the static_node tag
+# link logind acts on at session activation) makes udev start from scratch
+# at the node's next event, exactly as after a boot; udev recreates the
+# entry then. Deliberately no `udevadm trigger` afterwards: nothing is left
+# to apply.
+forget_uinput_tags() {
+    [ -e /dev/uinput ] || return 0
+    rm -f /run/udev/static_node-tags/uaccess/uinput 2>/dev/null
+    have udevadm || return 0
+    maj=$(udevadm info -q property /dev/uinput 2>/dev/null | sed -n 's/^MAJOR=//p')
+    min=$(udevadm info -q property /dev/uinput 2>/dev/null | sed -n 's/^MINOR=//p')
+    [ -n "$maj" ] && [ -n "$min" ] || return 0
+    rm -f "/run/udev/data/c$maj:$min" /run/udev/tags/*/"c$maj:$min" 2>/dev/null
+    return 0
 }
 
 do_udev() {
@@ -351,13 +388,20 @@ do_udev() {
     fi
     if [ "$MODE" = uninstall ]; then
         rm -f "$UDEV_DEST" "$MODLOAD_DEST"
-        have udevadm && { udevadm control --reload 2>/dev/null || true; udevadm trigger --name-match=uinput 2>/dev/null || true; }
-        echo "install-bridge.sh: removed $UDEV_DEST and $MODLOAD_DEST (ACL goes away at next trigger/login)"
+        have udevadm && { udevadm control --reload 2>/dev/null || true; }
+        forget_uinput_tags
+        restore_uinput_node
+        echo "install-bridge.sh: removed $UDEV_DEST and $MODLOAD_DEST; /dev/uinput is root:root 0600 again, ACL cleared"
         return 0
     fi
     if [ ! -f "$HERE/$UDEV_RULE" ] || [ ! -f "$HERE/$MODLOAD_SRC" ]; then
         echo "install-bridge.sh: $UDEV_RULE / $MODLOAD_SRC not found next to this script" >&2
         exit 1
+    fi
+    # An earlier revision of the rule also set MODE="0660" GROUP="input".
+    if [ -f "$UDEV_DEST" ] && grep -q 'GROUP=' "$UDEV_DEST"; then
+        echo "install-bridge.sh: replacing a rule that opened /dev/uinput to a group; resetting the node to root:root 0600"
+        restore_uinput_node
     fi
     install -m 644 "$HERE/$UDEV_RULE" "$UDEV_DEST"
     install -m 644 "$HERE/$MODLOAD_SRC" "$MODLOAD_DEST"

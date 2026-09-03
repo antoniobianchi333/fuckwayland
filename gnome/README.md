@@ -133,7 +133,11 @@ gdbus call --session --dest org.fuckwayland.Bridge --object-path /org/fuckwaylan
 | `SetState` | `(t, s state, s action) → b` | `state` ∈ `FULLSCREEN MAXIMIZED_HORZ MAXIMIZED_VERT MAXIMIZED HIDDEN ABOVE BELOW STICKY DEMANDS_ATTENTION SHADED SKIP_TASKBAR SKIP_PAGER MODAL`, `action` ∈ `add remove toggle`. `MAXIMIZED_HORZ`/`_VERT` are real per-axis operations on every release. Returns `false` (and does nothing) for what Mutter cannot set: `SHADED`, `SKIP_*`, `MODAL`, `BELOW`. Unknown ids still raise `NotFound`. |
 | `MoveToWorkspace` | `(t, i index)` | `change_workspace_by_index`; `index < 0` = stick to all workspaces (EWMH 0xFFFFFFFF); `NotFound` for a missing workspace |
 | `SelectWindow` | `(u timeout_ms) → t` | resolves with the next window that gains focus (the user must focus a *different* window, like sway), `0` on timeout; `timeout_ms = 0` waits forever. Set your D-Bus call timeout above `timeout_ms`. |
-| `WindowAt` | `(i x, i y) → t` | topmost non-desktop window showing on the active workspace whose frame contains the point, `0` if none |
+
+There is no hit-test method on purpose: `getmouselocation`'s window is
+computed client-side from `ListWindows` (`GnomeBackend.window_at()`, looking
+through `DESKTOP`/`DOCK` windows) with the focused-first/topmost rule every
+backend shares, so the two cannot drift apart.
 
 Window object (`ListWindows`/`GetWindow`):
 
@@ -172,7 +176,7 @@ stable_sequence    get_stable_sequence() (creation counter)
 | Method | Signature | Does |
 |---|---|---|
 | `DisplaySize` | `() → (ii)` | `global.display.get_size()` — the whole layout |
-| `GetPointer` | `() → (iiu)` | the real pointer and Clutter modifier mask |
+| `GetPointer` | `() → (iiu)` | the real pointer and Clutter modifier mask. Diagnostic only (`GnomeBackend.real_pointer()`, no command uses it): `getmouselocation` reports the daemon-tracked injected pointer by design, and this is how the two are checked against each other |
 | `ListMonitors` | `() → s` | `[{index, x, y, width, height, scale, primary, connector}]`; `connector` is filled on GNOME 49+ (`MonitorManager.get_monitors()` + `get_monitor_for_connector()`) and empty on 46 (match on x/y against `DisplayConfig.GetCurrentState` there) |
 | `XInfo` | `() → (ss)` | gnome-shell's own `DISPLAY` and `XAUTHORITY` — how a root caller finds Xwayland and its cookie file. When the shell has no `XAUTHORITY`, the newest `$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` is returned instead; `""` means unknown |
 | `ConfirmDisplayChange` | `(b keep) → b` | best-effort: finds the "Keep these display settings?" dialog and presses Keep/Revert; returns `false` when no dialog was found (the verdict is still forwarded to Mutter, which ignores it when nothing is pending) |
@@ -202,7 +206,7 @@ gnome-calculator: user install → "log out and back in" → after the reboot
 workspace, unminimizes), `windowfocus`, `windowmove/windowsize --sync`
 (xterm snaps to its cell grid: 640x480 → 640x470), `windowstate`
 FULLSCREEN / MAXIMIZED_VERT (per-axis: 500x768 at y=32) / ABOVE / STICKY /
-DEMANDS_ATTENTION (SKIP_TASKBAR warns, BELOW errors), `windowminimize` /
+DEMANDS_ATTENTION (SKIP_TASKBAR warns; SHADED and BELOW error), `windowminimize` /
 `windowmap --sync`, `set_desktop[_for_window]`, `get_desktop_for_window` (-1
 when sticky), `getmouselocation` window hit-test, `windowraise/lower`,
 `windowclose`, `windowkill`, `type`/`key` into xterm, `selectwindow` (returns
@@ -244,6 +248,25 @@ follows `set_desktop_for_window` (1) and `STICKY` (`0xffffffff`,
 Not exercised live yet: `ConfirmDisplayChange` (no display change was
 triggered) and the Looking-Glass probes of §6 of the checklist.
 
+Review fixes re-verified on Ubuntu 24.04 / GNOME Shell 46.0 (fresh instance,
+systemd 255): the uaccess-only rule gives `root:root 0600` plus
+`user:test:rw-` right after `--udev` and again right after autologin on the
+next boot, `wdotool mousemove` works as the plain user; `--udev` over the
+earlier `GROUP="input"` rule prints "resetting the node" and ends in the
+same state; `--udev --uninstall` leaves `root:root 0600`, no ACL, no udev
+tags, and repeated `udevadm trigger --name-match=uinput` keep it that way
+(`open('/dev/uinput')` as the user → `EACCES`, `wdotool` prints its
+run-as-root hint). `windowstate --add/--toggle/--remove SHADED` → rc 1
+"Mutter does not implement window shading", `SKIP_TASKBAR`/`MODAL` still
+warn with rc 0, `BELOW` rc 1. `getmouselocation`'s window is unchanged with
+`WindowAt` gone (`gdbus call … WindowAt` → `UnknownMethod`), `GetPointer`
+answers. With the extension disabled, `dbus-monitor` sees no `Eval` from the
+tools by default and exactly one with `WDOTOOL_GNOME_AUTOLOAD=1` (refused
+outside unsafe mode, same "installed but not enabled" message either way);
+`loginctl lock-session` → "unavailable while the screen is locked" (`Mode`
+stays `ubuntu` on 46, `ScreenSaver.GetActive` is `true`), unlock → working
+again. Journal clean throughout.
+
 ## GNOME 46 vs 50 and other honest limits
 
 * **Partial maximization** works on every release: GNOME 46–48 take the
@@ -266,7 +289,18 @@ triggered) and the Looking-Glass probes of §6 of the checklist.
   `"session-modes": ["user", "unlock-dialog"]` to `metadata.json` if a test
   rig needs it alive there.
 * No `Eval`, no input injection, no screenshots: the bridge is the
-  window-management plane only.
+  window-management plane only. The Python side never touches
+  `org.gnome.Shell.Eval` either, unless `WDOTOOL_GNOME_AUTOLOAD=1` is set —
+  then, with the shell already in unsafe mode, the backend loads an installed
+  but not-yet-loaded copy of the extension on first use instead of asking for
+  a re-login.
+* **Hotkeys**: do not bind scripts to `Ctrl+Alt+F1`…`F12` on GNOME Wayland.
+  Mutter's native backend owns those chords as VT switches
+  (`switch-to-session-N`), gsd-media-keys cannot grab them (`Failed to grab
+  accelerator` in the journal) and injecting one switches the console — the
+  session keeps running on the VT you just left (`chvt N` brings it back).
+  `<Ctrl><Super>F7` and the like work fine (verified: custom keybinding →
+  script → `wdotool search … windowactivate type`).
 
 ## `/dev/uinput` without root (`--udev`)
 
@@ -287,7 +321,7 @@ and `gnome/modules-load-uinput.conf` to
 `udevadm control --reload` and `udevadm trigger --name-match=uinput`:
 
 ```
-KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", MODE="0660", GROUP="input"
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"
 ```
 
 * `TAG+="uaccess"` makes systemd-logind put an ACL for the user of the
@@ -300,8 +334,13 @@ KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uacces
   where uinput is a module that is not loaded yet (the first `open()`
   autoloads it). The `modules-load.d` file loads it at boot anyway so nothing
   depends on the autoload path.
-* `MODE="0660", GROUP="input"` keeps the classic route (membership in
-  `input` + relogin) for sessions logind does not manage (ssh, containers).
+* Deliberately **no `MODE`/`GROUP`**: the node stays `root:root 0600` plus
+  the ACL, so only the user at the seat can inject input. An earlier
+  revision added `MODE="0660", GROUP="input"` as a fallback for sessions
+  logind does not manage; that hands every member of `input` (service
+  accounts included) a standing keystroke-injection channel into the seat
+  user's session whether or not they are logged in there, which is exactly
+  what the uaccess tag avoids. Sessions without logind run the tools as root.
 
 Verified on Ubuntu 24.04 (GNOME 46, kernel 6.8):
 
@@ -316,14 +355,34 @@ Verified on Ubuntu 24.04 (GNOME 46, kernel 6.8):
 * After a reboot the ACL is there right after autologin (`--check`: "uinput
   usable by test: yes (logind ACL)"), i.e. the rule present at boot is
   enough.
-* `--udev --uninstall` removes the files; the ACL and `root:input 0660`
-  already on the node stay until the next boot/login (udev does not undo
-  permissions it applied earlier).
+* `--udev --uninstall` puts the node back to `root:root 0600` with the ACL
+  cleared, and makes that stick. udev tags are sticky in its database: with
+  the rule merely deleted, the next `udevadm trigger` of the node still
+  matched `73-seat-late.rules`' `TAG=="uaccess"` and brought the ACL back
+  (observed on systemd 255, where `TAG-=` only drops the *current* tag and
+  `TAG==` matches the sticky set). The uninstall therefore deletes the
+  files, then the node's udev database entry and tag index links
+  (`/run/udev/data/c10:223`, `/run/udev/tags/*/c10:223`, plus the
+  `static_node-tags/uaccess/uinput` link logind would act on at the next
+  session activation) so udev starts from scratch at the node's next event
+  as after a boot, then `setfacl -b` + `chmod 0600`. Verified: repeated
+  `udevadm trigger --name-match=uinput` afterwards leave `root:root 0600`,
+  no ACL, no tags. Re-running `--udev` over the earlier `GROUP="input"`
+  revision of the rule resets the node the same way before installing the
+  new one.
+* The tools' "bridge unavailable" diagnosis: `org.gnome.ScreenSaver
+  .GetActive()` says whether the screen is locked (GNOME 46 keeps the
+  shell's `Mode` property at the session mode while locked; 50 reports
+  `unlock-dialog` there — both are handled), `Mode` = `gdm` means you
+  reached the greeter's bus (nobody logged in). The unlocked session's mode
+  is `ubuntu` on Ubuntu (`classic` in GNOME Classic), which is *not*
+  treated as locked — a disabled extension there is reported as disabled.
 
 Check with `getfacl /dev/uinput` — expect a `user:<you>:rw-` line while your
-session is active. Security-wise, whoever can open `/dev/uinput` can type as
-you; the rule limits that to the physically logged-in user, which is the X11
-status quo.
+session is active (`ls -l` shows `root root` and `rw-rw----`: the group
+column is the ACL mask, nobody is in that group). Security-wise, whoever can
+open `/dev/uinput` can type as you; the rule limits that to the physically
+logged-in user — not to a group — which is the X11 status quo.
 
 ## Uninstall
 

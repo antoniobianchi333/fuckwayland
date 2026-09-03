@@ -31,11 +31,15 @@ picks hits[-1] = topmost; window_at() additionally skips DESKTOP/DOCK layers
 (desktop icons, docks) like a click-through X11 root window would.
 
 When the bridge name is missing but org.gnome.Shell is on the bus, the
-constructor tries once to load the installed extension through
-org.gnome.Shell.Eval -- which only works while the shell is in unsafe mode --
-and otherwise fails with the one-line install hint (_HINT)."""
+constructor fails with a diagnosis: screen locked, extension disabled or
+broken, or the one-line install hint (_HINT). Only with WDOTOOL_GNOME_AUTOLOAD
+set (to anything but 0) does it first try to load the installed extension
+through org.gnome.Shell.Eval, which works only while the shell is in unsafe
+mode; the default path -- the common "installed, needs a re-login" case --
+never probes that privileged interface."""
 
 import json
+import os
 import sys
 import time
 
@@ -48,6 +52,7 @@ BUS_NAME = "org.fuckwayland.Bridge"
 OBJECT_PATH = "/org/fuckwayland/Bridge"
 IFACE = "org.fuckwayland.Bridge1"
 SHELL_NAME = "org.gnome.Shell"
+SCREENSAVER_NAME = "org.gnome.ScreenSaver"
 EXT_UUID = "fuckwayland-bridge@fuckwayland"
 
 _HINT = ("gnome backend: the fuckwayland bridge extension is not running in "
@@ -64,8 +69,21 @@ AUTOLOAD_WAIT = 3.0     # after a successful Eval(loadExtension)
 _ACTIONS = {0: "remove", 1: "add", 2: "toggle"}
 # _NET_WM_STATE atoms Mutter has no setter for and that change nothing a
 # script can observe through these tools: warn + succeed (DESIGN.md cosmetic
-# rule). Everything else the bridge cannot apply is a real capability gap.
-_COSMETIC_STATES = {"SKIP_TASKBAR", "SKIP_PAGER", "SHADED", "MODAL"}
+# rule). SHADED is not one of them: shading is a visible operation a script
+# may rely on, and Mutter does not implement it at all -- a real capability
+# gap, like BELOW. Everything else the bridge cannot apply is a gap too.
+_COSMETIC_STATES = {"SKIP_TASKBAR", "SKIP_PAGER", "MODAL"}
+_GAP_REASONS = {"SHADED": "Mutter does not implement window shading",
+                "BELOW": "Mutter has no API for it"}
+# Opt-in for the Eval-based auto-load of an installed extension (__init__).
+AUTOLOAD_ENV = "WDOTOOL_GNOME_AUTOLOAD"
+# org.gnome.Shell Mode values in which no user session runs extensions. The
+# unlocked session's mode is NOT always "user": Ubuntu's is "ubuntu" (parent
+# mode user), GNOME Classic's "classic" -- so the test is for the known
+# no-extension modes, never `!= "user"` (that misreported a disabled
+# extension as a locked screen, observed live on 24.04).
+_LOCKED_MODES = {"unlock-dialog", "initial-setup"}
+_GREETER_MODES = {"gdm"}
 # window types the pointer hit-test looks through (DING desktop icons, docks)
 _LAYER_TYPES = {"DESKTOP", "DOCK"}
 
@@ -124,7 +142,7 @@ class GnomeBackend(WindowBackend):
             if SHELL_NAME not in names:
                 raise CmdError("gnome backend: %s is not on the session bus "
                                "(no GNOME session?)" % SHELL_NAME)
-            if not self._try_autoload():
+            if not (_autoload_wanted() and self._try_autoload()):
                 raise CmdError(self._missing_bridge_text())
 
     # -- plumbing -----------------------------------------------------------
@@ -161,14 +179,23 @@ class GnomeBackend(WindowBackend):
         an installed extension may simply be disabled; both are readable by
         anyone on the bus. Falls back to the generic install hint."""
         try:
-            mode = self.bus.get_property(SHELL_NAME, "/org/gnome/Shell", SHELL_NAME,
-                                         "Mode", timeout=CALL_TIMEOUT)
+            mode = str(self.bus.get_property(SHELL_NAME, "/org/gnome/Shell",
+                                             SHELL_NAME, "Mode",
+                                             timeout=CALL_TIMEOUT) or "")
         except DBusError:
-            mode = "user"
-        if mode and mode != "user":
+            mode = ""
+        if mode in _LOCKED_MODES:
             return ("gnome backend: the fuckwayland bridge is unavailable while "
                     "GNOME Shell is in '%s' mode (screen locked?); extensions run "
                     "only in the unlocked session" % mode)
+        if mode in _GREETER_MODES:
+            return ("gnome backend: the GNOME Shell on this session bus is the "
+                    "GDM greeter ('%s' mode): nobody is logged in there, and "
+                    "extensions do not run in the greeter" % mode)
+        if self._screen_locked():
+            return ("gnome backend: the fuckwayland bridge is unavailable while "
+                    "the screen is locked (GNOME Shell disables extensions "
+                    "behind the lock screen); unlock the session")
         try:
             (info,) = self.bus.call(SHELL_NAME, "/org/gnome/Shell",
                                     SHELL_NAME + ".Extensions", "GetExtensionInfo",
@@ -194,9 +221,25 @@ class GnomeBackend(WindowBackend):
                     "(or: gnome-extensions enable %s)" % (state, EXT_UUID))
         return _HINT
 
+    def _screen_locked(self) -> bool:
+        """org.gnome.ScreenSaver.GetActive(): public, unprivileged, true
+        while the shell's lock screen is up. Needed besides `Mode`: GNOME 46
+        keeps the Mode property at the session mode ('ubuntu') while locked
+        (observed live), only 50 reports 'unlock-dialog' there."""
+        try:
+            (active,) = self.bus.call(SCREENSAVER_NAME, "/org/gnome/ScreenSaver",
+                                      SCREENSAVER_NAME, "GetActive",
+                                      timeout=CALL_TIMEOUT)
+        except (DBusError, ValueError):
+            return False
+        return bool(active)
+
     def _try_autoload(self) -> bool:
         """Eval-based load of an installed extension; False unless the shell
-        is in unsafe mode and the load produced the bridge name."""
+        is in unsafe mode and the load produced the bridge name. Opt-in only
+        (WDOTOOL_GNOME_AUTOLOAD): Eval is a privileged interface and the
+        common bridge-less case is "installed, needs a re-login", which
+        must not send a round trip to it just to be refused."""
         try:
             ok, result = self.bus.call(SHELL_NAME, "/org/gnome/Shell", SHELL_NAME,
                                        "Eval", "s", (_AUTOLOAD_JS,), timeout=CALL_TIMEOUT)
@@ -348,8 +391,8 @@ class GnomeBackend(WindowBackend):
             sys.stderr.write("wdotool: windowstate %s: Mutter cannot set it on "
                              "Wayland; ignoring\n" % state)
             return
-        raise CmdError("windowstate %s is not supported by the gnome backend "
-                       "(Mutter has no API for it)" % state)
+        raise CmdError("windowstate %s is not supported by the gnome backend (%s)"
+                       % (state, _GAP_REASONS.get(state, "Mutter has no API for it")))
 
     def window_desktop(self, wid: int) -> int:
         return self.find(wid).desktop
@@ -386,7 +429,9 @@ class GnomeBackend(WindowBackend):
     def window_at(self, x: int, y: int) -> int:
         """Topmost window under (x, y) on the active workspace; DESKTOP and
         DOCK layers are looked through, the focused window wins among the
-        hits (the generic rule getmouselocation applies)."""
+        hits (the generic rule getmouselocation applies). Client-side over
+        ListWindows on purpose: the bridge exports no hit-test, so this and
+        the rule in input_cmds cannot drift apart."""
         hits = []
         for d in self._raw_list():
             if d.get("window_type") in _LAYER_TYPES:
@@ -473,13 +518,20 @@ class GnomeBackend(WindowBackend):
         return data if isinstance(data, list) else []
 
     def real_pointer(self) -> tuple[int, int]:
-        """The compositor's actual pointer (not the daemon-tracked injected
-        one that getmouselocation reports by design)."""
+        """Diagnostic, no command uses it: the compositor's actual pointer
+        (not the daemon-tracked injected one that getmouselocation reports
+        by design), for checking that injected moves land where the tools
+        think they do (PLAN critique 3, VERIFY-CHECKLIST)."""
         x, y, _mods = self._call("GetPointer")
         return int(x), int(y)
 
     def bridge_version(self) -> int:
         return int(self._call("GetVersion")[0])
+
+
+def _autoload_wanted() -> bool:
+    v = os.environ.get(AUTOLOAD_ENV, "").strip().lower()
+    return bool(v) and v not in ("0", "no", "false", "off")
 
 
 def _no_bus_text(e: DBusError) -> str:

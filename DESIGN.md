@@ -180,17 +180,23 @@ Daemon notes (B):
   the client, works as any uid); map/unmap = unminimize/minimize; raise/lower real.
   `windowstate`: FULLSCREEN, MAXIMIZED_HORZ/VERT (per-axis on 46 and 49+), HIDDEN,
   ABOVE, STICKY, DEMANDS_ATTENTION applied by Mutter; SKIP_TASKBAR/SKIP_PAGER/
-  SHADED/MODAL warn+succeed (cosmetic, no Mutter setter); BELOW and anything else
-  CmdError. Desktops = workspaces (dynamic workspaces count the trailing empty one;
+  MODAL warn+succeed (cosmetic, no Mutter setter); SHADED (observable, Mutter
+  cannot shade), BELOW and anything else CmdError. Desktops = workspaces (dynamic
+  workspaces count the trailing empty one;
   `set_desktop_for_window -1` sticks). `selectwindow` = bridge `SelectWindow(0)`,
   next focus change. Extras for wwmctl/wxprop: `views()` (xid, WM_CLASS
   instance/class, app_id, states), `workspaces()`, `x_info()` (gnome-shell's own
   DISPLAY/XAUTHORITY via the bridge, else `session.find_x_display/find_xauthority`),
-  `events()` (bridge `WindowEvent` signals), `monitors()`, `real_pointer()`. Without
-  the bridge name but with `org.gnome.Shell` owned the constructor tries one
-  `org.gnome.Shell.Eval` to load the installed extension (only works in unsafe
-  mode) and otherwise says: run `gnome/install-bridge.sh` and restart the session.
-  Bridge gone mid-session (extension disabled, lock screen) → one clear error.
+  `events()` (bridge `WindowEvent` signals), `monitors()`, `real_pointer()`
+  (diagnostic: the compositor's pointer vs the daemon's). The bridge exports no
+  hit-test; `window_at()` is client-side over `ListWindows` so it cannot drift
+  from the generic rule. Without the bridge name but with `org.gnome.Shell`
+  owned the constructor diagnoses (locked screen, disabled/broken extension, or
+  "run `gnome/install-bridge.sh` and restart the session") without touching
+  `org.gnome.Shell.Eval`; only `WDOTOOL_GNOME_AUTOLOAD=1` makes it try one Eval
+  to load the installed extension first (works in unsafe mode only). Bridge gone
+  mid-session (extension disabled, lock screen) → one clear error. The udev rule
+  is `uaccess` only (seat user's ACL, node stays `root:root 0600`; no group).
 - **wlr**: `zwlr_foreign_toplevel_management_unstable_v1` via `wayland_mini`. IDs:
   1000000 + enumeration order. list/activate/close/fullscreen/minimize only; geometry
   unknown (0,0 + output size); move/resize → CmdError.
