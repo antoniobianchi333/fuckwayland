@@ -473,7 +473,12 @@ def self_paths():
     if a0:
         add(a0)
         if os.sep not in a0:
-            add(_which_any(a0))
+            # ...but only when what PATH answers really is one of ours: if we
+            # are *not* first on PATH, this resolves to the original, and
+            # mistaking it for ourselves would leave nothing to hand over to
+            w = _which_any(a0)
+            if w and _is_our_file(w):
+                add(w)
     f = getattr(sys.modules.get("__main__"), "__file__", None)
     if f:
         add(f)
@@ -500,6 +505,18 @@ def _head(path):
         return b""
 
 
+def _is_our_file(path: str) -> bool:
+    """Guards 2 and 3 on their own: is this *file* one of ours, by the name it
+    resolves to or by the marker in its first 4 KiB?"""
+    base = os.path.basename(os.path.realpath(path))
+    if base in OUR_NAMES or base.split(".")[0] in OUR_NAMES:
+        return True
+    head = _head(path)
+    if head[:4] == b"\x7fELF" or head[:2] in (b"MZ", b"\xca\xfe"):
+        return False            # a compiled binary is never us: pure Python
+    return any(m in head for m in _SNIFF)
+
+
 def is_us(cand: str) -> bool:
     """Is this candidate one of our own executables? Four independent guards,
     because each alone has a hole:
@@ -524,14 +541,7 @@ def is_us(cand: str) -> bool:
                 return True
         except OSError:
             continue
-    real = os.path.realpath(cand)
-    base = os.path.basename(real)
-    if base in OUR_NAMES or base.split(".")[0] in OUR_NAMES:
-        return True
-    head = _head(cand)
-    if head[:4] == b"\x7fELF" or head[:2] in (b"MZ", b"\xca\xfe"):
-        return False
-    return any(m in head for m in _SNIFF)
+    return _is_our_file(cand)
 
 
 def real_tool(name: str, env=None):

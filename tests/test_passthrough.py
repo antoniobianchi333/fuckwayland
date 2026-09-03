@@ -271,6 +271,18 @@ class RealTool(Base):
         self.assertTrue(found.startswith(os.path.join(self.tmp, "bin")))
         self.assertEqual(passthrough.real_tool("wdotool", {"PATH": path}), found)
 
+    def test_not_being_first_on_path(self):
+        """`sys.argv[0]` with no slash has to be resolved against PATH to know
+        which file we are — but if the original is ahead of us there, that
+        resolution answers with *it*, and mistaking it for ourselves would
+        leave nothing to hand over to."""
+        local, real_dir = self.install_tree().split(os.pathsep)
+        path = os.pathsep.join([real_dir, local])
+        with mock.patch.object(sys, "argv", ["xdotool"]), \
+                mock.patch.dict(os.environ, {"PATH": path}):
+            found = passthrough.real_tool("xdotool", {"PATH": path})
+        self.assertEqual(os.path.realpath(found), os.path.realpath(FAKE))
+
     def test_nothing_installed(self):
         local = self.mkdir("local")
         os.symlink(SHIM, os.path.join(local, "xdotool"))
