@@ -8,7 +8,9 @@ Two rigs live here:
   plugged, unplugged and resized from the host at runtime, plus host-side screenshots of
   every head. This is the rig for testing `wxrandr`/`wwmctl`/`wdotool`/`wxprop` against
   real Wayland *and* X11 sessions, and for the X-parity oracles (every golden image also
-  carries the real `xdotool`, `wmctrl`, `x11-utils`, `x11-xserver-utils`).
+  carries the real `xdotool`, `wmctrl`, `x11-utils`, `x11-xserver-utils`). What the four
+  tools currently manage on each desktop — including where they have no backend at all —
+  is written down per flavor under *What the four tools do on each flavor*.
 * **`mkvm.sh` / `run.sh` / `compositor.sh` / `ssh.sh` / `scp.sh` / `stop.sh`**:
   the original headless-sway rig (single VM in this directory, root runs sway).
   Unchanged; the two rigs do not share state or ports (sway rig: 2222,
@@ -109,12 +111,12 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 | `vmctl stop <name> [--timeout 60]` | `systemctl poweroff` over ssh (GNOME inhibits logind's power-key handling, so a bare ACPI button would only pop a dialog), falls back to QMP `system_powerdown`, then QMP `quit`/kill after the timeout; stops the dbus-daemon. |
 | `vmctl destroy <name>` | stop + delete `instances/<name>`. |
 | `vmctl list` / `vmctl status <name>` | instances with state/pid/port/heads; `status` also reads each QEMU console over D-Bus and says which heads are unplugged (QEMU keeps an unplugged console's last surface size, so the size alone would mislead). |
-| `vmctl ssh <name> [-- cmd...]` | root ssh (`StrictHostKeyChecking=no`, known hosts `/dev/null`). |
+| `vmctl ssh <name> [-- cmd...]` | root ssh (`StrictHostKeyChecking=no`, known hosts `/dev/null`). A command of several words is quoted before it goes to ssh, so `vmctl ssh n -- sh -c 'a; b'` runs what it says (ssh joins the words with spaces and the guest's shell re-splits them; unquoted, that ran `sh -c a`). A single word is passed through untouched — `vmctl ssh n -- 'a \| b'` still reaches the remote shell as a command line. |
 | `vmctl scp <name> <src> <dst>` | scp; write the guest side as `<name>:<path>`. Extra scp flags need a `--` first: `vmctl scp n -- -r src n:/dst`. |
-| `vmctl head <name> <idx> <WxH>\|off` | `SetUIInfo` on head `idx` (0-based; `0` = Virtual-1, which can only be resized). A running GNOME picks the change up in well under a second. |
+| `vmctl head <name> <idx> <WxH>\|off` | `SetUIInfo` on head `idx` (0-based; `0` = Virtual-1, which can only be resized). A running GNOME picks the change up in well under a second. On an **X11 flavor** an unplug also releases the output in the X server: RandR keeps a removed output's CRTC (mode and position) until the desktop's display daemon disables it, so `off` waits ~5 s for the desktop to do it and otherwise runs `xrandr --output Virtual-N --off` in the session itself, logging `Virtual-N was still enabled in the X server after the unplug; disabled it`. |
 | `vmctl heads <name>` | guest DRM connectors (status, enabled, preferred mode) after `echo detect > .../status` — the kernel's cached mode list is stale until something re-probes. |
 | `vmctl shot <name> <idx> <out.png>` / `vmctl shot <name> --all <out>` | QMP `screendump` of one head (or every plugged head → `<out>-<idx>.png`). Written by QEMU straight to the host path. **The mouse cursor is not in it** (see Gotchas). |
-| `vmctl session <name> [--timeout 180] [--no-paint]` | wait until `loginctl` shows an **active session of user `test` on a seat** whose `Type` is the one the flavor's desktop registers (`wayland`; `x11` for Xfce; sway's greetd session starts as `tty` and libseat turns it into `wayland`) and whose sockets are there (`/run/user/1000/wayland-N`, `/tmp/.X11-unix/X0`, sway's `sway-ipc.*.sock`), **then until the desktop has painted its first frame**: GNOME the `GNOME Shell started` journal line, the others the compositor (`kwin_wayland`, `Xorg`, `sway`) owning head 0's scanout framebuffer in `/sys/kernel/debug/dri/0/state` *plus* the shell processes (`plasmashell`; `xfce4-panel`+`xfdesktop`; `swaybar`) up and any splash (`ksplashqml`) gone — and, when the guest offers none of that, head 0's screendump changing. `--no-paint` skips the paint wait. Prints `SESSION_ID`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`/`DISPLAY`/`SWAYSOCK`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_SESSION_TYPE`. |
+| `vmctl session <name> [--timeout 180] [--no-paint]` | wait until `loginctl` shows an **active session of user `test` on a seat** whose `Type` is the one the flavor's desktop registers (`wayland`; `x11` for Xfce; sway's greetd session starts as `tty` and libseat turns it into `wayland`) and whose sockets are there (`/run/user/1000/wayland-N`, `/tmp/.X11-unix/X0`, sway's `sway-ipc.*.sock`), **then until the desktop has painted its first frame**: GNOME the `GNOME Shell started` journal line, the others the compositor (`kwin_wayland`, `Xorg`, `sway`) owning head 0's scanout framebuffer in `/sys/kernel/debug/dri/0/state` *plus* the shell processes (`plasmashell`; `xfce4-panel`+`xfdesktop`; `swaybar`) up and any splash (`ksplashqml`) gone — and, when the guest offers none of that, head 0's screendump changing. Whatever the guest says is then confirmed **against the pixels of every head**: a screendump of each active head (QMP `screendump` in PPM, read without any image library) must not be one flat colour (sampled standard deviation >= 0.02). Head 0 can be painted seconds before the others are — on Xfce the panel is up while heads 1 and 2 are still black, which is what `waiting for the first frame: WAIT flat head 1,2` in the log means. `--no-paint` skips the paint wait. Prints `SESSION_ID`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`/`DISPLAY`/`SWAYSOCK`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_SESSION_TYPE`. |
 | `vmctl user <name> [-t] -- cmd...` | run `cmd` as `test` via `sudo -u test -H env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus ...` with the session's own environment reconstructed, first match wins: what the session published to the systemd user manager (`gnome-session`, `startplasma`, the X session's, sway's `dbus-update-activation-environment`), else the compositor's `/proc/<pid>/environ` (`gnome-shell`, `kwin_wayland`, `xfce4-session`, `sway`), else the sockets that are actually there. Result: `WAYLAND_DISPLAY` and `SWAYSOCK` on the Wayland flavors, `DISPLAY`+`XAUTHORITY` everywhere (Xwayland's on Wayland, Xorg's on Xfce), `XDG_CURRENT_DESKTOP`, `XDG_SESSION_ID` = logind's display/seat session of `test`, and `XDG_SESSION_TYPE` = `wayland` or `x11` as the session itself reports it (sway publishes `wayland` although greetd registered a `tty` session) — so `xrandr`/`wmctrl`/`xdotool`/`xprop`, `kscreen-doctor`, `swaymsg` and `loginctl show-session $XDG_SESSION_ID` all work in it. `-t` may follow `<name>`. |
 
 ## Flavors
@@ -250,7 +252,9 @@ order, using that desktop's own tools:
    display `xdpyinfo` can reach — Xwayland on the Wayland flavors, Xorg on Xfce.
 5. `vmctl heads` sees the DRM connectors, and `vmctl shot --all` yields one PNG per head whose
    pixel standard deviation is > 0.01 (a session that never finished starting paints every head a
-   flat `#222222`).
+   flat `#222222`). A head that is still flat is re-shot every 4 s, up to six times, before it
+   counts as a failure — `vmctl session` already waits for a picture on every head, so this is
+   only the safety net under it.
 6. **head 0 differs from head 1** — the proof that the screendumps caught the desktop and not the
    kernel console, which fbdev mirrors onto every head. This one is flavor-aware: GNOME (top bar
    and dock), Plasma (panel on the primary output) and Xfce (`xfce4-panel` on the first monitor)
@@ -258,10 +262,102 @@ order, using that desktop's own tools:
    and legitimately may not differ, so there it only warns — and the per-output workspace pinning
    (`Virtual-N` shows workspace `N`) is asserted through `swaymsg` instead.
 7. `vmctl head 3 1280x1024` makes the native tool report a 4th monitor and `Virtual-4` appear in
-   `vmctl heads`; `vmctl head 3 off` takes it away again.
+   `vmctl heads`; `vmctl head 3 off` takes it away again (up to 60 s — on X11 the removal is only
+   complete once the X server has let go of the output, which `vmctl head` sees to; a failure
+   prints the DRM connectors and, on Xfce, `xrandr`'s view of `Virtual-*`).
 
 Roughly 40 s for GNOME; a desktop that starts more slowly takes correspondingly longer. The VM
 is left running so a failure can be inspected — `vmctl stop <flavor>-t` when done.
+
+## What the four tools do on each flavor
+
+The point of the extra flavors is to see where `wxrandr`, `wwmctl`, `wdotool` and `wxprop`
+stand outside GNOME. This is the measured state, honest gaps included: the branch's own
+checkout copied into each guest and run as `python3 -m <tool>` **inside the session**
+(`vmctl user`) on a 3-head instance, plus a second round as root over plain `vmctl ssh`
+(no session environment). Every message below is verbatim. None of it is a rig defect —
+`selftest.sh` passes on all seven flavors. On the **X11 flavors** what is measured is the
+passthrough: on a plain X11 session the tools hand over to the real `xdotool`/`wmctrl`/`xprop`/
+`xrandr` (repo README, *X11*), all four of which the goldens carry, so there they behave as the
+originals do.
+
+| flavor | `wxrandr` | `wwmctl -m` | `wwmctl -l` | `wdotool` | `wxprop -root` |
+|---|---|---|---|---|---|
+| `noble-gnome`, `resolute-gnome` | works | works | needs the bridge extension | `getdisplaygeometry` works; window/input commands need the bridge extension | works |
+| `noble-kde`, `resolute-kde` | **no backend** | works | works | works | works |
+| `noble-xfce`, `resolute-xfce` | works (hands over to `xrandr`) | works (`wmctrl`) | works (`wmctrl`) | works (`xdotool`) | works (`xprop`) |
+| `resolute-sway` | works | works | works | works | works |
+
+**GNOME** — `wxrandr` prints the real listing through mutter's DisplayConfig
+(`Screen 0: minimum 16 x 16, current 5760 x 1080, maximum 32767 x 32767`,
+`Virtual-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 480mm x 270mm`),
+`wwmctl -m` prints `Name: GNOME Shell` … `Window manager's "showing the desktop" mode: OFF`,
+`wdotool getdisplaygeometry` prints `5760 1080`, and `wxprop -root _NET_SUPPORTING_WM_CHECK`
+prints `_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x400001` (Xwayland's root; the id varies).
+Everything that needs the window list — `wwmctl -l`, `wdotool getactivewindow` and the rest —
+exits non-zero with
+
+> `gnome backend: the fuckwayland bridge extension is not running in GNOME Shell; run gnome/install-bridge.sh and restart the session (log out and back in)`
+
+The goldens are stock desktops and deliberately do not carry the extension: install it in the
+guest (`gnome/install-bridge.sh`) and log the session out and in to exercise those paths.
+Same results as root over `vmctl ssh` — the GNOME backends need no session environment.
+
+**KDE Plasma** — in the session everything but `wxrandr` works. `wwmctl -m` prints `Name: KWin`
+(`Class: N/A`, `PID: N/A`); `wwmctl -l` lists KWin's windows by compositor node id — on Plasma 6
+`0xfc4c866655c0 -1 <hostname> plasmashell`, on 5.27 also the per-screen containers
+`0xd7f43d3f8d88 -1 <hostname> Desktop @ QRect(0,0 1920x1080) — Plasma` — and a GTK test window
+appears as `0x58085a951f16  0 <hostname> vmctl-probe-window`. `wdotool getactivewindow` returns a
+node id (`96792902704918`), `getdisplaygeometry` returns `5760 1080`, and `wxprop -root
+_NET_SUPPORTING_WM_CHECK` returns `_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x200002`.
+`wxrandr` has no backend on KWin (no DisplayConfig, no `wlr-output-management`) and exits 1 with
+
+> `Can't open display wayland-0`
+
+**As root over plain ssh the KWin backend is unreachable** — `wwmctl -l` and `wdotool
+getactivewindow` exit 1 with
+
+> `kwin backend: org.kde.kwin.Scripting.loadScript failed: Error connecting: The connection is closed`
+
+so drive Plasma through `vmctl user`, not `vmctl ssh`. (`wwmctl -m`, `wxprop` and
+`getdisplaygeometry` still answer there.)
+
+**Xfce** — the X11 flavors, and every tool hands over there, so the answers are the real
+tools' own. `wxrandr` prints the X server's listing
+(`Screen 0: minimum 320 x 200, current 5760 x 1080, maximum 8192 x 8192`,
+`Virtual-1 connected 1920x1080+0+0 (normal left inverted right x axis y axis) 487mm x 274mm` —
+X's numbers, not the Wayland backends'). `wwmctl -m` prints `Name: Xfwm4`, `Class: xfwm4` and
+xfwm4's real `PID:`; `wwmctl -l` lists the X windows —
+`0x01600003 -1 <hostname> xfce4-panel`, `0x01800017 -1 <hostname> Desktop` per monitor, and a GTK
+test window as `0x01400003  0 <hostname> vmctl-probe-window`. `wxprop -root
+_NET_SUPPORTING_WM_CHECK` prints `_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0xe00032`, and
+`wdotool getdisplaygeometry` prints `1920 1080` — xdotool answers per screen, where the Wayland
+backends report the 5760x1080 span. `wdotool getactivewindow` prints the focused window's X id
+(`25165855`); with nothing focused it fails the way the original does, exit 1 with
+
+> `XGetWindowProperty[_NET_ACTIVE_WINDOW] failed (code=1)`
+> `xdo_get_active_window reported an error`
+
+(seen on `noble-xfce` right after login — on `resolute-xfce` xfdesktop holds the focus, and once a
+window is open both answer with its id). **All of it works as root over plain `vmctl ssh` too**:
+the passthrough supplies the session owner's `DISPLAY` and cookie, so root gets the same output
+that `test` gets — the one flavor where `vmctl ssh` is as good as `vmctl user`. The flavors keep
+their other job: they are the X-parity oracles (`xrandr`, `wmctrl`, `xdotool`, `xprop` are
+installed), so the same command can be run through us and through the original and compared.
+
+**sway** — all four work, in the session and as root. `wxrandr` prints the full listing
+(`Screen 0: minimum 16 x 16, current 5760 x 1080, maximum 32767 x 32767`,
+`Virtual-3 connected 1920x1080+3840+0 (normal left inverted right x axis y axis) 480mm x 270mm`),
+`wwmctl -m` prints `Name: wlroots wm` in the session (`Name: sway` from a root shell), and with a
+window open (`swaymsg exec foot`) `wwmctl -l` prints `0x00000009  0 <hostname> foot`,
+`wdotool getactivewindow` prints `9` and `getwindowname 9` prints `foot`. `wxprop -root
+_NET_SUPPORTING_WM_CHECK` prints `_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x200004`.
+On an **empty** session `getactivewindow` exits 1 with
+
+> `xdo_get_active_window reported an error`
+
+which is xdotool's own wording for "nothing is focused", not a backend failure —
+`getdisplaygeometry` (`5760 1080`) and the window commands answer normally on the same session.
 
 ## The QEMU / D-Bus facts this rig relies on
 
@@ -299,7 +395,9 @@ Proven on QEMU 8.2.2 with a 24.04 (kernel 6.8) and 26.04 (kernel 7.0) guest:
   authoritative view (a hotplug shows up there within ~0.5 s, an unplug within ~4 s).
 * Screenshots: QMP `{"execute":"screendump","arguments":{"filename":"/abs/path.png",
   "device":"gpu0","head":N,"format":"png"}}` (after `qmp_capabilities`) over
-  `-qmp unix:<path>,server,nowait`. The PNG is written by QEMU on the host.
+  `-qmp unix:<path>,server,nowait`. The PNG is written by QEMU on the host. `"format":"ppm"`
+  (QEMU >= 7.1) writes a raw P6 instead — that is how `vmctl session` checks whether a head has
+  painted without depending on an image library in the host's python.
 * Guest access: cloud-init NoCloud seed (`cloud-localds`) with `disable_root: false` and the
   root key; user-mode networking with `hostfwd=tcp:127.0.0.1:<port>-:22`; `-enable-kvm -cpu host`.
 * No virtual input devices are attached (`virtio-tablet/keyboard` are not needed: the tools
@@ -368,7 +466,10 @@ A cron-started tool must therefore wait for the session and set them itself:
   console (mirrored on every head by fbdev), and on a slow host the window is several
   seconds wide. `vmctl session` therefore also waits for the first frame (per desktop: see
   the command table), and `selftest.sh` asserts that head 0 differs from head 1 — except on
-  sway, whose bar is identical on every output.
+  sway, whose bar is identical on every output. **The heads do not paint at once**: on Xfce the
+  panel is on head 0 while heads 1 and 2 are still black (`xfdesktop` draws the wallpaper per
+  monitor, seconds later), so what the guest reports about head 0 is not enough — the wait ends
+  only when no head is still a flat colour.
 
 * `vmctl start --heads N` sizes heads `0..N-1` to 1920x1080 (`--head-size` changes it) before
   the guest boots, so Virtual-1 is the primary monitor (top bar, dock) at logical (0,0) and
@@ -377,6 +478,14 @@ A cron-started tool must therefore wait for the session and set them itself:
   Virtual-2 as primary at (0,0), with Virtual-1 at x=1920 — confusing for coordinate tests.
   Sizes survive `stop`/`start` via `meta.json`.
 * `vmctl head ... off` on head 0 is refused (virtio-vga's first scanout is always connected).
+* **X11: a removed output stays in `xrandr` until someone disables it.** The unplug takes the DRM
+  connector away (`vmctl heads` → `Virtual-4 disconnected`), but the X server keeps scanning the
+  output out: `xrandr --query` shows `Virtual-4 disconnected 1280x1024+5760+0`, `--listmonitors`
+  still counts it, and `vmctl heads` says `disconnected enabled=enabled`. Disabling it is the
+  desktop's job; Xfce 4.18 does it within a second, Xfce 4.20 is unreliable — one boot released
+  every removed output in 1-3 s, another held them for over a minute. `vmctl head <idx> off`
+  therefore finishes the job itself on the X11 flavors (5 s of grace, then `xrandr --output
+  Virtual-N --off`), which turns a minute-long stall into a 6 s removal.
 * Screendumps of a head the guest has never scanned out are black.
 * **The mouse cursor is not in a screendump**: virtio-gpu puts it on a hardware cursor plane that
   QEMU's `screendump` does not compose. To verify pointer motion read the KMS cursor plane in the
@@ -399,7 +508,8 @@ A cron-started tool must therefore wait for the session and set them itself:
   it; restart those instances with `--fresh`.
 * **Xfce is the X11 flavor**: `vmctl user` exports no `WAYLAND_DISPLAY` there and the compositor
   is `Xorg`, so Wayland-only tools have nothing to talk to — that is the point of the flavor
-  (it is the X-side oracle). On 26.04 `xubuntu-desktop` also installs `gnome-shell` and GDM;
+  (it is the X-side oracle). Our four tools do not fail there: on an X11 session they hand over
+  to the real `xdotool`/`wmctrl`/`xprop`/`xrandr` (see *What the four tools do on each flavor*). On 26.04 `xubuntu-desktop` also installs `gnome-shell` and GDM;
   the build forces LightDM and fails if it did not win (see Flavors).
 * **Plasma 6 opens its welcome centre from a kded module**, not from an autostart entry, so
   hiding the `.desktop` file is not enough: `plasma-welcomerc`'s `LastSeenVersion` must name the
