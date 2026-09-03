@@ -154,3 +154,21 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   examine the root window: gnome backend: …`; `-name` keeps `No window with
   name … exists!`. Unit coverage: `tests/test_wxprop_gnome.py` on the
   mock bridge plus an in-memory X server stand-in.
+
+Verified live (same rigs as WWMCTL.md's GNOME section, GNOME 46 and 50):
+the full `-id <xterm>` dump is byte-identical to real `xprop` (31 lines);
+`-root` differs from real `xprop -root` in exactly the merged names
+(`_NET_CLIENT_LIST(_STACKING)` and `_NET_ACTIVE_WINDOW` covering the
+native windows — Mutter's X root lists the xterm only and, on 50, names
+its own no-focus window `0x200003` as active — plus `_NET_CURRENT_DESKTOP`,
+which Mutter's X root does not carry); native windows dump the synthesized
+set; a bridge id of the xterm redirects to its X properties; `-spy` on the
+calculator reprints `_NET_WM_STATE` through fullscreen/hidden toggles and
+exits 0 when it is closed; `-root -spy` prints the focus change and the
+workspace switches (a switch can arrive more than once, as an X
+`PropertyNotify` storm would); `-name "Both by wwmctl"` finds the
+`mutter-x11-frames` frame first, exactly as real `xprop` does;
+`-set WM_NAME` / `-remove WM_ICON_NAME` on the xterm are read back by real
+`xprop`; click-to-select returns with the window `wdotool windowactivate`
+focused; all of it also from `ssh root@` with `env -i`, under `sudo` and
+from a custom shortcut.

@@ -208,3 +208,22 @@ untouched) and the generic `list()` fallback.
   mid-session; `-a`/`-c`/… on a window that vanished exits 1 silently like
   a no-match. Unit coverage: `tests/test_wwmctl_gnome.py` on the mock
   bridge of `tests/test_backend_gnome.py`.
+
+Verified live (branch `gnome-wm-tools`, `vm/vmctl` rigs, xterm +
+gnome-text-editor + gnome-calculator): Ubuntu 24.04 / GNOME Shell 46 and
+Ubuntu 26.04 / GNOME Shell 50, as the desktop user, from a
+`<Ctrl><Super>F7` custom shortcut, from `ssh root@` with `env -i`, and
+under `sudo` — `-l/-lpGx` (the xterm under its X id `0x00800020` /
+`0x0060001e`, `xterm.XTerm`, `WM_CLIENT_MACHINE`; natives under bridge ids
+like `0x14a3062e`), `-d` (`WA: 66,32 3774x1048  Workspace 1` on two
+1920x1080 heads with the dock; real `wmctrl -d` fails there with `Cannot
+get current desktop properties`: Mutter's X root carries no
+`_NET_CURRENT_DESKTOP`), `-m` byte-identical to real `wmctrl -m`, `-a`,
+`-c :ACTIVE:`, `-i` with either id, `-e` (frame coordinates; xterm snaps
+500x400 to 496x392), `-e` with `-1` fills, `-b add,fullscreen` /
+`maximized_vert` seen by real `xprop`, `shaded,below`/`skip_taskbar`
+warn+exit 0, `-N/-I/-T` read back by real `xprop`, `-t 1`, `-R`, `-s`,
+`-t 7` → `workspace 7 not found`, `-k on/off` (0 then 3 visible windows),
+`-n 3` warn+exit 0, `:SELECT:` returning on a `wdotool windowactivate`.
+Real `wmctrl -lG` prints the doubled coordinates (`80 118` for our `66
+69`) — the non-reparenting-xwm quirk the contract already excludes.
