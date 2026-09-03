@@ -50,6 +50,18 @@ WID = {k: backend_kwin._wid(v) for k, v in UU.items()}
 XTERM_XID = 0x400005
 
 
+def _code(js: str) -> str:
+    """The script with its /* comments */ stripped: these tests are about
+    what the script does, not about what it says about itself."""
+    return re.sub(r"/\*.*?\*/", "", js, flags=re.S)
+
+
+def _clashing_uuid(u: str) -> str:
+    """Another uuid with the same first 8 hex digits -- all _wid() reads --
+    so the two mint the same window id."""
+    return u[:-4] + ("beef" if not u.endswith("beef") else "cafe")
+
+
 def fixture_windows(six=True):
     """The payload wdotool.kwin_js computes, bottom-to-top: Plasma's desktop
     view, a minimized kate, a konsole parked on desktop 1, and a focused
@@ -89,7 +101,8 @@ class FakeKWin:
     def __init__(self, address, plasma=6, own_name=True, silent=False,
                  decoy=False, refuse_load=False, select_uuid=UU["kate"],
                  select_error=None, select_delay=0.05,
-                 no_run=False, junk=False):
+                 no_run=False, junk=False, max_desktops=None,
+                 min_desktops=1):
         self.bus = Bus(address)
         self.bus.serve_calls = True
         self.plasma = plasma
@@ -102,6 +115,8 @@ class FakeKWin:
         self.select_error = select_error
         self.select_delay = select_delay
         self.windows = fixture_windows(plasma >= 6)
+        self.max_desktops = max_desktops   # KWin's own cap (20 on 5.27, 25 on 6)
+        self.min_desktops = min_desktops   # KWin keeps at least one
         self.desktops = [(0, "d-one", "Desktop 1"), (1, "d-two", "Desktop 2")]
         self.current = 0
         self.scripts = {}               # id -> (plugin, args)
@@ -292,7 +307,8 @@ class FakeKWin:
                     w[key] = val
             return {k: w[k] for k in ("x", "y", "w", "h")}
         if op == "state":
-            return {"applied": self._state(w, a["state"], a["action"])}
+            applied, settled = self._state(w, a["state"], a["action"])
+            return {"applied": applied, "settled": settled}
         if op == "desktop":
             n = a["n"]
             if n < 0:
@@ -310,32 +326,45 @@ class FakeKWin:
                "SKIP_PAGER": "sp", "DEMANDS_ATTENTION": "at"}
 
     def _state(self, w, state, action):
+        """(applied, settled) -- what kwin_js answers with.
+
+        `applied` is the read-back *after* the script has waited for the
+        window's own change signal, so a Wayland client that had simply not
+        acked the configure yet never shows up here; `settled` is false only
+        when nothing could be waited on, and then the read means nothing.
+        Window flags: `refuse` = KWin accepted the write and ignored it (a
+        window rule, or size hints the state cannot satisfy), `unverifiable`
+        = neither a signal nor a timer could be armed."""
         if state in ("MAXIMIZED_VERT", "MAXIMIZED_HORZ"):
             bit = 1 if state.endswith("VERT") else 2
             cur = bool(w["mm"] & bit)
             want = (not cur) if action == 2 else bool(action)
             if w.get("refuse"):
-                return cur          # KWin's maximizeMode has not caught up
+                return cur, True
+            if w.get("unverifiable"):
+                return cur, False
             w["mm"] = (w["mm"] | bit) if want else (w["mm"] & ~bit)
-            return want
+            return want, True
         if state == "SHADED":
             if w["sh"] is None:
                 raise _ScriptError("noshade")
             w["sh"] = (not w["sh"]) if action == 2 else bool(action)
-            return w["sh"]
+            return w["sh"], True
         key = self._STATES.get(state)
         if key is None:
             raise _ScriptError("nostate")
         want = (not w[key]) if action == 2 else bool(action)
         if w.get("refuse"):
-            return w[key]           # accepted and ignored, as KWin does
+            return w[key], True     # accepted and ignored, as KWin does
+        if w.get("unverifiable"):
+            return w[key], False
         w[key] = want
         if key == "m":
             w["hi"] = want
         if key == "st":
             w["d"] = -1 if want else self.current
             w["oc"] = True if want else (w["d"] == self.current)
-        return want
+        return want, True
 
     def _refresh(self):
         for d in self.windows:
@@ -382,11 +411,18 @@ class FakeKWin:
         raise DBusError(ERR + "InvalidArgs", "no property %s" % name)
 
     def v_createDesktop(self, position, name):
+        if (self.max_desktops is not None
+                and len(self.desktops) >= self.max_desktops):
+            # createVirtualDesktop() returns nullptr past maximum() and the
+            # D-Bus slot is void: KWin says nothing at all.
+            return "", ()
         self.desktops.insert(position, (position, "d-%d" % position, name))
         self.desktops = [(i, d[1], d[2]) for i, d in enumerate(self.desktops)]
         return "", ()
 
     def v_removeDesktop(self, ident):
+        if len(self.desktops) <= self.min_desktops:
+            return "", ()               # KWin keeps at least one, silently
         self.desktops = [(i, d[1], d[2]) for i, d in
                          enumerate(d for d in self.desktops if d[1] != ident)]
         self.current = min(self.current, len(self.desktops) - 1)
@@ -469,6 +505,19 @@ class TransportTests(_Base):
         # every one of them was unloaded again
         self.assertEqual(sorted(self.kwin.unloaded), sorted(self.kwin.plugins))
         self.assertEqual(self.kwin.loaded, set())
+
+    def test_plugin_name_is_unique_across_processes_too(self):
+        # KWin holds a pluginName for as long as the script object lives and
+        # nothing can list what is loaded, so a wdotool killed between
+        # loadScript and unloadScript leaks its name for the rest of the
+        # session. With pid+counter alone the next process handed that pid
+        # would fail on its first command, for ever; the name is random too.
+        names = {backend_kwin._plugin_name(0) for _ in range(200)}
+        self.assertEqual(len(names), 200)
+        self.assertNotEqual(backend_kwin._plugin_name(3, "ev"),
+                            backend_kwin._plugin_name(3, "ev"))
+        for n in list(names)[:5]:
+            self.assertTrue(n.startswith("wdotool-%d-0-" % os.getpid()), n)
 
     def test_plasma_5_27_object_path(self):
         b = self.backend(plasma=5)
@@ -684,11 +733,31 @@ class BackendTests(_Base):
             self.b.set_state(WID["kate"], "FULLSCREEN", 1)
         self.assertIn("did not apply", err.getvalue())
         self.assertFalse(d["fs"])
-        # ...but a maximize that has not been acked yet must not warn
+        # maximize too: the script waits for the window to agree before it
+        # answers, so a state that stays unapplied really is one KWin refused
         err = _capture_stderr()
         with err:
             self.b.set_state(WID["kate"], "MAXIMIZED_VERT", 1)
-        self.assertEqual(err.getvalue(), "")
+        self.assertIn("did not apply", err.getvalue())
+
+    def test_set_state_never_warns_on_an_unverifiable_read(self):
+        # `settled: false` = the script could arm neither the window's change
+        # signal nor a timer, so its read-back says nothing. Warning on it is
+        # the false alarm every FULLSCREEN on a Wayland client used to print.
+        d = self.kwin.find(UU["kate"])
+        d["unverifiable"] = True
+        for state in ("FULLSCREEN", "MAXIMIZED_VERT", "ABOVE"):
+            err = _capture_stderr()
+            with err:
+                self.b.set_state(WID["kate"], state, 1)
+            self.assertEqual(err.getvalue(), "", state)
+
+    def test_set_state_asks_the_script_to_wait(self):
+        self.b.set_state(WID["kate"], "FULLSCREEN", 1)
+        args = self.kwin.scripts[max(self.kwin.scripts)][1]
+        self.assertEqual(args["op"], "state")
+        self.assertEqual(args["settle"], backend_kwin.SETTLE_MS)
+        self.assertGreater(args["settle"], 0)
 
     def test_set_state_bad_action_and_unknown_state(self):
         with self.assertRaises(CmdError):
@@ -735,6 +804,30 @@ class BackendTests(_Base):
         self.assertEqual(self.b.num_desktops(), 1)
         with self.assertRaises(CmdError):
             self.b.set_num_desktops(0)
+
+    def test_set_num_desktops_stops_at_kwins_own_cap(self):
+        # createVirtualDesktop() returns nullptr past maximum() (20 on 5.27,
+        # 25 on 6) and the D-Bus slot is void, so nothing changing is the
+        # only refusal there is. Looping on it hammers the compositor with
+        # D-Bus calls for ever.
+        b = self.backend(max_desktops=5)
+        with self.assertRaises(CmdError) as cm:
+            b.set_num_desktops(9)
+        self.assertTrue(getattr(cm.exception, "unsupported", False))
+        self.assertIn("5", str(cm.exception))
+        self.assertEqual(b.num_desktops(), 5)
+        creates = [c for c in self.kwin.calls if c[1] == "createDesktop"]
+        self.assertLessEqual(len(creates), 5)      # 3 that worked, 1 that did not
+
+    def test_set_num_desktops_stops_when_kwin_will_not_remove(self):
+        b = self.backend(min_desktops=2)
+        with self.assertRaises(CmdError) as cm:
+            b.set_num_desktops(1)
+        self.assertTrue(getattr(cm.exception, "unsupported", False))
+        self.assertIn("below 2", str(cm.exception))
+        self.assertEqual(b.num_desktops(), 2)
+        removes = [c for c in self.kwin.calls if c[1] == "removeDesktop"]
+        self.assertEqual(len(removes), 1)
 
     def test_show_desktop(self):
         self.b.show_desktop(True)
@@ -809,6 +902,32 @@ class BackendTests(_Base):
         ws = b.workspaces()          # the work-area script answers nothing
         self.assertEqual([w.index for w in ws], [0, 1])
         self.assertEqual(ws[0].work_area, (0, 0, 0, 0))
+
+    def test_x_display_prefers_the_sessions_own_socket(self):
+        # KWin creates the listening socket for its Xwayland itself, as the
+        # session user; SDDM leaves its greeter's root-owned Xorg behind on
+        # the *lower* number. Taking that one (lowest wins, root accepted)
+        # handed `sudo wdotool` a DISPLAY the session cookie cannot open,
+        # and the whole X plane silently vanished from the answers.
+        d = tempfile.mkdtemp(prefix="wdotool-x11-")
+        self.addCleanup(shutil.rmtree, d, True)
+        for name in ("X0", "X1", "X2", "Xjunk"):
+            open(os.path.join(d, name), "w").close()
+        owners = {"X0": 0, "X1": 1000, "X2": 1000}
+        saved = (session.X11_SOCKET_DIR, session._owner, session._shell_environ)
+        session.X11_SOCKET_DIR = d
+        session._owner = lambda p: owners.get(os.path.basename(p))
+        session._shell_environ = lambda uid: {}
+        try:
+            self.assertEqual(session.find_x_display(1000), ":1")
+            # a plain X11 session's Xorg *is* root's: still the fallback
+            owners = {"X0": 0}
+            self.assertEqual(session.find_x_display(1000), ":0")
+            owners = {}
+            self.assertIsNone(session.find_x_display(1000))
+        finally:
+            (session.X11_SOCKET_DIR, session._owner,
+             session._shell_environ) = saved
 
     def test_window_at_looks_through_desktop_and_docks(self):
         # (1500, 900) is over the plasma DESKTOP window only
@@ -912,6 +1031,54 @@ class PayloadShapeTests(_Base):
         self.assertEqual(backend_kwin._match_xids(raw, clients),
                          {"a": 12, "b": 11})
 
+    def test_a_client_that_agrees_on_nothing_gets_no_id(self):
+        # An X client with neither _NET_WM_PID nor WM_CLASS contradicts
+        # nothing: matching it on geometry alone would hand its id to a
+        # *native* window, which then claims client_type "x11".
+        raw = [dict(u="a", c="org.kde.konsole", n="konsole", p=1400,
+                    t="test@kde: ~", x=100, y=80, w=640, h=480)]
+        anon = [{"xid": 11, "pid": 0, "inst": "", "cls": "",
+                 "name": "test@kde: ~", "geo": (100, 108, 640, 452)}]
+        self.assertEqual(backend_kwin._match_xids(raw, anon), {})
+        # the same client with a class that agrees is matched
+        named = [dict(anon[0], cls="konsole", inst="konsole")]
+        self.assertEqual(backend_kwin._match_xids(raw, named), {})
+        named = [dict(anon[0], cls="org.kde.konsole", inst="konsole")]
+        self.assertEqual(backend_kwin._match_xids(raw, named), {"a": 11})
+        # ...and so is one that agrees on the pid alone
+        self.assertEqual(backend_kwin._match_xids(
+            raw, [dict(anon[0], pid=1400)]), {"a": 11})
+
+    def test_two_windows_that_collide_both_keep_an_id(self):
+        # 30 bits of the uuid: a collision is a one-in-a-million session,
+        # and a plain {id: uuid} comprehension would drop one window out of
+        # the listing entirely (unlistable, unaddressable).
+        u1 = "12345678-0000-4000-8000-000000000001"
+        u2 = "12345678-0000-4000-8000-000000000002"   # same first 8 hex
+        self.assertEqual(backend_kwin._wid(u1), backend_kwin._wid(u2))
+        rows = [{"u": u1}, {"u": u2}]
+        table = backend_kwin._id_map(rows)
+        self.assertEqual(len(table), 2)
+        self.assertEqual(sorted(table.values()), sorted([u1, u2]))
+        self.assertNotEqual(rows[0]["_id"], rows[1]["_id"])
+        self.assertEqual(rows[0]["_id"], backend_kwin._wid(u1))
+        for wid in table:
+            self.assertGreaterEqual(wid, 0x40000000)
+            self.assertLessEqual(wid, 0xFFFFFFFF)
+        # stable while the pair is
+        self.assertEqual(backend_kwin._id_map([{"u": u1}, {"u": u2}]), table)
+
+    def test_a_collided_window_is_still_addressable(self):
+        b = self.backend()
+        clash = dict(self.kwin.find(UU["kate"]))
+        clash["u"] = _clashing_uuid(UU["kate"])
+        clash["t"], clash["so"] = "clash - Kate", 9
+        self.kwin.windows.append(clash)
+        wins = {w.title: w.id for w in b.list()}
+        self.assertEqual(len(set(wins.values())), len(wins))
+        self.assertEqual(b._info(wins["clash - Kate"])["u"], clash["u"])
+        self.assertEqual(b._info(wins["untitled - Kate"])["u"], UU["kate"])
+
     def test_pid_and_class_are_filters(self):
         raw = [dict(u="a", c="XTerm", n="xterm", p=7, t="x", x=0, y=0, w=1, h=1)]
         other_pid = [{"xid": 11, "pid": 9, "inst": "xterm", "cls": "XTerm",
@@ -977,6 +1144,64 @@ class ScriptTextTests(unittest.TestCase):
         for token in ("setMaximize(false, false)", "w.tile = null",
                       "w.fullScreen = false"):
             self.assertIn(token, unclamp)
+        # unconditionally: `if (w.maximizeMode)` is always false on 5.27
+        # (no such property), which left a maximized window maximized while
+        # its geometry was written out from under it
+        self.assertNotIn("if (w.maximizeMode)", _code(unclamp))
+
+    def test_maximize_mode_is_derived_where_the_property_is_missing(self):
+        # 5.27's window.h declares no maximizeMode Q_PROPERTY at all (only
+        # 6 has one), so reading it as a number reported every window as
+        # restored -- and every setMaximize() cleared the other axis.
+        js = kwin_js.SCRIPT
+        self.assertIn("function mmode(w)", js)
+        mmode = js[js.index("function mmode(w)"):js.index("function info(w)")]
+        self.assertIn("typeof m === \"number\"", mmode)
+        self.assertIn("maxArea(w)", mmode)
+        # not "equal to the maximize area": KWin honours an X11 client's
+        # size increments and centres the remainder, so a maximized xterm
+        # is 1918x1033 at (1,0) of a 1920x1036 area
+        self.assertIn("function covers(gp, gs, ap, as)", js)
+        self.assertIn("covers(num(g.y), num(g.height)", mmode)
+        self.assertIn("covers(num(g.x), num(g.width)", mmode)
+        # ...and a fullscreen frame is bigger than the maximize area, so it
+        # would otherwise report MAXIMIZED_HORZ for any fullscreen window
+        self.assertIn("if (w.fullScreen) {", mmode)
+        self.assertIn("KWin.MaximizeArea", kwin_js.SCRIPT)
+        self.assertIn("workspace.clientArea(opt, w)", kwin_js.SCRIPT)
+        # nothing reads the raw property anywhere else
+        self.assertEqual(_code(js).count("w.maximizeMode"), 1)
+        for fn, end in (("function readState(", "var _STATE_PROPS"),
+                        ("function writeState(", "/* The signals")):
+            body = js[js.index(fn):js.index(end)]
+            self.assertIn("mmode(w)", body)
+
+    def test_a_state_write_waits_for_the_window_to_agree(self):
+        # a Wayland client applies fullscreen/maximize on the configure ack,
+        # so the read-back inside the same run is stale and warning on it is
+        # a false alarm on every single windowstate command
+        js = kwin_js.SCRIPT
+        for token in ("var _WATCH = {", "fullScreenChanged",
+                      "maximizedChanged", "frameGeometryChanged",
+                      "function later(w, s, want)", "new QTimer()",
+                      "t.singleShot = true", "t.timeout.connect",
+                      "num(A.settle)", "return DEFER;",
+                      "if (_v !== DEFER)"):
+            self.assertIn(token, js)
+        # answered exactly once, whichever of the two gets there first
+        self.assertIn("if (_done) {", js)
+        state = js[js.index('if (op === "state") {'):
+                   js.index('if (op === "desktop") {')]
+        self.assertIn("settled: true", state)
+        self.assertIn("settled: false", state)
+
+    def test_the_output_property_is_only_read_on_plasma_6(self):
+        # KWin::Output* has no QJSEngine converter on 5.27: *reading* it logs
+        # "QMetaProperty::read: Unable to handle unregistered datatype" into
+        # the journal once per window per command.
+        js = kwin_js.SCRIPT
+        self.assertIn("var out = SIX ? w.output : null;", js)
+        self.assertEqual(_code(js).count("w.output"), 1)
 
 
 class DetectTests(_Base):

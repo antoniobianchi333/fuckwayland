@@ -774,13 +774,12 @@ class Core:
         ws_fn = getattr(backend, "workspaces", None)
         typed = ws_fn() if callable(ws_fn) else None
         if typed is not None:
-            # VP: like wmctrl under EWMH — a single _NET_DESKTOP_VIEWPORT
-            # pair applies to the current desktop only, the others print
-            # N/A. A nameless workspace prints its index.
-            for ws in typed:
+            # A nameless workspace prints its index.
+            cur = next((i for i, ws in enumerate(typed) if ws.active), -1)
+            vps = self._viewports(len(typed), cur)
+            for i, ws in enumerate(typed):
                 wx, wy, ww, wh = ws.work_area
-                rows.append((ws.index, ws.active, dg,
-                             "0,0" if ws.active else "N/A",
+                rows.append((ws.index, ws.active, dg, vps[i],
                              "%d,%d %dx%d" % (wx, wy, ww, wh),
                              ws.name or "%d" % ws.index))
             return rows
@@ -792,25 +791,57 @@ class Core:
                 workspaces = msg(GET_WORKSPACES)
             except Exception:
                 workspaces = None
-        # VP: like wmctrl under EWMH — a single _NET_DESKTOP_VIEWPORT pair
-        # applies to the current desktop only, the others print N/A.
         if workspaces is not None:
-            for ws in workspaces:
+            here = next((i for i, ws in enumerate(workspaces)
+                         if ws.get("focused")), -1)
+            vps = self._viewports(len(workspaces), here)
+            for i, ws in enumerate(workspaces):
                 num = ws.get("num", -1)
-                cur = bool(ws.get("focused"))
                 rect = ws.get("rect") or {}
                 wa = "%d,%d %dx%d" % (rect.get("x", 0), rect.get("y", 0),
                                       rect.get("width", 0),
                                       rect.get("height", 0))
                 rows.append((num - 1 if num > 0 else -1,
-                             cur, dg, "0,0" if cur else "N/A", wa,
+                             bool(ws.get("focused")), dg, vps[i], wa,
                              ws.get("name") or "N/A"))
         else:
             cur = backend.get_desktop()
-            for i in range(backend.num_desktops()):
-                rows.append((i, i == cur, dg, "0,0" if i == cur else "N/A",
-                             "N/A", "N/A"))
+            n = backend.num_desktops()
+            vps = self._viewports(n, cur)
+            for i in range(n):
+                rows.append((i, i == cur, dg, vps[i], "N/A", "N/A"))
         return rows
+
+    def _viewports(self, n: int, cur: int) -> list[str]:
+        """The VP column for `n` desktops, wmctrl's rule exactly.
+
+        wmctrl prints `_NET_DESKTOP_VIEWPORT[2i]` and `[2i+1]` for desktop i
+        when the array is long enough, and N/A when it is not — so a WM that
+        publishes one pair per desktop (KWin does) prints `VP: 0,0` on every
+        row, and one that publishes a single pair prints it against the
+        current desktop only. Read it from the X server when one is already
+        there, so the column is the same as `wmctrl -d`'s whatever the
+        compositor publishes; with no X plane fall back to the single-pair
+        reading (no Wayland compositor implements viewports — `wwmctl -o`
+        says so — so the current desktop's origin is all we can honestly
+        claim to know)."""
+        vals = []
+        if self._x11 not in ("unset", None) or session.xwayland_running():
+            x = self.x11()
+            if x is not None:
+                try:
+                    vals = x.get_prop_ints(x.root(), "_NET_DESKTOP_VIEWPORT")
+                except Exception:                              # noqa: BLE001
+                    vals = []
+        out = []
+        for i in range(n):
+            if len(vals) >= 2 * (i + 1):
+                out.append("%d,%d" % (vals[2 * i], vals[2 * i + 1]))
+            elif len(vals) >= 2 and i == cur:
+                out.append("%d,%d" % (vals[0], vals[1]))
+            else:
+                out.append("0,0" if i == cur else "N/A")
+        return out
 
     def list_desktops(self) -> int:
         rows = self._desktop_rows()

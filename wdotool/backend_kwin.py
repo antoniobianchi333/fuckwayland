@@ -13,10 +13,10 @@ global callDBus() to a name *we* own:
 
 Wire sequence per command (four round trips, one temp file):
 
-    id = loadScript(file, "wdotool-<pid>-<seq>")   /Scripting
-    run()                                          /Scripting/Script<id> (6)
-                                                   /<id>                 (5.27)
-    unloadScript("wdotool-<pid>-<seq>")            /Scripting, in a finally
+    id = loadScript(file, "wdotool-<pid>-<seq>-<rand>")   /Scripting
+    run()                                   /Scripting/Script<id> (6)
+                                            /<id>                 (5.27)
+    unloadScript("wdotool-<pid>-<seq>-<rand>")            /Scripting, finally
 
 `Script::run()` is a *delayed* D-Bus reply: KWin sends it only after the file
 has been read and QJSEngine::evaluate() has returned, and the script's own
@@ -30,12 +30,19 @@ Each call gets its own pluginName (KWin returns -1 for a name that is already
 loaded, and reuses script *ids* as soon as a script is destroyed, so a shared
 name would eventually drive somebody else's script) and its own token (a stale
 payload from an earlier, timed-out call must not be read as this call's
-answer).
+answer). The name carries random bytes as well as the pid and a counter: KWin
+keeps a name reserved for as long as the script object lives and loaded
+scripts cannot be enumerated, so a wdotool killed between loadScript and
+unloadScript leaks its name for the rest of the session -- with the pid alone
+the next process to be given that pid would fail on its very first command,
+for ever.
 
 Window identity: KWin's only stable handle is `internalId`, a UUID string, and
 the scripting API takes nothing else. wdotool prints numeric ids, so one is
 minted from the uuid (see _wid: 30 bits of it, in a range Xwayland never hands
-a client) and `self._uuids` maps it back; a miss re-reads the window list.
+a client) and `self._uuids` maps it back; a miss re-reads the window list. Two
+uuids colliding in those 30 bits is a one-in-a-million session, and _id_map
+re-mints the second window rather than dropping it out of the listing.
 `visible` = not minimized, not hidden and on the current desktop (X11's
 IsViewable), like the GNOME backend.
 
@@ -49,9 +56,11 @@ Titles are `captionNormal` on 6 and `caption` with KWin's " <2>" duplicate-
 title suffix stripped on 5.27 (which has no captionNormal property), so the
 same window is named the same on both, and the same as X names it.
 
-Capability gaps, both documented in DESIGN.md: Plasma 6 removed window shading
-(SHADED is a gap there, works on 5.27), and neither release has a per-window
-lower -- lowering a window that is not active falls back to keep-below.
+Capability gaps, all documented in DESIGN.md: Plasma 6 removed window shading
+(SHADED is a gap there, works on 5.27), neither release has a per-window
+lower -- lowering a window that is not active falls back to keep-below -- and
+KWin caps the number of virtual desktops (20 on 5.27, 25 on 6), which
+set_num_desktops reports rather than looping against.
 """
 
 import json
@@ -82,6 +91,7 @@ IFACE = "org.fuckwayland.KWin1"
 
 CALL_TIMEOUT = 10.0      # plain KWin D-Bus calls answer in milliseconds
 SCRIPT_TIMEOUT = 10.0    # load + run + the script's own reply
+SETTLE_MS = 1000         # how long the script waits for a state to land
 HEADER = "/* wdotool-kwin 1 "   # first line of every generated script
 
 # KWin's NET::WindowType (netwm_def.h) -> the Mutter window-type names the
@@ -97,10 +107,6 @@ _WINDOW_TYPES = {
 _LAYER_TYPES = {"DESKTOP", "DOCK"}
 # _NET_WM_STATE atoms KWin has no setter for at all
 _GAP_REASONS = {"SHADED": "Plasma 6 removed window shading"}
-# States whose read-back cannot be trusted right after the write: KWin's
-# maximizeMode follows the window's geometry, which a Wayland client only
-# takes on when it acks the configure.
-_LAZY_STATES = {"MAXIMIZED_VERT", "MAXIMIZED_HORZ"}
 
 
 class KwinBackend(WindowBackend):
@@ -165,7 +171,7 @@ class KwinBackend(WindowBackend):
         seq = self._seq
         self._seq += 1
         token = "%d-%d-%s" % (os.getpid(), seq, os.urandom(4).hex())
-        plugin = "wdotool-%d-%d" % (os.getpid(), seq)
+        plugin = _plugin_name(seq)
         source = self._source(self.dest, token, op, **kw)
         deadline = time.monotonic() + timeout
         self._load_run(plugin, source, deadline)
@@ -272,7 +278,7 @@ class KwinBackend(WindowBackend):
         if not isinstance(data, list) or not all(isinstance(d, dict) and d.get("u")
                                                  for d in data):
             raise CmdError("kwin backend: the window list came back malformed")
-        self._uuids = {_wid(d["u"]): d["u"] for d in data}
+        self._uuids = _id_map(data)
         return data
 
     def _uuid_for(self, wid: int) -> str:
@@ -308,7 +314,7 @@ class KwinBackend(WindowBackend):
     @staticmethod
     def _win(d: dict) -> Window:
         return Window(
-            id=_wid(d["u"]),
+            id=d.get("_id") or _wid(d["u"]),
             title=d.get("t") or "",
             class_=d.get("c") or "",
             instance=d.get("n") or "",
@@ -402,15 +408,20 @@ class KwinBackend(WindowBackend):
         if action not in (0, 1, 2):
             raise CmdError("windowstate: bad action %r" % (action,))
         try:
-            out = self._act(wid, "state", state=state, action=int(action)) or {}
+            out = self._act(wid, "state", state=state, action=int(action),
+                            settle=SETTLE_MS) or {}
             applied = out.get("applied")
             if (action in (0, 1) and applied is not None
-                    and state not in _LAZY_STATES
+                    and out.get("settled", True)
                     and bool(applied) != bool(action)):
                 # Accepted and ignored: KWin refuses a state that a window
                 # rule or the client's own size hints forbid (5.27 will not
                 # fullscreen a window whose hints cannot fill the screen).
-                # The X tools succeed silently here; warn and succeed.
+                # The X tools succeed silently here; warn and succeed. The
+                # read-back is the script's *settled* one -- it waited for
+                # the window's change signal, so a Wayland client that had
+                # simply not acked the configure yet is not reported here
+                # (`settled: false` means it could not be checked at all).
                 _warn("windowstate %s: KWin did not apply it to window %d "
                       "(a window rule, or the window's size hints)"
                       % (state, wid))
@@ -460,13 +471,29 @@ class KwinBackend(WindowBackend):
         if n < 1:
             raise CmdError("set_num_desktops: %d is not a workspace count" % n)
         rows = self._desktops()
-        while len(rows) < n:
-            self._call(VD_PATH, VD_IFACE, "createDesktop", "us",
-                       (len(rows), "Desktop %d" % (len(rows) + 1)))
+        # Both D-Bus slots are void and KWin silently refuses past its own
+        # limits -- VirtualDesktopManager::createVirtualDesktop() returns
+        # nullptr at maximum() desktops (20 on 5.27, 25 on 6) and nothing is
+        # removed below one. The count itself is the only progress report,
+        # so stop the moment a call changes nothing: without that this is an
+        # endless loop hammering the compositor with D-Bus calls.
+        while len(rows) != n:
+            before = len(rows)
+            if before < n:
+                self._call(VD_PATH, VD_IFACE, "createDesktop", "us",
+                           (before, "Desktop %d" % (before + 1)))
+            else:
+                self._call(VD_PATH, VD_IFACE, "removeDesktop", "s",
+                           (rows[-1][1],))
             rows = self._desktops()
-        while len(rows) > n:
-            self._call(VD_PATH, VD_IFACE, "removeDesktop", "s", (rows[-1][1],))
-            rows = self._desktops()
+            if len(rows) == before:
+                err = CmdError(
+                    "KWin would not go %s %d virtual desktop%s (that is its "
+                    "own limit)"
+                    % ("above" if before < n else "below", before,
+                       "" if before == 1 else "s"))
+                err.unsupported = True
+                raise err
 
     def select_window(self) -> int:
         """xdotool selectwindow: KWin's own interactive picker. The reply is
@@ -567,8 +594,8 @@ class KwinBackend(WindowBackend):
             return 0
         for d in hits:
             if d.get("f"):
-                return _wid(d["u"])
-        return _wid(hits[-1]["u"])
+                return self._win(d).id
+        return self._win(hits[-1]).id
 
     def events(self, timeout: float | None = None, workspaces: bool = False):
         """(id, change) in sway's vocabulary, from a script that stays loaded
@@ -582,7 +609,7 @@ class KwinBackend(WindowBackend):
         try:
             dest = _own(bus, EVENTS_NAME)
             token = "%d-ev-%s" % (os.getpid(), os.urandom(4).hex())
-            plugin = "wdotool-%d-ev-%d" % (os.getpid(), self._seq)
+            plugin = _plugin_name(self._seq, "ev")
             self._seq += 1
             self._load_run(plugin, self._source(dest, token, "events"),
                            time.monotonic() + SCRIPT_TIMEOUT)
@@ -709,6 +736,21 @@ class KwinBackend(WindowBackend):
 
 # ---------------------------------------------------------------- module bits
 
+def _plugin_name(seq: int, tag: str = "") -> str:
+    """The pluginName one script is loaded under.
+
+    Random, not just pid+counter: KWin holds a pluginName for as long as the
+    script object lives, `unloadScript` is the only way to give it back and
+    there is no way to enumerate what is loaded, so a wdotool killed between
+    loadScript and unloadScript leaks its names until the session ends. With
+    the pid alone the next process to be handed that pid would then fail on
+    its first command and keep failing (pids are recycled within minutes);
+    with the random part a leaked name harms nobody, which is what lets
+    "loadScript returned -1" stay a hard error."""
+    return "wdotool-%d-%d%s-%s" % (os.getpid(), seq, "-" + tag if tag else "",
+                                   os.urandom(4).hex())
+
+
 def _own(bus: Bus, name: str) -> str:
     """Own a bus name for the script's callDBus to answer to, and return the
     destination to put in the script. A second wdotool on the same session
@@ -791,15 +833,37 @@ _ID_BASE = 0x40000000
 _ID_MASK = 0x3FFFFFFF
 
 
-def _wid(u: str) -> int:
+def _wid(u: str, salt: int = 0) -> int:
     """KWin's uuid -> the id wdotool prints, and KwinBackend._uuids maps
     back. KWin's own handle is the uuid and nothing else; ids have to be
     minted here (there is no numeric window id anywhere in the scripting
-    API), so this is 30 bits of the uuid in a range of our own."""
+    API), so this is 30 bits of the uuid in a range of our own. `salt`
+    re-mints the same uuid into a different id, for the rare collision."""
     hexd = "".join(c for c in _norm_uuid(u) if c in "0123456789abcdef")
     if not hexd:
         return 0
-    return _ID_BASE | (int(hexd[:8], 16) & _ID_MASK)
+    n = int(hexd[:8], 16) + salt * 0x9E3779B1
+    return _ID_BASE | (n & _ID_MASK)
+
+
+def _id_map(rows: "list[dict]") -> "dict[int, str]":
+    """{printed id: uuid} for one window list, stamping each row's `_id`.
+
+    30 bits is 1e-6-ish odds of two live windows colliding in a session; a
+    plain dict comprehension would then drop one of them and leave it with
+    no id at all (unlistable and unaddressable). Whoever comes second in
+    stacking order is re-minted instead, so every window in the list has an
+    id of its own; the id is stable while the pair is."""
+    out: "dict[int, str]" = {}
+    for d in rows:
+        salt = 0
+        wid = _wid(d["u"])
+        while wid in out and out[wid] != d["u"]:
+            salt += 1
+            wid = _wid(d["u"], salt)
+        d["_id"] = wid
+        out[wid] = d["u"]
+    return out
 
 
 def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
@@ -809,7 +873,13 @@ def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
     KWin's back), the title and the geometry distance are the score -- two
     untitled terminals of the same class differ only in where they are, and
     the KWin rectangle is the frame while X reports the client area, so the
-    distance is small but not zero."""
+    distance is small but not zero.
+
+    A pair also has to *agree* on something: an X client with neither
+    _NET_WM_PID nor WM_CLASS contradicts nothing, and matching it on
+    geometry alone hands its id to a native Wayland window, which then
+    claims to be an X11 client. Such a client keeps xid 0 instead -- an
+    unknown id beats a wrong one."""
     pairs = []
     for c in clients:
         for d in raw:
@@ -819,6 +889,10 @@ def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
             if kcls and c["cls"] and kcls.lower() != c["cls"].lower():
                 continue
             if kinst and c["inst"] and kinst.lower() != c["inst"].lower():
+                continue
+            if not (c["pid"] and c["pid"] == d.get("p")
+                    or kcls and kcls.lower() == (c["cls"] or "").lower()
+                    or kinst and kinst.lower() == (c["inst"] or "").lower()):
                 continue
             x, y, w, h = c["geo"]
             dist = (abs(x - int(d.get("x", 0))) + abs(y - int(d.get("y", 0)))

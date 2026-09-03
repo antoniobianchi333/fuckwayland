@@ -143,6 +143,35 @@ sudo sh gnome/install-bridge.sh --udev   # optional: /dev/uinput for the logged-
   injects input; Flatpak/Snap apps without session-bus access cannot reach it.
   Do not install either piece on a machine where that trade is wrong.
 
+### KDE Plasma
+
+Stock Plasma Wayland sessions — Plasma 5.27 (Ubuntu 24.04) and Plasma 6.6
+(26.04) — are supported with **nothing to install**: `org.kde.kwin.Scripting.
+loadScript()` is plain `Q_SCRIPTABLE` with no polkit action and no bus policy
+on both, so `wdotool` pushes one small JavaScript file into KWin per command
+and unloads it again. `wwmctl`, `wxprop` and `wxrandr` come along with it.
+(That is also a security note in the GNOME sense: any client on your session
+bus can already do this, with or without these tools.)
+
+What differs from X, and why:
+
+| | |
+|---|---|
+| `windowraise` on 5.27 | KWin 5.27 has no per-window raise; the window is activated instead (which focuses it), and says so on stderr. Plasma 6 raises properly |
+| `windowlower` | neither release has a per-window lower: the active window is lowered for real, any other is marked keep-below, with a warning |
+| `windowstate SHADED` | works on 5.27; Plasma 6 removed window shading, so it is a clean "not supported" there |
+| `windowstate MAXIMIZED_*` on 5.27 | KWin 5.27 exposes no `maximizeMode` to scripts, so a window is read as maximized when its frame is exactly the maximize area. A window you sized to fill the work area yourself therefore reads as maximized |
+| `set_num_desktops` | KWin caps virtual desktops (20 on 5.27, 25 on 6) and keeps at least one; asking for more fails with that as the reason instead of hanging |
+| window ids | KWin's only window handle is a UUID, so the printed ids are minted from it (`0x4…`, out of the range Xwayland gives its clients). They are stable while the window lives, and an X id is not accepted in their place |
+| `wwmctl -l -G` positions | `wmctrl` doubles the frame offset under a non-reparenting WM; ours are the real ones (same on GNOME and sway) |
+| XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list (pid + `WM_CLASS`, then title and geometry). A client that publishes neither `_NET_WM_PID` nor `WM_CLASS` keeps id 0 rather than being guessed at |
+| `wxprop -root` | `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW` and `_NET_DESKTOP_NAMES` are ours (native windows included), not KWin's stale X copies |
+
+A window state that a client applies asynchronously (fullscreen and maximize
+on a Wayland client, applied when it acks the configure) is waited for before
+the command returns, so `windowstate` never reports a state it merely has not
+seen land yet, and the next command sees a settled window.
+
 ## Compatibility
 
 All 48 xdotool commands are implemented, with output byte-compatible against

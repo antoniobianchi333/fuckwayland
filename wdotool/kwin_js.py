@@ -20,12 +20,33 @@ Version differences live here, not in Python:
   VirtualDesktop object (6) or a 1-based int (5.27), w.desktops[] (6) vs
   w.desktop (5.27), captionNormal (6) vs caption, w.windowId (X11 windows on
   5.27, gone on 6), w.shade (5.27, shading removed in 6), workspace.
-  raiseWindow (6, absent on 5.27).
+  raiseWindow (6, absent on 5.27), w.maximizeMode (a Q_PROPERTY on 6 only --
+  5.27's window.h declares none, so there the mode is read off the geometry),
+  w.output (KWin::Output* -- a datatype QJSEngine does not know on 5.27, so
+  reading it at all logs a QMetaProperty::read warning per window).
+
+A state write is answered only once the window agrees: a Wayland client takes
+a new size when it acks the configure, so `fullScreen`/`maximizeMode` read
+back stale for a few milliseconds right after the write and warning on that
+read is a false alarm. When the immediate read-back disagrees the script
+arms the window's own change signal plus a QTimer backstop (both exist in
+KWin's script engine on 5.27 and 6) and answers from whichever comes first --
+which also means the *next* command sees a settled window.
 """
 
 SCRIPT = r"""
 /* ---------------------------------------------------------------- plumbing */
+var _done = false;
+var _keep = [];   /* a QTimer nothing references is collected by the engine */
+var DEFER = {defer: true};   /* main()'s "I will answer later" */
+
 function _ret(x) {
+  /* exactly once: a deferred answer and its backstop timer race each other,
+     and the loser must not send a second Result under the same token. */
+  if (_done) {
+    return;
+  }
+  _done = true;
   callDBus(A.dest, A.path, A.iface, "Result", A.token, JSON.stringify(x));
 }
 function _ev(u, c) {
@@ -100,18 +121,71 @@ function find(u) {
 }
 
 /* ------------------------------------------------------------------- facts */
+function maxArea(w) {
+  /* clientArea(option, window) is the one overload both releases have. */
+  var opt = (typeof KWin !== "undefined" && KWin.MaximizeArea !== undefined)
+            ? KWin.MaximizeArea : 2;
+  try {
+    var r = workspace.clientArea(opt, w);
+    return (r && typeof r.width === "number") ? r : null;
+  } catch (e) {
+    return null;
+  }
+}
+function covers(gp, gs, ap, as) {
+  /* Is the window maximized along this axis, judged by geometry alone?
+     It has to sit inside the maximize area -- KWin never puts a maximized
+     window outside it -- and fall short of it by less than one size
+     increment. Not "equal to the area": KWin honours an X11 client's size
+     hints when it maximizes it and centres the remainder, so a maximized
+     xterm is 1918x1033 at (1,0) in a 1920x1036 area. The slack is what
+     tells that from a window the user merely sized large. */
+  var slack = Math.max(32, Math.round(as * 0.02));
+  return gp >= ap - 2 && gp + gs <= ap + as + 2 && (as - gs) <= slack;
+}
+function mmode(w) {
+  /* 1 = vertical, 2 = horizontal, as KWin::MaximizeMode.
+     Plasma 6 has the property. Plasma 5.27's window.h declares no
+     maximizeMode Q_PROPERTY at all, so `w.maximizeMode` is undefined there
+     and reading it as 0 would (a) report every maximized window as restored
+     and (b) clear the other axis on every setMaximize(). Off the geometry
+     instead, against the area KWin would maximize this window into. */
+  var m = w.maximizeMode;
+  if (typeof m === "number") {
+    return m;
+  }
+  if (w.fullScreen) {
+    return 0;   /* a fullscreen frame is larger than the maximize area and
+                   says nothing about what is underneath it */
+  }
+  var a = maxArea(w), g = w.frameGeometry;
+  if (!a || !g) {
+    return 0;
+  }
+  var out = 0;
+  if (covers(num(g.y), num(g.height), num(a.y), num(a.height))) {
+    out |= 1;
+  }
+  if (covers(num(g.x), num(g.width), num(a.x), num(a.width))) {
+    out |= 2;
+  }
+  return out;
+}
 function info(w) {
   var g = w.frameGeometry || {};
   var xid = w.windowId;                       /* X11Window, Plasma 5.27 only */
   var tf = w.transientFor;
-  var out = w.output;
+  /* SIX: on 5.27 `output` is a KWin::Output*, a datatype QJSEngine has no
+     converter for -- merely reading it logs "QMetaProperty::read: Unable to
+     handle unregistered datatype" into the journal, once per window. */
+  var out = SIX ? w.output : null;
   return {
     u: uuid(w), t: title(w), c: str(w.resourceClass), n: str(w.resourceName),
     p: num(w.pid),
     x: num(g.x), y: num(g.y), w: num(g.width), h: num(g.height),
     f: !!w.active, m: !!w.minimized, hi: !!w.hidden,
     d: dnum(w), oc: oncur(w), st: !!w.onAllDesktops,
-    fs: !!w.fullScreen, mm: num(w.maximizeMode),
+    fs: !!w.fullScreen, mm: mmode(w),
     ka: !!w.keepAbove, kb: !!w.keepBelow,
     sk: !!w.skipTaskbar, sp: !!w.skipPager, at: !!w.demandsAttention,
     nb: !!w.noBorder, sh: (typeof w.shade === "boolean") ? w.shade : null,
@@ -152,11 +226,13 @@ function screenInfo() {
 /* ----------------------------------------------------------------- actions */
 function unclamp(w) {
   /* moveResize() is clamped or ignored for maximized, quick-tiled, custom-
-     tiled and fullscreen windows: undo those first, or the write is a no-op. */
+     tiled and fullscreen windows: undo those first, or the write is a no-op.
+     Unconditionally, not `if (w.maximizeMode)`: that property does not exist
+     on 5.27, where the test was always false and a maximized window kept its
+     _NET_WM_STATE_MAXIMIZED_* while being resized out from under it.
+     setMaximize(false, false) on a restored window is a no-op. */
   try {
-    if (w.maximizeMode) {
-      w.setMaximize(false, false);
-    }
+    w.setMaximize(false, false);
   } catch (e) { }
   try {
     if (w.tile) {
@@ -207,8 +283,8 @@ function toDesktop(w, n) {
   }
 }
 function readState(w, s) {
-  if (s === "MAXIMIZED_VERT") { return !!(num(w.maximizeMode) & 1); }
-  if (s === "MAXIMIZED_HORZ") { return !!(num(w.maximizeMode) & 2); }
+  if (s === "MAXIMIZED_VERT") { return !!(mmode(w) & 1); }
+  if (s === "MAXIMIZED_HORZ") { return !!(mmode(w) & 2); }
   var name = _STATE_PROPS[s];
   if (!name) {
     throw new Error("nostate");
@@ -235,18 +311,80 @@ function setBool(w, s, v) {
   w[name] = v;
 }
 function writeState(w, s, v) {
+  /* setMaximize takes both axes at once, so one axis is always a read-
+     modify-write of the other -- through mmode(), never the raw property. */
   if (s === "MAXIMIZED_VERT") {
-    w.setMaximize(v, !!(num(w.maximizeMode) & 2));
+    w.setMaximize(v, !!(mmode(w) & 2));
     return;
   }
   if (s === "MAXIMIZED_HORZ") {
-    w.setMaximize(!!(num(w.maximizeMode) & 1), v);
+    w.setMaximize(!!(mmode(w) & 1), v);
     return;
   }
   if (!_STATE_PROPS[s]) {
     throw new Error("nostate");
   }
   setBool(w, s, v);
+}
+/* The signals that say "this state has landed", best first. A Wayland client
+   applies a size-changing state only when it acks the configure, so the read
+   right after the write is stale and warning on it is a false alarm. */
+var _WATCH = {
+  FULLSCREEN: ["fullScreenChanged", "frameGeometryChanged"],
+  MAXIMIZED_VERT: ["maximizedChanged", "clientMaximizedStateChanged",
+                   "frameGeometryChanged"],
+  MAXIMIZED_HORZ: ["maximizedChanged", "clientMaximizedStateChanged",
+                   "frameGeometryChanged"],
+  HIDDEN: ["minimizedChanged"],
+  ABOVE: ["keepAboveChanged"],
+  BELOW: ["keepBelowChanged"],
+  STICKY: ["desktopsChanged", "desktopChanged"],
+  SKIP_TASKBAR: ["skipTaskbarChanged"],
+  SKIP_PAGER: ["skipPagerChanged"],
+  DEMANDS_ATTENTION: ["demandsAttentionChanged"],
+  SHADED: ["shadeChanged"]
+};
+function later(w, s, want) {
+  /* Answer the state op once the window agrees, or once the backstop timer
+     gives up -- whichever comes first. Returns false when neither could be
+     armed; then the caller answers with the read it already has. */
+  var sigs = _WATCH[s] || [], armed = false, t = null;
+  function reply(settled) {
+    try {
+      _ret({ok: true, v: {applied: readState(w, s), settled: !!settled}});
+    } catch (e) {
+      _ret({ok: false, err: (e && e.message) ? String(e.message) : String(e)});
+    }
+  }
+  function check() {
+    try {
+      if (readState(w, s) !== want) {
+        return;
+      }
+    } catch (e) {
+      return;
+    }
+    if (t) {
+      try { t.stop(); } catch (e2) { }
+    }
+    reply(true);
+  }
+  for (var i = 0; i < sigs.length; i++) {
+    if (on(w, sigs[i], check)) {
+      armed = true;
+    }
+  }
+  try {
+    t = new QTimer();                    /* KWin::ScriptTimer, both releases */
+    t.singleShot = true;
+    t.interval = num(A.settle) > 0 ? num(A.settle) : 1000;
+    t.timeout.connect(function () { reply(true); });
+    t.start();
+    _keep.push(t);
+  } catch (e) {
+    t = null;
+  }
+  return armed || t !== null;
 }
 
 /* ------------------------------------------------------------------ events */
@@ -376,7 +514,14 @@ function main() {
   if (op === "state") {
     var want = (A.action === 2) ? !readState(w, A.state) : (A.action === 1);
     writeState(w, A.state, want);
-    return {applied: readState(w, A.state)};
+    var got = readState(w, A.state);
+    if (got === want) {
+      return {applied: got, settled: true};        /* synchronous, as X11 is */
+    }
+    if (later(w, A.state, want)) {
+      return DEFER;
+    }
+    return {applied: got, settled: false};   /* unverifiable: do not warn on it */
   }
   if (op === "desktop") {
     toDesktop(w, A.n);
@@ -405,7 +550,10 @@ function toCurrent(w) {
 }
 
 try {
-  _ret({ok: true, v: main()});
+  var _v = main();
+  if (_v !== DEFER) {                 /* DEFER: a signal or the timer answers */
+    _ret({ok: true, v: _v});
+  }
 } catch (e) {
   _ret({ok: false, err: (e && e.message) ? String(e.message) : String(e)});
 }
