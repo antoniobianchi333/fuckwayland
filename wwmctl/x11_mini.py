@@ -52,6 +52,7 @@ _OP_GET_GEOMETRY = 14
 _OP_QUERY_TREE = 15
 _OP_TRANSLATE_COORDS = 40
 _OP_GET_INPUT_FOCUS = 43
+_OP_LOOKUP_COLOR = 92
 _OP_OPEN_FONT = 45
 _OP_CLOSE_FONT = 46
 _OP_QUERY_FONT = 47
@@ -309,19 +310,22 @@ class X11Conn:
             nscreens, nformats = body[20], body[21]
             p = 32 + len(_pad4(b"\0" * vlen)) + 8 * nformats
             roots = []
+            cmaps = []
             for _ in range(nscreens):
-                (root,) = struct.unpack_from("<I", body, p)
+                root, cmap = struct.unpack_from("<II", body, p)
                 ndepths = body[p + 39]
                 p += 40
                 for _ in range(ndepths):
                     (nvis,) = struct.unpack_from("<H", body, p + 2)
                     p += 8 + 24 * nvis
                 roots.append(root)
+                cmaps.append(cmap)
         except (struct.error, IndexError):
             return False, "malformed setup reply"
         if not roots:
             return False, "setup reply carries no screens"
         self._roots = roots
+        self._cmaps = cmaps      # the screens' default colormaps (-M)
         # resource ids we may allocate (fonts: xprop -font). The mask is a
         # contiguous run of low bits the client owns.
         self._rid_base, self._rid_mask = rid_base, rid_mask
@@ -532,6 +536,17 @@ class X11Conn:
         if not (n & mask):
             raise XUnavailable("no resource ids left")
         return (getattr(self, "_rid_base", 0) or 0) | (n & mask)
+
+    def lookup_color(self, name: str) -> "tuple[int, int, int]":
+        """XParseColor's server side: the exact 16-bit RGB of a colour name
+        (or a #rrggbb literal) in the screen's default colormap. X11Error
+        (BadName) for a name the server's rgb.txt does not have."""
+        cmap = (getattr(self, "_cmaps", None) or [0])[0]
+        raw = name.encode("latin-1", "replace")
+        seq = self._send(_OP_LOOKUP_COLOR, 0,
+                         struct.pack("<IHxx", cmap, len(raw)) + _pad4(raw))
+        pkt, _body = self._wait_reply(seq)
+        return struct.unpack_from("<HHH", pkt, 8)
 
     def font_properties(self, name: str) -> "list[tuple[int, int]]":
         """[(atom id, CARD32 value)] — a core X font's FONTPROPs, the list

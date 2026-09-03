@@ -277,14 +277,15 @@ class UsageTest(unittest.TestCase):
 
     def test_help_generation_follows_the_oracle(self):
         """wwmctl-5: two oracle generations are in the field and both say
-        "1.07" for -V. The newer one (1.07+git20240228, Ubuntu 25.04+)
-        documents six more options and `-k toggle`; --help follows whichever
-        wmctrl is installed here."""
+        "1.07" for -V. The newer one (1.07+git20240228 plus the distro's
+        own -M/-L patches, Ubuntu 25.04+) documents eight more options and
+        `-k toggle`; --help follows whichever wmctrl is installed here."""
         self.assertTrue(cli.HELP_GIT.startswith(
             "wmctrl 1.07\nUsage: wmctrl [OPTION]...\nActions:\n"))
         self.assertTrue(cli.HELP_GIT.endswith("Copyright (C) 2003\n"))
-        self.assertEqual(len(cli.HELP_GIT.encode()), 7037)
+        self.assertEqual(len(cli.HELP_GIT.encode()), 7179)
         for opt in ("  -j  ", "  -S  ", "  -Y <WIN>", "  -r <WIN> -y <MVARG>",
+                    "  -r <WIN> -M <PATH>", "  -r <WIN> -L", 
                     "  -k (on|off|toggle)"):
             self.assertIn(opt, cli.HELP_GIT)
             self.assertNotIn(opt, cli.HELP)
@@ -658,6 +659,71 @@ class SetTitleTest(unittest.TestCase):
         self.assertIn("ignoring", err)
 
 
+class XpmTest(unittest.TestCase):
+    """wwmctl-5: `-M <PATH>` turns an XPM into _NET_WM_ICON, the way the
+    distro's wmctrl patch does — colours through the X server's own
+    XParseColor, "None" and anything the server does not know as 0."""
+
+    XPM = b'''/* XPM */
+static char *icon[] = {
+/* columns rows colors chars-per-pixel */
+"2 2 3 1",
+"  c None",
+". c #FF0000",
+"X c navy blue",
+/* pixels */
+". ",
+"X.",
+};
+'''
+
+    class _X:
+        """The server only ever sees NAMES: XParseColor resolves the
+        numeric forms in the client."""
+
+        def lookup_color(self, name):
+            table = {"navy blue": (0, 0, 0x8080)}
+            if name not in table:
+                raise ValueError("BadName")
+            return table[name]
+
+    def test_read_xpm(self):
+        with tempfile.NamedTemporaryFile(suffix=".xpm", delete=False) as fh:
+            fh.write(self.XPM)
+            path = fh.name
+        self.addCleanup(os.unlink, path)
+        w, h, pixels = core._read_xpm(path, self._X())
+        self.assertEqual((w, h), (2, 2))
+        self.assertEqual(pixels, [0xFFFF0000, 0,            # ". "
+                                  0xFF000080, 0xFFFF0000])  # "X."
+
+    def test_unknown_colour_is_transparent_like_the_oracle(self):
+        with tempfile.NamedTemporaryFile(suffix=".xpm", delete=False) as fh:
+            fh.write(self.XPM.replace(b"navy blue", b"zzznosuch"))
+            path = fh.name
+        self.addCleanup(os.unlink, path)
+        _w, _h, pixels = core._read_xpm(path, self._X())
+        self.assertEqual(pixels[2], 0)
+
+    def test_numeric_colour_specs_are_parsed_in_the_client(self):
+        for spec, want in (("#F00", (0xF000, 0, 0)),
+                           ("#FF0000", (0xFF00, 0, 0)),
+                           ("#FFF000000", (0xFFF0, 0, 0)),
+                           ("#FFFF00000000", (0xFFFF, 0, 0)),
+                           ("rgb:ff/0/8080", (0xFF00, 0, 0x8080))):
+            self.assertEqual(core._parse_color(spec), want, spec)
+        for spec in ("navy blue", "#FF00", "#ZZZZZZ", "rgb:1/2"):
+            self.assertIsNone(core._parse_color(spec), spec)
+
+    def test_a_file_that_is_not_an_xpm_raises(self):
+        with tempfile.NamedTemporaryFile(delete=False) as fh:
+            fh.write(b"not an xpm at all")
+            path = fh.name
+        self.addCleanup(os.unlink, path)
+        with self.assertRaises(Exception):
+            core._read_xpm(path, self._X())
+
+
 class PlaceAxisTest(unittest.TestCase):
     """core._place_axis, the -e gravity arithmetic, as a table. Frame edge
     100, frame size 640, asked for a 300-wide client in a 300-wide frame
@@ -749,6 +815,25 @@ class GitGenerationOptionsTest(unittest.TestCase):
         self.assertEqual(b.calls, [("resize", 5, 300, 200),
                                    ("move", 5, 10, 20),
                                    ("activate", 5)])
+
+    def test_L_prints_this_window_s_list_row(self):
+        rc, out, err, _b = run(["-r", "Mail", "-L"], x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(out, "0x0040000c  0 testhost Mail inbox\n")
+        # the -l flags shape the row, and the machine column is sized from
+        # this window alone (display_window's max_client_machine_len == 0)
+        rc, out, _e, _b = run(["-Gp", "-r", "Mail", "-L"], x11=None)
+        self.assertEqual(out, "0x0040000c  0 111    0    0    640  720  "
+                              "testhost Mail inbox\n")
+
+    def test_M_needs_an_x_window_and_a_readable_xpm(self):
+        rc, _o, err, _b = run(["-r", "FootWin", "-M", "/nope.xpm"], x11=None)
+        self.assertEqual(rc, 0)
+        self.assertIn("native window", err)
+        rc, _o, err, _b = run(["-r", "Mail", "-M", "/nope.xpm"], x11=None)
+        self.assertEqual((rc, err), (0, "wwmctl: cannot reach the XWayland "
+                                        "server to set the window icon; "
+                                        "ignoring\n"))
 
     def test_unknown_ids_still_exit_1_silently(self):
         for opt in ("-Y", "-z", "-E"):

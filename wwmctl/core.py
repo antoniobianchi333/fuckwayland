@@ -27,6 +27,7 @@ import dataclasses
 import os
 import re
 import socket
+import struct
 import sys
 import time
 
@@ -647,6 +648,57 @@ class Core:
 
     # -- listings -----------------------------------------------------------
 
+    def _list_row(self, w: UWindow, show_pid: bool, show_geometry: bool,
+                  show_class: bool, machine_len: int) -> str:
+        """One `-l` row. Column widths count BYTES like printf's %*s."""
+        line = "0x%08x %2d" % (w.id, w.desktop)
+        if show_pid:
+            line += " %-6d" % (w.pid if w.pid > 0 else 0)
+        if show_geometry:
+            line += " %-4d %-4d %-4d %-4d" % (w.x, w.y, w.w, w.h)
+        if show_class:
+            cls = w.class_ if w.class_ is not None else "N/A"
+            line += " %s%s " % (cls, " " * max(0, 20 - _blen(cls)))
+        machine = w.machine or "N/A"
+        return line + " %s%s %s" % (" " * max(0, machine_len - _blen(machine)),
+                                    machine,
+                                    w.title if w.title is not None else "N/A")
+
+    def list_one_window(self, w: UWindow, show_pid: bool,
+                        show_geometry: bool, show_class: bool) -> int:  # -L
+        """1.07+git's `-r <WIN> -L`: the window's own `-l` row. Its machine
+        column is sized from that one window (display_window's
+        `max_client_machine_len == 0` branch), so nothing is padded."""
+        sys.stdout.write(self._list_row(w, show_pid, show_geometry,
+                                        show_class,
+                                        _blen(w.machine or "N/A")) + "\n")
+        return 0
+
+    def set_mini_icon(self, w: UWindow, path: str) -> int:  # -M
+        """1.07+git's `-r <WIN> -M <PATH>`: an XPM file becomes the
+        window's `_NET_WM_ICON`. An X-only property, so a native Wayland
+        window warns like -N/-I/-T does."""
+        if not w.is_x:
+            _warn("window icons cannot be set from outside on Wayland "
+                  "(native window); ignoring")
+            return 0
+        x = self.x11() if self._x_is_up() else None
+        if x is None:
+            _warn("cannot reach the XWayland server to set the window "
+                  "icon; ignoring")
+            return 0
+        try:
+            width, height, pixels = _read_xpm(path, x)
+        except Exception:
+            sys.stderr.write("Invalid icon path.\n")
+            return 0   # the oracle's own return value: it drops the result
+        data = struct.pack("<%dI" % (len(pixels) + 2), width, height, *pixels)
+        try:
+            x.change_property(w.id, "_NET_WM_ICON", "CARDINAL", 32, data)
+        except Exception as e:
+            _warn("cannot set the window icon: %s; ignoring" % e)
+        return 0
+
     def list_windows(self, show_pid: bool, show_geometry: bool,
                      show_class: bool) -> int:
         wins = self.windows()
@@ -660,19 +712,8 @@ class Core:
         # Widths count BYTES like printf's %*s, not characters.
         machine_len = max([_blen(w.machine) for w in wins if w.machine] or [0])
         for w in wins:
-            line = "0x%08x %2d" % (w.id, w.desktop)
-            if show_pid:
-                line += " %-6d" % (w.pid if w.pid > 0 else 0)
-            if show_geometry:
-                line += " %-4d %-4d %-4d %-4d" % (w.x, w.y, w.w, w.h)
-            if show_class:
-                cls = w.class_ if w.class_ is not None else "N/A"
-                line += " %s%s " % (cls, " " * max(0, 20 - _blen(cls)))
-            machine = w.machine or "N/A"
-            line += " %s%s %s" % (" " * max(0, machine_len - _blen(machine)),
-                                  machine,
-                                  w.title if w.title is not None else "N/A")
-            sys.stdout.write(line + "\n")
+            sys.stdout.write(self._list_row(w, show_pid, show_geometry,
+                                            show_class, machine_len) + "\n")
         return 0
 
     def list_current_desktop(self) -> int:  # -j (1.07+git)
@@ -930,7 +971,9 @@ class Core:
 
     def action_window(self, mode: str, param_window: str, param: str | None,
                       match_by_id: bool, match_by_cls: bool,
-                      full_match: bool) -> int:
+                      full_match: bool, show_pid: bool = False,
+                      show_geometry: bool = False,
+                      show_class: bool = False) -> int:
         w = self.find_target(param_window, match_by_id, match_by_cls,
                              full_match)
         if w is None:
@@ -958,6 +1001,11 @@ class Core:
         if mode == "z":  # 1.07+git, undocumented: XLowerWindow
             self.backend().lower(w.node_id)
             return 0
+        if mode == "L":  # 1.07+git (distro patch): this window's -l row
+            return self.list_one_window(w, show_pid, show_geometry,
+                                        show_class)
+        if mode == "M":  # 1.07+git (distro patch): _NET_WM_ICON from an XPM
+            return self.set_mini_icon(w, param or "")
         if mode == "E":  # 1.07+git, undocumented: print the title
             sys.stdout.write("%s\n" % (w.title if w.title is not None
                                         else ""))
@@ -1061,6 +1109,104 @@ def _place_axis(pos: int, static: bool, req: int, lead: int,
             return f_old
         return f_old + _anchor(pos, fs_old) - _anchor(pos, fs_new)
     return req + _anchor(pos, cs_new) - _anchor(pos, fs_new)
+
+
+# XPM color keys, most specific first: wmctrl's own order is c then g
+_XPM_KEYS = ("c", "g", "g4", "m", "s")
+
+
+def _read_xpm(path: str, x):
+    """(width, height, [ARGB pixels]) from an XPM file, the way wmctrl's
+    -M reads one: XpmReadFileToXpmImage plus XParseColor per colour.
+
+    Colour names are resolved by the X server itself (LookupColor, which is
+    what XParseColor asks), so the server's own rgb.txt decides -- and a
+    name it does not know becomes 0, exactly as wmctrl's "color parsing
+    failed" branch does. "None" is 0 too: transparent."""
+    with open(path, "rb") as fh:
+        text = fh.read().decode("latin-1")
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    items = re.findall(r'"((?:[^"\\]|\\.)*)"', text)
+    if not items:
+        raise ValueError("no XPM strings")
+    head = items[0].split()
+    width, height, ncolors, cpp = (int(v) for v in head[:4])
+    if min(width, height, ncolors, cpp) < 0 or len(items) < 1 + ncolors + height:
+        raise ValueError("truncated XPM")
+    table = {}
+    for spec in items[1:1 + ncolors]:
+        chars, rest = spec[:cpp], spec[cpp:]
+        toks = rest.split()
+        colors, key = {}, None
+        for t in toks:
+            if t in _XPM_KEYS and key is None:
+                key = t
+                colors[key] = []
+            elif key is None:
+                continue
+            elif t in _XPM_KEYS:
+                key = t
+                colors[key] = []
+            else:
+                colors[key].append(t)
+        name = None
+        for k in ("c", "g"):
+            if colors.get(k):
+                name = " ".join(colors[k])
+                break
+        table[chars] = _xpm_pixel(name, x)
+    pixels = []
+    for row in items[1 + ncolors:1 + ncolors + height]:
+        for i in range(width):
+            pixels.append(table.get(row[i * cpp:(i + 1) * cpp], 0))
+    return width, height, pixels
+
+
+def _xpm_pixel(name, x) -> int:
+    """One XPM colour as the ARGB CARD32 wmctrl packs into _NET_WM_ICON."""
+    if not name or name.lower() == "none":
+        return 0
+    rgb = _parse_color(name)
+    if rgb is None:
+        # a name, not a numeric spec: the server's own rgb.txt decides,
+        # and a name it does not know is 0 (wmctrl's "parsing failed")
+        rgb = _xtry(lambda: x.lookup_color(name))
+    if rgb is None:
+        return 0
+    r, g, b = (v >> 8 for v in rgb)
+    return 0xFF000000 | (r << 16) | (g << 8) | b
+
+
+def _parse_color(spec: str):
+    """XParseColor's client-side numeric forms as 16-bit (r, g, b), or None
+    for a colour NAME (which only the server can resolve). `#rgb`, `#rrggbb`,
+    `#rrrgggbbb`, `#rrrrggggbbbb` are left-aligned in 16 bits, exactly as
+    Xlib scales them; `rgb:r/g/b` takes 1-4 digits per component."""
+    if spec.startswith("#"):
+        digits = spec[1:]
+        if len(digits) % 3 or not 3 <= len(digits) <= 12:
+            return None
+        n = len(digits) // 3
+        try:
+            vals = [int(digits[i * n:(i + 1) * n], 16) for i in range(3)]
+        except ValueError:
+            return None
+        return tuple(v << (16 - 4 * n) for v in vals)
+    if spec.lower().startswith("rgb:"):
+        parts = spec[4:].split("/")
+        if len(parts) != 3:
+            return None
+        out = []
+        for part in parts:
+            if not 1 <= len(part) <= 4:
+                return None
+            try:
+                v = int(part, 16)
+            except ValueError:
+                return None
+            out.append(v << (16 - 4 * len(part)))
+        return tuple(out)
+    return None
 
 
 def _parse_win_id(s: str) -> int | None:

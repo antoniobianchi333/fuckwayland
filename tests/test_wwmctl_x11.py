@@ -85,6 +85,7 @@ class FakeXServer(threading.Thread):
         self.error_windows = set()  # BadWindow on any request naming these
         self.max_chunk_units = None  # cap GetProperty chunks (force the loop)
         self.fonts = {}             # name -> [(prop name, CARD32)]
+        self.colors = {}            # LookupColor name -> (r16, g16, b16)
         self._open_fonts = {}       # fid -> name
         self.setup_attempts = []    # (auth_name, auth_data) per connection
         self.log = []               # parsed requests
@@ -219,6 +220,16 @@ class FakeXServer(threading.Thread):
             tname = self._names.get(typ, "?")
             self.log.append(("ChangeProperty", win, pname, tname, fmt, data))
             self.props[(win, pname)] = (tname, fmt, data)
+        elif opcode == 92:  # LookupColor
+            cmap, n = struct.unpack_from("<IH", payload, 0)
+            name = payload[8:8 + n].decode("latin-1")
+            self.log.append(("LookupColor", cmap, name))
+            rgb = self.colors.get(name)
+            if rgb is None:
+                return self._error(conn, seq, 15, 92, bad=0)  # BadName
+            r, g, b = rgb
+            conn.sendall(struct.pack("<BxHIHHHHHH12x", 1, seq, 0,
+                                     r, g, b, r, g, b))
         elif opcode == 45:  # OpenFont
             fid, n = struct.unpack_from("<IH", payload, 0)
             name = payload[8:8 + n].decode("latin-1")
@@ -590,6 +601,18 @@ class FakeXServerTest(unittest.TestCase):
         self.assertEqual(changed["_NET_WM_NAME"],
                          ("UTF8_STRING", 8, "caf\u00e9 \u2713".encode("utf-8")))
         self.assertEqual(sorted(deleted), ["WM_ICON_NAME", "WM_NAME"])
+
+    def test_lookup_color(self):
+        """wmctrl -M resolves XPM colour names with XParseColor, i.e. the
+        server's own rgb.txt: LookupColor."""
+        srv = self.serve()
+        srv.colors["navy blue"] = (0x0000, 0x0000, 0x8080)
+        conn = self.connect()
+        self.assertEqual(conn.lookup_color("navy blue"),
+                         (0x0000, 0x0000, 0x8080))
+        self.assertIn(("LookupColor", 0, "navy blue"), srv.log)
+        with self.assertRaises(X11Error):
+            conn.lookup_color("nosuchcolour")
 
     def test_font_properties(self):
         """wxprop-9: XWayland really does serve the core fonts, so -font is

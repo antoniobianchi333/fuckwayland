@@ -38,9 +38,10 @@ from wwmctl import core
 WMCTRL_VERSION = "1.07"
 
 # vanilla wmctrl 1.07 optstring, kept for the record; what we parse is the
-# union below (main.c of 1.07+git20240228 adds S j Y: y: z: E:)
+# union below (1.07+git20240228's main.c adds S j Y: y: z: E:, and the
+# Debian/Ubuntu packaging adds M: and L on top)
 OPTSTRING_107 = "FGVvhlupidmxa:r:s:c:t:w:k:o:n:g:e:b:N:I:T:R:"
-OPTSTRING = "FGVvhSlupidjmxa:r:s:c:t:w:k:o:n:g:e:y:b:z:E:N:I:T:R:Y:"
+OPTSTRING = ("FGVvhSlupidjmxa:r:s:c:t:w:k:o:n:g:e:y:b:z:E:N:I:T:LR:Y:M:")
 
 HELP = '''wmctrl 1.07
 Usage: wmctrl [OPTION]...
@@ -180,8 +181,10 @@ Copyright (C) 2003
 '''
 
 
-# wmctrl 1.07+git20240228 (Ubuntu 25.04+/Debian 13+): six more options,
-# `-k toggle`, and two typo fixes in the prose
+# The wmctrl of Ubuntu 25.04+/Debian 13+: upstream 1.07+git20240228 (six
+# more options and `-k toggle`) plus the two options the distro patches add,
+# -M and -L. This is the text the installed oracle prints, which is the one
+# worth matching -- the unpatched tarball is what nobody has.
 HELP_GIT = '''wmctrl 1.07
 Usage: wmctrl [OPTION]...
 Actions:
@@ -208,7 +211,9 @@ Actions:
                        argument and list of possible states is given below.
   -r <WIN> -N <STR>    Set the name (long title) of the window.
   -r <WIN> -I <STR>    Set the icon name (short title) of the window.
+  -r <WIN> -M <PATH>   Set the mini-icon of the window to the xpm bitmap in <PATH>.
   -r <WIN> -T <STR>    Set both the name and the icon name of the window.
+  -r <WIN> -L          List information about the window.
   -k (on|off|toggle)   Activate or deactivate window manager's
                        "showing the desktop" mode. Many window managers
                        do not implement this mode.
@@ -477,14 +482,16 @@ def _run(argv=None) -> int:
             action = c
         elif c == "r":
             param_window = val
-        elif c in ("t", "e", "y", "b", "N", "I", "T", "s", "k", "o", "n",
-                   "g"):
+        elif c in ("t", "e", "y", "b", "N", "I", "T", "M", "s", "k", "o",
+                   "n", "g"):
             param = val
             action = c
         elif c == "w":
             if val != "DESKTOP_TITLES_INVALID_UTF8":
                 sys.stderr.write("Unknown workaround: %s\n" % val)
                 return 1
+        elif c == "L":  # 1.07+git, distro patch: no argument
+            action = c
         else:  # V h l d j m
             action = c
 
@@ -526,7 +533,8 @@ def _run(argv=None) -> int:
             sys.stderr.write("No window was specified.\n")
             return 1
         return ctl.action_window(action, param_window, param,
-                                 match_by_id, match_by_cls, full_match)
+                                 match_by_id, match_by_cls, full_match,
+                                 show_pid, show_geometry, show_class)
     except CmdError as e:
         sys.stderr.write("%s\n" % e)
         return 1
