@@ -125,9 +125,24 @@ glib-compile-schemas /usr/share/glib-2.0/schemas
 [ "$(gsettings get org.gnome.desktop.session idle-delay 2>/dev/null)" = "uint32 0" ] || fail "gschema override not applied"
 [ "$(gsettings get org.gnome.shell welcome-dialog-last-shown-version 2>/dev/null)" = "'999'" ] || fail "gschema override (shell) not applied"
 
-say "user test: skip gnome-initial-setup, hide update-notifier autostarts"
-install -d -o test -g test -m 0700 /home/test/.config /home/test/.config/autostart
+say "user test: skip gnome-initial-setup (first login AND post-upgrade), hide update-notifier autostarts"
+install -d -o test -g test -m 0700 /home/test/.config /home/test/.config/autostart /home/test/.config/gnome-initial-setup
 echo yes > /home/test/.config/gnome-initial-setup-done
+# gnome-initial-setup >= 50 (26.04) also has gnome-initial-setup-upgrade-login.service
+# ("Welcome to Ubuntu 26.04 LTS!" / release notes dialog): it runs when the
+# -done marker above EXISTS and gnome-initial-setup/upgrade-<release>-done does
+# NOT, so the first-login marker alone turns that dialog on at every login.
+# Create the marker for this release plus whatever the installed unit names.
+rel=$(. /etc/os-release; echo "$VERSION_ID")
+touch "/home/test/.config/gnome-initial-setup/upgrade-${rel}-done"
+for u in /usr/lib/systemd/user/gnome-initial-setup-upgrade-login.service; do
+  [ -f "$u" ] || continue
+  for m in $(sed -n 's/^ConditionPathExists=!%E\/\([^ ]*\)$/\1/p' "$u"); do
+    install -d "/home/test/.config/$(dirname "$m")"
+    touch "/home/test/.config/$m"
+  done
+  say "post-upgrade dialog markers: $(ls /home/test/.config/gnome-initial-setup | tr '\n' ' ')"
+done
 for d in gnome-initial-setup-first-login update-notifier ubuntu-report-on-upgrade; do
   printf '[Desktop Entry]\nType=Application\nName=%s (disabled by vmctl)\nHidden=true\n' "$d" > "/home/test/.config/autostart/$d.desktop"
 done

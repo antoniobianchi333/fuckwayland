@@ -48,7 +48,7 @@ BUILDS = VMDATA / "build"
 KEYS = VMDATA / "keys"
 PORTS = range(2400, 2500)
 MAX_HEADS = 4                     # virtio-vga max_outputs
-DEFAULT_HEAD = "1920x1080"        # size given to heads 1..N-1 by `start --heads N`
+DEFAULT_HEAD = "1920x1080"        # size of heads 0..N-1 for `start --heads N` (override: --head-size)
 GPU = "gpu0"
 BUS_NAME = "org.qemu"             # what QEMU 8.2's dbus display owns (not org.qemu.Display1)
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,40}$")
@@ -329,6 +329,22 @@ def list_consoles(bus):
     if p.returncode != 0:
         return []
     return sorted(int(n) for n in re.findall(r"node Console_(\d+)", p.stdout))
+
+
+def wait_consoles(inst, timeout=20):
+    """Block until QEMU owns org.qemu on the instance bus and exports Console_0.
+    `-daemonize` returns after the display is initialised, but the bus name is
+    acquired asynchronously from QEMU's main loop, so poll briefly."""
+    t0 = time.monotonic()
+    while True:
+        if 0 in list_consoles(inst.bus):
+            return time.monotonic() - t0
+        if inst.pid() is None:
+            raise Fail(f"{inst.name}: QEMU exited while starting; see {inst.serial} and meta.json")
+        if time.monotonic() - t0 > timeout:
+            raise Fail(f"{inst.name}: QEMU did not export /org/qemu/Display1/Console_0 on {inst.bus} "
+                       f"within {timeout}s")
+        time.sleep(0.2)
 
 
 # ---------------------------------------------------------------- instances
@@ -644,11 +660,15 @@ def cmd_start(a):
     nheads = a.heads if a.heads is not None else inst.meta.get("nheads", 1)
     if not 1 <= nheads <= MAX_HEADS:
         raise Fail(f"--heads must be 1..{MAX_HEADS}")
-    heads = {0: "default"}
-    saved = inst.heads() if a.heads is None else {}
-    for i in range(1, MAX_HEADS):
+    size = a.head_size or DEFAULT_HEAD
+    parse_size(size)
+    # --heads / --head-size (re)size every head incl. head 0; otherwise a reused
+    # instance keeps the sizes it had (old meta.json may still say 0=default).
+    saved = inst.heads() if a.heads is None and a.head_size is None else {}
+    heads = {}
+    for i in range(MAX_HEADS):
         heads[i] = (saved.get(i) if i < nheads and saved.get(i) not in (None, "off") else
-                    DEFAULT_HEAD if i < nheads else "off")
+                    size if i < nheads else "off")
     inst.meta.update({"name": inst.name, "flavor": flavor, "mem": mem, "cpus": cpus,
                       "nheads": nheads, "heads": {str(k): v for k, v in heads.items()},
                       "golden": str(golden), "started": time.strftime("%Y-%m-%dT%H:%M:%S")})
@@ -673,15 +693,28 @@ def cmd_start(a):
         raise Fail("QEMU exited immediately; check the command line in meta.json")
     log(f"{inst.name}: QEMU pid {pid}, flavor {flavor}, {cpus} vCPU/{mem}, ssh port {inst.port}, "
         f"bus {inst.bus}")
+    # Size/plug the heads NOW, before the guest kernel probes virtio-gpu: QEMU keeps
+    # the requested state per scanout and reports it (with the matching EDID) on the
+    # driver's first GET_DISPLAY_INFO, so the session starts with its final monitor
+    # set.  Plugging after ssh-up (2-6 s after gnome-shell starts) raced with
+    # gnome-shell's startup: a monitors-changed during the start-up animation left
+    # every head a flat #222222 (no top bar / dock / wallpaper) until the next login.
+    try:
+        wait_consoles(inst)
+        apply_heads(inst, heads)
+    except Fail:
+        kill_pid(pid)
+        stop_dbus(inst)
+        inst.qemu_pid.unlink(missing_ok=True)
+        raise
+    active = [f"Virtual-{i + 1}" for i in sorted(heads) if heads[i] != "off"]
+    log(f"{inst.name}: heads: " + ", ".join(f"{i}={heads[i]}" for i in sorted(heads) if heads[i] != "off")
+        + f"  (guest connectors {', '.join(active)}; set before the guest boots)")
     if a.no_wait:
         print(inst.port)
         return
     t = wait_ssh(inst.port, a.timeout, inst.name)
     log(f"{inst.name}: ssh up after {t:.0f}s")
-    apply_heads(inst, heads)
-    active = [f"Virtual-{i + 1}" for i in sorted(heads) if heads[i] != "off"]
-    log(f"{inst.name}: heads: " + ", ".join(f"{i}={heads[i]}" for i in sorted(heads) if heads[i] != "off")
-        + f"  (guest connectors {', '.join(active)})")
     print(inst.port)
 
 
@@ -766,12 +799,21 @@ def cmd_status(a):
     print(f"ssh:       root@127.0.0.1 port {inst.meta.get('port')}  (key {root_key()})")
     print(f"dir:       {inst.dir}")
     print(f"bus:       {inst.bus}   qmp: {inst.qmp_sock}")
-    print(f"heads:     " + "  ".join(f"{i}={v}" for i, v in sorted(inst.heads().items())))
+    heads = inst.heads()
+    print(f"heads:     " + "  ".join(f"{i}={v}" for i, v in sorted(heads.items())))
     if pid:
         for idx in list_consoles(inst.bus):
             pr = console_props(inst.bus, idx) or {}
-            print(f"  Console_{idx}: label={pr.get('Label')} head={pr.get('Head')} "
-                  f"{pr.get('Width')}x{pr.get('Height')}  (guest connector Virtual-{idx + 1})")
+            size = f"{pr.get('Width')}x{pr.get('Height')}"
+            state = heads.get(idx, "off" if idx else "default")
+            if state == "off":
+                # QEMU's Console keeps the surface of the last scanout, so its
+                # Width/Height do not tell that the head is unplugged
+                what = f"unplugged (Virtual-{idx + 1} disconnected; QEMU console still holds a {size} surface)"
+            else:
+                what = f"{size}  (guest connector Virtual-{idx + 1}" + \
+                       (", QEMU default EDID)" if state == "default" else ")")
+            print(f"  Console_{idx}: label={pr.get('Label')} head={pr.get('Head')} {what}")
 
 
 # ---------------------------------------------------------------- guest access
@@ -912,6 +954,17 @@ if [ -z "$XAUTHORITY" ]; then
   [ -n "$p" ] && imp $(tr '\0' '\n' < /proc/$p/environ 2>/dev/null)
 fi
 [ -z "$DISPLAY" ] && [ -S /tmp/.X11-unix/X0 ] && export DISPLAY=:0
+# XDG_SESSION_ID is not in the user manager's environment: take logind's
+# "display" session of the user (the graphical one) and its real Type.
+if [ -z "$XDG_SESSION_ID" ]; then
+  sid=$(loginctl show-user "$(id -un)" -p Display --value 2>/dev/null)
+  case "$sid" in *[!A-Za-z0-9_.-]*|"") ;; *) export XDG_SESSION_ID=$sid ;; esac
+fi
+if [ -n "$XDG_SESSION_ID" ]; then
+  st=$(loginctl show-session "$XDG_SESSION_ID" -p Type --value 2>/dev/null)
+  case "$st" in wayland|x11|tty|mir) export XDG_SESSION_TYPE=$st ;; esac
+fi
+: "${XDG_SESSION_TYPE:=wayland}"; export XDG_SESSION_TYPE
 cd "$HOME" 2>/dev/null
 exec "$@"
 """
@@ -935,7 +988,7 @@ def cmd_user(a):
     remote = ["sudo", "-u", "test", "-H", "env",
               "XDG_RUNTIME_DIR=/run/user/1000", "WAYLAND_DISPLAY=wayland-0",
               "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
-              "XDG_SESSION_TYPE=wayland", "USER=test", "LOGNAME=test",
+              "USER=test", "LOGNAME=test",
               "sh", "-c", wrapper, "vmctl-user"] + list(a.cmd)
     os.execvp("ssh", ssh_cmd(inst.port, 5, tty=a.tty) + [shlex.join(remote)])
 
@@ -961,11 +1014,13 @@ def main(argv=None):
     p.add_argument("name")
     p.add_argument("--flavor", help="golden image to use (required for a new instance)")
     p.add_argument("--heads", type=int, default=None, help=f"number of monitors, 1..{MAX_HEADS} (default 1)")
+    p.add_argument("--head-size", default=None, metavar="WxH",
+                   help=f"size of every head 0..N-1 (default {DEFAULT_HEAD}); implies re-sizing a reused instance")
     p.add_argument("--mem", default=None, help="QEMU memory (default 4G)")
     p.add_argument("--cpus", type=int, default=None, help="vCPUs (default 3)")
     p.add_argument("--fresh", action="store_true", help="recreate the overlay disk and cloud-init seed")
     p.add_argument("--timeout", type=int, default=240, help="seconds to wait for ssh")
-    p.add_argument("--no-wait", action="store_true", help="do not wait for ssh / apply heads")
+    p.add_argument("--no-wait", action="store_true", help="return right after the heads are set, without waiting for ssh")
     p.set_defaults(fn=cmd_start)
 
     p = sub.add_parser("stop", help="power the guest off (ssh poweroff, ACPI, then kill)")
