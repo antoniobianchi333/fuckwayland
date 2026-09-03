@@ -30,6 +30,7 @@ import re
 import struct
 import sys
 
+from wdotool import passthrough
 from wxprop import core
 from wxprop import fmt as fmtmod
 from wxprop.fmt import FatalError
@@ -422,6 +423,14 @@ def _safe_flush():
 
 def main(argv=None) -> int:
     prog = _progname()
+    # X11 session: hand over to the real xprop. Unlike the other three we do
+    # have a native X11 path (core.Session talks to $DISPLAY directly), so a
+    # box with no x11-utils installed keeps working instead of exiting 127.
+    rc = passthrough.maybe_exec_real(
+        "xprop", sys.argv[1:] if argv is None else argv, entry=argv is None,
+        fallback_native=True)
+    if rc is not None:
+        return rc
     try:
         try:
             return _main(prog, list(sys.argv[1:] if argv is None else argv))

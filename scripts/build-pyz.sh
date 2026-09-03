@@ -4,16 +4,36 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# Stamped into every zipapp so that a *copy* of one of these files installed
+# under an original's name is recognised as ours by
+# wdotool.passthrough.is_us() (the head sniff, which is the only "not us"
+# guard that survives two copies under two names in two PATH directories).
+# zipapp stores members uncompressed and __main__.py sorts first, so the
+# stamp lands in plain text in the first few hundred bytes -- which is what
+# the guard reads. The guard matches the whole of "$STAMP", never the bare
+# word: a third-party wrapper that merely mentions the project must not be
+# mistaken for one of ours. Keep both in sync with
+# wdotool/passthrough.py:MARKER / STAMP.
+MARKER=fuckwayland
+STAMP="$MARKER-clone:"
+
 build() { # name entry_module packages...
   name=$1; entry=$2; shift 2
   rm -rf dist/.stage
   mkdir -p dist/.stage
   for p in "$@"; do cp -r "$p" "dist/.stage/$p"; done
   find dist/.stage -name __pycache__ -type d -exec rm -rf {} +
-  printf 'import sys\nfrom %s import main\n\nsys.exit(main())\n' "$entry" > dist/.stage/__main__.py
+  printf '# %s-clone: %s (X11 passthrough marker, see wdotool/passthrough.py)\nimport sys\nfrom %s import main\n\nsys.exit(main())\n' \
+    "$MARKER" "$name" "$entry" > dist/.stage/__main__.py
+  printf '%s %s\n' "$STAMP" "$name" > "dist/.stage/_${MARKER}_marker"
   python3 -m zipapp dist/.stage -p "/usr/bin/env python3" -o "dist/$name"
   rm -rf dist/.stage
   chmod +x "dist/$name"
+  # the guard reads the first 4 KiB: fail the build if the stamp is not there
+  if ! head -c 4096 "dist/$name" | grep -aqF "$STAMP"; then
+    echo "build-pyz: $name: stamp '$STAMP' missing from the first 4 KiB" >&2
+    exit 1
+  fi
   echo "built dist/$name ($(wc -c < "dist/$name") bytes)"
 }
 

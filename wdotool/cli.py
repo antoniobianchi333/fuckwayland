@@ -9,7 +9,7 @@ import os
 import re
 import sys
 
-from wdotool import commands
+from wdotool import commands, passthrough
 from wdotool.ctx import CmdError, Context
 
 # What `version`/-v prints. Must match the real xdotool byte-for-byte so
@@ -307,10 +307,12 @@ def script_main(argv: list[str], prog: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    entry = argv is None
     argv = list(sys.argv) if argv is None else list(argv)
 
     # The console script entry point is cli:main, so route the daemon
     # re-invocation here too (python -m wdotool routes it in __main__.py).
+    # This is our own re-invocation of ourselves: never a passthrough.
     if len(argv) > 1 and argv[1] == "__daemon":
         from wdotool.daemon import daemon_main
 
@@ -319,6 +321,14 @@ def main(argv: list[str] | None = None) -> int:
         except CmdError as e:
             sys.stderr.write("%s\n" % e)
             return 1
+
+    # X11 session: this is the real xdotool's job. Before option parsing and
+    # before --help/--version -- installed as `xdotool`, even the version
+    # string has to be theirs (ours pins one upstream version and will drift).
+    # argv here includes argv[0]; the hook wants the arguments alone.
+    rc = passthrough.maybe_exec_real("xdotool", argv[1:], entry=entry)
+    if rc is not None:
+        return rc
 
     prog = os.path.basename(argv[0]) if argv and argv[0] else "wdotool"
     if prog == "__main__.py":

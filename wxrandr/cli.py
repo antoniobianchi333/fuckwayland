@@ -15,6 +15,7 @@ import os
 import re
 import sys
 
+from wdotool import passthrough
 from wxrandr import core
 from wxrandr.core import ArgErr, Fatal, Stanza
 
@@ -915,6 +916,11 @@ def _run(argv) -> int:
 
 
 def main(argv=None) -> int:
+    # X11 session: the X server's RandR is authoritative, hand over.
+    rc = passthrough.maybe_exec_real(
+        "xrandr", sys.argv[1:] if argv is None else argv, entry=argv is None)
+    if rc is not None:
+        return rc
     if argv is None:
         argv = sys.argv[1:]
     try:

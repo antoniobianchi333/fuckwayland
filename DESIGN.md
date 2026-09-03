@@ -35,6 +35,155 @@ on stock Ubuntu. Root is acceptable and expected (for `/dev/uinput`). No kernel 
   gnome-shell's own environment via `/proc`, Mutter's
   `$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` cookie, `/tmp/.X11-unix/X*`).
 
+## X11 passthrough (`passthrough.py`)
+
+We are installed **over** the originals, so on a plain X11 session (Xfce, i3,
+GNOME-on-Xorg, KDE-on-Xorg) the right thing to do is get out of the way: the X
+server is authoritative there, `xdotool` has XTEST and `--sync` on real X
+events, `xprop` has the real property store, `xrandr` has the real RandR, and
+we cannot beat any of it from outside. Worse, backend detection would *half*
+succeed — GNOME-on-Xorg owns `org.gnome.Shell`, KWin-on-X11 owns
+`org.kde.KWin` — so the check has to run **before** it.
+
+`wdotool/passthrough.py` is shared and **frozen after landing** (like
+`session.py` and `dbus_mini.py`): wire-level fixes allowed, API changes need a
+note. Pure stdlib, no imports from the rest of the tree except `session.py`.
+
+**`session_kind() -> "wayland" | "x11" | None`**, ordered, memoised, and
+reading nothing but the environment it is handed plus three seam directories
+(`_X11_SOCK_DIR`, `_LOGIND_DIR`, `_RUN_USER_DIR` — which is what makes the
+tests hermetic):
+
+1. `FUCKWAYLAND_PASSTHROUGH` / `WDOTOOL_PASSTHROUGH` & co: `never` -> wayland
+   (run our own code whatever the session), `always` -> x11. Those variables
+   are about the *handover*, so a caller that never hands over passes
+   `respect_override=False` and skips this step — see `warandr` below;
+   `passthrough_mode()` is the way to ask about the variables themselves.
+2. `$WAYLAND_DISPLAY` **and** its socket exists -> wayland. Wayland is tested
+   first because `$DISPLAY` is set on a Wayland session too (Xwayland) and is
+   therefore never evidence of an X11 session — while a live compositor
+   socket is conclusive.
+3. `$XDG_SESSION_TYPE`, ignored when `SUDO_UID`/`PKEXEC_UID` is set (`sudo`
+   keeps root's `XDG_SESSION_TYPE=tty` from an `ssh root@` login).
+4. logind's own record, `/run/systemd/sessions/*` (world-readable key=value,
+   read-only best-effort; `<id>.ref` is a FIFO and is never opened): the
+   active, local, non-greeter session of the target user, and its `TYPE=`.
+5. Socket scan: a `wayland-*` socket **owned by the target user** — a display
+   manager's Wayland greeter under another uid must not turn an Xfce box into
+   a Wayland session, which is the one real trap in this design — else an X
+   socket (or a `host:0` display, which the original handles and we do not).
+6. Nothing -> `None`, and the tool prints its own "no session" error.
+
+**`real_tool(name)`** walks `$PATH` for the first executable of that name that
+is not us. Four independent "not us" guards, because each alone has a hole:
+`samestat` against our own entry points; `basename(realpath(cand))` in
+`{wdotool, wwmctl, wxprop, wxrandr, warandr}` (the normal install, where
+`xdotool` is a *symlink* to our `wdotool`); a 4 KiB head sniff for the
+`fuckwayland-clone:` stamp `scripts/build-pyz.sh` writes into every zipapp
+(the build fails without it) or for an import of one of our packages, which
+is what a `pip`-generated console script looks like — never an ELF, and
+never a bare `fuckwayland`/`wmctrl` *substring*, or a third-party wrapper
+that merely mentions the project would be skipped and the user told to
+install what is already installed; and `_FUCKWAYLAND_PASSTHROUGH`, which
+carries the realpaths already
+handed over to — a process that finds *itself* in that list was exec'd as
+somebody's "real tool" and refuses to go round again (plus a depth backstop).
+`WDOTOOL_REAL_XDOTOOL` / `WWMCTL_REAL_WMCTRL` / `WXPROP_REAL_XPROP` /
+`WXRANDR_REAL_XRANDR` skip the walk; set-but-unusable is an error naming the
+variable, never a silent fallback.
+
+**`maybe_exec_real(tool, args, ...)`** is the hook at the top of each
+`main()`. It returns `None` (keep running) or an exit status; usually it does
+not return at all, because the handover is `os.execve`, not `subprocess`:
+exit status, death by signal, stop/cont, the controlling terminal and the
+process group all survive for free, stdio stays the real fds (`xprop -root |
+head -1`, `xdotool selectwindow`), and nothing extra shows up in `ps`. Two
+things must happen first or parity silently breaks: `SIGPIPE` and `SIGXFSZ`
+back to `SIG_DFL` (Python ignores both, and an *ignored* disposition survives
+`execve`, so `| head -1` would print an EPIPE error instead of dying), and a
+stdio flush. argv[0] is the original's own name, so its usage text is
+internally consistent. No original installed: **127** (never confusable with
+a tool failure) and one line naming the package to install and the override
+variable — except for a `--help`/`--version`/bare invocation, which falls
+back to our own output, and except for `wxprop` (below). Help is recognised
+by each original's *exact* spellings (`-h -V --help --version` for wmctrl,
+`-help -version -grammar` for xprop, `-h -v --help --version help version`
+and `-hv`-style clusters for xdotool, `-help --help -v --version` for
+xrandr): `-v` is `--verbose` in wmctrl and unknown to xprop, and a looser
+rule would read `wmctrl -v -l` as a help request and answer it with a
+Wayland error where `wmctrl -l` correctly says which package to install.
+
+**Environment repair.** On the X11 path a missing or dead `$DISPLAY` /
+`$XAUTHORITY` is replaced with the session's own (logind's `DISPLAY=`, the
+socket scan, the display manager's cookie), so `sudo xdotool key a`,
+`ssh root@box xprop -root` and cron jobs work *through* us where the original
+alone fails — the Wayland trick of `session.py`, applied to X. Values that
+already work are never touched, and a `$XAUTHORITY` that points at nothing is
+*removed* rather than forwarded (left in place it suppresses the original's
+own `~/.Xauthority` default).
+
+Whose session, though: as root with no `SUDO_UID` (`ssh root@box`, root cron)
+the uid is in neither the environment nor `getuid()`, and `session_uid()` then
+asks logind. Failing that, a system account's runtime directory is skipped —
+the lowest-numbered one on a box with a display manager is the *greeter's*,
+and its cookie authorises nothing on the user's X server, so forwarding it
+would break precisely the case this repair exists for. Same rule as
+`find_wayland_socket()`. uid 0 is never an answer either, from either source:
+`sudo -i` run *by* root leaves `SUDO_UID=0` behind, and believing it sends the
+search into `/root` — measured on a real Xfce box, that is the difference
+between `sudo -i xdotool getactivewindow` printing the window name through us
+and printing `Authorization required, but no authorization protocol
+specified`.
+
+**Per tool.** `wdotool`, `wwmctl` and `wxrandr` exec, always. `wdotool` has no
+native X11 option worth having (no XTEST, no `XKeysymToKeycode`, no `--sync`
+on X events; uinput would inject, but `getmouselocation` would report our
+tracked pointer and `--clearmodifiers` still could not read state — the
+documented Wayland approximations on a platform that has none). `wxrandr`:
+the X server's RandR is the truth, and our Mutter backend on GNOME-on-Xorg is
+at best a second opinion. `wwmctl` *does* carry an X11 wire client
+(`wwmctl/x11_mini.py`), and it is still not enough: `-m`, `-d` viewport and
+workarea, `-e` gravity math, `-r -b` state toggles, `-x` class matching and
+`:SELECT:` (which needs `GrabPointer`/`QueryPointer`, not in `x11_mini`) would
+all have to be reimplemented and their byte parity re-proved against the real
+`wmctrl` on X11, for the sole benefit of a box with no `wmctrl` installed —
+and `x11_mini` is unix-socket only, so it cannot do `ssh -X`'s
+`DISPLAY=localhost:10.0` while a handover does that for free. `wxprop` is the
+exception: its native X11 path is already complete and proven against a live
+X server (`WXPROP.md`), and `core.Session` resolves the X plane from
+`$DISPLAY` with no backend at all, so it hands over when a real `xprop`
+exists and keeps running when none does (`fallback_native=True`) — no 127
+from `wxprop`, ever. From a script's point of view the four behave
+identically: on X11 the output is the original's.
+
+`warandr` does **not** exec — it is not a clone of an X11 binary we are
+installed over, and it already drives the real `xrandr` on X11. It only swaps
+`randr.choose()`'s bare `$WAYLAND_DISPLAY` test for
+`passthrough.session_kind(respect_override=False) == "wayland"` (the
+`respect_override` is load-bearing: `FUCKWAYLAND_PASSTHROUGH=never` means
+"do not hand over", and warandr has nothing to hand over — read as a session
+type it would select `wxrandr` on an X11 box and every Apply would say
+`Can't open display`, for exactly the developers the variable is documented
+for), which fixes a stale
+`WAYLAND_DISPLAY` selecting `wxrandr` (the GUI came up and every Apply said
+`Can't open display`) and makes a thin `.desktop` environment work. It still
+writes the bare word `xrandr` into `~/.screenlayout/*.sh` for arandr
+compatibility; if we are installed over `/usr/local/bin/xrandr` that word
+resolves to us and passes through — one extra process, correct result, no
+recursion.
+
+**Never exec'ing the test runner.** ~17 tests call `cli.main([...])`
+in-process and several spawn our tools as subprocesses, so an unguarded hook
+would `execve` the suite away (and `tests/test_cli_parity.py`, which shells a
+shim named `xdotool` while the real one is on PATH, would compare the real
+xdotool with itself and pass tautologically). Three independent belts:
+`entry=False` — an explicit argv means we are being used as a library, and a
+library never replaces its caller's process; `tests/conftest.py`; and the
+`FUCKWAYLAND_PASSTHROUGH=never` line every `tests/test_*.py` carries (the
+suite is run file by file, where conftest never loads), which a test in
+`tests/test_passthrough.py` enforces for future files.
+
+
 ## Parity references (read these!)
 
 - `SCRATCH/xdotool-src/` — real xdotool source. `xdotool.pod` is the manpage (exact
@@ -67,7 +216,8 @@ normally. `Context` (frozen, `ctx.py`) provides `stack`, `resolve_window(arg|Non
 - **Agent C (windows)**: `backend_detect.py`, `backend_sway.py`, `backend_wlr.py`,
   `backend_kwin.py`, `backend_gnome.py`, `window_cmds.py`, `desktop_cmds.py`
 - **Frozen (implemented; edit only if broken)**: `__init__.py`, `__main__.py`, `ctx.py`,
-  `backend.py`, `session.py`, `wayland_mini.py`, `flake.nix`, `pyproject.toml`
+  `backend.py`, `session.py`, `passthrough.py`, `wayland_mini.py`, `flake.nix`,
+  `pyproject.toml`
 
 `wayland_mini.py` is a working pure-stdlib Wayland wire client shared by B (output
 geometry) and C (foreign-toplevel) — wire-level bugfixes allowed, API changes need a
@@ -347,3 +497,13 @@ Pure-stdlib D-Bus client for the session bus and any `unix:` address (QEMU's
 - Full-stack: Ubuntu 26.04 QEMU/KVM VM (user networking, ssh localhost:2222), sway with
   `WLR_BACKENDS=headless,libinput` — libinput MUST be listed so sway picks up uinput
   devices. Screenshots `grim -c` (cursor included). Demo gif: frames → ffmpeg → gif.
+- X11 passthrough: `tests/test_passthrough.py` (hermetic detection matrix, the
+  "not us" guards, each `main()`'s argv convention against a stubbed `execve`,
+  help/version, environment repair) and `tests/test_passthrough_exec.py` (real
+  processes against a fake install tree: the handover is an `execve` because
+  the exec'd tool logs *our* pid, exit codes and signal deaths propagate,
+  `| head -1` dies of SIGPIPE, rc 127 and its message, two copies of us on
+  PATH stop after exactly two invocations). **Every `tests/test_*.py` sets
+  `FUCKWAYLAND_PASSTHROUGH=never`** — the suite would otherwise exec itself
+  away on an X11 box, and the parity oracle would go tautological;
+  `tests/test_passthrough.py` fails if a test file is missing the line.

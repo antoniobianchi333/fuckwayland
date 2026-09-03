@@ -28,6 +28,12 @@ from wdotool import backend_detect, session  # noqa: E402
 from wdotool.backend_gnome import IFACE, OBJECT_PATH, GnomeBackend  # noqa: E402
 from wwmctl import cli, core  # noqa: E402
 
+# The suite never hands a tool over to the real X11 one: see
+# tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
+# This line is what covers `python3 tests/<file>.py`, where conftest is
+# not loaded, and it reaches every subprocess a test spawns.
+os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
+
 WM_CHECK = 0x200001
 XAUTH = "/run/user/1000/.mutter-Xwaylandauth.AB12CD"
 

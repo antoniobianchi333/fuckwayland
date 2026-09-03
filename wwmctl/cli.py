@@ -17,6 +17,7 @@ import getopt
 import os
 import sys
 
+from wdotool import passthrough
 from wdotool.ctx import CmdError
 
 from wwmctl import core
@@ -193,6 +194,12 @@ def main(argv=None) -> int:
         sys.stdout = open(os.devnull, "w")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w")
+    # X11 session: hand over to the real wmctrl (argv here is already
+    # sys.argv[1:], wmctrl's own convention).
+    rc = passthrough.maybe_exec_real(
+        "wmctrl", sys.argv[1:] if argv is None else argv, entry=argv is None)
+    if rc is not None:
+        return rc
     try:
         rc = _run(argv)
         sys.stdout.flush()
