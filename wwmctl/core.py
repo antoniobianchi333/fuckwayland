@@ -411,31 +411,60 @@ class Core:
         if hh != -1:
             grflags |= 1 << 11
         self.vprint("grflags: %d\n" % grflags)
-        # The compositor is the WM: route the request through it. Gravity has
-        # no compositor equivalent — coordinates address the top-left of the
-        # rectangle the compositor manages (gravity 0 / NorthWest behavior:
-        # the content on sway, the frame on GNOME), and a -1 keeps that
-        # rectangle's own value (not the X plane's client rect, which on a
-        # reparenting WM like Mutter sits a titlebar lower). Requests the
+        # The compositor is the WM: route the request through it with
+        # _NET_MOVERESIZE_WINDOW's meaning. `W,H` are the CLIENT size and
+        # the gravity names the point of the frame the request positions:
+        # NorthWest its top-left, Center its centre, SouthEast its
+        # bottom-right, Static the client's own top-left (0 = "the window's
+        # own WM_SIZE_HINTS gravity", taken as NorthWest, the ICCCM default
+        # and what toolkits set). A -1 keeps that point where it is, so a
+        # bare resize under SouthEast pins the frame's bottom-right corner
+        # and grows up and to the left -- Mutter's own behavior, verified
+        # against real wmctrl. The frame extents (Mutter's server-side
+        # titlebar on an XWayland window) turn the client rectangle into
+        # the frame rectangle the bridge's Move/Resize address; where the
+        # compositor manages the client rectangle itself (native windows,
+        # sway's content rect, X plane not reached) they are zero and every
+        # gravity but Static collapses to NorthWest. Requests the
         # compositor cannot honor (moving a tiled window, touching a
         # fullscreen one) are warned about and ignored, matching "the WM
         # may ignore the request".
         backend = self.backend()
+        left, top, right, bottom = self._frame_extents(w)
+        cw = ww if ww != -1 else w.fw - left - right
+        ch = hh if hh != -1 else w.fh - top - bottom
+        fw, fh = cw + left + right, ch + top + bottom
+        col, row = _GRAVITY_CORNER.get(grav, (0, 0))
+        static = grav == _GRAVITY_STATIC
+        fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw)
+        fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh)
         if ww != -1 or hh != -1:
             try:
-                backend.resize(w.node_id,
-                               ww if ww != -1 else w.fw,
-                               hh if hh != -1 else w.fh)
+                backend.resize(w.node_id, fw, fh)
             except CmdError as e:
                 _warn("%s; ignoring" % e)
-        if x != -1 or y != -1:
+        # a move was asked for, or the gravity's anchor requires one
+        if x != -1 or y != -1 or (fx, fy) != (w.fx, w.fy):
             try:
-                backend.move_window(w.node_id,
-                                    x if x != -1 else w.fx,
-                                    y if y != -1 else w.fy)
+                backend.move_window(w.node_id, fx, fy)
             except CmdError as e:
                 _warn("%s; ignoring" % e)
         return 0
+
+    def _frame_extents(self, w: UWindow):
+        """(left, top, right, bottom) between the compositor's frame rect
+        and the X plane's client rect of an XWayland window listed by
+        views(): Mutter's server-side titlebar and border. Zero when the two
+        are the same rectangle (native windows, the sway tree's content
+        rect, an X plane that was not reached) or do not fit each other (an
+        X coordinate space scaled differently from the compositor's)."""
+        if not (self._views_seen and w.is_x):
+            return 0, 0, 0, 0
+        left, top = w.x - w.fx, w.y - w.fy
+        right, bottom = w.fw - w.w - left, w.fh - w.h - top
+        if min(left, top, right, bottom) < 0:
+            return 0, 0, 0, 0
+        return left, top, right, bottom
 
     def window_state(self, w: UWindow, arg: str) -> int:  # -b
         argerr = ('The -b option expects a list of comma separated parameters'
@@ -771,6 +800,46 @@ def _dot_class(instance: str | None, class_: str | None) -> str | None:
     if instance is not None:
         return instance
     return None
+
+
+# ICCCM win_gravity (wmctrl -e's first field) as (column, row), with
+# 0 = the left/top edge, 1 = the middle, 2 = the right/bottom edge: which
+# point of the window the request positions. StaticGravity (10) addresses
+# the client rather than the frame and is handled apart; 0 (use the
+# window's own WM_SIZE_HINTS gravity) and unknown values are NorthWest.
+_GRAVITY_CORNER = {1: (0, 0), 2: (1, 0), 3: (2, 0), 4: (0, 1), 5: (1, 1),
+                   6: (2, 1), 7: (0, 2), 8: (1, 2), 9: (2, 2)}
+_GRAVITY_STATIC = 10
+
+
+def _anchor(pos: int, size: int) -> int:
+    """Where the gravity's reference point sits inside a rectangle of
+    `size`: its leading edge, its middle, or its trailing edge (Mutter's
+    adjust_for_gravity arithmetic, halves truncated)."""
+    if pos == 1:
+        return size // 2
+    if pos == 2:
+        return size
+    return 0
+
+
+def _place_axis(pos: int, static: bool, req: int, lead: int,
+                f_old: int, fs_old: int, cs_new: int, fs_new: int) -> int:
+    """The frame's new leading edge on one axis.
+
+    `pos` is the gravity's reference point (see _GRAVITY_CORNER), `static`
+    marks StaticGravity, `req` the requested coordinate (-1 = keep), `lead`
+    the leading frame extent (left or top), `f_old`/`fs_old` the frame's
+    current edge and size, `cs_new`/`fs_new` the client and frame sizes the
+    request asks for. A request positions the frame's reference point on
+    the same point of the requested client rectangle; a -1 keeps the frame's
+    reference point where it is, which is what makes a bare resize move the
+    window under any gravity but NorthWest."""
+    if static:                       # the client itself is addressed
+        return f_old if req == -1 else req - lead
+    if req == -1:
+        return f_old + _anchor(pos, fs_old) - _anchor(pos, fs_new)
+    return req + _anchor(pos, cs_new) - _anchor(pos, fs_new)
 
 
 def _parse_win_id(s: str) -> int | None:

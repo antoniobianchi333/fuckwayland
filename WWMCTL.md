@@ -179,13 +179,37 @@ untouched) and the generic `list()` fallback.
   `sticky`, `demands_attention` are applied by Mutter; `skip_taskbar`,
   `skip_pager`, `modal` warn and succeed (no Mutter setter, nothing
   observable); `shaded` and `below` warn `…; ignoring` and exit 0 like any
-  request "the WM may ignore". `-e G,X,Y,W,H`: `Resize` (keeps the frame's
-  top-left) then `Move`, both in **frame** coordinates (the rectangle `-lG`
-  prints for native windows; for XWayland windows `-lG` prints the client
-  rectangle, so a `-1` keeps the frame's own value rather than the client
-  rect's). Gravity is accepted and ignored (NorthWest semantics); a
-  maximized or fullscreen window is silently constrained by Mutter, as on
-  X11. `-k on|off` is the bridge's `ShowDesktop` (minimizes every normal
+  request "the WM may ignore". `-e G,X,Y,W,H` carries
+  `_NET_MOVERESIZE_WINDOW`'s meaning: `W,H` are the **client** size and
+  the gravity names the point of the window the request positions —
+  `1` NorthWest puts the frame's top-left at `X,Y`, `5` Center puts its
+  centre on the requested rectangle's, `9` SouthEast its bottom-right at
+  `X+W,Y+H`, `10` Static the client itself at `X,Y`; `0` means "the
+  window's own `WM_SIZE_HINTS` gravity" and is taken as NorthWest, the
+  ICCCM default. A `-1` keeps that point where it is, so `-e 9,-1,-1,W,H`
+  pins the bottom-right corner and grows the window up and to the left,
+  while `-e 0,-1,-1,W,H` is a resize alone. The frame extents — Mutter's
+  server-side titlebar, i.e. the difference between its frame rect and
+  the X client rectangle `-lG` prints — turn that client rectangle into
+  the `Resize` (frame size) and `Move` (frame top-left) the bridge takes:
+  `-e 0,10,20,300,200` on an xterm under a 37 px bar is a `300x237` frame
+  at `10,20` around a `300x200` client at `10,57`, which is what real
+  wmctrl gets from Mutter. Native windows (and an XWayland window whose X
+  plane could not be reached) have no extents, so there every gravity but
+  Static collapses to NorthWest and `X,Y,W,H` are the frame rectangle
+  `-lG` prints. A maximized or fullscreen window is silently constrained
+  by Mutter, as on X11. Two Mutter quirks are deliberately **not**
+  copied, both from its gravity code reading the frame rect *with* the
+  invisible resize border (worth `28` px horizontally and `66` px
+  vertically on GNOME 46) and placing by the visible one: with an
+  explicit `X,Y` under a trailing or centre gravity real wmctrl lands
+  1–2 px further out
+  (`-e 9,900,700,300,200`: Mutter `902,665`, wwmctl `900,663`), and a
+  value left at `-1` is re-read from that inflated rect, so
+  `-e 6,-1,-1,300,-1` grows the height it was not asked to touch from
+  `400` to `466` and `-e 3,-1,60,-1,-1` slides x by 16 px. wwmctl keeps
+  what the `-1` asked it to keep.
+  `-k on|off` is the bridge's `ShowDesktop` (minimizes every normal
   window on the active workspace and restores exactly those on `off` —
   Mutter's own mode is not scriptable). `-n N` is `SetNWorkspaces`: works
   with static workspaces, and with GNOME's default dynamic workspaces the
@@ -209,8 +233,8 @@ untouched) and the generic `list()` fallback.
   a no-match. Unit coverage: `tests/test_wwmctl_gnome.py` on the mock
   bridge of `tests/test_backend_gnome.py`.
 
-Verified live (branch `gnome-wm-tools`, `vm/vmctl` rigs, xterm +
-gnome-text-editor + gnome-calculator): Ubuntu 24.04 / GNOME Shell 46 and
+Verified live (branch `gnome-wm-tools`, `vm/vmctl` rigs, xterm + xeyes
++ gnome-text-editor + gnome-calculator): Ubuntu 24.04 / GNOME Shell 46 and
 Ubuntu 26.04 / GNOME Shell 50, as the desktop user, from a
 `<Ctrl><Super>F7` custom shortcut, from `ssh root@` with `env -i`, and
 under `sudo` — `-l/-lpGx` (the xterm under its X id `0x00800020` /
@@ -219,8 +243,13 @@ like `0x14a3062e`), `-d` (`WA: 66,32 3774x1048  Workspace 1` on two
 1920x1080 heads with the dock; real `wmctrl -d` fails there with `Cannot
 get current desktop properties`: Mutter's X root carries no
 `_NET_CURRENT_DESKTOP`), `-m` byte-identical to real `wmctrl -m`, `-a`,
-`-c :ACTIVE:`, `-i` with either id, `-e` (frame coordinates; xterm snaps
-500x400 to 496x392), `-e` with `-1` fills, `-b add,fullscreen` /
+`-c :ACTIVE:`, `-i` with either id, `-e` against real `wmctrl` on the
+same window (GNOME 46; `xeyes`, `_NET_FRAME_EXTENTS 0,0,37,0`): identical
+rectangles for gravity `0`/`1`/`10` and for every bare resize
+(`9,-1,-1,300,250` on a `200,150 500x400` frame → `400,263 300x287`,
+the `700,550` corner kept; `2,-1,-1,300,250` → `300,150`), 1–2 px apart
+only where Mutter's own gravity arithmetic is (above); xterm snaps
+`500x400` to `496x392` on its size increments, `-b add,fullscreen` /
 `maximized_vert` seen by real `xprop`, `shaded,below`/`skip_taskbar`
 warn+exit 0, `-N/-I/-T` read back by real `xprop`, `-t 1`, `-R`, `-s`,
 `-t 7` → `workspace 7 not found`, `-k on/off` (0 then 3 visible windows),

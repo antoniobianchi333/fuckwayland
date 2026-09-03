@@ -38,9 +38,12 @@ class FakeX11:
     (real wmctrl -m prints N/A for both there), _NET_SHOWING_DESKTOP on the
     root, and the xterm's client rectangle one titlebar below its frame."""
 
+    TITLEBAR = 37  # Mutter's SSD bar: the client sits one bar below the frame
+
     def __init__(self, showing=0):
         self.calls = []
         self.showing = showing
+        self.bridge = None  # the harness' bridge: frames to derive from
 
     def root(self):
         return 0x1C5
@@ -52,7 +55,13 @@ class FakeX11:
         return "vmhost" if win == XTERM_XID else ""
 
     def get_geometry(self, win):
-        return (100, 117, 640, 443)  # frame (100,80,640,480) minus SSD bar
+        # the xterm's client rectangle: the bridge's frame minus the SSD bar
+        # (100,117 640x443 for the fixture's frame at 100,80 640x480)
+        if self.bridge is None or win != XTERM_XID:
+            return (100, 117, 640, 443)
+        d = self.bridge.find(XTERM)
+        return (d["x"], d["y"] + self.TITLEBAR, d["width"],
+                d["height"] - self.TITLEBAR)
 
     def get_pid(self, win):
         return 1201 if win == XTERM_XID else 0
@@ -100,6 +109,8 @@ class GnomeCliBase(_Base):
         if x11 == "auto":
             x11 = FakeX11() if any(d["xid"] for d in self.bridge.windows) \
                 else None
+        if x11 is not None:
+            x11.bridge = self.bridge
         self.x11 = x11
 
         def connect(display=None, xauthority=None):
@@ -327,20 +338,85 @@ class ActionTests(GnomeCliBase):
         rc, _o, err = self.wm(["-r", "Calculator", "-t", "7"], x11=None)
         self.assertEqual((rc, err), (1, "workspace 7 not found\n"))
 
-    def test_e_resize_then_move_in_frame_coordinates(self):
+    def test_e_client_rectangle_with_the_frame_extents(self):
+        # gravity 0 (the window's own: NorthWest): the frame's top-left at
+        # X,Y; W,H are the CLIENT size, so the frame is one SSD bar taller
+        # (the X plane says the client sits 37 px below the frame)
         rc, _o, err = self.wm(["-r", "test@vm", "-e", "0,10,20,300,200"])
         self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 200)])
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 237)])
         self.assertEqual(self.calls("Move"), [(XTERM, 10, 20)])
-        # -1 keeps the FRAME's value (now y=20, 300 wide), not the X client
-        # rect's (the fake X plane reports y=117, 640 wide)
+        # -1 keeps the current value: the frame stays at y=20 and 300 wide
         rc, _o, _e = self.wm(["-r", "test@vm", "-e", "0,50,-1,-1,-1"])
         self.assertEqual(self.calls("Move")[-1], (XTERM, 50, 20))
+        self.assertEqual(len(self.calls("Resize")), 1)
         rc, _o, _e = self.wm(["-r", "test@vm", "-e", "0,-1,-1,-1,700"])
-        self.assertEqual(self.calls("Resize")[-1], (XTERM, 300, 700))
+        self.assertEqual(self.calls("Resize")[-1], (XTERM, 300, 737))
+        self.assertEqual(len(self.calls("Move")), 2)
         rc, _o, err = self.wm(["-r", "test@vm", "-e", "1,2"])
         self.assertEqual(rc, 1)
         self.assertIn("gravity,X,Y,width,height", err)
+
+    def test_e_gravity_places_the_named_frame_point(self):
+        # frame 100,80 640x480 over client 100,117 640x443: extents
+        # 0,37,0,0.  SouthEast: the frame's bottom-right corner lands on
+        # the requested client rectangle's, (X+W, Y+H)
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,1000,900,300,200"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize")[-1], (XTERM, 300, 237))
+        self.assertEqual(self.calls("Move")[-1], (XTERM, 1000, 863))
+        # Center: the frame centred on the requested rectangle's centre
+        rc, _o, _e = self.wm(["-r", "test@vm", "-e", "5,500,400,300,200"])
+        self.assertEqual(self.calls("Move")[-1], (XTERM, 500, 382))
+        # Static: the client itself at X,Y, the frame one bar higher; the
+        # -1s keep the client size
+        rc, _o, _e = self.wm(["-r", "test@vm", "-e", "10,200,300,-1,-1"])
+        self.assertEqual(self.calls("Move")[-1], (XTERM, 200, 263))
+        self.assertEqual(len(self.calls("Resize")), 2)
+        # Static with -1 for the position keeps the frame where it is
+        rc, _o, _e = self.wm(["-r", "test@vm", "-e", "10,-1,-1,400,100"])
+        self.assertEqual(self.calls("Resize")[-1], (XTERM, 400, 137))
+        self.assertEqual(self.calls("Move")[-1], (XTERM, 200, 263))
+
+    def test_e_bare_resize_keeps_the_gravity_point(self):
+        # `-e 9,-1,-1,W,H` pins the frame's bottom-right corner and grows
+        # up and to the left, as Mutter does for real wmctrl (live: a
+        # frame 200,150 500x400 asked for a 300x250 client keeps its
+        # 700,550 corner and lands at 400,263 with a 300x287 frame)
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,-1,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 287)])
+        self.assertEqual(self.calls("Move"), [(XTERM, 440, 273)])  # 740,560
+        # Center keeps the frame's centre (440+150, 273+143 = 590, 416)
+        rc, _o, _e = self.wm(["-r", "test@vm", "-e", "5,-1,-1,200,150"])
+        self.assertEqual(self.calls("Resize")[-1], (XTERM, 200, 187))
+        self.assertEqual(self.calls("Move")[-1], (XTERM, 490, 323))
+        # NorthWest pins the top-left, so a bare resize is a resize alone
+        rc, _o, _e = self.wm(["-r", "test@vm", "-e", "0,-1,-1,300,200"])
+        self.assertEqual(self.calls("Resize")[-1], (XTERM, 300, 237))
+        self.assertEqual(len(self.calls("Move")), 2)
+        # ... and a narrower window under East keeps its right edge (790)
+        # while the unchanged height leaves the vertical centre alone
+        rc, _o, _e = self.wm(["-r", "test@vm", "-e", "6,-1,-1,150,-1"])
+        self.assertEqual(self.calls("Resize")[-1], (XTERM, 150, 237))
+        self.assertEqual(self.calls("Move")[-1], (XTERM, 640, 323))
+
+    def test_e_without_frame_extents_is_the_frame_rectangle(self):
+        # a native window: the frame is the client, so every gravity puts
+        # X,Y,W,H on the rectangle -lG prints
+        for grav in ("0", "5", "9", "10"):
+            rc, _o, err = self.wm(["-r", "Calculator", "-e",
+                                   "%s,100,100,320,240" % grav], x11=None)
+            self.assertEqual((rc, err), (0, ""), grav)
+            self.assertEqual(self.calls("Resize")[-1], (CALC, 320, 240), grav)
+            self.assertEqual(self.calls("Move")[-1], (CALC, 100, 100), grav)
+        # an XWayland window with the X plane unreachable: the bridge's
+        # frame rect is all there is, so it is addressed directly
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,10,20,300,200"],
+                              x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize")[-1], (XTERM, 300, 200))
+        self.assertEqual(self.calls("Move")[-1], (XTERM, 10, 20))
 
     def test_b_states_through_set_state(self):
         rc, _o, err = self.wm(["-r", "Calculator", "-b", "add,fullscreen"],
