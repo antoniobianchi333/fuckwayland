@@ -789,7 +789,8 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
                       % sess.mutter.primary)
         if (sess.backend == "kwin" and sess.kwin.primary
                 and not any(s.primary for s in opts.stanzas)):
-            # set_primary_output has no inverse in the protocol
+            # neither set_priority nor set_primary_output has an inverse:
+            # KWin's output order always has a first entry
             core.warn("KWin keeps a primary output; keeping %s\n"
                       % sess.kwin.primary)
         sess.state.primary = None
@@ -809,8 +810,11 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
             # KWin has no verify request, and building a configuration
             # without applying it changes nothing, so this runs the plan
             # client-side only (mode resolution, the last-output refusal).
-            # Nothing is sent, so nothing is claimed about the compositor.
+            # Nothing is sent, so nothing is claimed about the compositor --
+            # including the primary: a --dryrun that recorded one would make
+            # the next --query name a primary KWin was never asked for.
             sess.kwin.verify(sess.state, targets)
+            sess.state.primary = sess.kwin.primary
         sess.state.save()
         return outputs
     for cmd in filter_cmds:
@@ -932,8 +936,10 @@ def _run(argv) -> int:
         return 0
     if opts.monitor_op:
         if opts.monitor_op[0] in ("list", "listactive"):
-            for line in core.render_monitors(outputs, sess.state,
-                                             sess.backend == "mutter"):
+            # KWin has a real primary XWayland knows about (measured: its
+            # own --listmonitors puts it first), so it lists it first too
+            for line in core.render_monitors(
+                    outputs, sess.state, sess.backend in ("mutter", "kwin")):
                 print(line)
             return 0
         if opts.monitor_op[0] == "del":

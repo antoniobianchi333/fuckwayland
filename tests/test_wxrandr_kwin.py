@@ -36,7 +36,7 @@ from wxrandr.core import Mode, State                           # noqa: E402
 # (which covers pytest). This line covers `python3 tests/<file>.py`.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-DEV, REG, MGMT = kwin.DEV, kwin.REG, kwin.MGMT
+DEV, REG, MGMT, ORDER = kwin.DEV, kwin.REG, kwin.MGMT, kwin.ORDER
 GAMMA = kwin.GAMMA
 
 # ---------------------------------------------------------------- fixtures
@@ -86,7 +86,7 @@ def _msg(obj: int, op: int, payload: bytes = b"") -> bytes:
     return struct.pack("<II", obj, ((8 + len(payload)) << 16) | op) + payload
 
 
-MGMT_GNAME, REG_GNAME, GAMMA_GNAME = 100, 99, 98
+MGMT_GNAME, REG_GNAME, GAMMA_GNAME, ORDER_GNAME = 100, 99, 98, 97
 
 
 class _Client(threading.Thread):
@@ -104,6 +104,7 @@ class _Client(threading.Thread):
         self.mgmt_bound = 0
         self.dev_bound = 0
         self.reg_obj = None
+        self.order_obj = None
         self.devs = {}          # device object id -> head
         self.dev_of = {}        # head gname -> device object id
         self.modes = {}         # mode object id -> (head gname, index)
@@ -187,6 +188,9 @@ class _Client(threading.Thread):
             self.reg_obj, self.dev_bound = nid, ver
             for h in list(self.svc.heads):
                 self._offer(h)
+        elif iface == ORDER:
+            self.order_obj = nid
+            self.send_order()
         elif iface == DEV:
             self.dev_bound = ver
             h = self.svc.by_gname(gname)
@@ -194,6 +198,16 @@ class _Client(threading.Thread):
                 self.devs[nid] = h
                 self.dev_of[h["gname"]] = nid
                 self._burst(nid, h, full=True)
+
+    def send_order(self):
+        """kde_output_order_v1: the connector names in KWin's own order,
+        then `done`; resent whenever the order changes."""
+        if self.order_obj is None:
+            return
+        out = b""
+        for name in self.svc.output_order():
+            out += _msg(self.order_obj, 0, _s(name))
+        self.send(out + _msg(self.order_obj, 1))
 
     def _offer(self, h):
         """kde_output_device_registry_v2's `output` event: a new_id of
@@ -264,6 +278,11 @@ class _Client(threading.Thread):
             h = self.devs.get(cur.u32())
             cfg["requests"].append(("primary", h["name"] if h else "?"))
             return
+        if op == kwin.REQ_SET_PRIORITY:
+            h = self.devs.get(cur.u32())
+            cfg["requests"].append(("priority", h["name"] if h else "?",
+                                    cur.u32()))
+            return
         dev = self.devs.get(cur.u32())
         name = dev["name"] if dev else "?"
         if op == kwin.REQ_ENABLE:
@@ -325,7 +344,11 @@ class _Client(threading.Thread):
                     if s > 0:
                         h["scale"] = s
                 elif req[0] == "primary":
-                    svc.primary = h["name"]
+                    # KWin takes the request and does nothing with it, on
+                    # 5.27 as on 6.6: the output order does not move
+                    svc.primary_requested = h["name"]
+                elif req[0] == "priority":
+                    h["priority"] = req[2]
             if not any(h["enabled"] for h in pend.values()):
                 self._fail(cid, "Disabling all outputs through configuration "
                                 "changes is not allowed")
@@ -338,24 +361,31 @@ class _Client(threading.Thread):
             svc.heads = [pend[h["gname"]] for h in svc.heads]
         self.send(_msg(cid, 0))                       # applied
         self.refresh()
+        for c in list(svc.clients):
+            c.send_order()
 
 
 class FakeKWin:
     """KWin's two output protocols on a real unix socket."""
 
     def __init__(self, heads, dev_version=20, mgmt_version=19,
-                 registry_path=False, registry_opcode=1, gamma=False):
+                 registry_path=False, registry_opcode=1, gamma=False,
+                 order=True, registry_version=None):
         self.heads = list(heads)
         for i, h in enumerate(self.heads):
             h["gname"] = i + 1
+            if h["priority"] is None:
+                h["priority"] = i + 1
+        self.order = order
         self.dev_version = dev_version
         self.mgmt_version = mgmt_version
         self.registry_path = registry_path
+        self.registry_version = registry_version
         self.registry_opcode = registry_opcode
         self.gamma = gamma
         self.created = 0          # configuration objects created
         self.applied = []         # request lists that reached `apply`
-        self.primary = None
+        self.primary_requested = None
         self.fail_next = None     # reason string for the next apply
         self.invalidate_once = False
         self.withhold_done = None  # output name whose `done` never comes
@@ -388,14 +418,40 @@ class FakeKWin:
     def globals(self):
         out = []
         if self.registry_path:
-            out.append((REG_GNAME, REG, max(self.dev_version, kwin.REG_MIN)))
+            out.append((REG_GNAME, REG, self.registry_version
+                        or max(self.dev_version, kwin.REG_MIN)))
         else:
             for h in self.heads:
                 out.append((h["gname"], DEV, self.dev_version))
         out.append((MGMT_GNAME, MGMT, self.mgmt_version))
+        if self.order:
+            out.append((ORDER_GNAME, ORDER, 1))
         if self.gamma:
             out.append((GAMMA_GNAME, GAMMA, 1))
         return out
+
+    def output_order(self):
+        """KWin's output order: the enabled outputs by priority. Its first
+        entry is the primary plasmashell and XWayland follow."""
+        return [n for _p, _i, n in
+                sorted((h["priority"], i, h["name"])
+                       for i, h in enumerate(self.heads) if h["enabled"])]
+
+    @property
+    def primary(self):
+        order = self.output_order()
+        return order[0] if order else None
+
+    def hangup(self):
+        """The compositor goes away mid-session (a KWin restart)."""
+        with self.lock:
+            for c in list(self.clients):
+                c.dead = True
+                try:
+                    c.sock.shutdown(socket.SHUT_RDWR)
+                    c.sock.close()
+                except OSError:
+                    pass
 
     def by_gname(self, gname):
         for h in self.heads:
@@ -428,6 +484,7 @@ class FakeKWin:
                         c.send(_msg(oid, 36))          # removed (since v21)
                 elif c.registry is not None:
                     c.send(_msg(c.registry, 1, struct.pack("<I", h["gname"])))
+                c.send_order()
 
 
 # ---------------------------------------------------------------- fixtures
@@ -530,6 +587,9 @@ class Helpers(unittest.TestCase):
         self.assertEqual(kwin.quantize_scale(1.3), 1.3)
         self.assertEqual(kwin.quantize_scale(1.0001), 1.0)
         self.assertEqual(kwin.quantize_scale(1.2345), round(1.2345 * 120) / 120)
+        # std::round, not Python's banker's round: 1.4375 * 120 == 172.5
+        self.assertEqual(kwin.quantize_scale(1.4375), 173 / 120)
+        self.assertEqual(kwin.quantize_scale(1.3 + 1 / 240), 157 / 120)
         # the wl_fixed we marshal ourselves rounds; wayland_mini's "f" (shared
         # with the wlroots path, and deliberately left alone) truncates
         self.assertEqual(kwin.to_fixed(1.5), 384)
@@ -551,10 +611,27 @@ class Helpers(unittest.TestCase):
         self.assertEqual(L(2560, 1600, "normal", 1.5), (1707, 1067))
         self.assertEqual(L(1920, 1080, "270", 1.0), (1080, 1920))
         self.assertEqual(L(1920, 1080, "flipped-90", 2.0), (540, 960))
-        self.assertEqual(L(1111, 666, "normal", 1.5), (741, 444))
-        # KWin keeps a float and rounds at geometry(); wlroots truncates
+        # wlroots truncates where KWin does not
         self.assertEqual(core.logical_size(1111, 666, "normal", 1.5), (740, 444))
-        self.assertIs(kwin.logical_size, mutter.logical_size)
+
+    def test_logical_size_splits_at_plasma_6(self):
+        """Measured against the compositor: 6.x takes the enclosing integer,
+        5.27 rounds. One pixel short means the neighbour overlaps."""
+        L = kwin.logical_size
+        for px, scale, six, five in ((1920, 1.4, 1372, 1371),
+                                     (1080, 1.4, 772, 771),
+                                     (1280, 1.5, 854, 853),
+                                     (1280, 157 / 120, 979, 978),
+                                     (1111, 1.5, 741, 741),
+                                     (1920, 1.3, 1477, 1477),
+                                     (2560, 1.25, 2048, 2048)):
+            self.assertEqual(L(px, px, "normal", scale, True), (six, six),
+                             (px, scale))
+            self.assertEqual(L(px, px, "normal", scale, False), (five, five),
+                             (px, scale))
+        # 5.27 is exactly Mutter's layout-mode-1 rule
+        self.assertEqual(L(1920, 1080, "90", 1.4, False),
+                         mutter.logical_size(1920, 1080, "90", 1.4))
 
     def test_transform_mapping(self):
         # libkscreen's toKScreenRotation: 1 -> left, 3 -> right, 4..7 reflect
@@ -628,12 +705,30 @@ class Helpers(unittest.TestCase):
                              transform="270",
                              current=Mode(w=2560, h=1600, refresh_mhz=59972))
         c = core.OutputState(name="HDMI-1", active=False)
+        # every property is spelled out, defaults included: this line is the
+        # only undo KWin leaves, and a --rotate/--scale omitted because the
+        # old value was the default one would not undo the new one
         self.assertEqual(
-            kwin.restore_command([a, b, c]),
+            kwin.restore_command([a, b, c], primary="DP-1"),
             "xrandr --output eDP-1 --mode 1920x1080 --rate 60.02 --pos 0x0"
+            " --rotate normal --reflect normal --scale 1"
             " --output DP-1 --mode 2560x1600 --rate 59.97 --pos 1920x0"
-            " --rotate left --scale 1.5 --output HDMI-1 --off")
+            " --rotate left --reflect normal --scale 1.5 --primary"
+            " --output HDMI-1 --off")
+        self.assertNotIn("--primary", kwin.restore_command([a, b, c]))
         self.assertEqual(kwin.restore_command([]), "")
+
+    def test_wire_errors_are_one_line(self):
+        with self.assertRaises(core.Fatal) as cm:
+            with kwin.wire("sending the output configuration"):
+                raise BrokenPipeError(32, "Broken pipe")
+        msg = cm.exception.args[0]
+        self.assertEqual(msg.count("\n"), 1)
+        self.assertTrue(msg.startswith("lost the connection to the "
+                                       "compositor while sending"), msg)
+        with self.assertRaises(core.Fatal):
+            with kwin.wire("x"):
+                raise RuntimeError("wayland connection closed")
 
 
 # ---------------------------------------------------------------- discovery
@@ -746,9 +841,11 @@ class Query(KwinCase):
     def test_query_bytes(self):
         code, out, err = self.run_cli()
         self.assertEqual((code, err), (0, ""))
+        # `primary` comes from kde_output_order_v1, with no state file and
+        # nothing ever set: real xrandr always names one too
         self.assertEqual(out, (
             "Screen 0: minimum 16 x 16, current 4480 x 1600, maximum 32767 x 32767\n"
-            "eDP-1 connected 1920x1080+0+0 (normal left inverted right x axis "
+            "eDP-1 connected primary 1920x1080+0+0 (normal left inverted right x axis "
             "y axis) 344mm x 194mm\n"
             "   1920x1080     60.02*+  48.00  \n"
             "   1680x1050     59.95  \n"
@@ -767,15 +864,22 @@ class Query(KwinCase):
         code, out, err = self.run_cli()
         self.assertEqual((code, err), (0, ""))
         # transform 1 is xrandr `left`, and the logical size is the swapped
-        # mode size divided by the scale, rounded half away from zero
-        self.assertIn("eDP-1 connected 720x1280+0+0 left ", out)
+        # mode size divided by the scale
+        self.assertIn("eDP-1 connected primary 720x1280+0+0 left ", out)
 
     def test_listmonitors_and_providers(self):
         code, out, err = self.run_cli("--listmonitors")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, ("Monitors: 2\n"
-                               " 0: +eDP-1 1920/344x1080/194+0+0  eDP-1\n"
+                               " 0: +*eDP-1 1920/344x1080/194+0+0  eDP-1\n"
                                " 1: +DP-1 2560/597x1600/373+1920+0  DP-1\n"))
+        # and the primary monitor is listed first, as the X server does and
+        # as KWin's own XWayland does (measured)
+        self.run_cli("--output", "DP-1", "--primary")
+        code, out, err = self.run_cli("--listmonitors")
+        self.assertEqual(out, ("Monitors: 2\n"
+                               " 0: +*DP-1 2560/597x1600/373+1920+0  DP-1\n"
+                               " 1: +eDP-1 1920/344x1080/194+0+0  eDP-1\n"))
         code, out, err = self.run_cli("--listproviders")
         self.assertEqual((code, err), (0, ""))
         self.assertIn("name:kwin", out)
@@ -827,10 +931,16 @@ class Apply(KwinCase):
         ko.conn.send(cfg, kwin.REQ_APPLY, [])
         ko.conn.roundtrip()
         ko.conn.send(cfg, kwin.REQ_APPLY, [])
-        with self.assertRaises(RuntimeError) as cm:
-            for _ in range(3):
-                ko.conn.roundtrip()
-        self.assertIn("already applied", str(cm.exception))
+        # the fake closes the socket right after the error, so the write of
+        # the next roundtrip can lose the race: what must hold is that the
+        # connection is dead and says why (asserting on which of the two
+        # exceptions wins makes this flaky under load)
+        for _ in range(3):
+            try:
+                ko.conn.dispatch(timeout=2.0)
+            except (RuntimeError, OSError):
+                break
+        self.assertIn("already applied", ko.conn.dead or "")
 
     def test_off_and_back_on(self):
         code, _out, err = self.run_cli("--output", "DP-1", "--off")
@@ -902,12 +1012,13 @@ class Apply(KwinCase):
         self.assertEqual(reqs["transform"], ("eDP-1", 1))   # left == wl 90
         self.assertEqual(reqs["scale"], ("eDP-1", 333))     # rounded wl_fixed
         self.assertEqual(self.svc.by_name("eDP-1")["scale"], 1.3)
+        # 1920/1.3 is 1476.9 and 1080/1.3 is 830.8: the enclosing integer
         # KWin does not enforce the XML's no-gaps sentence, so DP-1 stays
         # where xrandr leaves it and is not mentioned at all
         self.assertNotIn("position", reqs)
         self.assertEqual(self.svc.by_name("DP-1")["x"], 1920)
         code, out, _err = self.run_cli()
-        self.assertIn("eDP-1 connected 831x1477+0+0 left ", out)
+        self.assertIn("eDP-1 connected primary 831x1477+0+0 left ", out)
 
     def test_relative_placement_uses_the_logical_size(self):
         code, _out, err = self.run_cli("--output", "eDP-1", "--rotate", "left",
@@ -927,10 +1038,17 @@ class Apply(KwinCase):
         self.assertEqual((code, self.strip_save(err)), (0, ""))
         self.assertEqual(self.svc.applied, [])
 
-    def test_primary_uses_set_primary_output_once(self):
+    def test_primary_moves_the_output_order_with_set_priority(self):
+        """set_primary_output is accepted and ignored by KWin (measured on
+        5.27 and on 6.6): what moves the primary is set_priority over the
+        whole list, and what reports it is kde_output_order_v1."""
+        self.assertEqual(self.svc.primary, "eDP-1")
         code, _out, err = self.run_cli("--output", "DP-1", "--primary")
         self.assertEqual((code, self.strip_save(err)), (0, ""))
-        self.assertEqual(self.svc.applied[-1], [("primary", "DP-1")])
+        self.assertEqual([r for r in self.svc.applied[-1]
+                          if r[0] in ("priority", "primary")],
+                         [("primary", "DP-1"),
+                          ("priority", "DP-1", 1), ("priority", "eDP-1", 2)])
         self.assertEqual(self.svc.primary, "DP-1")
         self.svc.applied.clear()
         code, out, err = self.run_cli("--output", "DP-1", "--primary")
@@ -938,6 +1056,57 @@ class Apply(KwinCase):
         self.assertEqual(self.svc.applied, [])      # already primary
         code, out, _err = self.run_cli()
         self.assertIn("DP-1 connected primary ", out)
+
+    def test_primary_is_read_from_the_compositor(self):
+        """No state file needed, and a disabled output is never the primary:
+        both come from KWin's own output order."""
+        code, out, _err = self.run_cli()
+        self.assertIn("eDP-1 connected primary ", out)
+        self.assertIsNone(State("kwin-test", path=self.state_path).d.get(
+            "primary"))
+        code, _out, err = self.run_cli("--output", "eDP-1", "--off")
+        self.assertEqual(code, 0)
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected primary ", out)
+        self.assertNotIn("eDP-1 connected primary", out)
+
+    def test_primary_below_set_priority_is_not_remembered(self):
+        """K5: a --primary the backend never sent must not make --query lie."""
+        self.svc.close()
+        self.svc = two_heads(dev_version=2, mgmt_version=1, order=False)
+        code, out, err = self.run_cli("--output", "DP-1", "--primary")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "xrandr: this KWin is too old for --primary "
+                              "(kde_output_management_v2 version 1)\n")
+        self.assertEqual((self.svc.created, self.svc.applied), (0, []))
+        code, out, _err = self.run_cli("--listmonitors")
+        self.assertNotIn("*", out)
+        self.assertIsNone(State("kwin-test", path=self.state_path).primary)
+
+    def test_primary_falls_back_to_the_state_file(self):
+        """A KWin that announces no output order: what we set is remembered,
+        and it is still only sent once."""
+        self.svc.close()
+        self.svc = two_heads(dev_version=2, mgmt_version=3, order=False)
+        code, _out, err = self.run_cli("--output", "DP-1", "--primary")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual([r for r in self.svc.applied[-1] if r[0] == "priority"],
+                         [("priority", "DP-1", 1), ("priority", "eDP-1", 2)])
+        self.assertEqual(State("kwin-test", path=self.state_path).primary,
+                         "DP-1")
+        self.svc.applied.clear()
+        code, _out, err = self.run_cli("--output", "DP-1", "--primary")
+        self.assertEqual(self.svc.applied, [])
+
+    def test_dryrun_records_no_primary(self):
+        code, out, err = self.run_cli("--dryrun", "--output", "DP-1",
+                                      "--primary")
+        self.assertEqual(code, 0)
+        self.assertEqual((self.svc.created, self.svc.primary), (0, "eDP-1"))
+        self.assertEqual(State("kwin-test", path=self.state_path).primary,
+                         "eDP-1")
+        code, out, _err = self.run_cli()
+        self.assertIn("eDP-1 connected primary ", out)
 
     def test_noprimary_warns(self):
         self.run_cli("--output", "DP-1", "--primary")
@@ -975,21 +1144,55 @@ class Apply(KwinCase):
         self.assertEqual(self.svc.created, 2)       # a fresh object each time
         self.assertEqual(self.svc.by_name("DP-1")["current"], 1)
 
-    def test_invalidation_retry_rebuilds_from_a_fresh_snapshot(self):
-        """The retry re-reads: the mode objects of the first attempt are gone
-        once the device is re-announced, so matching has to be by value."""
+    def _hotplug_class(self):
+        """A backend that unplugs a head between create_configuration and
+        apply, the way a real hotplug lands."""
         tc = self
 
         class Hotplug(kwin.KwinOutputs):
-            def _send(self, records, primary):
+            def _send(self, records, primary, sig=None):
                 if not getattr(self, "_bounced", False):
                     self._bounced = True
                     tc.svc.unplug("HDMI-1")
-                super()._send(records, primary)
+                super()._send(records, primary, sig)
+        return Hotplug
+
+    def test_invalidation_is_retried_without_a_reason_string(self):
+        """5.27 binds management 3, where failure_reason does not exist: the
+        retry cannot key on the message. The outputs having moved under the
+        configuration is the evidence, and it is there on every version."""
+        self.svc = three_heads(hdmi_on=True, dev_version=2, mgmt_version=3)
+        self.svc.invalidate_once = True
+        orig = kwin.KwinOutputs
+        kwin.KwinOutputs = self._hotplug_class()
+        try:
+            code, _out, err = self.run_cli("--output", "DP-1", "--scale",
+                                           "1.5")
+        finally:
+            kwin.KwinOutputs = orig
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.svc.by_name("DP-1")["scale"], 1.5)
+        self.assertEqual((self.svc.created, len(self.svc.applied)), (2, 2))
+        self.assertEqual([h["name"] for h in self.svc.heads],
+                         ["eDP-1", "DP-1"])
+
+    def test_a_rejection_that_is_not_a_hotplug_is_not_retried(self):
+        """The evidence test must not turn every failure into a second
+        configuration: with the outputs unmoved, the message stands."""
+        self.svc = two_heads(dev_version=2, mgmt_version=3)
+        self.svc.fail_next = "Position of enabled output DP-1 is negative"
+        code, _out, err = self.run_cli("--output", "DP-1", "--scale", "1.5")
+        self.assertEqual(code, 1)
+        self.assertEqual((self.svc.created, len(self.svc.applied)), (1, 1))
+        self.assertIn("too old to report why", err)
+
+    def test_invalidation_retry_rebuilds_from_a_fresh_snapshot(self):
+        """The retry re-reads: the mode objects of the first attempt are gone
+        once the device is re-announced, so matching has to be by value."""
         self.svc = three_heads(hdmi_on=True)
         self.svc.invalidate_once = True
         orig = kwin.KwinOutputs
-        kwin.KwinOutputs = Hotplug
+        kwin.KwinOutputs = self._hotplug_class()
         try:
             code, _out, err = self.run_cli("--output", "DP-1", "--mode",
                                            "1920x1080", "--rate", "60")
@@ -1009,7 +1212,9 @@ class Apply(KwinCase):
         self.assertEqual(
             self.restore_line(err),
             "xrandr --output eDP-1 --mode 1920x1080 --rate 60.02 --pos 0x0"
-            " --output DP-1 --mode 2560x1600 --rate 59.97 --pos 1920x0")
+            " --rotate normal --reflect normal --scale 1 --primary"
+            " --output DP-1 --mode 2560x1600 --rate 59.97 --pos 1920x0"
+            " --rotate normal --reflect normal --scale 1")
         # exactly once per invocation, even when several outputs move
         code, _out, err = self.run_cli("--output", "DP-1", "--auto",
                                        "--right-of", "eDP-1",
@@ -1017,6 +1222,90 @@ class Apply(KwinCase):
         self.assertEqual(err.count("KWin applies and saves"), 1)
         # and the restore command names the layout as it was before
         self.assertIn("--output DP-1 --off", self.restore_line(err))
+
+    def test_the_restore_command_is_a_real_inverse(self):
+        """KWin has no temporary mode, so this line is the only undo there
+        is: running it verbatim must put every property back, including the
+        ones whose old value happened to be the default."""
+        before = (self.svc.layout(), self.svc.primary)
+        code, _out, err = self.run_cli("--output", "DP-1", "--rotate", "left",
+                                       "--scale", "1.5", "--primary")
+        self.assertEqual(code, 0)
+        self.assertNotEqual((self.svc.layout(), self.svc.primary), before)
+        line = self.restore_line(err).split()
+        self.assertEqual(line[0], "xrandr")
+        code, _out, err = self.run_cli(*line[1:])
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual((self.svc.layout(), self.svc.primary), before)
+
+    def test_a_failed_apply_claims_nothing_was_saved(self):
+        """K3: the warning says KWin has already saved the layout and offers
+        a command that would change the live one -- neither is true when the
+        apply was refused."""
+        self.svc.fail_next = "The driver rejected the output configuration"
+        code, _out, err = self.run_cli("--output", "DP-1", "--scale", "1.5")
+        self.assertEqual(code, 1)
+        self.assertNotIn("KWin applies and saves", err)
+        self.assertNotIn("to restore the previous layout", err)
+        self.assertEqual(self.svc.by_name("DP-1")["scale"], 1.0)
+        # and the next, successful, apply does say it
+        code, _out, err = self.run_cli("--output", "DP-1", "--scale", "1.5")
+        self.assertEqual(code, 0)
+        self.assertIn("KWin applies and saves", err)
+
+    def test_a_compositor_that_hangs_up_is_one_xrandr_line(self):
+        """K2: the send side of an apply is as guarded as the receive side --
+        a KWin that goes away mid-apply is not a bare errno."""
+        tc = self
+
+        class Hangup(kwin.KwinOutputs):
+            def plan(self, state, targets):
+                out = super().plan(state, targets)
+                tc.svc.hangup()
+                return out
+        orig = kwin.KwinOutputs
+        kwin.KwinOutputs = Hangup
+        try:
+            code, out, err = self.run_cli("--output", "DP-1", "--scale", "1.5")
+        finally:
+            kwin.KwinOutputs = orig
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err.count("\n"), 1, err)
+        self.assertTrue(err.startswith("xrandr: "), err)
+        self.assertNotIn("Traceback", err)
+
+    def test_no_outputs_is_a_refusal_not_an_empty_screen(self):
+        """K6: management present, not one device published. Printing an
+        empty screen and calling every apply a success hides a real
+        failure."""
+        for svc in (FakeKWin([]),
+                    two_heads(registry_path=True, registry_version=20)):
+            self.svc.close()
+            self.svc = svc
+            code, out, err = self.run_cli()
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn("xrandr: kde_output_management_v2 is advertised but"
+                          " the compositor announced no outputs\n", err)
+            code, out, err = self.run_cli("--output", "eDP-1", "--off")
+            self.assertEqual((code, self.svc.created), (1, 0))
+        # the too-old registry says which version it was
+        self.assertIn("kde_output_device_registry_v2 version 20 is older than"
+                      " the 21", err)
+
+    def test_logical_size_gates_the_layout_on_the_plasma_version(self):
+        """Plasma 6 takes the enclosing integer: a neighbour placed one pixel
+        short of it is an overlap KWin silently keeps."""
+        for mgmt, dev, w, h in ((19, 20, 1372, 772), (3, 2, 1371, 771)):
+            self.svc.close()
+            self.svc = FakeKWin([EDP(scale=1.4), DP(x=4000)],
+                                dev_version=dev, mgmt_version=mgmt)
+            code, out, _err = self.run_cli()
+            self.assertIn("eDP-1 connected primary %dx%d+0+0 " % (w, h), out)
+            code, _out, err = self.run_cli("--output", "DP-1", "--right-of",
+                                           "eDP-1")
+            self.assertEqual((code, self.strip_save(err)), (0, ""))
+            self.assertEqual(self.svc.applied[-1],
+                             [("position", "DP-1", (w, 0))])
 
     def test_persistent_is_the_only_mode(self):
         code, _out, err = self.run_cli("--persistent", "--output", "DP-1",
