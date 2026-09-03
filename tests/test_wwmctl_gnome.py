@@ -184,11 +184,29 @@ class ListingTests(GnomeCliBase):
         self.assertEqual(self.x_calls, [(":0", XAUTH)])
         lines = out.splitlines()
         # machine column: WM_CLIENT_MACHINE from X for the xterm, hostname
-        # for native windows; width = the LAST row's machine (wmctrl quirk)
+        # for native windows; right-aligned to the LONGEST of the two
         self.assertEqual(lines[-1], "0x00400005  0 100  117  640  443  "
-                                    "xterm.XTerm           vmhost test@vm: ~")
+                                    "xterm.XTerm             vmhost test@vm: ~")
         self.assertEqual(lines[0], "0x003ffffd  0 0    0    1920 1080 "
                                    "Gjs.Gjs               testhost Desktop")
+
+    def test_l_machine_column_does_not_reflow_when_a_window_is_raised(self):
+        """wwmctl-3: wmctrl 1.07 sizes the machine column from the LAST
+        row, which is stable only because its list is in creation order.
+        Ours is stacking order, so the last row changes whenever a window
+        is raised; the column is sized from the longest instead and the
+        listing is identical in either order."""
+        first = self.wm(["-l"])[1]
+        # raise a native (long machine) above the xterm (short machine):
+        # the last row's machine changes, the column must not
+        self.bridge.m_Raise(None, CALC)
+        second = self.wm(["-l"])[1]
+        self.assertEqual(sorted(first.splitlines()),
+                         sorted(second.splitlines()))
+        for line in first.splitlines():
+            self.assertIn(line, second.splitlines())
+        # ... and the short machine really is padded out to the long one
+        self.assertIn("   vmhost test@vm: ~", first)
 
     def test_no_x_windows_means_no_x_connection(self):
         self.bridge.windows = [d for d in self.bridge.windows if not d["xid"]]

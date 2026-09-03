@@ -575,14 +575,15 @@ class Core:
     def list_windows(self, show_pid: bool, show_geometry: bool,
                      show_class: bool) -> int:
         wins = self.windows()
-        # wmctrl 1.07 quirk kept for byte parity: the machine column width is
-        # the length of the LAST window's WM_CLIENT_MACHINE, not the longest
-        # (all-local XWayland/Wayland clients share one hostname anyway).
+        # The machine column is right-aligned to the LONGEST
+        # WM_CLIENT_MACHINE. wmctrl 1.07 uses the LAST row's instead (a bug
+        # in main.c), which is stable there only because its list is
+        # _NET_CLIENT_LIST, i.e. creation order; ours is Mutter's stacking
+        # order, so copying the quirk would re-flow the whole column every
+        # time a window is raised. On any real session every row carries the
+        # same hostname and the two rules print the same bytes.
         # Widths count BYTES like printf's %*s, not characters.
-        machine_len = 0
-        for w in wins:
-            if w.machine:
-                machine_len = _blen(w.machine)
+        machine_len = max([_blen(w.machine) for w in wins if w.machine] or [0])
         for w in wins:
             line = "0x%08x %2d" % (w.id, w.desktop)
             if show_pid:

@@ -232,7 +232,10 @@ Real wmctrl on Wayland can't see the foot window at all, prints doubled coordina
 an urgency hint. wwmctl routes every action through the compositor, so `-a`
 focuses, `-c` closes, `-e` moves — for X and Wayland windows alike. Symlink it as
 `wmctrl` (nix does this for you) and byte-parity covers the rest: help text, list
-formats, error strings, even wmctrl 1.07's machine-column width bug.
+formats, error strings, exit codes. (One deliberate exception: the machine
+column is sized from the longest hostname, not — as wmctrl 1.07's `main.c`
+does — from the last row's, which our stacking-ordered list would re-flow on
+every raise. See [WWMCTL.md](WWMCTL.md).)
 
 On GNOME (with the bridge extension, see [GNOME](#gnome)) the same list mixes
 XWayland windows under their real X ids with native windows under Mutter's ids,

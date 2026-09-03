@@ -324,17 +324,19 @@ class ListTest(unittest.TestCase):
                          "0x0040000c  0 111    0    0    640  720  "
                          "xterm.XTerm           testhost Mail inbox")
 
-    def test_l_x_enrichment_and_machine_len_quirk(self):
+    def test_l_x_enrichment_and_machine_column_width(self):
         # X plane fills machine/class/geometry for the XWayland row; the
-        # machine column width mimics wmctrl 1.07's "last window wins"
-        # (not longest) quirk.
+        # machine column is right-aligned to the LONGEST hostname in the
+        # list. wmctrl 1.07 uses the last row's width instead -- a main.c
+        # bug that is invisible on its creation-ordered list and would
+        # re-flow ours (stacking order) on every raise.
         x11 = FakeX11(machines={0x40000C: "longmachine.example"})
         rc, out, _e, _b = run(["-lG"], x11=x11)
         self.assertEqual(out.splitlines(), [
             "0x0040000c  0 7    8    111  222  longmachine.example "
             "Mail inbox",
-            "0x00000006  0 640  0    640  720  testhost FootWin",
-            "0x00000007 -1 -5   2    10   20   testhost N/A",
+            "0x00000006  0 640  0    640  720             testhost FootWin",
+            "0x00000007 -1 -5   2    10   20              testhost N/A",
         ])
 
     def test_l_generic_backend(self):

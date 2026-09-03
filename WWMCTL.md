@@ -135,8 +135,14 @@ untouched) and the generic `list()` fallback.
   root coordinates) for XWayland windows — one titlebar below the frame,
   Mutter being a reparenting WM — and the bridge's `get_frame_rect()` for
   native ones (logical pixels, no CSD shadows). Machine column: the
-  `WM_CLIENT_MACHINE` of X windows, the local hostname otherwise (the
-  machine-column rule above). The desktop column is the workspace index,
+  `WM_CLIENT_MACHINE` of X windows, the local hostname otherwise,
+  right-aligned to the *longest* one in the list. Real wmctrl 1.07 sizes
+  that column from the *last* row (a bug in its `main.c`), which looks
+  stable only because its rows come from `_NET_CLIENT_LIST`, i.e. creation
+  order; our rows are in stacking order, so copying the quirk would re-flow
+  the column by the difference in hostname lengths every time a window is
+  raised. On a session where every client is local — every session with
+  XWayland or Wayland clients — the two rules print the same bytes. The desktop column is the workspace index,
   `-1` for a sticky window — Mutter's dense 0-based indices are exactly
   wmctrl's, so GNOME has none of the sway id-mapping hole.
 * **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge
