@@ -16,9 +16,17 @@ test clicks real pixels:
   Save As (WARANDR_TEST_SAVE_AS) -> arandr's two-line layout script
   a failing apply shows the error dialog, keeps the edits, editor survives
 
+Every popup dump also carries the *modelled* item positions — what the
+editor computes from where GTK asked for the popup (at the pointer, right
+of the parent item, below the menubar item), which is all a Wayland driver
+gets — and X11, where GDK knows the truth, checks the model against it for
+the context menu, its Orientation submenu, the menubar's Outputs drop-down
+and a per-output submenu of that.
+
 tests/fixtures/gui_probe.py runs in-process checks under the same Xvfb
-(Apply on a worker thread, popup release, zoom radios, menu shapes), and a
-run without any display must end in one line, not a traceback.
+(Apply on a worker thread, popup release, zoom radios, menu shapes, layout
+dumps that wait for GTK's allocation, the Save As PATH hint), and a run
+without any display must end in one line, not a traceback.
 
 Set WARANDR_TEST_SHOTS=DIR to keep `import -window root` screenshots."""
 
@@ -196,6 +204,17 @@ class GuiDrive(XvfbCase):
         self.click(d["items"][label])
         return n
 
+    def assert_modelled(self, menu, tol=2):
+        """The popup-position model (all a Wayland driver gets) agrees, to
+        `tol` px, with where X11 really put every item."""
+        self.assertEqual(menu["coords"], "root")
+        self.assertEqual(set(menu["modelled"]), set(menu["items"]), menu)
+        for label, r in menu["items"].items():
+            m = menu["modelled"][label]
+            self.assertEqual(m[2:], r[2:], (label, r, m))
+            self.assertLessEqual(max(abs(m[0] - r[0]), abs(m[1] - r[1])),
+                                 tol, (label, r, m))
+
     def shot(self, name):
         if SHOTS and shutil.which("import"):
             os.makedirs(SHOTS, exist_ok=True)
@@ -218,6 +237,11 @@ class GuiDrive(XvfbCase):
     def test_menu_drag_apply_save(self):
         lay = self.layout()
         self.assertEqual(set(lay["boxes"]), {"DP-1", "HDMI-1", "DP-2"})
+        self.assertEqual(lay["coords"], "root")
+        self.assertTrue(lay["settled"], lay)
+        self.assertEqual(len(lay["window"]), 2)
+        self.assertEqual(sorted(lay["menubar"]),
+                         ["Help", "Layout", "Outputs", "View"])
         f = lay["factor"]
         self.assertEqual(f, 8)
         # 1:8 boxes: 1920x1080 -> 240x135, side by side without gaps
@@ -248,12 +272,17 @@ class GuiDrive(XvfbCase):
                                  and "Orientation" in d["items"], after=n)
         order = sorted(menu["items"], key=lambda k: menu["items"][k][1])
         self.assertEqual(order, ARANDR_MENU)
+        self.assert_modelled(menu)
         self.click(menu["items"]["Orientation"])
         self.shot("warandr-2-menu")
-        n = self.menu_click("Orientation", "left", n)
+        sub, n = self.wait_dump("menu", lambda d: d["name"] == "Orientation"
+                                and "left" in d["items"], after=n)
+        self.assert_modelled(sub)
+        self.click(sub["items"]["left"])
         lay, n = self.wait_dump(
             "layout", lambda d: d["boxes"]["HDMI-1"][2:] == [128, 160],
             after=n)
+        self.assertTrue(lay["settled"], lay)
         i = lay["command"].index("HDMI-1")
         self.assertEqual(lay["command"][i:i + 7],
                          ["HDMI-1", "--mode", "1280x1024", "--pos", "1920x0",
@@ -287,6 +316,22 @@ class GuiDrive(XvfbCase):
             and d["boxes"]["DP-2"][1] == hdmi[1], after=n)
         self.assertEqual(lay["command"], EXPECTED)
         self.shot("warandr-4-dragged")
+
+        # the menubar's Outputs drop-down and DP-1's submenu of it: the
+        # model covers those placements too; Escape twice closes them
+        self.click(lay["menubar"]["Outputs"])
+        outputs, n = self.wait_dump("menu", lambda d: d["name"] == "outputs"
+                                    and "DP-1" in d["items"], after=n)
+        self.assertEqual(sorted(outputs["items"]),
+                         ["DP-1", "DP-2", "HDMI-1", "HDMI-2"])
+        self.assert_modelled(outputs)
+        self.click(outputs["items"]["DP-1"])
+        sub, n = self.wait_dump("menu", lambda d: d["name"] == "output:DP-1"
+                                and "Primary" in d["items"], after=n)
+        self.assert_modelled(sub)
+        self.shot("warandr-4b-outputs-menu")
+        self.xdo("key", "Escape", "key", "Escape")
+        time.sleep(0.3)
 
         # Apply: the fake records exactly one command, arandr-shaped
         self.click(lay["buttons"]["apply"])
@@ -383,6 +428,20 @@ class GuiProbe(XvfbCase):
         self.assertIn("configure crtc failed", res["fail_dialog"])
         self.assertTrue(res["fail_keeps_edits"], res)
         self.assertEqual(res["snapshots_after_fail"], 2, res)
+        # a layout dump waits for the frame clock's allocation: none reports
+        # the box at its old size
+        self.assertTrue(res["unsettled_after_redraw"], res)
+        self.assertTrue(res["dumps_after_redraw"], res)
+        self.assertEqual(res["dumps_after_redraw"],
+                         [[[160, 128], True]] * len(res["dumps_after_redraw"]),
+                         res)
+        self.assertTrue(res["settled_now"], res)
+        self.assertEqual(res["hdmi_alloc"], [160, 128], res)
+        # Save As: the hint when wxrandr is missing from PATH, none when it
+        # is there
+        self.assertEqual(res["save_hint"], "saved %s - note: wxrandr is not "
+                         "on PATH, the script needs it" % res["saved_path"])
+        self.assertEqual(res["save_nohint"], "saved " + res["saved_path"])
         # popup menus do not accumulate
         self.assertTrue(res["popup_released"], res)
         self.assertLessEqual(res["popups_alive"], 1, res)

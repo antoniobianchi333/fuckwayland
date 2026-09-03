@@ -230,6 +230,9 @@ $ warandr                      # the GUI: drag, snap, right-click, Apply
 $ warandr --command            # what Apply would run, no GUI
 wxrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal --output HDMI-A-1 --mode 1280x1024 --pos 1920x0 --rotate left
 $ warandr --save ~/.screenlayout/desk.sh   # an arandr-compatible layout script
+$ cat ~/.screenlayout/desk.sh              # bind this to a hotkey, as with arandr
+#!/bin/sh
+wxrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal --output HDMI-A-1 --mode 1280x1024 --pos 1920x0 --rotate left
 ```
 
 On top of arandr's menu (Active, Primary, Resolution, Orientation) every output also
@@ -240,6 +243,21 @@ main loop and a failed Apply keeps your edits. It needs the GTK 3 bindings every
 desktop already has (`python3-gi`, `gir1.2-gtk-3.0`) and nothing else — no cairo:
 the canvas is plain widgets. `warandr.desktop` puts it in the Settings menu.
 Contract: `WARANDR.md`.
+
+On a stock GNOME desktop (verified on Ubuntu 24.04 and 26.04, Wayland session):
+`scripts/build-pyz.sh`, copy `dist/warandr` and `dist/wxrandr` to `/usr/local/bin/`
+— warandr itself carries wxrandr inside, but the layout scripts it saves call bare
+`wxrandr`, exactly like arandr's call bare `xrandr`, so a script bound to a hotkey
+needs it on `PATH` (Save As says so in the status bar when it is missing). Bind
+`warandr` and `~/.screenlayout/desk.sh` to GNOME custom shortcuts on `<Super>F`-keys
+(`<Ctrl><Alt>F1`–`F12` are Mutter's VT switches); the script restores a three-head
+layout in about a second. Apply is temporary, like xrandr: Mutter drops it at the
+next hotplug or login, so the shortcut script *is* the way to keep a layout. A
+monitor plugged in while the window is open shows up after New (Ctrl+N), as in
+arandr; a layout with a gap between monitors gets Mutter's own "Logical monitors not
+adjacent" in the error dialog and stays on the canvas to be fixed. One GNOME habit
+to know: an Apply that turns a monitor off or on makes Mutter move the keyboard
+focus off the window, so click it before the next Ctrl+S.
 
 ## Fully vibed, fully awesome
 

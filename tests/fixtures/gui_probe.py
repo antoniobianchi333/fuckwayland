@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """In-process checks of the warandr editor under an X display (the GUI test
 runs this under its Xvfb): Apply must not block the main loop, a failed
-Apply keeps the edits, popup menus are released, zoom keeps the View radios
-in step, the per-output menu has arandr's order and Scale only on Wayland.
-Prints one JSON object; a stub backend stands in for xrandr."""
+Apply keeps the edits, a layout dump waits for GTK's allocation, popup menus
+are released, zoom keeps the View radios in step, the per-output menu has
+arandr's order and Scale only on Wayland, Save As warns when the script's
+command word is not on PATH.  Prints one JSON object; a stub backend stands
+in for xrandr."""
 
 import gc
 import json
 import os
+import stat
 import sys
+import tempfile
 import time
 import weakref
 
@@ -115,6 +119,32 @@ def main():
     res["snapshots_after_fail"] = backend.snapshots       # unchanged
     backend.rc = 0
 
+    # -- a layout dump waits until GTK allocated the boxes --------------------
+    # (HDMI-1 goes back to landscape: its box turns from 128x160 into
+    # 160x128 only in the frame clock's layout phase, after the redraw; no
+    # dump may report the old size)
+    tmp = tempfile.mkdtemp(prefix="warandr-probe-")
+    gui.DUMP = os.path.join(tmp, "dump.jsonl")
+
+    def layout_dumps():
+        try:
+            with open(gui.DUMP) as f:
+                return [d for d in (json.loads(ln) for ln in f if ln.strip())
+                        if d["kind"] == "layout"]
+        except OSError:
+            return []
+    before = len(layout_dumps())
+    app.layout.set_rotation("HDMI-1", "normal")
+    app.redraw()
+    res["unsettled_after_redraw"] = not app._layout_settled()
+    pump(lambda: len(layout_dumps()) > before, timeout=5)
+    res["dumps_after_redraw"] = [[d["boxes"]["HDMI-1"][2:], d["settled"]]
+                                 for d in layout_dumps()[before:]]
+    res["settled_now"] = app._layout_settled()
+    alloc = app.boxes["HDMI-1"].get_allocation()
+    res["hdmi_alloc"] = [alloc.width, alloc.height]
+    gui.DUMP = None
+
     # -- popup menus are released ---------------------------------------------
     # (a programmatic popup gets no pointer grab under Xvfb, so the menu is
     # closed through deactivate() — what a click or Escape does)
@@ -152,6 +182,22 @@ def main():
     pump(lambda: wapp.layout is not None)
     res["menu_wayland"] = menu_labels(wapp.output_menu("DP-1"))
     res["wayland_word"] = wapp.status_text().split()[0]
+
+    # -- Save As says so when the script's command word is not on PATH -------
+    # (a layout script calls bare `wxrandr`; a stock desktop has none)
+    os.environ["WARANDR_TEST_SAVE_AS"] = os.path.join(tmp, "layout")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = tmp
+    wapp.do_save_as()
+    res["save_hint"] = wapp.status_text()
+    exe = os.path.join(tmp, "wxrandr")
+    with open(exe, "w") as f:
+        f.write("#!/bin/sh\n")
+    os.chmod(exe, stat.S_IRWXU)
+    wapp.do_save_as()
+    res["save_nohint"] = wapp.status_text()
+    res["saved_path"] = os.path.join(tmp, "layout.sh")
+    os.environ["PATH"] = old_path
     wapp.window.destroy()
     print(json.dumps(res))
     return 0

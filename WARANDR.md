@@ -161,7 +161,11 @@ output) and, on Wayland only, **Scale** ▸. Right-click on empty canvas: the
 outputs menu. Empty-layout Apply asks first, like arandr. The status bar
 shows, by priority, a transient message (refused drop, saved file; cleared
 by the next redraw or after a few seconds), the hovered output's
-description, or the command Apply would run. Without a display warandr
+description, or the command Apply would run. Save As reports `saved PATH`
+and, when the script's command word is not on `PATH` (a stock desktop has
+no `wxrandr`), appends `- note: wxrandr is not on PATH, the script needs
+it` — arandr's scripts call bare `xrandr`, ours call bare `wxrandr`, and a
+hotkey running the script needs it installed. Without a display warandr
 exits 1 with one line (`warandr: cannot open display ...`).
 
 ## CLI
@@ -172,15 +176,83 @@ last one accepted and ignored — warandr never refuses a RandR version), plus
 current outputs — as a layout script, no GUI) and `--command` (print what
 Apply would run). Exit 1 with `warandr: ...` on backend/parse/file errors.
 
+## Launching on GNOME (verified live: Ubuntu 24.04 / GNOME 46, 26.04 / GNOME 50)
+
+- **Install**: `scripts/build-pyz.sh`; `dist/warandr` runs on the stock
+  desktop (`python3-gi` + `gir1.2-gtk-3.0` are there, GTK 3.24.41 / 3.24.52,
+  PyGObject 3.48 / 3.56, Python 3.12 / 3.14) and carries wxrandr inside for
+  its own Apply. The scripts it saves call bare `wxrandr` (arandr's shape,
+  bare `xrandr`), so install `dist/wxrandr` as `/usr/local/bin/wxrandr` too;
+  Save As's status line says when it is missing. `warandr.desktop` goes to
+  `~/.local/share/applications/` (or `/usr/share/applications/`).
+- **Hotkeys**: GNOME custom shortcuts (Settings ▸ Keyboard, or `gsettings`
+  on `org.gnome.settings-daemon.plugins.media-keys custom-keybindings`)
+  run their command with the session's environment — `warandr` on one,
+  `~/.screenlayout/desk.sh` on another, nothing to export. Bind chords Mutter
+  does not own: `<Ctrl><Alt>F1`–`F12` are its VT switches (the chord changes
+  the VT and gsd logs `Failed to grab accelerator`); `<Super>F6`/`<Super>F7`
+  work. The window is up ~2 s after the chord; a three-head layout script
+  restores the screen in about a second (0.65 s / 0.99 s measured).
+- **Temporary, like xrandr**: Apply uses Mutter's non-persistent method —
+  no "Keep changes?" dialog, nothing written to `monitors.xml` — and Mutter
+  drops it at the next hotplug or login (`wxrandr --persistent` is the
+  other way). The shortcut script is how a layout comes back, as with arandr.
+- **Mutter allows no gaps**: a layout leaving a hole between monitors
+  (`--pos 5000x0`) is refused by Mutter itself; the dialog shows its text
+  (`XRandR failed: xrandr: Logical monitors not adjacent`), the screen is
+  unchanged and the edited layout stays on the canvas. Mutter keeps
+  neighbours adjacent for wxrandr's own size changes (WXRANDR.md).
+- **Hotplug**: a monitor plugged in while the window is open is not picked
+  up until New (Ctrl+N) — arandr's behaviour; the new head appears where
+  Mutter put it (right of the row, e.g. `Virtual-4 1280x1024 at 5760x0`).
+  Mutter itself discards the temporary layout at hotplug and re-lays every
+  monitor out in a row; after the unplug GNOME 46 keeps that row, GNOME 50
+  restores the pre-hotplug temporary layout.
+- **Keyboard focus after Apply**: when an Apply changes the set of
+  monitors (an output turned off or on), Mutter moves the keyboard focus
+  off the window — on GNOME 50 the next `Ctrl+S` landed in the desktop
+  (Desktop Icons' "Clear Current Selection before New Search" dialog) —
+  until it is clicked again. A Wayland client cannot take focus back
+  itself, so click the window (a driver: the canvas) before the next
+  accelerator; mouse clicks on the boxes and toolbar keep working.
+- **Windows on Wayland**: `org.gnome.Shell.Introspect.GetWindows` is
+  `AccessDenied` on a stock session and wdotool has no GNOME window
+  backend there, so a driver finds the window by screenshot; `super+Up`
+  maximizes it so the layout dump's window-relative coordinates become
+  absolute after the shell's chrome offset (dock + top bar: (66, 32) on
+  24.04, (67, 32) on 26.04 at 1920x1080; `"window"` is then 1853x1048).
+  Idle: 0 % CPU, ~70–80 MB RSS, no GTK/GLib warnings on either release.
+
 ## Test hooks (env)
 
 - `WARANDR_TEST_LAYOUT_DUMP=FILE`: append one JSON line per redraw
-  (`{"kind":"layout","boxes":{name:[x,y,w,h]},"buttons":{...},"xid":..,
+  (`{"kind":"layout","boxes":{name:[x,y,w,h]},"buttons":{...},
+  "menubar":{...},"xid":..,"coords":..,"window":[w,h],"settled":..,
   "factor":..,"status":..,"busy":..,"command":[...]}`), per popup menu
-  (`"kind":"menu","name":..,"items":{label:[x,y,w,h]}`), per status-bar
-  change (`"kind":"status","text":..`), per apply (`rc`, `stderr`) and per
-  save (`path`) — root-window pixel coordinates so xdotool can click real
-  widgets.
+  (`"kind":"menu","name":..,"items":{label:[x,y,w,h]},"modelled":{...},
+  "coords":..`), per status-bar change (`"kind":"status","text":..`), per
+  apply (`rc`, `stderr`) and per save (`path`), so xdotool/wdotool can click
+  real widgets. Coordinates: `"coords":"root"` — root-window pixels — on X11;
+  `"coords":"window"` on Wayland, where a toplevel's position is unknowable
+  and everything is relative to the toplevel surface (which includes the
+  CSD shadow unless the window is maximized; `"window"` is the surface
+  size, `"xid"` null). A layout line is written only once GTK has
+  allocated every box at the size and place the redraw asked for
+  (`"settled":true`; after 3 s of waiting it is written anyway with
+  `false`): the frame clock's layout phase runs after an idle callback, and
+  on Wayland it waits for the compositor's frame callback, which stalls
+  while Mutter reconfigures outputs right after an Apply — a dump taken
+  then would carry the previous boxes. Popup items: GDK cannot read a
+  popup's position back on Wayland (`get_origin` is a constant), so
+  `"modelled"` holds positions computed from what GTK asked the compositor
+  for — a menu popped at the pointer sits at pointer + (1, 1), a submenu at
+  its parent item's north-east corner shifted by the menu's
+  `horizontal-offset`/`vertical-offset` style and top padding (its first
+  item level with the parent item), a menubar drop-down at the item's
+  south-west corner; `"items"` is what a driver clicks: GDK's truth on X11,
+  the model on Wayland. The X11 GUI test checks the model against GDK for
+  all three placements (it is exact under Xvfb); unconstrained placement is
+  assumed — near a screen edge the compositor may flip or slide a popup.
 - `WARANDR_TEST_SAVE_AS=FILE`: Save As writes there without a file chooser.
 
 ## Files
@@ -194,7 +266,9 @@ xrandr 1.5.4 laptop capture, wxrandr renders for 1–4 outputs),
 scripts incl. `tests/fixtures/arandr-saved.sh` — a genuine arandr 0.1.11
 save — backend choice, CLI), `tests/test_warandr_gui.py` (Xvfb + xdotool
 drive of the real editor against `tests/fixtures/fake_xrandr.py`, a RandR
-simulator rendering through wxrandr's renderers; `tests/fixtures/
-gui_probe.py`, the editor in-process with a stub backend — Apply off the
-main loop, failure keeps edits, popup release, zoom radios, menu shapes;
-a no-display run; skipped without GTK/Xvfb).
+simulator rendering through wxrandr's renderers, including the popup
+position model against GDK's X11 truth; `tests/fixtures/gui_probe.py`, the
+editor in-process with a stub backend — Apply off the main loop, failure
+keeps edits, layout dumps that wait for the allocation, popup release, zoom
+radios, menu shapes, the Save As PATH hint; a no-display run; skipped
+without GTK/Xvfb).

@@ -9,14 +9,23 @@ not freeze the window); the result comes back through GLib.idle_add.  A
 failed Apply keeps the edited layout (arandr raises before re-reading).
 
 Test hooks (env): ``WARANDR_TEST_LAYOUT_DUMP=FILE`` appends one JSON line
-per redraw / menu popup / status-bar change with root-window coordinates of
-the boxes, toolbar buttons and menu items, so xdotool can drive the editor
-deterministically; ``WARANDR_TEST_SAVE_AS=FILE`` makes Save As write there
-without the file chooser.
+per redraw / menu popup / status-bar change with the coordinates of the
+boxes, toolbar buttons and menu items, so xdotool/wdotool can drive the
+editor deterministically — root-window pixels on X11 (``"coords": "root"``),
+toplevel-relative pixels on Wayland (``"coords": "window"``; the compositor
+tells nobody where a toplevel is).  A layout dump waits until GTK has
+allocated the boxes at the size and place the redraw asked for (the frame
+clock lags an idle callback while the compositor reconfigures outputs);
+popup-menu items are, on Wayland, *modelled* from what GTK asked the
+compositor for (at the pointer, right of the parent item, below the menubar
+item) because GDK cannot read a popup's position back there.
+``WARANDR_TEST_SAVE_AS=FILE`` makes Save As write there without the file
+chooser.
 """
 
 import json
 import os
+import shutil
 import sys
 import threading
 
@@ -24,7 +33,7 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import VERSION, cli, randr  # noqa: E402
 from .model import (REFLECTIONS, ROTATIONS, SCALES, LayoutError,  # noqa: E402
@@ -63,7 +72,15 @@ def _dump(kind, payload):
         pass
 
 
+def _is_wayland():
+    d = Gdk.Display.get_default()
+    return bool(d) and "Wayland" in d.__gtype__.name
+
+
 def _root_origin(widget):
+    """[x, y, w, h] of a widget: root-window pixels on X11; on Wayland the
+    toplevel's origin reads as 0,0, so toplevel-relative pixels (the
+    toplevel surface includes the CSD shadow when it is not maximized)."""
     top = widget.get_toplevel()
     win = top.get_window() if top else None
     if win is None:
@@ -75,6 +92,12 @@ def _root_origin(widget):
         return None
     a = widget.get_allocation()
     return [ox + rel[0], oy + rel[1], a.width, a.height]
+
+
+def _style_int(widget, name):
+    v = GObject.Value(GObject.TYPE_INT)
+    widget.style_get_property(name, v)
+    return v.get_int()
 
 
 def _msg(parent, kind, text, buttons=Gtk.ButtonsType.CLOSE):
@@ -247,6 +270,7 @@ class Application:
         self.layout = None
         self._popup = None       # the one popup menu that can be open
         self._busy = False       # an Apply is running on the worker thread
+        self._dump_serial = 0    # a newer redraw supersedes a pending dump
         self.window = Gtk.Window(title=TITLE)
         self.window.set_default_size(720, 520)
         self.window.set_icon_name("video-display")
@@ -293,7 +317,8 @@ class Application:
 
         self.boxes = {}
         self.window.show_all()
-        self.window.connect("configure-event", lambda *_: self._dump_layout())
+        self.window.connect("configure-event",
+                            lambda *_: self._schedule_dump())
 
         if filename:
             self.load_file(filename)
@@ -357,6 +382,7 @@ class Application:
         m = Gtk.MenuItem.new_with_mnemonic("_Help")
         m.set_submenu(helpm)
         bar.append(m)
+        self.menubar = bar
         return bar
 
     def _build_toolbar(self):
@@ -455,8 +481,9 @@ class Application:
     # -- drawing --------------------------------------------------------------
 
     def place_box(self, box, x, y):
-        self.canvas.move(box, MARGIN + max(0, x) // self.factor,
-                         MARGIN + max(0, y) // self.factor)
+        box._target = (MARGIN + max(0, x) // self.factor,
+                       MARGIN + max(0, y) // self.factor)
+        self.canvas.move(box, *box._target)
 
     def redraw(self):
         lay = self.layout
@@ -486,10 +513,36 @@ class Application:
                     + 10 * self.factor
         self.show_status(self.command_text())
         self._populate_outputs_menu()
-        GLib.idle_add(self._dump_layout, priority=GLib.PRIORITY_LOW)
+        self._schedule_dump()
 
-    def _dump_layout(self):
-        if not DUMP:
+    # -- test hook: geometry dumps -------------------------------------------
+
+    def _schedule_dump(self):
+        if DUMP:
+            self._dump_serial += 1
+            GLib.idle_add(self._dump_layout, self._dump_serial, 0,
+                          priority=GLib.PRIORITY_LOW)
+
+    def _layout_settled(self):
+        """True once GTK has allocated every box at the size and place the
+        last redraw asked for.  The frame clock's layout phase can lag an
+        idle callback — on Wayland it waits for the compositor's frame
+        callback, which stalls while Mutter reconfigures outputs right after
+        an Apply — and a dump taken before it would report the old boxes."""
+        for b in self.boxes.values():
+            a = b.get_allocation()
+            rel = b.translate_coordinates(self.canvas, 0, 0)
+            if (a.width, a.height) != (b._pw, b._ph) or rel is None or \
+                    tuple(rel) != getattr(b, "_target", None):
+                return False
+        return True
+
+    def _dump_layout(self, serial=None, attempt=0):
+        if not DUMP or (serial is not None and serial != self._dump_serial):
+            return False
+        settled = self._layout_settled()
+        if not settled and attempt < 60:            # up to 3 s
+            GLib.timeout_add(50, self._dump_layout, serial, attempt + 1)
             return False
         boxes = {}
         for n, b in self.boxes.items():
@@ -501,6 +554,11 @@ class Application:
             r = _root_origin(b)
             if r:
                 buttons[k] = r
+        menubar = {}
+        for it in self.menubar.get_children():
+            r = _root_origin(it)
+            if r:
+                menubar[(it.get_label() or "").replace("_", "")] = r
         win = self.window.get_window()
         xid = None
         if win is not None and hasattr(win, "get_xid"):
@@ -508,25 +566,79 @@ class Application:
                 xid = win.get_xid()
             except Exception:
                 xid = None
-        _dump("layout", {"boxes": boxes, "buttons": buttons, "xid": xid,
+        _dump("layout", {"boxes": boxes, "buttons": buttons,
+                         "menubar": menubar, "xid": xid,
+                         "coords": "window" if _is_wayland() else "root",
+                         "window": [win.get_width(), win.get_height()]
+                         if win is not None else None,
+                         "settled": settled,
                          "factor": self.factor, "status": self.status_text(),
                          "busy": self._busy,
                          "command": self.layout.args() if self.layout
                          else None})
         return False
 
+    def _menu_origin(self, menu):
+        """Top-left of a popup menu's allocation, from what GTK asked the
+        compositor for (GDK cannot read a popup's position back on
+        Wayland): a menu popped at the pointer sits at pointer + (1, 1)
+        (gtk_menu_popup_at_pointer anchors south-east of a 1x1 rect); a
+        submenu hangs at its parent item's north-east corner, shifted by the
+        menu's horizontal-offset/vertical-offset style and its top padding
+        so the first item lines up with the parent item; a menubar item's
+        menu drops from the item's south-west corner.  Unconstrained
+        placement is assumed (the compositor may flip or slide a popup
+        near a screen edge)."""
+        anchor = getattr(menu, "_anchor", None)
+        if anchor is not None:
+            return anchor
+        item = menu.get_attach_widget()
+        if not isinstance(item, Gtk.MenuItem):
+            return None
+        pr = self._widget_rect(item)
+        if pr is None:
+            return None
+        if isinstance(item.get_parent(), Gtk.MenuBar):
+            return (pr[0], pr[1] + pr[3])
+        ctx = menu.get_style_context()
+        pad = ctx.get_padding(ctx.get_state())
+        return (pr[0] + pr[2] + _style_int(menu, "horizontal-offset")
+                + pad.left,
+                pr[1] + _style_int(menu, "vertical-offset") - pad.top)
+
+    def _widget_rect(self, w):
+        """[x, y, w, h] in the layout dump's coordinates: read from GDK for
+        a widget of the main window, modelled for a popup-menu item."""
+        parent = w.get_parent()
+        if isinstance(parent, Gtk.Menu):
+            o = self._menu_origin(parent)
+            rel = w.translate_coordinates(parent, 0, 0)
+            if o is None or rel is None:
+                return None
+            a = w.get_allocation()
+            return [o[0] + rel[0], o[1] + rel[1], a.width, a.height]
+        return _root_origin(w)
+
     def _dump_menu(self, menu, name):
+        """Items of a popup: `items` is what a driver clicks (GDK's root
+        coordinates on X11, the model on Wayland), `modelled` always the
+        model — the X11 GUI test checks the two agree."""
         if not DUMP:
             return False
-        items = {}
+        items, modelled = {}, {}
         for it in menu.get_children():
             if not isinstance(it, Gtk.MenuItem) or \
                     isinstance(it, Gtk.SeparatorMenuItem):
                 continue
-            r = _root_origin(it)
+            label = (it.get_label() or "").replace("_", "")
+            m = self._widget_rect(it)
+            if m:
+                modelled[label] = m
+            r = m if _is_wayland() else _root_origin(it)
             if r:
-                items[(it.get_label() or "").replace("_", "")] = r
-        _dump("menu", {"name": name, "items": items})
+                items[label] = r
+        _dump("menu", {"name": name, "items": items, "modelled": modelled,
+                       "coords": "window" if _is_wayland() else "root"})
         return False
 
     def _track_menu(self, menu, name):
@@ -572,6 +684,7 @@ class Application:
 
     def _populate_outputs_menu(self):
         menu = Gtk.Menu()
+        self._track_menu(menu, "outputs")
         for o in self.layout.outputs:
             it = Gtk.MenuItem.new_with_label(o.name)
             it.set_submenu(self.output_menu(o.name))
@@ -607,8 +720,11 @@ class Application:
             self._release_popup, m))
         self._popup = menu
         if ev is not None:
+            menu._anchor = (int(ev.x_root) + 1, int(ev.y_root) + 1)
             menu.popup_at_pointer(ev)
         else:                       # no event (programmatic): at the canvas
+            r = _root_origin(self.canvas_bg)
+            menu._anchor = (r[0], r[1]) if r else None
             menu.popup_at_widget(self.canvas_bg, Gdk.Gravity.NORTH_WEST,
                                  Gdk.Gravity.NORTH_WEST, None)
 
@@ -756,7 +872,13 @@ class Application:
         except OSError as e:
             _msg(self.window, Gtk.MessageType.ERROR, "Cannot save:\n%s" % e)
             return
-        self.show_status("saved %s" % path)
+        text = "saved %s" % path
+        # the script calls the bare command word (arandr's shape); xrandr is
+        # always installed on X11, wxrandr on a stock desktop is not
+        if not shutil.which(self.backend.word):
+            text += " - note: %s is not on PATH, the script needs it" \
+                % self.backend.word
+        self.show_status(text)
         _dump("saved", {"path": path})
 
     def do_apply(self):
