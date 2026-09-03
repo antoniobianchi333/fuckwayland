@@ -16,6 +16,7 @@ In the box:
 - **wwmctl** — wmctrl, for native Wayland *and* legacy X apps in one list
 - **wxprop** — xprop, real X properties for XWayland windows and synthesized ones for native windows
 - **wxrandr** — xrandr, with first-class multimonitor: reshape crazy layouts in one atomic call
+- **warandr** — arandr, the drag-your-monitors GUI, on Wayland (via wxrandr) and X11 (via xrandr)
 
 ## wdotool
 
@@ -215,6 +216,29 @@ that changes size (`--rotate`, `--mode`, `--scale`, `-s`, `-o`) keeps its neighb
 touching it, with a warning. Changes are temporary like xrandr's; `--persistent`
 writes `monitors.xml` (GNOME then asks "Keep changes?"). It finds the session from a
 custom keyboard shortcut, under `sudo`, or from `ssh root@` with no environment.
+
+## warandr
+
+`arandr` — the little GTK window where you drag your monitors around — reborn for
+Wayland. Same window, same menus, same `~/.screenlayout/*.sh` scripts: warandr
+loads arandr's saved layouts and arandr loads warandr's. Under Wayland it talks to
+`wxrandr` (one atomic apply per click), under X11 to plain `xrandr`, and it tells
+you in the status bar exactly which command Apply is about to run:
+
+```console
+$ warandr                      # the GUI: drag, snap, right-click, Apply
+$ warandr --command            # what Apply would run, no GUI
+wxrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal --output HDMI-A-1 --mode 1280x1024 --pos 1920x0 --rotate left
+$ warandr --save ~/.screenlayout/desk.sh   # an arandr-compatible layout script
+```
+
+On top of arandr's menu (Active, Primary, Resolution, Orientation) every output also
+gets Refresh rate, Reflection, Mirror of, and — Wayland only — Scale (1 … 3, the
+compositor's HiDPI factor). Overlaps are refused unless they are exact mirrors, and
+the layout is kept anchored at 0,0. It needs the GTK 3 bindings every stock Ubuntu
+desktop already has (`python3-gi`, `gir1.2-gtk-3.0`) and nothing else — no cairo:
+the canvas is plain widgets. `warandr.desktop` puts it in the Settings menu.
+Contract: `WARANDR.md`.
 
 ## Fully vibed, fully awesome
 

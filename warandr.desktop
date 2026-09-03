@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=WARandR
+GenericName=Screen Layout Editor
+Comment=Arrange your monitors - on Wayland (through wxrandr) and X11 (through xrandr)
+Exec=warandr
+Icon=video-display
+Terminal=false
+Categories=Settings;HardwareSettings;GTK;
+Keywords=monitor;display;screen;layout;xrandr;wayland;arandr;

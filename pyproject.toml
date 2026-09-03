@@ -13,6 +13,7 @@ wdotool = "wdotool.cli:main"
 wwmctl = "wwmctl.cli:main"
 wxprop = "wxprop.cli:main"
 wxrandr = "wxrandr.cli:main"
+warandr = "warandr.cli:main"
 
 [tool.setuptools]
-packages = ["wdotool", "wwmctl", "wxprop", "wxrandr"]
+packages = ["wdotool", "wwmctl", "wxprop", "wxrandr", "warandr"]
