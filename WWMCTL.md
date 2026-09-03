@@ -77,13 +77,28 @@ byte order 'l'. Keep it ~400 tight lines.
 
 `-l` (with `-p` pid, `-G` geometry, `-x` class), `-d`, `-s N`, `-a/-c/-R <STR>`,
 `-t N -r <STR>`, `-e G,X,Y,W,H -r <STR>`, `-b add/remove/toggle,P1[,P2] -r <STR>`,
-`-N/-I/-T <STR> -r <STR>`, `-i`, `-F`, `-v`, `-m`, `-k on|off`, `-o X,Y`, `-n N`,
-`-h`. Selection default: case-insensitive substring on title. Exact printf formats,
+`-N/-I/-T <STR> -r <STR>`, `-i`, `-F`, `-v`, `-m`, `-k on|off|toggle`, `-o X,Y`,
+`-n N`, `-h`. Selection default: case-insensitive substring on title. Exact printf formats,
 column widths, error strings, and exit codes come from the real wmctrl source + the
 reference dumps (workflow stage 1 produces both; sandbox devshell has the real
 `wmctrl` binary). Desktop semantics map exactly like wdotool's desktop commands
 (sway workspaces, 0-based). `-k`/`-o`/`-n`: warn+succeed style where Wayland can't
 (match wdotool's philosophy; document).
+
+**Two oracle generations.** Ubuntu 24.04 ships wmctrl 1.07; Ubuntu 25.04+ and
+Debian 13+ ship 1.07+git20240228, which adds `-j` (print the current desktop,
+`printf("%-2d\n")`), `-S` (list in stacking order), `-Y <WIN>` (iconify), `-r
+<WIN> -y <MVARG>` (move/resize, then activate), the undocumented `-z <WIN>`
+(lower) and `-E <WIN>` (print the title), and `-k toggle`. Both generations
+answer `1.07` to `-V`. wwmctl implements the **union** on every flavor — being a
+drop-in that rejects `wmctrl -j` on one distro is worse than accepting it on
+both — so `-S` is accepted and does nothing (our `-l` is already stacking order,
+see below) and `-k`'s argument error always names `toggle`. Only `--help`, which
+documents a specific upstream release rather than any behavior, follows the
+oracle installed on the box: `wmctrl --help` is consulted once and cached, and
+`$WWMCTL_WMCTRL_GENERATION=1.07|git` forces the answer. With no oracle installed
+(we may *be* `/usr/bin/wmctrl`) the 1.07 text is printed, the documented parity
+target of this clone.
 
 **Known desktop-id mapping hole**: sway workspace *number* N prints as desktop
 N-1, but a workspace literally numbered 0 and *named* (numberless) workspaces

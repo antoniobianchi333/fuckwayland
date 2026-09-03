@@ -600,6 +600,11 @@ class Core:
             sys.stdout.write(line + "\n")
         return 0
 
+    def list_current_desktop(self) -> int:  # -j (1.07+git)
+        """wmctrl prints _NET_CURRENT_DESKTOP with "%-2d\n"."""
+        sys.stdout.write("%-2d\n" % self.backend().get_desktop())
+        return 0
+
     def _desktop_rows(self):
         """[(id, current?, dg, vp, wa, name)]. backend.workspaces() when the
         backend has it (GNOME: index, name, work area -- what wmctrl reads
@@ -739,10 +744,12 @@ class Core:
         return 0
 
     def showing_desktop(self, param: str) -> int:  # -k
-        if param not in ("on", "off"):
+        if param not in ("on", "off", "toggle"):
             sys.stderr.write('The argument to the -k option must be either '
-                             '"on" or "off"\n')
+                             '"on" or "off" or "toggle"\n')
             return 1
+        if param == "toggle":
+            param = "off" if self._showing_desktop() == 1 else "on"
         show_fn = self._backend_hook("show_desktop")
         if show_fn is None:
             _warn("Wayland compositors have no 'showing the desktop' mode; "
@@ -753,6 +760,18 @@ class Core:
         except CmdError as e:
             _warn("%s; ignoring" % e)
         return 0
+
+    def _showing_desktop(self):
+        """The X root's _NET_SHOWING_DESKTOP (Mutter keeps it for the
+        XWayland plane, and -k drives it there too), or None when there is
+        no X plane to ask -- `-k toggle` then reads as "currently off",
+        which is what real wmctrl does with an absent property, minus the
+        NULL dereference."""
+        x = self.x11()
+        if x is None:
+            return None
+        vals = _xtry(lambda: x.get_prop_ints(x.root(), "_NET_SHOWING_DESKTOP"))
+        return vals[0] if vals else None
 
     def _backend_hook(self, name: str):
         """An optional backend method (GNOME: show_desktop,
@@ -817,6 +836,20 @@ class Core:
             return self.to_desktop(w, _atoi(param or ""))
         if mode == "e":
             return self.move_resize(w, param or "")
+        if mode == "y":  # 1.07+git: -e, then activate
+            rv = self.move_resize(w, param or "")
+            self.activate(w)
+            return rv
+        if mode == "Y":  # 1.07+git: iconify (XIconifyWindow)
+            self.backend().minimize(w.node_id)
+            return 0
+        if mode == "z":  # 1.07+git, undocumented: XLowerWindow
+            self.backend().lower(w.node_id)
+            return 0
+        if mode == "E":  # 1.07+git, undocumented: print the title
+            sys.stdout.write("%s\n" % (w.title if w.title is not None
+                                        else ""))
+            return 0
         if mode == "b":
             return self.window_state(w, param or "")
         if mode in ("N", "I", "T"):

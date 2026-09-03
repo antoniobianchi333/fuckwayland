@@ -132,6 +132,14 @@ class FakeSwayBackend:
     def select_window(self):
         return self._select
 
+    def minimize(self, wid):
+        self._spec(wid)
+        self.calls.append(("minimize", wid))
+
+    def lower(self, wid):
+        self._spec(wid)
+        self.calls.append(("lower", wid))
+
 
 class FakeX11:
     """Implements the parts of the frozen x11_mini API that core uses."""
@@ -259,6 +267,27 @@ class UsageTest(unittest.TestCase):
         rc, _o, err, _b = run(["--frob", "x"])
         self.assertEqual((rc, err),
                          (1, "wmctrl: invalid option -- '-'\n"))
+
+    def test_help_generation_follows_the_oracle(self):
+        """wwmctl-5: two oracle generations are in the field and both say
+        "1.07" for -V. The newer one (1.07+git20240228, Ubuntu 25.04+)
+        documents six more options and `-k toggle`; --help follows whichever
+        wmctrl is installed here."""
+        self.assertTrue(cli.HELP_GIT.startswith(
+            "wmctrl 1.07\nUsage: wmctrl [OPTION]...\nActions:\n"))
+        self.assertTrue(cli.HELP_GIT.endswith("Copyright (C) 2003\n"))
+        self.assertEqual(len(cli.HELP_GIT.encode()), 7037)
+        for opt in ("  -j  ", "  -S  ", "  -Y <WIN>", "  -r <WIN> -y <MVARG>",
+                    "  -k (on|off|toggle)"):
+            self.assertIn(opt, cli.HELP_GIT)
+            self.assertNotIn(opt, cli.HELP)
+        for argv in (["-h"], ["--help"]):
+            rc, out, err, _b = run(argv, env={"WWMCTL_WMCTRL_GENERATION":
+                                              "git"})
+            self.assertEqual((rc, out, err), (0, cli.HELP_GIT, ""))
+            rc, out, err, _b = run(argv, env={"WWMCTL_WMCTRL_GENERATION":
+                                              "1.07"})
+            self.assertEqual((rc, out, err), (0, cli.HELP, ""))
 
     def test_unknown_workaround(self):
         rc, _o, err, _b = run(["-w", "NOPE"])
@@ -619,12 +648,69 @@ class SetTitleTest(unittest.TestCase):
         self.assertIn("ignoring", err)
 
 
+class GitGenerationOptionsTest(unittest.TestCase):
+    """wwmctl-5: the options wmctrl 1.07+git20240228 added. We accept them
+    on every flavor -- rejecting `wmctrl -j` on 24.04 would only make a
+    26.04 script fail later and more confusingly."""
+
+    def test_j_prints_the_current_desktop(self):
+        rc, out, err, _b = run(["-j"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(out, "0 \n")   # printf("%-2d\n")
+        b = FakeSwayBackend([dict(s) for s in SPECS], current=12)
+        rc, out, _e, _b = run(["-j"], backend=b)
+        self.assertEqual(out, "12\n")
+
+    def test_S_is_accepted_and_our_list_is_already_stacking(self):
+        rc, plain, err, _b = run(["-l"])
+        self.assertEqual((rc, err), (0, ""))
+        rc, stacked, err, _b = run(["-lS"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(plain, stacked)
+
+    def test_Y_iconifies(self):
+        rc, _o, err, b = run(["-Y", "Mail"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(b.calls, [("minimize", 5)])
+
+    def test_z_lowers(self):
+        rc, _o, err, b = run(["-z", "Mail"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(b.calls, [("lower", 5)])
+
+    def test_E_prints_the_title(self):
+        rc, out, err, _b = run(["-E", "Mail"])
+        self.assertEqual((rc, out, err), (0, "Mail inbox\n", ""))
+        # a titleless window prints an empty line, like the oracle's
+        # get_window_title fallback
+        rc, out, _e, _b = run(["-i", "-E", "7"])
+        self.assertEqual((rc, out), (0, "\n"))
+
+    def test_y_is_e_then_activate(self):
+        specs = [dict(s) for s in SPECS]
+        specs[0]["floating"] = True
+        b = FakeSwayBackend(specs)
+        rc, _o, err, b = run(["-r", "Mail", "-y", "0,10,20,300,200"],
+                             backend=b)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(b.calls, [("resize", 5, 300, 200),
+                                   ("move", 5, 10, 20),
+                                   ("activate", 5)])
+
+    def test_unknown_ids_still_exit_1_silently(self):
+        for opt in ("-Y", "-z", "-E"):
+            rc, out, err, b = run(["-i", opt, "0x999999"])
+            self.assertEqual((rc, out, err), (1, "", ""))
+            self.assertEqual(b.calls, [])
+
+
 class WarnAndSucceedTest(unittest.TestCase):
     def test_k(self):
         rc, _o, err, _b = run(["-k", "maybe"])
         self.assertEqual((rc, err), (1, 'The argument to the -k option must '
-                                        'be either "on" or "off"\n'))
-        for arg in ("on", "off"):
+                                        'be either "on" or "off" or '
+                                        '"toggle"\n'))
+        for arg in ("on", "off", "toggle"):
             rc, _o, err, _b = run(["-k", arg])
             self.assertEqual(rc, 0)
             self.assertIn("ignoring", err)

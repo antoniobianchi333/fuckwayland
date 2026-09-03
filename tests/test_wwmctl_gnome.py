@@ -295,6 +295,38 @@ class DesktopTests(GnomeCliBase):
         self.assertEqual(self.calls("ShowDesktop"),
                          [(True,), (True,), (False,)])
 
+    def test_k_toggle_reads_the_x_root_state(self):
+        """wwmctl-5: 1.07+git's `-k toggle` flips whatever
+        _NET_SHOWING_DESKTOP says; with no X plane to ask, an absent
+        property reads as off, like the oracle's (NULL-dereferencing)
+        default."""
+        rc, _o, err = self.wm(["-k", "toggle"], x11=FakeX11(showing=0))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("ShowDesktop"), [(True,)])
+        rc, _o, err = self.wm(["-k", "toggle"], x11=FakeX11(showing=1))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("ShowDesktop"), [(True,), (False,)])
+        rc, _o, err = self.wm(["-k", "toggle"], x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("ShowDesktop")[-1], (True,))
+
+    def test_j_prints_the_active_workspace(self):
+        rc, out, err = self.wm(["-j"], x11=None)
+        self.assertEqual((rc, out, err), (0, "0 \n", ""))
+        self.bridge.m_SetActiveWorkspace(None, 2)
+        rc, out, _e = self.wm(["-j"], x11=None)
+        self.assertEqual(out, "2 \n")
+
+    def test_Y_z_E_reach_the_bridge(self):
+        rc, _o, err = self.wm(["-Y", "Calculator"], x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Minimize"), [(CALC,)])
+        rc, _o, err = self.wm(["-z", "Calculator"], x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Lower"), [(CALC,)])
+        rc, out, err = self.wm(["-E", "Calculator"], x11=None)
+        self.assertEqual((rc, out, err), (0, "Calculator\n", ""))
+
     def test_n_dynamic_workspaces_warns_and_succeeds(self):
         rc, _o, err = self.wm(["-n", "5"], x11=None)
         self.assertEqual(rc, 0)
