@@ -163,6 +163,53 @@ class Lookahead(unittest.TestCase):
         self.assertEqual(self.scan("--backend", "sway", "--backend=kwin")[0],
                          "kwin")
 
+    def test_a_flag_with_no_value_is_still_the_flag(self):
+        """It names nothing, but it *is* there.  Lose that and an X11
+        session hands `--backend` to the original, and the user gets its
+        `unrecognized option` where ours says what is missing."""
+        self.assertEqual(self.scan("--backend"), ("", False, []))
+        self.assertEqual(self.scan("--query", "--backend"),
+                         ("", False, ["--query"]))
+        self.assertIsNone(cli.canonical_backend(""))
+
+    def test_the_walk_agrees_with_the_parser(self):
+        """The look-ahead's whole job is to read argv exactly as parse()
+        will, one step earlier -- for the flag, for the two informational
+        options, and for the argv left over once the flag is removed."""
+        cases = [
+            ["--query"],
+            ["--backend", "sway", "--query"],
+            ["--backend=kde", "--print-backend"],
+            ["--backends", "--verbose"],
+            ["-d", ":0", "--backend", "wlr", "--dryrun"],
+            ["--fb", "1920x1080", "--backend=auto", "--dpi", "96"],
+            ["--output", "--backend", "--off"],
+            ["--output", "DP-1", "--mode", "--backend", "--pos", "0x0"],
+            ["--output", "DP-1", "--set", "--backend", "--print-backend"],
+            ["--output", "DP-1", "--gamma", "1:1:1", "--backend", "mutter"],
+            ["--addmode", "--backend", "--backends"],
+            ["--rmmode", "--print-backend"],
+            ["--newmode", "--backend", "1", "2", "3", "4", "5", "6", "7",
+             "8", "9", "+hsync", "--backend", "kwin"],
+            ["--setmonitor", "--backend", "x", "--backends", "--query"],
+            ["--output", "DP-1", "--auto", "--backend", "sway",
+             "--output", "HDMI-1", "--off"],
+        ]
+        for argv in cases:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):     # "not supported" warns
+                opts = cli.parse(list(argv))
+                flag, info, rest = cli.scan_backend_argv(list(argv))
+                stripped = cli.parse(list(rest))
+            self.assertEqual(cli.canonical_backend(flag), opts.backend, argv)
+            self.assertEqual(info, opts.print_backend or opts.list_backends,
+                             argv)
+            self.assertIsNone(stripped.backend, argv)
+            self.assertEqual([s.name for s in stripped.stanzas],
+                             [s.name for s in opts.stanzas], argv)
+            self.assertEqual(stripped.mode_ops, opts.mode_ops, argv)
+            self.assertEqual(stripped.monitor_op, opts.monitor_op, argv)
+
     def test_an_unparseable_argv_does_not_raise(self):
         for argv in (["--backend"], ["--output"], ["--newmode", "m"],
                      ["--set"], ["--zorp", "--backend", "sway"]):
@@ -192,6 +239,15 @@ class Precedence(Stubbed):
         os.environ["WXRANDR_BACKEND"] = "auto"
         self.assertEqual(cli.resolve_backend("auto"), (None, "detection", None))
         self.assertEqual(cli.resolve_backend(None), (None, "detection", None))
+
+    def test_x11_is_a_value_the_environment_may_hold(self):
+        """It was meaningless before the flag existed; now it means what the
+        flag means, and main() reads it there (see test_passthrough_exec)."""
+        os.environ["WXRANDR_BACKEND"] = "x11"
+        self.assertEqual(cli.resolve_backend(None),
+                         ("x11", "environment", "WXRANDR_BACKEND=x11"))
+        self.assertEqual(cli.resolve_backend("mutter")[0], "mutter")
+        self.assertEqual(cli.resolve_backend("auto")[0], "x11")
 
     def test_detection_order_is_unchanged(self):
         name, _p = cli.detect_wayland()
@@ -361,6 +417,34 @@ class Errors(Stubbed):
         self.assertEqual((code, out), (1, ""))
         self.assertEqual(err, "xrandr: --backend x11 hands over to the real "
                               "xrandr, which an embedded call cannot do\n")
+
+
+class EnvironmentX11(Stubbed):
+    """`WXRANDR_BACKEND=x11` is the same request as `--backend x11`.  At a
+    command line main() hands over before parsing (proved with a real
+    `execve` in tests/test_passthrough_exec.py); embedded, where a process
+    may not be replaced, it is one fatal line -- naming the variable that
+    asked, not a flag nobody typed."""
+
+    def test_it_is_one_line_naming_the_variable(self):
+        os.environ["WXRANDR_BACKEND"] = "x11"
+        code, out, err = self.run_cli("--query")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "xrandr: WXRANDR_BACKEND=x11 hands over to the "
+                              "real xrandr, which an embedded call cannot "
+                              "do\n")
+
+    def test_the_flag_still_beats_it(self):
+        os.environ["WXRANDR_BACKEND"] = "x11"
+        code, _out, err = self.run_cli("--backend", "sway", "--query")
+        self.assertEqual(code, 1)
+        self.assertIn("--backend sway is not available", err)
+        self.assertNotIn("WXRANDR_BACKEND", err)
+
+    def test_the_informational_options_answer_for_it(self):
+        os.environ["WXRANDR_BACKEND"] = "x11"
+        code, out, _err = self.run_cli("--print-backend")
+        self.assertEqual((code, out), (0, "x11\n"))
 
 
 class X11Probe(unittest.TestCase):

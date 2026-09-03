@@ -244,7 +244,26 @@ two backend spellings, the same as wxrandr's so a hotkey can pin one:
 `--backend NAME` (applies to the GUI, `--command` and `--save` alike; an
 unknown name is `warandr: unknown backend 'banana' (valid: auto, x11, sway,
 wlr, mutter, kwin)`) and `--print-backend`, which prints the token
-(`x11`, `mutter`, ...) and exits without a GUI. Exit 1 with `warandr: ...`
+(`x11`, `mutter`, ...) and exits without a GUI — with `--verbose`, the same
+explanation the indicator's tooltip carries, under a first line that is
+still the bare token, spelled like wxrandr's own `--print-backend
+--verbose`:
+
+```console
+$ warandr --print-backend --verbose
+mutter
+kind: Wayland
+runs: /usr/bin/python3 -m wxrandr
+chosen by: wxrandr package at /usr/lib/python3/dist-packages
+session: wayland
+compositor: Mutter
+protocol: org.gnome.Mutter.DisplayConfig (D-Bus)
+available: yes
+```
+
+(One `chosen by:` line, never two: warandr passed the `--backend` flag that
+wxrandr would otherwise report back to it, so the inner answer is dropped
+where it only restates the outer one.) Exit 1 with `warandr: ...`
 on backend/parse/file errors.
 
 ## Launching on GNOME (verified live: Ubuntu 24.04 / GNOME 46, 26.04 / GNOME 50)
@@ -347,8 +366,9 @@ simulator rendering through wxrandr's renderers, including the popup
 position model against GDK's X11 truth, plus the backend indicator,
 Layout ▸ Backend with its greyed-out entries, a switch that re-reads through
 the new backend and one that is refused, and warandr's own
-`--backend`/`--print-backend`; `tests/fixtures/gui_probe.py`, the
-editor in-process with a stub backend — Apply off the main loop, failure
-keeps edits, layout dumps that wait for the allocation, popup release, zoom
-radios, menu shapes, the Save As PATH hint; a no-display run; skipped
+`--backend`/`--print-backend`/`--print-backend --verbose`;
+`tests/fixtures/gui_probe.py`, the editor in-process with a stub backend —
+Apply off the main loop, failure keeps edits, layout dumps that wait for the
+allocation, popup release, zoom radios, menu shapes, the Save As PATH hint;
+a no-display run; skipped
 without GTK/Xvfb).

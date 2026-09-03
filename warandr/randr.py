@@ -112,15 +112,31 @@ class Backend:
     def describe(self):
         return "%s (%s)" % (self.command(), self.kind)
 
-    def detail(self):
-        """The fuller explanation behind the indicator (the tooltip, the
-        About dialog, Script Properties): what runs, why it was picked, and
-        what wxrandr says about the other end."""
-        lines = ["backend: %s" % self.label,
+    def info_lines(self):
+        """The explanation behind the indicator, as lines: what runs, why
+        warandr picked it, and what the tool on the other end says about
+        itself.  A key the tool repeats is dropped -- its own ``chosen by:``
+        only ever restates ours (we are the one who passed ``--backend``),
+        and two answers to one question in one paragraph is worse than
+        none."""
+        lines = ["kind: %s" % self.kind,
                  "runs: %s" % self.command(),
                  "chosen by: %s" % self.source]
-        lines += [ln for ln in self.info[1:] if ln.strip()]
-        return "\n".join(lines)
+        seen = set(ln.split(":", 1)[0] for ln in lines)
+        for ln in self.info[1:]:
+            if ln.strip() and ln.split(":", 1)[0] not in seen:
+                lines.append(ln)
+        return lines
+
+    def detail(self):
+        """The fuller explanation behind the indicator (the tooltip, the
+        About dialog, Script Properties)."""
+        return "\n".join(["backend: %s" % self.label] + self.info_lines()[1:])
+
+    def report(self):
+        """``warandr --print-backend --verbose``: the bare token first, for
+        scripts, then the same explanation, spelled like wxrandr's own."""
+        return [self.name] + self.info_lines()
 
     def script_note(self):
         """The single comment a saved layout script carries about the

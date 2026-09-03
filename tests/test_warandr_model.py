@@ -685,6 +685,38 @@ class ForcedBackend(unittest.TestCase):
         self.assertIn("backend: xrandr (X11)", b.detail())
         self.assertIn("runs: xrandr", b.detail())
 
+    def test_the_explanation_answers_each_question_once(self):
+        """detail() is the indicator's tooltip, the About paragraph and the
+        Script Properties page.  warandr says why it picked this backend and
+        wxrandr says why *it* did -- but warandr is the one who passed
+        `--backend`, so the inner answer only restates the outer one, and
+        two `chosen by:` lines in one paragraph contradict each other for a
+        living."""
+        b = randr.choose(self.fake_env(), forced="mutter").identify()
+        lines = b.detail().splitlines()
+        self.assertEqual([ln for ln in lines if ln.startswith("chosen by:")],
+                         ["chosen by: --backend mutter ($WARANDR_XRANDR)"])
+        keys = [ln.split(":", 1)[0] for ln in lines]
+        self.assertEqual(sorted(keys), sorted(set(keys)), lines)
+        self.assertEqual(keys[0], "backend")
+        self.assertIn("compositor: Mutter (fake)", lines)
+
+    def test_report_is_the_token_then_the_explanation(self):
+        """`warandr --print-backend --verbose`, spelled like wxrandr's own:
+        a bare token first, for scripts."""
+        b = randr.choose(self.fake_env(), forced="mutter").identify()
+        rep = b.report()
+        self.assertEqual(rep[:3], ["mutter", "kind: Wayland",
+                                   "runs: " + b.command()])
+        self.assertIn("chosen by: --backend mutter ($WARANDR_XRANDR)", rep)
+        self.assertIn("available: yes", rep)
+        self.assertEqual(len([ln for ln in rep
+                              if ln.startswith("chosen by:")]), 1)
+        # the X11 runner knows no such option; its answer is composed here
+        x = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11",
+                          "PATH": "/nonexist"}).identify()
+        self.assertEqual(x.report()[:2], ["x11", "kind: X11"])
+
     def test_identify_survives_a_runner_that_knows_nothing(self):
         b = randr.Backend(["/nonexistent/wxrandr"], True)
         self.assertEqual(b.identify().name, "wayland")

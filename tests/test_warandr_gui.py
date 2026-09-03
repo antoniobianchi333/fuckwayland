@@ -649,6 +649,31 @@ class BackendCli(unittest.TestCase):
         p = self.warandr("--backend", "x11", "--print-backend")
         self.assertEqual(p.stdout, "x11\n")
 
+    def test_print_backend_verbose_explains_the_choice(self):
+        """`--verbose` is the command-line spelling of what the window's
+        indicator explains in its tooltip: the token stays the first line,
+        for scripts, and each question is answered once."""
+        p = self.warandr("--print-backend", "--verbose")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        lines = p.stdout.splitlines()
+        self.assertEqual(lines[:2], ["x11", "kind: X11"])
+        self.assertTrue(lines[2].startswith("runs: "), lines)
+        self.assertEqual([ln for ln in lines
+                          if ln.startswith("chosen by:")],
+                         ["chosen by: WARANDR_XRANDR"])
+        p = self.warandr("--backend", "mutter", "--print-backend",
+                         "--verbose")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        lines = p.stdout.splitlines()
+        self.assertEqual(lines[:2], ["mutter", "kind: Wayland"])
+        self.assertIn("compositor: Mutter (fake)", lines)
+        self.assertIn("available: yes", lines)
+        self.assertEqual(len([ln for ln in lines
+                              if ln.startswith("chosen by:")]), 1)
+        # ...and without it, still exactly the one token
+        p = self.warandr("--backend", "mutter", "--print-backend")
+        self.assertEqual((p.returncode, p.stdout), (0, "mutter\n"))
+
     def test_a_forced_backend_reaches_the_command_and_the_script(self):
         p = self.warandr("--backend", "mutter", "--command")
         self.assertEqual(p.returncode, 0, p.stderr)

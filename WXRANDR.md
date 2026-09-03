@@ -68,10 +68,19 @@ its usage text, so `--help` and every other byte stay xrandr's:
   exit 1). A backend that is not available *in this session* is one clear
   line naming what was missing and exit 1, never a silent fallback:
   `xrandr: --backend sway is not available in this session: no sway or i3 IPC
-  socket ($SWAYSOCK)`. `$WXRANDR_BACKEND` deliberately keeps its older
-  behaviour — no pre-check, so it still fails the way the backend itself
-  fails (`Can't open display`, `org.gnome.Mutter.DisplayConfig is not on the
-  session bus`) and no existing byte moves.
+  socket ($SWAYSOCK)`. A `--backend` with no value at all is our own
+  `xrandr: --backend requires an argument`, on either kind of session: the
+  look-ahead keeps the flag's *presence*, or an X11 session would hand
+  `--backend` to the original and answer with its `unrecognized option`
+  instead. `$WXRANDR_BACKEND` deliberately keeps its older behaviour — no
+  pre-check, so it still fails the way the backend itself fails (`Can't open
+  display`, `org.gnome.Mutter.DisplayConfig is not on the session bus`) and
+  no existing byte moves — with one exception: `WXRANDR_BACKEND=x11` asks
+  for the real xrandr exactly as `--backend x11` does, on any session. That
+  is the one thing the variable gets to say about the handover, and it has
+  to: the handover is decided before parsing, so a variable left to reach
+  the backend selection would only be able to ask this process to be a
+  thing it can no longer become.
 * **`--print-backend`** prints the chosen backend and exits 0 without
   touching the layout (and without handing over, so it answers on X11 too).
   First line: the bare token, for scripts. `--verbose` adds the rest.

@@ -130,11 +130,16 @@ two informational options never hand over (the original would only answer
 --backend --off`) is a value, not a flag. The flag itself is stripped from
 the argv the original is exec'd with: real xrandr has no such option. Forcing
 a backend that is not available here is one line naming what was missing and
-exit 1, never a silent fallback; `$WXRANDR_BACKEND` keeps its older
-behaviour (no pre-check), because those bytes are pinned. warandr sits on top
-of all of it and never hands over at all: it *chooses* which tool to run and
-runs it as a child, which is what lets the window switch backends while it
-is open.
+exit 1, never a silent fallback; a `--backend` with no value is still
+the flag (the scan returns `""`), so its error is ours on both kinds of
+session. `$WXRANDR_BACKEND` keeps its older behaviour (no pre-check), because
+those bytes are pinned — except for the single value `x11`, which the hook
+does read: the handover is settled before parsing, so a variable that only
+reached `Session` could ask this process to be something it can no longer
+become, and would have to answer with a fatal about a flag nobody typed.
+warandr sits on top of all of it and never hands over at all: it *chooses*
+which tool to run and runs it as a child, which is what lets the window
+switch backends while it is open.
 
 **Environment repair.** On the X11 path a missing or dead `$DISPLAY` /
 `$XAUTHORITY` is replaced with the session's own (logind's `DISPLAY=`, the

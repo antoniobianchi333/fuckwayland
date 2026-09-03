@@ -3,7 +3,9 @@
 ``--save FILE`` writes the current layout as a layout script, ``--command``
 prints the command Apply would run, ``--backend NAME`` pins the backend for
 this run (the GUI's Layout ▸ Backend, spelled the same as wxrandr's own
-flag) and ``--print-backend`` prints the backend token and exits."""
+flag) and ``--print-backend`` prints the backend token and exits; with
+``--verbose`` it adds the whole of what the window's indicator explains,
+again spelled like wxrandr's own ``--print-backend --verbose``."""
 
 import argparse
 import os
@@ -45,6 +47,9 @@ def _parser():
     p.add_argument("--print-backend", action="store_true",
                    help="print the backend token (x11, sway, wlr, mutter, "
                         "kwin) and exit; no GUI")
+    p.add_argument("--verbose", action="store_true",
+                   help="with --print-backend: add what runs, why it was "
+                        "picked, and what that tool says about the session")
     return p
 
 
@@ -73,7 +78,10 @@ def main(argv=None):
         backend = randr.choose(forced=args.backend)
         backend.set_display(args.randr_display)
         if args.print_backend:
-            print(backend.identify().name)
+            backend.identify()
+            for line in (backend.report() if args.verbose
+                         else [backend.name]):
+                print(line)
             return 0
         if args.save or args.command:
             layout = load_layout(backend, args.savedfile)

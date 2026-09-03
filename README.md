@@ -386,6 +386,7 @@ command line, so a hotkey can pin one:
 
 ```console
 $ warandr --print-backend            # mutter
+$ warandr --print-backend --verbose  # ...and what runs, why, and what it found
 $ warandr --backend x11              # the GUI, talking to the real xrandr
 $ warandr --backend mutter --command
 wxrandr --backend mutter --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal

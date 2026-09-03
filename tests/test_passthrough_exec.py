@@ -412,6 +412,44 @@ class BackendFlag(Tree):
         self.assertEqual(p.returncode, 0, err)
         self.assertEqual([r["argv"] for r in self.records()], [argv])
 
+    def test_the_variable_may_also_ask_for_the_real_xrandr(self):
+        """`WXRANDR_BACKEND=x11` is the same request as `--backend x11`, and
+        it is the one thing that variable gets to say about the handover:
+        read any later and it could only ask this process to be something it
+        can no longer become."""
+        env = self.wayland_env(WXRANDR_BACKEND="x11")
+        p, out, err = self.run_tool("xrandr", "--query", env=env)
+        self.assertEqual(p.returncode, 0, err)
+        recs = self.records()
+        self.assertEqual([r["argv"] for r in recs], [["--query"]])
+        self.assertEqual(recs[0]["pid"], p.pid)         # execve, not a child
+        # a Wayland name in it keeps its older behaviour: an X11 session
+        # still hands over, and nothing is pre-checked
+        os.remove(self.log)
+        p, out, err = self.run_tool("xrandr", "--query",
+                                    env=self.env(WXRANDR_BACKEND="mutter"))
+        self.assertEqual([r["argv"] for r in self.records()], [["--query"]])
+        # ...and the flag beats the variable, in both directions
+        os.remove(self.log)
+        p, out, err = self.run_tool("xrandr", "--backend", "sway", "--query",
+                                    env=self.env(WXRANDR_BACKEND="x11"))
+        self.assertEqual(self.records(), [])
+        self.assertIn("--backend sway is not available", err)
+
+    def test_a_flag_with_no_value_is_answered_by_us(self):
+        """Either session: the look-ahead keeps the flag's presence, so the
+        bytes are our own xrandr-shaped `requires an argument`, not the
+        original's `unrecognized option`."""
+        for env in (self.env(), self.wayland_env()):
+            if os.path.exists(self.log):
+                os.remove(self.log)
+            p, out, err = self.run_tool("xrandr", "--backend", env=env)
+            self.assertEqual((p.returncode, out), (1, ""))
+            self.assertEqual(err, "xrandr: --backend requires an argument\n"
+                                  "Try 'xrandr --help' for more "
+                                  "information.\n")
+            self.assertEqual(self.records(), [])
+
     def test_the_informational_options_answer_on_an_x11_session(self):
         """`--print-backend` and `--backends` are about *us*; handing them
         to the original would only earn an `unrecognized option`."""

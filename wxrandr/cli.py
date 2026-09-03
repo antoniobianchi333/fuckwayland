@@ -502,7 +502,9 @@ def scan_backend_argv(argv):
     parsed -- which is where main() has to decide whether this X11 session
     hands over to the real xrandr.  The stripped argv is what the original
     is then exec'd with: `--backend x11` asks for the real xrandr, which
-    has no such option to be handed.
+    has no such option to be handed.  A `--backend` with no value at all
+    comes back as `""` -- present, naming nothing -- so that the flag's own
+    error is ours to print on every session, not the original's.
 
     argv is walked exactly the way parse() walks it, every option consuming
     its own arguments, so a *value* that happens to spell one of our options
@@ -517,8 +519,11 @@ def scan_backend_argv(argv):
     while i < n:
         a = argv[i]
         if a == "--backend":
-            if i + 1 < n:
-                backend = argv[i + 1]           # last one wins, like parse()
+            # last one wins, like parse().  A missing value still *is* the
+            # flag -- returned as "", which no backend is called -- or an
+            # X11 session would hand `--backend` to the original and answer
+            # with its `unrecognized option` instead of our own error.
+            backend = argv[i + 1] if i + 1 < n else ""
             i += 2
             continue
         if a.startswith("--backend="):
@@ -801,9 +806,10 @@ class Session:
         probes = {}
         if name == "x11":
             # unreachable from a command line: main() hands an X11 choice
-            # over to the real xrandr before a single option is parsed.
-            raise Fatal("--backend x11 hands over to the real xrandr, which "
-                        "an embedded call cannot do\n")
+            # over to the real xrandr -- asked for by the flag or by the
+            # variable -- before a single option is parsed.
+            raise Fatal("%s hands over to the real xrandr, which an embedded "
+                        "call cannot do\n" % self.backend_note)
         if name is None:
             name, probes = detect_wayland()
         elif self.backend_source == "flag":
@@ -1330,8 +1336,17 @@ def main(argv=None) -> int:
     entry = argv is None
     args = list(sys.argv[1:] if entry else argv)
     flag, info_only, stripped = scan_backend_argv(args)
-    forced = canonical_backend(flag)
-    ours = info_only or (flag is not None and forced not in ("auto", "x11"))
+    asked = canonical_backend(flag)
+    forced = asked
+    if forced in (None, "auto") and \
+            canonical_backend(os.environ.get("WXRANDR_BACKEND")) == "x11":
+        # the variable's one say over the handover, so that it cannot ask
+        # for a backend this process is then unable to be: `x11` there means
+        # the real xrandr on any session, exactly like the flag.  A Wayland
+        # name in it is still left alone -- not pre-checked, and not allowed
+        # to suppress an X11 session's handover.
+        forced = "x11"
+    ours = info_only or (flag is not None and asked not in ("auto", "x11"))
     if not ours:
         rc = passthrough.maybe_exec_real(
             "xrandr", args if flag is None else stripped, entry=entry,
