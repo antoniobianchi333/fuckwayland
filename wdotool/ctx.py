@@ -11,7 +11,24 @@ message to stderr, aborts the rest of the chain, and exits 1.
 
 
 class CmdError(Exception):
-    pass
+    """A command failed. The driver prints str(self) and exits with
+    `exit_code` (1 unless a subclass says otherwise)."""
+
+    exit_code = 1
+
+
+class NoSessionError(CmdError):
+    """No Wayland session / window-management backend could be found at all
+    (B5). Distinct from "the session is fine but nothing matched", which
+    stays rc 1, so a script can tell "not logged in yet / no bridge" from "no
+    such window" -- see SESSION READINESS in README.md."""
+
+    exit_code = 2
+
+
+# Highest valid X/Mutter window id: both are 64-bit unsigned in our wire
+# formats, and anything outside the range cannot name a window.
+_MAX_WINDOW_ID = 2 ** 64 - 1
 
 
 class Context:

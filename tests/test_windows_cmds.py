@@ -15,7 +15,7 @@ import time
 
 from wdotool import cli, window_cmds
 from wdotool.backend import Window, WindowBackend
-from wdotool.ctx import CmdError, Context
+from wdotool.ctx import CmdError, Context, NoSessionError
 
 
 class FakeBackend(WindowBackend):
@@ -492,6 +492,43 @@ class ClassNameSearchTest(unittest.TestCase):
         for flag in ("--class", "--classname"):
             rc, out, _e, _c = run(["search", flag, "gnome.Calc"], self.backend())
             self.assertEqual((rc, out), (0, "22\n"), flag)
+
+class NoSessionExitCodeTest(unittest.TestCase):
+    """B5: rc 2 for "no Wayland session", rc 1 for "nothing matched"."""
+
+    class _NoSession(WindowBackend):
+        name = "none"
+
+    def run_without_backend(self, argv):
+        ctx = Context()
+
+        def boom():
+            raise NoSessionError("wdotool: no Wayland session found: nothing here")
+
+        ctx.backend = boom
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.run_chain(ctx, "wdotool", argv)
+        return (rc if rc else ctx.exit_code), out.getvalue(), err.getvalue()
+
+    def test_no_session_is_rc_2(self):
+        for argv in (["search", "--name", "x"], ["getactivewindow"],
+                     ["windowactivate", "11"], ["get_num_desktops"]):
+            rc, _o, err = self.run_without_backend(argv)
+            self.assertEqual(rc, 2, argv)
+            self.assertEqual(err, "wdotool: no Wayland session found: nothing here\n")
+
+    def test_no_match_stays_rc_1(self):
+        rc, out, err, _c = run(["search", "--name", "nothing-matches-this"])
+        self.assertEqual((rc, out, err), (1, "", ""))
+
+    def test_no_active_window_stays_rc_1(self):
+        b = make_backend()
+        for w in b.windows.values():
+            w.focused = False
+        rc, _o, err, _c = run(["getactivewindow"], b)
+        self.assertEqual(rc, 1)
+        self.assertEqual(err, "xdo_get_active_window reported an error\n")
 
 if __name__ == "__main__":
     unittest.main()

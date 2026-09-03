@@ -393,6 +393,21 @@ class TestPointerModel(unittest.TestCase):
         self.assertEqual(d.handle({"op": "pointer"}),
                          {"ok": True, "x": 640, "y": 400, "known": True})
 
+class TestGeometryFallback(unittest.TestCase):
+    """B5: the daemon says when the layout size is only a guess."""
+
+    def test_geometry_reports_the_fallback(self):
+        d = make_daemon()
+        d.geom = None
+        with contextlib.redirect_stderr(io.StringIO()):
+            resp = d.handle({"op": "geometry"})
+        self.assertTrue(resp["ok"])
+        self.assertTrue(resp["fallback"])
+        self.assertEqual((resp["w"], resp["h"]), daemon.FALLBACK_GEOMETRY[2:])
+        d.geom = (0, 0, 640, 480)
+        resp = d.handle({"op": "geometry"})
+        self.assertFalse(resp["fallback"])
+
 class TestProtocol(unittest.TestCase):
     """Full client<->daemon protocol against a really spawned (forked) daemon."""
 

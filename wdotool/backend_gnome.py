@@ -48,7 +48,7 @@ import time
 
 from wdotool import session
 from wdotool.backend import View, Window, WindowBackend, Workspace
-from wdotool.ctx import CmdError
+from wdotool.ctx import CmdError, NoSessionError
 from wdotool.dbus_mini import ERR, Bus, DBusError
 
 BUS_NAME = "org.fuckwayland.Bridge"
@@ -134,7 +134,7 @@ class GnomeBackend(WindowBackend):
             try:
                 bus = Bus()
             except DBusError as e:
-                raise CmdError("gnome backend: %s" % _no_bus_text(e)) from None
+                raise NoSessionError("gnome backend: %s" % _no_bus_text(e)) from None
         self.bus = bus
         if names is None:
             try:
@@ -143,10 +143,15 @@ class GnomeBackend(WindowBackend):
                 raise CmdError("gnome backend: ListNames failed: %s" % e) from None
         if BUS_NAME not in names:
             if SHELL_NAME not in names:
-                raise CmdError("gnome backend: %s is not on the session bus "
-                               "(no GNOME session?)" % SHELL_NAME)
+                raise NoSessionError("gnome backend: %s is not on the session "
+                                     "bus (no GNOME session?)" % SHELL_NAME)
             if not (_autoload_wanted() and self._try_autoload()):
-                raise CmdError(self._missing_bridge_text())
+                # Every reason the bridge can be missing (not installed, not
+                # enabled, screen locked, greeter, shell restarting) means the
+                # same thing to a script: there is no window backend to talk
+                # to yet. That is rc 2, distinct from "no matching window"
+                # (rc 1) -- see B5 / SESSION READINESS in README.md.
+                raise NoSessionError(self._missing_bridge_text())
 
     # -- plumbing -----------------------------------------------------------
 

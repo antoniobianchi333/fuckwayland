@@ -7,7 +7,7 @@ import sys
 import time
 
 from wdotool.cli import ChainAbort, GetoptError, getopt_long_only
-from wdotool.ctx import CmdError
+from wdotool.ctx import CmdError, NoSessionError
 
 _ATOI_RE = re.compile(r"[ \t\n\r\f\v]*([+-]?\d+)")
 _ATOF_RE = re.compile(
@@ -162,7 +162,15 @@ def cmd_getdisplaygeometry(ctx, args):
             pass  # single logical screen on Wayland; accepted and ignored
         elif name == "shell":
             shell = True
-    w, h = ctx.daemon().geometry()
+    w, h, guessed = ctx.daemon().geometry_status()
+    if guessed:
+        # B5: printing a made-up 1920x1080 with rc 0 when no compositor could
+        # be reached made `getdisplaygeometry` useless as a session probe --
+        # it was the one command that "succeeded" with no session at all.
+        raise NoSessionError(
+            "wdotool: no Wayland session found: cannot query the output "
+            "layout (no compositor reachable); not guessing a display size"
+        )
     if shell:
         sys.stdout.write("WIDTH=%d\nHEIGHT=%d\n" % (w, h))
     else:

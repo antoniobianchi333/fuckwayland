@@ -236,10 +236,13 @@ class _Daemon:
         tracked in these global layout coordinates."""
         try:
             self.geom = _wayland_bbox()
+            self.geom_fallback = False
             return self.geom
         except Exception as e:
             if self.geom:
+                self.geom_fallback = False
                 return self.geom
+            self.geom_fallback = True
             if not self.geom_warned:
                 self.geom_warned = True
                 msg = (f"wdotool: cannot query Wayland output geometry ({e}); "

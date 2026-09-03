@@ -26,7 +26,7 @@ from wdotool import backend_detect, backend_gnome, dbus_mini, session  # noqa: E
 from wdotool.backend import View, Window, Workspace                    # noqa: E402
 from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,        # noqa: E402
                                    OBJECT_PATH, SHELL_NAME, GnomeBackend)
-from wdotool.ctx import CmdError                                       # noqa: E402
+from wdotool.ctx import CmdError, NoSessionError                       # noqa: E402
 from wdotool.dbus_mini import Bus, DBusError, Message, Variant         # noqa: E402
 
 XTERM, EDITOR, CALC, DESKTOP = 4194305, 4194306, 4194307, 4194301
@@ -681,6 +681,40 @@ class BackendTests(_Base):
         with self.assertRaises(CmdError) as cm:
             self.b._call("SetState", "tss", (XTERM, "FULLSCREEN", "flip"))
         self.assertIn("action must be add|remove|toggle", str(cm.exception))
+
+
+class SessionReadinessTests(_Base):
+    """B5: "there is no backend to talk to" is rc 2, distinct from rc 1 for
+    "the session is up and nothing matched"."""
+
+    def test_every_constructor_failure_is_a_no_session_error(self):
+        cases = [
+            dict(own_shell=True, own_bridge=False),                   # no bridge
+            dict(own_shell=True, own_bridge=False, shell_mode="gdm"),  # greeter
+            dict(own_shell=True, own_bridge=False,
+                 shell_mode="unlock-dialog"),                          # locked
+            dict(own_shell=False, own_bridge=False),                   # no shell
+        ]
+        for kw in cases:
+            bridge = MockBridge(self.mock.address, **kw)
+            try:
+                with self.assertRaises(NoSessionError) as cm:
+                    GnomeBackend()
+                self.assertEqual(cm.exception.exit_code, 2, kw)
+            finally:
+                bridge.close()
+
+    def test_a_missing_window_stays_rc_1(self):
+        bridge = MockBridge(self.mock.address)
+        try:
+            b = GnomeBackend()
+            self.addCleanup(b.bus.close)
+            with self.assertRaises(CmdError) as cm:
+                b.find(999)
+            self.assertNotIsInstance(cm.exception, NoSessionError)
+            self.assertEqual(getattr(cm.exception, "exit_code", 1), 1)
+        finally:
+            bridge.close()
 
 
 class ConstructorTests(_Base):

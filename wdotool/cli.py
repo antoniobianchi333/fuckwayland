@@ -185,7 +185,9 @@ def run_chain(ctx: Context, prog: str, tokens: list[str]) -> int:
             n = fn(ctx, args)
         except CmdError as e:
             sys.stderr.write("%s\n" % e)
-            return 1
+            # NoSessionError carries rc 2 ("no Wayland session found"); every
+            # other failure keeps xdotool's rc 1 (B5).
+            return getattr(e, "exit_code", 1) or 1
         except ChainAbort as e:
             if e.msg:
                 sys.stderr.write("%s\n" % e.msg)
