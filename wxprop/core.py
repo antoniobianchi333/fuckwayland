@@ -133,6 +133,17 @@ def _detect_backend():
     return backend_detect.detect()
 
 
+def _progname() -> str:
+    """argv[0] the way xprop prints it in its diagnostics."""
+    override = os.environ.get("WXPROP_ARGV0")
+    if override:
+        return override
+    base = os.path.basename(sys.argv[0] or "")
+    if not base or base in ("__main__.py", "-c", "-m"):
+        return "wxprop"
+    return base
+
+
 def _hostname() -> str:
     try:
         return socket.gethostname() or ""
@@ -677,6 +688,7 @@ class MergedRootTarget:
         self.native = native
         self.conn = xt.conn
         self.win = xt.win
+        self._written = set()   # override names this run -set / -remove'd
 
     def refresh(self):
         return True
@@ -685,7 +697,17 @@ class MergedRootTarget:
         return self.xt.intern(name, create) or name in _ROOT_OVERRIDES
 
     def fetch(self, name: bytes):
-        if name in _ROOT_OVERRIDES:
+        """The X root's property, with the six window-list ones answered
+        from the compositor -- except for a name THIS RUN has written or
+        removed, which is read straight from the X root so the tool can
+        see what it just did.
+
+        The absence of an override is not evidence of damage: Mutter
+        writes _NET_CURRENT_DESKTOP only when the workspace first changes,
+        so a fresh session legitimately lacks it while the compositor
+        knows the answer. Damage is reported at the moment it is done
+        instead -- see _note()."""
+        if name in _ROOT_OVERRIDES and name not in self._written:
             p = self.native._props().get(name)
             if p is not None:
                 return p
@@ -694,7 +716,7 @@ class MergedRootTarget:
     def list_names(self):
         names = self.xt.list_names()
         for n in _ROOT_OVERRIDES:
-            if n not in names:
+            if n not in names and n not in self._written:
                 names.append(n)
         return names
 
@@ -702,10 +724,27 @@ class MergedRootTarget:
         return self.xt.atom_name(a)
 
     def remove_prop(self, name: bytes) -> bool:
+        self._note("-remove", name)
         return self.xt.remove_prop(name)
 
     def set_prop(self, name: bytes, type_name: str, size: int, data: bytes):
+        self._note("-set", name)
         self.xt.set_prop(name, type_name, size, data)
+
+    def _note(self, what: str, name: bytes):
+        """-set/-remove address the real X root, never the synthesis, so
+        the tool could not see what it had just done -- and an operator who
+        has broken every EWMH client on the X plane (`-root -remove
+        _NET_CLIENT_LIST`; `wmctrl -l` then says "Cannot get client list
+        properties") got silence. Say it once, and read that name straight
+        from the X root for the rest of the run."""
+        if name not in _ROOT_OVERRIDES or name in self._written:
+            return
+        self._written.add(name)
+        sys.stderr.write(
+            "%s:  %s %s writes the X root only; XWayland clients read it, "
+            "the compositor does not\n"
+            % (_progname(), what, name.decode("latin-1", "replace")))
 
 
 # -- window selection --------------------------------------------------------

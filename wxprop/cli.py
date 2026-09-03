@@ -91,14 +91,9 @@ class UsageError(Exception):
         self.msg = msg
 
 
-def _progname() -> str:
-    override = os.environ.get("WXPROP_ARGV0")
-    if override:
-        return override
-    base = os.path.basename(sys.argv[0] or "")
-    if not base or base in ("__main__.py", "-c", "-m"):
-        return "wxprop"
-    return base
+# argv[0] as the oracle prints it; core needs it too (the merged root's
+# -set/-remove note), so it lives there
+_progname = core._progname
 
 
 def print_help(prog: str):

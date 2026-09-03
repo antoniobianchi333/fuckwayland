@@ -423,6 +423,71 @@ class RootTests(GnomeXpropBase):
                       self.xconn.calls)
 
 
+    def test_removing_an_override_from_the_merged_root_is_visible(self):
+        """wxprop-2: -set/-remove address the real X root while a read of
+        one of the six window-list names is answered from the bridge, so
+        the tool could not see its own write. Deleting _NET_CLIENT_LIST
+        breaks every EWMH client on the X plane (`wmctrl -l`: "Cannot get
+        client list properties") and -root reported silence."""
+        code, out, err = self.run_cli("-root", "-remove", "_NET_CLIENT_LIST")
+        self.assertEqual((code, out), (0, b""))
+        self.assertEqual(err, "xprop:  -remove _NET_CLIENT_LIST writes the "
+                              "X root only; XWayland clients read it, the "
+                              "compositor does not\n")
+        self.assertIn(("delete", XROOT, "_NET_CLIENT_LIST"), self.xconn.calls)
+
+    def test_merged_root_reads_back_what_it_wrote(self):
+        """... and once a name has been written this run, reads of it go to
+        the X root, so a caller that writes and then reads sees its own
+        write rather than the synthesis."""
+        ps = self._patches()
+        for pp in ps:
+            pp.start()
+        try:
+            target = core.resolve_root(core.Session())
+            self.assertIsInstance(target, core.MergedRootTarget)
+            synth = target.fetch(b"_NET_CLIENT_LIST")
+            self.assertEqual(synth[0], "WINDOW")
+            self.assertEqual(len(synth[2]), 16)     # all four windows
+            self.assertTrue(target.remove_prop(b"_NET_CLIENT_LIST"))
+            self.assertIsNone(target.fetch(b"_NET_CLIENT_LIST"))
+            self.assertNotIn(b"_NET_CLIENT_LIST", target.list_names())
+            # the five untouched names still come from the compositor
+            self.assertEqual(len(target.fetch(b"_NET_CLIENT_LIST_STACKING")[2]),
+                             16)
+        finally:
+            for pp in reversed(ps):
+                pp.stop()
+
+    def test_merged_root_synthesizes_a_name_the_x_root_never_had(self):
+        """The absence of an override is not damage: Mutter writes
+        _NET_CURRENT_DESKTOP only once the workspace changes, so a fresh
+        session has none while the compositor knows the answer (live on
+        GNOME 46). -root must still print it."""
+        props = mutter_x_props()
+        props[XROOT] = [e for e in props[XROOT]
+                        if e[0] != "_NET_CURRENT_DESKTOP"]
+        self.xconn = FakeXConn(props)
+        code, out, err = self.run_cli("-root", "_NET_CURRENT_DESKTOP")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, b"_NET_CURRENT_DESKTOP(CARDINAL) = 0\n")
+
+    def test_setting_an_override_on_the_merged_root_says_where_it_went(self):
+        code, _o, err = self.run_cli("-root", "-f", "_NET_CURRENT_DESKTOP",
+                                     "32c", "-set", "_NET_CURRENT_DESKTOP",
+                                     "7")
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "xprop:  -set _NET_CURRENT_DESKTOP writes the "
+                              "X root only; XWayland clients read it, the "
+                              "compositor does not\n")
+        # the X root really took it; -root still answers from the
+        # compositor, which is the authority on the workspace
+        self.assertIn(("change", XROOT, "_NET_CURRENT_DESKTOP", "CARDINAL",
+                       32, struct.pack("<I", 7)), self.xconn.calls)
+        code, out, _e = self.run_cli("-root", "_NET_CURRENT_DESKTOP")
+        self.assertEqual(out, b"_NET_CURRENT_DESKTOP(CARDINAL) = 0\n")
+
+
 class SelectionTests(GnomeXpropBase):
     def test_click_select_uses_select_window(self):
         code, out, err = self.run_cli("WM_CLASS")

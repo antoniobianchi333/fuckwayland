@@ -126,6 +126,17 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   `_NET_DESKTOP_NAMES`, with `_NET_SUPPORTING_WM_CHECK` = `0x0`. Real
   xprop on the same session would print the X-only list; the merged view
   is the point of the tool.
+  `-set`/`-remove` always address the real X root, never the synthesis.
+  That gap is where damage used to disappear: `wxprop -root -remove
+  _NET_CLIENT_LIST` breaks every EWMH client on the X plane (`wmctrl -l`:
+  *Cannot get client list properties*) while `-root` went on printing the
+  compositor's healthy-looking list. Writing or removing one of the six
+  now prints a line on stderr saying where the write went, and reads of
+  that name for the rest of the run come from the X root. It is *not*
+  enough to treat a missing override as damage: Mutter writes
+  `_NET_CURRENT_DESKTOP` on the X root only once the workspace first
+  changes, so a fresh GNOME 46 session legitimately has none while the
+  compositor knows the answer.
 * **`-spy`** on an XWayland window is the X `PropertyNotify` loop. On a
   native window it follows the bridge's `WindowEvent` signals
   (`backend.events()`): `title` reprints `WM_NAME`/`_NET_WM_NAME`,
