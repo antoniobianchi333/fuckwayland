@@ -74,9 +74,15 @@ class Context:
                 )
             return self.stack[idx - 1]
         try:
-            return int(arg, 0)
+            wid = int(arg, 0)
         except ValueError:
             raise CmdError(f"Invalid window id '{arg}'") from None
+        # B8: a negative or out-of-range id used to reach the bridge and blow
+        # up in the D-Bus marshaller ("cannot marshal -5 as 't'"); one line
+        # and rc 1 instead.
+        if not 0 <= wid <= _MAX_WINDOW_ID:
+            raise CmdError(f"Invalid window id '{arg}'")
+        return wid
 
     def resolve_window(self, arg: str | None = None) -> int:
         """Resolve an optional window argument like xdotool: explicit arg (decimal,

@@ -530,5 +530,63 @@ class NoSessionExitCodeTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(err, "xdo_get_active_window reported an error\n")
 
+class InvalidWindowIdTest(unittest.TestCase):
+    """B8: a negative or out-of-range id is one line and rc 1, never a
+    D-Bus marshalling traceback."""
+
+    def test_bad_ids(self):
+        for bad in ("-5", "0x10000000000000000", "18446744073709551616",
+                    "notanumber"):
+            rc, out, err, _c = run(["getwindowname", "--", bad])
+            self.assertEqual(rc, 1, bad)
+            self.assertEqual(out, "", bad)
+            self.assertEqual(err, "Invalid window id '%s'\n" % bad, bad)
+
+    def test_the_largest_valid_id_is_still_accepted(self):
+        ctx = Context()
+        self.assertEqual(ctx._resolve_one("18446744073709551615"), 2 ** 64 - 1)
+        self.assertEqual(ctx._resolve_one("0"), 0)
+
+class SetNumDesktopsTest(unittest.TestCase):
+    """B9: actually ask the compositor; only a capability gap warns."""
+
+    class _Counting(FakeBackend):
+        def __init__(self, windows, fail=None):
+            super().__init__(windows)
+            self.fail = fail
+
+        def set_num_desktops(self, n):
+            self.calls.append(("set_num_desktops", n))
+            if self.fail is not None:
+                raise self.fail
+
+    def test_calls_the_backend(self):
+        b = self._Counting([])
+        rc, _o, err, _c = run(["set_num_desktops", "3"], b)
+        self.assertEqual(rc, 0)
+        self.assertEqual(b.calls, [("set_num_desktops", 3)])
+        self.assertEqual(err, "")
+
+    def test_unsupported_only_warns(self):
+        err_obj = CmdError("dynamic workspaces are enabled")
+        err_obj.unsupported = True
+        b = self._Counting([], fail=err_obj)
+        rc, _o, err, _c = run(["set_num_desktops", "3"], b)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            err, "wdotool: set_num_desktops: dynamic workspaces are enabled; ignoring\n")
+
+    def test_a_real_failure_fails(self):
+        b = self._Counting([], fail=CmdError("SetNWorkspaces: no reply"))
+        rc, _o, err, _c = run(["set_num_desktops", "3"], b)
+        self.assertEqual(rc, 1)
+        self.assertEqual(err, "SetNWorkspaces: no reply\n")
+
+    def test_a_backend_without_the_capability_warns(self):
+        rc, _o, err, _c = run(["set_num_desktops", "3"], FakeBackend([]))
+        self.assertEqual(rc, 0)
+        self.assertIn("not supported by the fake backend", err)
+        self.assertTrue(err.endswith("; ignoring\n"))
+
 if __name__ == "__main__":
     unittest.main()

@@ -571,6 +571,26 @@ class BackendTests(_Base):
         self.assertEqual(self.b.real_pointer(), (2881, 17))  # historical alias
         self.assertEqual(len(self.calls("GetPointer")), 3)
 
+    def test_set_num_desktops_calls_the_bridge(self):
+        # B9: the command used to print "managed by the compositor; ignoring"
+        # and never call anything. The mock bridge answers Unsupported (its
+        # dynamic-workspaces are on), which must be marked as a capability
+        # gap rather than a plain failure.
+        with self.assertRaises(CmdError) as cm:
+            self.b.set_num_desktops(3)
+        self.assertEqual(self.calls("SetNWorkspaces"), [(3,)])
+        self.assertTrue(getattr(cm.exception, "unsupported", False))
+        self.assertIn("dynamic workspaces", str(cm.exception))
+
+    def test_invalid_window_id_is_one_line_not_a_marshal_traceback(self):
+        # B8: -5 and 2**64 cannot be carried as a D-Bus 't'; ctx rejects them
+        # first, and _call is the belt-and-braces guard behind it.
+        for bad in (-5, 2 ** 64):
+            with self.assertRaises(CmdError) as cm:
+                self.b._call("GetWindow", "t", (bad,))
+            self.assertIn("invalid argument", str(cm.exception))
+            self.assertEqual(len(str(cm.exception).splitlines()), 1)
+
     def test_display_size_and_extras(self):
         self.assertEqual(self.b.display_size(), (1920, 1080))
         self.assertEqual(self.b.bridge_version(), 1)

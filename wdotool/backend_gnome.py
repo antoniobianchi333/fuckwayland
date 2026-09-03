@@ -43,6 +43,7 @@ never probes that privileged interface."""
 
 import json
 import os
+import struct
 import sys
 import time
 
@@ -162,6 +163,12 @@ class GnomeBackend(WindowBackend):
                                  timeout=timeout)
         except DBusError as e:
             raise self._map_error(member, e) from None
+        except (ValueError, OverflowError, struct.error) as e:
+            # An argument the wire format cannot carry (a negative or
+            # >64-bit window id reached us from somewhere): one line, rc 1,
+            # never a marshalling traceback (B8).
+            raise CmdError("gnome backend: %s: invalid argument: %s"
+                           % (member, e)) from None
 
     @staticmethod
     def _map_error(member: str, e: DBusError) -> CmdError:
@@ -169,7 +176,10 @@ class GnomeBackend(WindowBackend):
         if n.startswith(IFACE + "."):
             kind = n[len(IFACE) + 1:]
             if kind in ("NotFound", "Unsupported"):
-                return CmdError(e.message or "%s: %s" % (member, kind))
+                err = CmdError(e.message or "%s: %s" % (member, kind))
+                if kind == "Unsupported":
+                    err.unsupported = True  # a capability gap, not a failure
+                return err
             return CmdError("gnome backend: %s: %s" % (member, e.message or kind))
         if n in (ERR + "ServiceUnknown", ERR + "NameHasNoOwner"):
             return CmdError(_GONE)
@@ -417,6 +427,12 @@ class GnomeBackend(WindowBackend):
 
     def num_desktops(self) -> int:
         return int(self._call("GetNWorkspaces")[0])
+
+    def set_num_desktops(self, n: int):
+        # The bridge answers Unsupported when Mutter's dynamic-workspaces is
+        # on (then the shell owns the count); _map_error marks that so
+        # set_num_desktops can warn instead of failing (B9).
+        self._call("SetNWorkspaces", "i", (n,))
 
     def select_window(self) -> int:
         # SelectWindow(0) waits for the next focus change without a deadline;

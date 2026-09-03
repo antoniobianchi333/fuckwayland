@@ -79,7 +79,13 @@ class WindowBackend:
     name = "none"
 
     def _unsupported(self, op: str):
-        raise CmdError(f"{op} is not supported by the {self.name} backend")
+        # `unsupported` marks a capability gap (as opposed to a failed
+        # operation) so callers can downgrade it to a warning -- see
+        # set_num_desktops, which must not fail a chain on a compositor with
+        # a fixed workspace count.
+        err = CmdError(f"{op} is not supported by the {self.name} backend")
+        err.unsupported = True
+        raise err
 
     # required
     def list(self) -> list[Window]:
@@ -141,6 +147,12 @@ class WindowBackend:
         """state: uppercase _NET_WM_STATE suffix (e.g. "FULLSCREEN");
         action: 0=remove 1=add 2=toggle"""
         self._unsupported("windowstate")
+
+    def set_num_desktops(self, n: int):
+        """Ask the compositor for exactly n workspaces (set_num_desktops).
+        Raises a CmdError with .unsupported set where the count is not the
+        caller's to choose (dynamic workspaces)."""
+        self._unsupported("set_num_desktops")
 
     def window_desktop(self, wid: int) -> int:
         return self.find(wid).desktop
