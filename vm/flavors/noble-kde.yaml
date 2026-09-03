@@ -1,11 +1,13 @@
 #cloud-config
-# vmctl flavor noble-gnome: Ubuntu 24.04 LTS (noble) + ubuntu-desktop, GNOME on Wayland,
-# GDM autologin of user test (uid 1000, password test, NOPASSWD sudo).
+# vmctl flavor noble-kde: Ubuntu 24.04 LTS (noble) + kubuntu-desktop, KDE Plasma 5.27 on Wayland
+# (plasma-workspace-wayland is not pulled in by kubuntu-desktop on noble, so it is listed here),
+# SDDM autologin of user test (uid 1000, password test, NOPASSWD sudo) into plasmawayland.desktop.
+# Native display tool: kscreen-doctor.
 # vmctl fills in the two @@...@@ placeholders at build time (root ssh public
 # key; the contents of vm/build-image.sh). The base image lives in $VMIMAGES:
 # vmctl-base: noble-server-cloudimg-amd64.img
-# vmctl-desktop: gnome
-hostname: noble-gnome
+# vmctl-desktop: kde
+hostname: noble-kde
 manage_etc_hosts: true
 disable_root: false
 ssh_pwauth: false
@@ -27,9 +29,9 @@ write_files:
     content: "uinput\n"
   - path: /etc/vmctl-build.env
     content: |
-      FLAVOR=noble-gnome
-      DESKTOP=gnome
-      DESKTOP_PKG=ubuntu-desktop
+      FLAVOR=noble-kde
+      DESKTOP=kde
+      DESKTOP_PKG="kubuntu-desktop plasma-workspace-wayland libkf5config-bin"
       EXTRA_PKGS="xdotool wmctrl x11-utils x11-xserver-utils"
   - path: /usr/local/sbin/vmctl-build
     permissions: '0755'

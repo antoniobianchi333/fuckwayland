@@ -4,6 +4,7 @@
 # vmctl fills in the two @@...@@ placeholders at build time (root ssh public
 # key; the contents of vm/build-image.sh). The base image lives in $VMIMAGES:
 # vmctl-base: ubuntu-26.04-server-cloudimg-amd64.img
+# vmctl-desktop: gnome
 hostname: resolute-gnome
 manage_etc_hosts: true
 disable_root: false
@@ -27,6 +28,7 @@ write_files:
   - path: /etc/vmctl-build.env
     content: |
       FLAVOR=resolute-gnome
+      DESKTOP=gnome
       DESKTOP_PKG=ubuntu-desktop
       EXTRA_PKGS="xdotool wmctrl x11-utils x11-xserver-utils"
   - path: /usr/local/sbin/vmctl-build
