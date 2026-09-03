@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""vmctl -- host-side controller for the multi-head GNOME test VMs.
+"""vmctl -- host-side controller for the multi-head desktop test VMs.
 
-Builds golden images (cloud-init + ubuntu-desktop, GDM autologin of user
-`test` on Wayland) and runs instances of them under QEMU/KVM with a
+Builds golden images (cloud-init + a desktop metapackage, autologin of user
+`test`: GNOME/Wayland via GDM, Plasma/Wayland via SDDM, Xfce/X11 via LightDM,
+sway via greetd) and runs instances of them under QEMU/KVM with a
 virtio-vga whose heads are hot-plugged/resized from the host over QEMU's
 D-Bus display backend.  Screenshots come out of QMP `screendump`.
 
@@ -34,6 +35,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -48,6 +50,27 @@ BUILDS = VMDATA / "build"
 KEYS = VMDATA / "keys"
 PORTS = range(2400, 2500)
 MAX_HEADS = 4                     # virtio-vga max_outputs
+# `# vmctl-desktop:` header of a flavor yaml -> how that desktop presents itself:
+#   label       for humans
+#   session     the kind of graphical session (what XDG_SESSION_TYPE says inside it,
+#               which sockets `vmctl session`/`vmctl user` look for: wayland|x11)
+#   logind      the Type(s) logind may report for it.  greetd registers sway as a
+#               plain tty session and sway's libseat switches it to wayland.
+#   dm          the display manager unit to look at when the session never comes up
+#   compositor  the process that owns the scanout once the desktop is up (DRM debugfs
+#               names it as the allocator of head 0's framebuffer: the first frame)
+#   shell       processes that must be up before a screenshot shows the desktop
+#   splash      a splash screen that must be gone
+DESKTOPS = {
+    "gnome": dict(label="GNOME on Wayland (GDM)", session="wayland", logind=("wayland",),
+                  dm="gdm", compositor="gnome-shell", shell=(), splash=None),
+    "kde":   dict(label="KDE Plasma on Wayland (SDDM)", session="wayland", logind=("wayland",),
+                  dm="sddm", compositor="kwin_wayland", shell=("plasmashell",), splash="ksplashqml"),
+    "xfce":  dict(label="Xfce on X11 (LightDM)", session="x11", logind=("x11",),
+                  dm="lightdm", compositor="Xorg", shell=("xfce4-panel", "xfdesktop"), splash=None),
+    "sway":  dict(label="sway on Wayland (greetd)", session="wayland", logind=("wayland", "tty"),
+                  dm="greetd", compositor="sway", shell=("swaybar",), splash=None),
+}
 DEFAULT_HEAD = "1920x1080"        # size of heads 0..N-1 for `start --heads N` (override: --head-size)
 GPU = "gpu0"
 BUS_NAME = "org.qemu"             # what QEMU 8.2's dbus display owns (not org.qemu.Display1)
@@ -409,6 +432,20 @@ class Instance:
     def active_heads(self):
         return sorted(i for i, v in self.heads().items() if v != "off")
 
+    def desktop(self):
+        """gnome|kde|xfce|sway: from meta.json (recorded by `start`), else the flavor yaml."""
+        d = self.meta.get("desktop")
+        if d in DESKTOPS:
+            return d
+        try:
+            return flavor_desktop(self.meta.get("flavor", ""))
+        except Fail:
+            return "gnome"
+
+    def session_kind(self):
+        """wayland|x11: the kind of graphical session the desktop runs."""
+        return DESKTOPS[self.desktop()]["session"]
+
 
 def user_data_common(hostname):
     """cloud-config fragment shared by golden builds and instances: root key + user test."""
@@ -471,6 +508,16 @@ def flavor_base(flavor):
     if not base.exists():
         raise Fail(f"base image {base} not found (set VMIMAGES or download it)")
     return base.resolve()
+
+
+def flavor_desktop(flavor):
+    """The flavor's `# vmctl-desktop: gnome|kde|xfce|sway` header (default gnome)."""
+    text = flavor_file(flavor).read_text()
+    m = re.search(r"^#\s*vmctl-desktop:\s*(\S+)", text, re.M)
+    d = m[1] if m else "gnome"
+    if d not in DESKTOPS:
+        raise Fail(f"{flavor_file(flavor)}: unknown '# vmctl-desktop: {d}' (want {'|'.join(DESKTOPS)})")
+    return d
 
 
 def golden_path(flavor):
@@ -669,9 +716,11 @@ def cmd_start(a):
     for i in range(MAX_HEADS):
         heads[i] = (saved.get(i) if i < nheads and saved.get(i) not in (None, "off") else
                     size if i < nheads else "off")
+    desktop = flavor_desktop(flavor)
     inst.meta.update({"name": inst.name, "flavor": flavor, "mem": mem, "cpus": cpus,
                       "nheads": nheads, "heads": {str(k): v for k, v in heads.items()},
-                      "golden": str(golden), "started": time.strftime("%Y-%m-%dT%H:%M:%S")})
+                      "golden": str(golden), "desktop": desktop, "session_type": DESKTOPS[desktop]["session"],
+                      "started": time.strftime("%Y-%m-%dT%H:%M:%S")})
     inst.save()
 
     start_dbus(inst)
@@ -794,6 +843,9 @@ def cmd_status(a):
     pid = inst.pid()
     print(f"name:      {inst.name}")
     print(f"flavor:    {inst.meta.get('flavor')}  (golden {inst.meta.get('golden')})")
+    d = DESKTOPS[inst.desktop()]
+    print(f"desktop:   {inst.desktop()}  ({d['label']}; session type {d['session']}, "
+          f"logind Type {'/'.join(d['logind'])}, display manager {d['dm']})")
     print(f"state:     {'running (pid %d)' % pid if pid else 'stopped'}")
     print(f"resources: {inst.meta.get('cpus')} vCPU / {inst.meta.get('mem')}")
     print(f"ssh:       root@127.0.0.1 port {inst.meta.get('port')}  (key {root_key()})")
@@ -820,8 +872,15 @@ def cmd_status(a):
 
 def cmd_ssh(a):
     inst = Instance(a.name).require_running()
-    cmd = ssh_cmd(inst.port, 5, tty=False) + list(a.cmd)
-    os.execvp("ssh", cmd)
+    # ssh joins the words of a remote command with spaces and the guest's shell
+    # re-splits them, so a multi-word command has to be quoted here: without it
+    # `-- sh -c 'a; b'` reaches the guest as three words and runs `sh -c a`.
+    # A single word is handed over untouched -- that is the ssh convention for
+    # passing a whole command line ("a | b") to the remote shell.
+    cmd = list(a.cmd)
+    if len(cmd) > 1:
+        cmd = [shlex.join(cmd)]
+    os.execvp("ssh", ssh_cmd(inst.port, 5, tty=False) + cmd)
 
 
 def cmd_scp(a):
@@ -847,6 +906,8 @@ def cmd_head(a):
         set_ui_info(inst.bus, a.idx, 0, 0)
         heads[a.idx] = "off"
         log(f"{inst.name}: head {a.idx} (Virtual-{a.idx + 1}) unplugged")
+        if inst.session_kind() == "x11":
+            drop_x11_output(inst, a.idx)
     else:
         w, h = parse_size(a.size)
         set_ui_info(inst.bus, a.idx, w, h)
@@ -855,6 +916,47 @@ def cmd_head(a):
     inst.meta["heads"] = {str(k): v for k, v in heads.items()}
     inst.meta["nheads"] = max(i for i, v in heads.items() if v != "off") + 1
     inst.save()
+
+
+X11_DROP_SCRIPT = r"""
+# @OUT@ has just been unplugged.  The DRM connector goes away, but RandR keeps
+# the output's CRTC -- with its mode and position -- until something disables
+# it, so `xrandr --listmonitors` still reports a monitor that is not there.
+# The desktop's display daemon normally does it; Xfce 4.20's has been seen
+# sitting on a removed output for over a minute.  Give it a few seconds, then
+# disable the output here.
+st=connected
+for _ in 1 2 3 4 5; do
+  line=$(xrandr --query 2>/dev/null | sed -n 's/^@OUT@ //p' | head -1)
+  case "$line" in
+    "")                   echo unknown-output; exit 0 ;;   # no such output (or no X)
+    disconnected\ [0-9]*)  st=stuck ;;                      # gone, but X still scans it out
+    disconnected*)        echo released; exit 0 ;;         # X let go of it
+    *)                    st=connected ;;                  # X has not seen the unplug yet
+  esac
+  sleep 1
+done
+[ "$st" = stuck ] || { echo "$st"; exit 0; }
+xrandr --output @OUT@ --off >/dev/null 2>&1 && echo disabled || echo disable-failed
+"""
+
+
+def drop_x11_output(inst, idx):
+    """Best-effort: after unplugging head `idx`, make the X server let go of the
+    output (see X11_DROP_SCRIPT).  Never fails the command -- the session may not
+    be up yet, and on a Wayland flavor this is not called at all."""
+    out = f"Virtual-{idx + 1}"
+    try:
+        p = user_shell(inst, X11_DROP_SCRIPT.replace("@OUT@", out), timeout=45)
+    except Fail as e:
+        log(f"{inst.name}: could not reach the X session to release {out}: {e}")
+        return
+    state = (p.stdout.strip().splitlines() or [""])[-1] if p.returncode == 0 else "unreachable"
+    if state == "disabled":
+        log(f"{inst.name}: {out} was still enabled in the X server after the unplug; "
+            f"disabled it (xrandr --output {out} --off)")
+    elif state in ("connected", "disable-failed", "unreachable"):
+        log(f"{inst.name}: warning: the X server still holds {out} ({state})")
 
 
 HEADS_SCRIPT = r"""
@@ -900,38 +1002,143 @@ def cmd_shot(a):
 
 
 SESSION_SCRIPT = r"""
+# DESKTOP=gnome|kde|xfce|sway and KIND=wayland|x11 are prepended by cmd_session.
+# The desktop is there once logind shows user test's SEAT session active with the
+# expected Type and the session's sockets exist in XDG_RUNTIME_DIR.
+RT=/run/user/1000
+wl=$(find $RT -maxdepth 1 -type s -name 'wayland-[0-9]*' 2>/dev/null | sort | head -1); wl=${wl##*/}
+sw=$(find $RT -maxdepth 1 -type s -name 'sway-ipc.*.sock' 2>/dev/null | head -1)
+x0=no; [ -S /tmp/.X11-unix/X0 ] && x0=yes
 for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
-  unset S_Name S_Type S_State S_Class
-  eval "$(loginctl show-session "$s" -p Name -p Type -p State -p Class 2>/dev/null | sed 's/^/S_/')"
-  [ "$S_Name" = test ] || continue
-  if [ "$S_Type" = wayland ] && [ "$S_State" = active ] && [ -S /run/user/1000/wayland-0 ]; then
-    echo "OK $s"; exit 0
-  fi
-  echo "PARTIAL session=$s type=$S_Type state=$S_State class=$S_Class wayland-0=$([ -S /run/user/1000/wayland-0 ] && echo yes || echo no)"
+  unset S_Name S_Type S_State S_Class S_Seat S_Display
+  eval "$(loginctl show-session "$s" -p Name -p Type -p State -p Class -p Seat -p Display 2>/dev/null | sed 's/^/S_/')"
+  [ "$S_Name" = test ] && [ -n "$S_Seat" ] || continue     # not the ssh / user-manager sessions
+  ok=yes
+  [ "$S_State" = active ] || ok=no
+  case "$KIND" in
+    wayland)
+      [ -n "$wl" ] || ok=no
+      case "$DESKTOP" in
+        # greetd registers a tty session; sway's libseat turns it into a wayland one
+        # and sway is up once its IPC socket exists
+        sway) { [ "$S_Type" = wayland ] || [ "$S_Type" = tty ]; } && [ -n "$sw" ] || ok=no ;;
+        *)    [ "$S_Type" = wayland ] || ok=no ;;
+      esac
+      [ $ok = yes ] && { echo "OK $s WAYLAND_DISPLAY=$wl${sw:+ SWAYSOCK=$sw}"; exit 0; } ;;
+    x11)
+      [ "$S_Type" = x11 ] && [ $x0 = yes ] || ok=no
+      [ $ok = yes ] && { echo "OK $s DISPLAY=${S_Display:-:0}"; exit 0; } ;;
+  esac
+  echo "PARTIAL session=$s type=$S_Type state=$S_State class=$S_Class wayland=${wl:-none} X0=$x0${sw:+ swaysock=yes}"
 done
 echo "WAIT"
 """
 
 
 PAINT_SCRIPT = r"""
-# The graphical session is "active" a few seconds before the shell has drawn
-# anything; on a slow host a screenshot taken right away still shows the
-# kernel console. GNOME logs a line once its UI is up.
-if pgrep -x gnome-shell >/dev/null 2>&1; then
-  if journalctl -b --no-pager -o cat _COMM=gnome-shell 2>/dev/null | grep -q "GNOME Shell started"; then
-    echo PAINTED
-  else
-    echo WAIT
-  fi
-else
-  echo NOSHELL
+# DESKTOP plus the desktop's COMP/SHELLS/SPLASH (from DESKTOPS) are prepended by
+# wait_first_paint.  The graphical
+# session is "active" a few seconds before anything is drawn; on a slow host a
+# screenshot taken right away still shows the kernel console.  Verdicts:
+# PAINTED, WAIT <why>, or UNKNOWN (nothing in the guest to go by: the caller
+# then watches head 0's screendump for a change).
+painted_gnome() {   # GNOME logs a line once its UI is up
+  pgrep -x gnome-shell >/dev/null 2>&1 || return 1
+  journalctl -b --no-pager -o cat _COMM=gnome-shell 2>/dev/null | grep -q "GNOME Shell started"
+}
+scanout_owner() {   # who allocated the framebuffer scanned out on head 0 (crtc-0), per DRM debugfs
+  awk '/^plane\[/ { crtc = ""; fb = "" }
+       /^\tcrtc=/ { crtc = $1 }
+       /^\tfb=/ { fb = $1 }
+       /allocated by = / && crtc == "crtc=crtc-0" && fb != "fb=0" { sub(/.*allocated by = /, ""); print; exit }' \
+      /sys/kernel/debug/dri/0/state 2>/dev/null
+}
+if [ "$DESKTOP" = gnome ]; then
+  painted_gnome && echo PAINTED || echo "WAIT gnome-shell"; exit 0
 fi
+[ -n "$COMP" ] || { echo UNKNOWN; exit 0; }
+owner=$(scanout_owner)
+[ -n "$owner" ] || { echo UNKNOWN; exit 0; }
+# the kernel console's framebuffer belongs to whoever loaded the driver; the
+# compositor's (or a render thread of it) carries its name
+case "$owner" in "$COMP"*) ;; *) echo "WAIT scanout=$owner"; exit 0 ;; esac
+for p in $SHELLS; do pgrep -x "$p" >/dev/null 2>&1 || { echo "WAIT no $p"; exit 0; }; done
+if [ -n "$SPLASH" ] && pgrep -x "$SPLASH" >/dev/null 2>&1; then echo "WAIT $SPLASH"; exit 0; fi
+echo PAINTED
 """
+
+
+def paint_env(desktop):
+    """The `DESKTOP=... COMP=... SHELLS=... SPLASH=...` prelude of PAINT_SCRIPT."""
+    d = DESKTOPS.get(desktop, {})
+    return ("DESKTOP={}\nCOMP={}\nSHELLS={}\nSPLASH={}\n".format(
+        desktop, d.get("compositor") or "",
+        shlex.quote(" ".join(d.get("shell") or ())), d.get("splash") or ""))
+
+
+PAINT_MIN_STDDEV = 0.02   # below this a head is one flat colour and nothing has been
+                          # painted on it yet (selftest.sh fails a screendump under
+                          # 0.01; a desktop that is up measures 0.05 and more)
+
+
+def _ppm_stddev(data):
+    """Standard deviation (0..1) of the pixels of a binary PPM, over a sample of
+    its bytes; None if the data is not a P6 PPM with 8-bit channels."""
+    if not data.startswith(b"P6"):
+        return None
+    pos, fields = 2, []
+    while len(fields) < 3 and pos < len(data):
+        c = data[pos:pos + 1]
+        if c.isspace():
+            pos += 1
+        elif c == b"#":
+            while pos < len(data) and data[pos:pos + 1] not in (b"\n", b"\r"):
+                pos += 1
+        else:
+            start = pos
+            while pos < len(data) and not data[pos:pos + 1].isspace():
+                pos += 1
+            try:
+                fields.append(int(data[start:pos]))
+            except ValueError:
+                return None
+    if len(fields) != 3 or fields[2] != 255 or pos >= len(data):
+        return None
+    pix = data[pos + 1:fields[0] * fields[1] * 3 + pos + 1]
+    if not pix:
+        return None
+    stride = max(1, len(pix) // 30000)
+    if stride % 3 == 0:            # keep the sample from landing on one channel
+        stride += 1
+    vals = pix[::stride]
+    mean = sum(vals) / len(vals)
+    return (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5 / 255.0
+
+
+def _flat_heads(inst):
+    """The active heads whose screendump is (near enough) a single flat colour.
+    Empty when every head carries a picture -- and also when QEMU cannot write a
+    PPM, in which case the caller simply gets the guest-side verdict."""
+    flat = []
+    for idx in inst.active_heads():
+        with tempfile.NamedTemporaryFile(suffix=".ppm", delete=False) as f:
+            path = Path(f.name)
+        try:
+            qmp(inst.qmp_sock, "screendump",
+                {"filename": str(path), "device": GPU, "head": idx, "format": "ppm"}, timeout=30)
+            sd = _ppm_stddev(path.read_bytes())
+        except Exception:
+            sd = None
+        finally:
+            path.unlink(missing_ok=True)
+        if sd is not None and sd < PAINT_MIN_STDDEV:
+            flat.append(idx)
+    return flat
 
 
 def _shot_md5(inst, idx):
     """md5 of a screendump of head idx (None if the dump fails)."""
-    import hashlib, tempfile
+    import hashlib
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         path = Path(f.name)
     try:
@@ -947,43 +1154,62 @@ def _shot_md5(inst, idx):
             pass
 
 
-def wait_first_paint(inst, timeout=60):
-    """Block until the desktop has drawn its first frame: GNOME's
-    "GNOME Shell started" journal line, or (other desktops) head 0's
-    screendump changing from what it showed when the session became active.
-    Returns the number of seconds waited (or None on timeout)."""
+def wait_first_paint(inst, before=None, timeout=60):
+    """Block until the desktop has drawn its first frame on *every* head: GNOME's
+    "GNOME Shell started" journal line; other desktops: the compositor owns head
+    0's scanout framebuffer (DRM debugfs) and the shell/panel processes are up
+    with no splash screen left -- or, when the guest offers nothing to go by,
+    head 0's screendump differs from `before` (its md5 from before the session
+    came up).  All of those look at head 0 alone, and a secondary head can lag it
+    by seconds (Xfce paints its panel first and xfdesktop's wallpaper per monitor
+    afterwards), so the guest's verdict is confirmed against the pixels: no head
+    may still be one flat colour.  Returns the seconds waited (None on timeout)."""
     t0 = time.monotonic()
-    before = _shot_md5(inst, 0)
+    desktop = inst.desktop()
+    last = ""
     while time.monotonic() - t0 < timeout:
-        p = ssh_script(inst.port, PAINT_SCRIPT, timeout=30)
-        verdict = (p.stdout.strip().splitlines() or [""])[-1] if p.returncode == 0 else "WAIT"
-        if verdict == "PAINTED":
-            return time.monotonic() - t0
-        if verdict == "NOSHELL":
+        p = ssh_script(inst.port, paint_env(desktop) + PAINT_SCRIPT, timeout=30)
+        verdict = (p.stdout.strip().splitlines() or [""])[-1] if p.returncode == 0 else "WAIT ssh"
+        if verdict == "UNKNOWN":
             now = _shot_md5(inst, 0)
             if now and before and now != before:
+                verdict = "PAINTED"
+        if verdict == "PAINTED":
+            flat = _flat_heads(inst)
+            if not flat:
                 return time.monotonic() - t0
+            verdict = "WAIT flat head " + ",".join(str(i) for i in flat)
+        if verdict != last:
+            log(f"{inst.name}: waiting for the first frame: {verdict}")
+            last = verdict
         time.sleep(1.5)
     return None
 
 
 def cmd_session(a):
     inst = Instance(a.name).require_running()
+    kind, desktop = inst.session_kind(), inst.desktop()
     t0 = time.monotonic()
     last = ""
+    before = None if getattr(a, "no_paint", False) else _shot_md5(inst, 0)
     while True:
-        p = ssh_script(inst.port, SESSION_SCRIPT, timeout=30)
+        p = ssh_script(inst.port, f"DESKTOP={desktop}\nKIND={kind}\n" + SESSION_SCRIPT, timeout=30)
         line = (p.stdout.strip().splitlines() or [""])[-1] if p.returncode == 0 else "ssh: " + p.stderr.strip()
         partial = [l for l in p.stdout.splitlines() if l.startswith("PARTIAL")]
         if line.startswith("OK "):
-            sid = line.split()[1]
+            words = line.split()
+            sid = words[1]
+            found = dict(w.split("=", 1) for w in words[2:] if "=" in w)
             print(f"SESSION_ID={sid}")
             print("XDG_RUNTIME_DIR=/run/user/1000")
-            print("WAYLAND_DISPLAY=wayland-0")
+            for k in ("WAYLAND_DISPLAY", "DISPLAY", "SWAYSOCK"):
+                if k in found:
+                    print(f"{k}={found[k]}")
             print("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus")
-            log(f"{inst.name}: wayland session {sid} for user test active after {time.monotonic() - t0:.0f}s")
+            print(f"XDG_SESSION_TYPE={kind}")
+            log(f"{inst.name}: {kind} session {sid} of user test ({desktop}) active after {time.monotonic() - t0:.0f}s")
             if not getattr(a, "no_paint", False):
-                waited = wait_first_paint(inst)
+                waited = wait_first_paint(inst, before)
                 if waited is None:
                     log(f"{inst.name}: warning: no first frame detected within 60s; continuing")
                 else:
@@ -991,43 +1217,97 @@ def cmd_session(a):
             return
         state = partial[-1] if partial else line
         if state != last:
-            log(f"{inst.name}: waiting for graphical session of user test: {state}")
+            log(f"{inst.name}: waiting for the {kind} session of user test ({desktop}): {state}")
             last = state
         if time.monotonic() - t0 > a.timeout:
-            raise Fail(f"{inst.name}: no active Wayland session for user test within {a.timeout}s "
-                       f"(last: {state}); check `vmctl ssh {inst.name} -- journalctl -b -u gdm`")
+            raise Fail(f"{inst.name}: no active {kind} session for user test within {a.timeout}s "
+                       f"(last: {state}); check `vmctl ssh {inst.name} -- journalctl -b -u {DESKTOPS[desktop]['dm']}`")
         time.sleep(3)
 
 
 USER_WRAPPER = r"""
-imp() {
+# VMCTL_DESKTOP=gnome|kde|xfce|sway and VMCTL_SESSION=wayland|x11 come from the host.
+# Session variables are imported first-wins, in this order: what the session
+# exported to the systemd user manager (gnome-session, startplasma, the X
+# session's dbus-update-activation-environment, sway's exec line), then the
+# compositor's / session leader's own environment, then the sockets that are
+# actually there.
+imp() {   # import plain-valued session variables from "K=V" words, never overriding
   for kv in "$@"; do
     case "$kv" in
-      XAUTHORITY=*|DISPLAY=*|XDG_CURRENT_DESKTOP=*|XDG_SESSION_DESKTOP=*|DESKTOP_SESSION=*|XDG_SESSION_ID=*)
+      XAUTHORITY=*|DISPLAY=*|WAYLAND_DISPLAY=*|SWAYSOCK=*|XDG_CURRENT_DESKTOP=*|XDG_SESSION_DESKTOP=*|DESKTOP_SESSION=*|XDG_SESSION_ID=*|XDG_SESSION_TYPE=*)
+        k=${kv%%=*}
+        eval "have=\${$k:-}"
+        [ -n "$have" ] && continue
         case "${kv#*=}" in *[!A-Za-z0-9_./:@,-]*) ;; *) export "$kv" ;; esac ;;
     esac
   done
 }
 imp $(systemctl --user show-environment 2>/dev/null)
-if [ -z "$XAUTHORITY" ]; then
-  p=$(pgrep -u "$(id -u)" -x gnome-shell 2>/dev/null | head -1)
-  [ -n "$p" ] && imp $(tr '\0' '\n' < /proc/$p/environ 2>/dev/null)
+case "$VMCTL_DESKTOP" in kde) comp=kwin_wayland ;; xfce) comp=xfce4-session ;; sway) comp=sway ;; *) comp=gnome-shell ;; esac
+p=$(pgrep -u "$(id -u)" -x "$comp" 2>/dev/null | head -1)
+# 2> before < : a kwin_wayland that carries file capabilities has an environ
+# only root may read, and the shell's own "Permission denied" would go to the
+# caller's stderr if the redirection of fd 2 came second.
+[ -n "$p" ] && imp $(tr '\0' '\n' 2>/dev/null < /proc/$p/environ)
+RT=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+if [ -z "$WAYLAND_DISPLAY" ] && [ "$VMCTL_SESSION" = wayland ]; then
+  s=$(find "$RT" -maxdepth 1 -type s -name 'wayland-[0-9]*' 2>/dev/null | sort | head -1)
+  [ -n "$s" ] && export WAYLAND_DISPLAY=${s##*/}
+fi
+if [ "$VMCTL_DESKTOP" = sway ] && [ -z "$SWAYSOCK" ]; then
+  s=$(find "$RT" -maxdepth 1 -type s -name 'sway-ipc.*.sock' 2>/dev/null | head -1)
+  [ -n "$s" ] && export SWAYSOCK=$s
 fi
 [ -z "$DISPLAY" ] && [ -S /tmp/.X11-unix/X0 ] && export DISPLAY=:0
-# XDG_SESSION_ID is not in the user manager's environment: take logind's
-# "display" session of the user (the graphical one) and its real Type.
+# LightDM writes the X cookie to ~/.Xauthority (user-authority-in-system-dir=false)
+[ -z "$XAUTHORITY" ] && [ "$VMCTL_SESSION" = x11 ] && [ -f "$HOME/.Xauthority" ] && export XAUTHORITY=$HOME/.Xauthority
+if [ -z "$XDG_CURRENT_DESKTOP" ]; then
+  case "$VMCTL_DESKTOP" in kde) export XDG_CURRENT_DESKTOP=KDE ;; xfce) export XDG_CURRENT_DESKTOP=XFCE ;;
+    sway) export XDG_CURRENT_DESKTOP=sway ;; gnome) export XDG_CURRENT_DESKTOP=ubuntu:GNOME ;; esac
+fi
+# XDG_SESSION_ID is not in the user manager's environment: logind's "display"
+# session of the user (the graphical one), else the user's session on a seat.
 if [ -z "$XDG_SESSION_ID" ]; then
   sid=$(loginctl show-user "$(id -un)" -p Display --value 2>/dev/null)
+  if [ -z "$sid" ] || [ -z "$(loginctl show-session "$sid" -p Seat --value 2>/dev/null)" ]; then
+    for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$(id -un)" '$3==u {print $1}'); do
+      [ -n "$(loginctl show-session "$s" -p Seat --value 2>/dev/null)" ] && { sid=$s; break; }
+    done
+  fi
   case "$sid" in *[!A-Za-z0-9_.-]*|"") ;; *) export XDG_SESSION_ID=$sid ;; esac
 fi
-if [ -n "$XDG_SESSION_ID" ]; then
+# XDG_SESSION_TYPE: what the session exported (GNOME/Plasma/Xfce: the same as
+# logind's Type; sway publishes wayland although greetd registered a tty
+# session), else logind's Type, else the kind of session the flavor runs.
+case "$XDG_SESSION_TYPE" in wayland|x11) ;; *) unset XDG_SESSION_TYPE ;; esac
+if [ -z "$XDG_SESSION_TYPE" ] && [ -n "$XDG_SESSION_ID" ]; then
   st=$(loginctl show-session "$XDG_SESSION_ID" -p Type --value 2>/dev/null)
-  case "$st" in wayland|x11|tty|mir) export XDG_SESSION_TYPE=$st ;; esac
+  case "$st" in wayland|x11) export XDG_SESSION_TYPE=$st ;; esac
 fi
-: "${XDG_SESSION_TYPE:=wayland}"; export XDG_SESSION_TYPE
+: "${XDG_SESSION_TYPE:=$VMCTL_SESSION}"; export XDG_SESSION_TYPE
+unset VMCTL_SESSION VMCTL_DESKTOP comp p s st sid RT kv k have
 cd "$HOME" 2>/dev/null
 exec "$@"
 """
+
+
+def user_argv(inst, cmd):
+    """The remote argv running `cmd` (a list) as user test inside the desktop
+    session, with the session environment USER_WRAPPER reconstructs."""
+    return ["sudo", "-u", "test", "-H", "env",
+            "XDG_RUNTIME_DIR=/run/user/1000",
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+            "USER=test", "LOGNAME=test",
+            f"VMCTL_SESSION={inst.session_kind()}", f"VMCTL_DESKTOP={inst.desktop()}",
+            "sh", "-c", USER_WRAPPER, "vmctl-user"] + list(cmd)
+
+
+def user_shell(inst, script, timeout=60):
+    """Run a /bin/sh script as user test inside the desktop session (what
+    `vmctl user` gives a command); returns the CompletedProcess."""
+    return run(ssh_cmd(inst.port, 5) + [shlex.join(user_argv(inst, ["sh", "-c", script]))],
+               check=False, timeout=timeout)
 
 
 def cmd_user(a):
@@ -1036,21 +1316,17 @@ def cmd_user(a):
     while a.cmd and a.cmd[0] in ("-t", "--tty"):
         a.tty = True
         a.cmd.pop(0)
-    if a.cmd[:1] == ["--"]:
+    if a.cmd and a.cmd[0] == "--":
         a.cmd.pop(0)
     if not a.cmd:
         raise Fail("usage: vmctl user <name> [-t] -- cmd...")
-    # The X side needs more than DISPLAY: mutter's Xwayland uses an auth file
-    # (XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.*) that gnome-session
-    # exports to the systemd user manager -- import those plain-valued
-    # variables from there, with the running gnome-shell's environ as fallback.
-    wrapper = USER_WRAPPER
-    remote = ["sudo", "-u", "test", "-H", "env",
-              "XDG_RUNTIME_DIR=/run/user/1000", "WAYLAND_DISPLAY=wayland-0",
-              "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
-              "USER=test", "LOGNAME=test",
-              "sh", "-c", wrapper, "vmctl-user"] + list(a.cmd)
-    os.execvp("ssh", ssh_cmd(inst.port, 5, tty=a.tty) + [shlex.join(remote)])
+    # The X side needs more than DISPLAY: mutter's/kwin's Xwayland use an auth
+    # file (XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.* / xauth_*) that the
+    # session exports to the systemd user manager -- the wrapper imports those
+    # plain-valued variables from there, then from the compositor's environ,
+    # then falls back to the sockets present (see USER_WRAPPER).
+    os.execvp("ssh", ssh_cmd(inst.port, 5, tty=a.tty)
+              + [shlex.join(user_argv(inst, a.cmd))])
 
 
 # ---------------------------------------------------------------- main
@@ -1125,7 +1401,7 @@ def main(argv=None):
     p.add_argument("--all", action="store_true", help="every active head -> <out>-<idx>.png")
     p.set_defaults(fn=cmd_shot)
 
-    p = sub.add_parser("session", help="wait for user test's Wayland session and print its env")
+    p = sub.add_parser("session", help="wait for user test's graphical session and print its env")
     p.add_argument("name")
     p.add_argument("--timeout", type=int, default=180)
     p.add_argument("--no-paint", action="store_true",

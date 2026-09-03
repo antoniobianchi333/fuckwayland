@@ -1,11 +1,13 @@
 #cloud-config
-# vmctl flavor noble-gnome: Ubuntu 24.04 LTS (noble) + ubuntu-desktop, GNOME on Wayland,
-# GDM autologin of user test (uid 1000, password test, NOPASSWD sudo).
+# vmctl flavor resolute-sway: Ubuntu 26.04 LTS (resolute) + sway (wlroots) with Xwayland, foot, grim;
+# greetd autologin ([initial_session]) of user test (uid 1000, password test, NOPASSWD sudo) into
+# sway on vt 1; the session's outputs are arranged Virtual-1, -2, ... left to right at start.
+# Native display tool: swaymsg -t get_outputs.  No NetworkManager here (networkd stays).
 # vmctl fills in the two @@...@@ placeholders at build time (root ssh public
 # key; the contents of vm/build-image.sh). The base image lives in $VMIMAGES:
-# vmctl-base: noble-server-cloudimg-amd64.img
-# vmctl-desktop: gnome
-hostname: noble-gnome
+# vmctl-base: ubuntu-26.04-server-cloudimg-amd64.img
+# vmctl-desktop: sway
+hostname: resolute-sway
 manage_etc_hosts: true
 disable_root: false
 ssh_pwauth: false
@@ -27,9 +29,9 @@ write_files:
     content: "uinput\n"
   - path: /etc/vmctl-build.env
     content: |
-      FLAVOR=noble-gnome
-      DESKTOP=gnome
-      DESKTOP_PKG=ubuntu-desktop
+      FLAVOR=resolute-sway
+      DESKTOP=sway
+      DESKTOP_PKG="sway swaybg sway-backgrounds xwayland foot grim greetd dbus-user-session"
       EXTRA_PKGS="xdotool wmctrl x11-utils x11-xserver-utils"
   - path: /usr/local/sbin/vmctl-build
     permissions: '0755'

@@ -1,11 +1,12 @@
 #cloud-config
-# vmctl flavor noble-gnome: Ubuntu 24.04 LTS (noble) + ubuntu-desktop, GNOME on Wayland,
-# GDM autologin of user test (uid 1000, password test, NOPASSWD sudo).
+# vmctl flavor noble-xfce: Ubuntu 24.04 LTS (noble) + xubuntu-desktop, Xfce 4.18 on Xorg (X11),
+# LightDM autologin of user test (uid 1000, password test, NOPASSWD sudo) into the xubuntu session.
+# The X11-path oracle: real xrandr/arandr work here.
 # vmctl fills in the two @@...@@ placeholders at build time (root ssh public
 # key; the contents of vm/build-image.sh). The base image lives in $VMIMAGES:
 # vmctl-base: noble-server-cloudimg-amd64.img
-# vmctl-desktop: gnome
-hostname: noble-gnome
+# vmctl-desktop: xfce
+hostname: noble-xfce
 manage_etc_hosts: true
 disable_root: false
 ssh_pwauth: false
@@ -27,9 +28,9 @@ write_files:
     content: "uinput\n"
   - path: /etc/vmctl-build.env
     content: |
-      FLAVOR=noble-gnome
-      DESKTOP=gnome
-      DESKTOP_PKG=ubuntu-desktop
+      FLAVOR=noble-xfce
+      DESKTOP=xfce
+      DESKTOP_PKG="xubuntu-desktop"
       EXTRA_PKGS="xdotool wmctrl x11-utils x11-xserver-utils"
   - path: /usr/local/sbin/vmctl-build
     permissions: '0755'
