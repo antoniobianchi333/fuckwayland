@@ -48,6 +48,7 @@ class FakeX11:
 
     def __init__(self, showing=0):
         self.calls = []
+        self.atoms = {}
         self.showing = showing
         self.bridge = None  # the harness' bridge: frames to derive from
 
@@ -86,6 +87,16 @@ class FakeX11:
 
     def set_name(self, win, name, icon, long_):
         self.calls.append(("set_name", win, name, icon, long_))
+
+    def atom(self, name, only_if_exists=False):
+        return self.atoms.setdefault(name, 0x180 + len(self.atoms))
+
+    def send_root_message(self, win, type_name, data):
+        """Mutter's side of an EWMH request: _NET_SHOWING_DESKTOP really
+        changes the mode and the root property that reports it."""
+        self.calls.append(("client_message", win, type_name, tuple(data)))
+        if type_name == "_NET_SHOWING_DESKTOP":
+            self.showing = int(data[0])
 
     def close(self):
         pass
@@ -295,20 +306,53 @@ class DesktopTests(GnomeCliBase):
         self.assertEqual(self.calls("ShowDesktop"),
                          [(True,), (True,), (False,)])
 
+    def test_k_prefers_the_x_plane(self):
+        """wwmctl-6: Mutter's real show-desktop mode is reachable with the
+        _NET_SHOWING_DESKTOP ClientMessage real wmctrl sends, and on GNOME
+        it works: every window is hidden, `-k off` brings them all back
+        untouched, and `-m` (the same property) finally agrees. The
+        bridge's minimize-everything stand-in is the fallback, for a
+        session with no X plane."""
+        x = FakeX11(showing=0)
+        rc, _o, err = self.wm(["-k", "on"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"],
+                         [("client_message", x.root(),
+                           "_NET_SHOWING_DESKTOP", (1, 0, 0, 0, 0))])
+        self.assertEqual(self.calls("ShowDesktop"), [])   # not the stand-in
+        self.assertEqual(x.showing, 1)
+        rc, _o, err = self.wm(["-k", "off"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(x.showing, 0)
+        self.assertEqual(self.calls("ShowDesktop"), [])
+
+    def test_k_falls_back_to_the_bridge_when_the_wm_does_not_answer(self):
+        class DeafX11(FakeX11):
+            def send_root_message(self, win, type_name, data):
+                self.calls.append(("client_message", win, type_name,
+                                   tuple(data)))   # ... and nothing happens
+
+        with mock.patch.object(core.time, "sleep"):
+            rc, _o, err = self.wm(["-k", "on"], x11=DeafX11(showing=0))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("ShowDesktop"), [(True,)])
+
     def test_k_toggle_reads_the_x_root_state(self):
         """wwmctl-5: 1.07+git's `-k toggle` flips whatever
         _NET_SHOWING_DESKTOP says; with no X plane to ask, an absent
         property reads as off, like the oracle's (NULL-dereferencing)
         default."""
-        rc, _o, err = self.wm(["-k", "toggle"], x11=FakeX11(showing=0))
+        x = FakeX11(showing=0)
+        rc, _o, err = self.wm(["-k", "toggle"], x11=x)
         self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(self.calls("ShowDesktop"), [(True,)])
-        rc, _o, err = self.wm(["-k", "toggle"], x11=FakeX11(showing=1))
+        self.assertEqual(x.showing, 1)
+        rc, _o, err = self.wm(["-k", "toggle"], x11=x)
         self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(self.calls("ShowDesktop"), [(True,), (False,)])
+        self.assertEqual(x.showing, 0)
+        # no X plane: "off" is the reading, so toggle asks the bridge for on
         rc, _o, err = self.wm(["-k", "toggle"], x11=None)
         self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(self.calls("ShowDesktop")[-1], (True,))
+        self.assertEqual(self.calls("ShowDesktop"), [(True,)])
 
     def test_j_prints_the_active_workspace(self):
         rc, out, err = self.wm(["-j"], x11=None)
@@ -553,6 +597,46 @@ class ActionTests(GnomeCliBase):
         self.assertEqual((rc, err), (0, ""))
         self.assertEqual(self.calls("Resize"), [(XTERM, 300, 237)])
         self.assertEqual(self.calls("Move"), [(XTERM, 10, 20)])
+
+    def test_b_states_mutter_cannot_set_go_through_the_x_server(self):
+        """wwmctl-6: the bridge answers "not applied" for below,
+        skip_taskbar, skip_pager, shaded and modal -- Mutter exports no
+        Wayland setter. For an XWayland window Mutter is still the EWMH
+        window manager, and the root ClientMessage real wmctrl sends does
+        work (oracle-proven live). The compositor stays the first choice
+        for everything else: `hidden` really minimizes through the bridge,
+        where the X route is a no-op."""
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "test@vm", "-b", "add,below"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("SetState"), [])
+        self.assertEqual(
+            [c for c in x.calls if c[0] == "client_message"],
+            [("client_message", XTERM_XID, "_NET_WM_STATE",
+              (1, x.atom("_NET_WM_STATE_BELOW"), 0, 0, 0))])
+        # two properties at once, and remove/toggle carry their action
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "test@vm", "-b",
+                               "toggle,skip_taskbar,skip_pager"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual([(c[3][0], c[2]) for c in x.calls
+                          if c[0] == "client_message"],
+                         [(2, "_NET_WM_STATE"), (2, "_NET_WM_STATE")])
+        # a state the compositor CAN set still goes through the bridge
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "test@vm", "-b", "add,hidden"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("SetState"), [(XTERM, "HIDDEN", "add")])
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"], [])
+
+    def test_b_on_a_native_window_still_warns(self):
+        """A native window has no X twin to ask, so the gap stays a
+        warning rather than a ClientMessage into the void."""
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "Calculator", "-b", "add,below"], x11=x)
+        self.assertEqual(rc, 0)
+        self.assertIn("ignoring", err)
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"], [])
 
     def test_b_states_through_set_state(self):
         rc, _o, err = self.wm(["-r", "Calculator", "-b", "add,fullscreen"],

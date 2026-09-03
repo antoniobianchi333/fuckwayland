@@ -186,10 +186,20 @@ untouched) and the generic `list()` fallback.
   Xwayland is up — byte-identical to real wmctrl there —, waiting up to 2 s
   for a freshly started Xwayland to get its root properties. Without
   Xwayland the name comes from the backend (`GnomeBackend.wm_name`, the
-  same string) and the showing-desktop mode is `N/A` (Mutter's real
-  show-desktop state has no public API off the X root).
-* **Actions** all go through the bridge, for XWayland and native windows
-  alike: `-a` `Activate` (switches workspace, unminimizes, raises,
+  same string) and the showing-desktop mode is `N/A` — Mutter's real
+  show-desktop state has no public API off the X root, which is also why
+  `-k` prefers that root (below).
+* **`-k`** sends `_NET_SHOWING_DESKTOP` to the X root, exactly as real
+  wmctrl does, and Mutter's own show-desktop mode answers: every window is
+  hidden, `-k off` brings them all back untouched, and `-m` — which reads
+  the same property — agrees. The bridge exports a stand-in that minimizes
+  every window on the active workspace (the shell has no API for the real
+  mode) and it is the fallback, for a session with no X plane or an
+  Xwayland whose window-manager half has not come up; the root property is
+  polled for a second to tell the two apart. `-k toggle` (1.07+git) reads
+  the same property, and reads an absent one as off.
+* **Actions** otherwise go through the bridge, for XWayland and native
+  windows alike: `-a` `Activate` (switches workspace, unminimizes, raises,
   focuses), `-c` `Close` (polite delete), `-R` `MoveToWorkspace(current)` +
   `Activate`, `-t N` `MoveToWorkspace(N)` (`-t -1` = current; an index past
   the last workspace is a one-line error, exit 1, where wmctrl would fire
@@ -197,10 +207,17 @@ untouched) and the generic `list()` fallback.
   index), `-b (add|remove|toggle),P1[,P2]` `SetState` per property —
   `fullscreen`, `maximized_vert`/`maximized_horz` (real per-axis
   maximization on every GNOME release), `hidden` (minimize), `above`,
-  `sticky`, `demands_attention` are applied by Mutter; `skip_taskbar`,
-  `skip_pager`, `modal` warn and succeed (no Mutter setter, nothing
-  observable); `shaded` and `below` warn `…; ignoring` and exit 0 like any
-  request "the WM may ignore". `-e G,X,Y,W,H` carries
+  `sticky`, `demands_attention` are applied by Mutter. Five have no
+  Wayland setter at all — `below`, `skip_taskbar`, `skip_pager`, `shaded`,
+  `modal` — and for an **XWayland** window those go to the X plane
+  instead, as the `_NET_WM_STATE` ClientMessage real wmctrl sends: Mutter
+  is the EWMH window manager there and applies `below`, `skip_taskbar` and
+  `skip_pager` for real (verified against the oracle on GNOME 46), while
+  `shaded` and `modal` are no-ops for the oracle too. On a **native**
+  window there is no X twin to ask and they warn `…; ignoring` and exit 0,
+  like any request "the WM may ignore". The compositor stays the first
+  choice everywhere else — `hidden` really minimizes through the bridge,
+  where the X route is a no-op. `-e G,X,Y,W,H` carries
   `_NET_MOVERESIZE_WINDOW`'s meaning: `W,H` are the **client** size and
   the gravity names the point of the window the request positions —
   `1` NorthWest puts the frame's top-left at `X,Y`, `5` Center puts its

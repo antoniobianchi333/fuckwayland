@@ -552,14 +552,54 @@ class Core:
             sys.stderr.write("Invalid zero length property.\n")
             return 1
         self.vprint("State 1: _NET_WM_STATE_%s\n" % p1.upper())
+        # An XWayland window has a second route: Mutter is a full EWMH
+        # window manager for the X plane and honours the _NET_WM_STATE
+        # ClientMessage real wmctrl sends -- including for the states its
+        # Wayland API cannot express (below, skip_taskbar, skip_pager).
+        # The compositor stays the first choice: `hidden` really minimizes
+        # through the bridge, where the X route is a no-op.
+        skip = self._compositor_cannot_set() if w.is_x else frozenset()
         for prop in (p1, p2):
             if prop is None:
                 continue
+            name = prop.upper()
+            if name in skip and self._x_set_state(w, name, action):
+                continue
             try:
-                self.backend().set_state(w.node_id, prop.upper(), action)
+                self.backend().set_state(w.node_id, name, action)
             except CmdError as e:
+                if self._x_set_state(w, name, action):
+                    continue
                 _warn("%s; ignoring" % e)
         return 0
+
+    def _compositor_cannot_set(self):
+        """_NET_WM_STATE names the compositor backend answers "not
+        applied" to. The backend reports them (GNOME: the bridge's own
+        gaps); one that does not say lets the CmdError path decide."""
+        fn = self._backend_hook("unsupported_states")
+        try:
+            return frozenset(fn() or ()) if callable(fn) else frozenset()
+        except Exception:
+            return frozenset()
+
+    def _x_set_state(self, w: UWindow, name: str, action: int) -> bool:
+        """The EWMH _NET_WM_STATE ClientMessage, sent to the X root about
+        an XWayland window -- byte for byte what real wmctrl does. False
+        when there is no X window or no X plane to send it on."""
+        if not w.is_x:
+            return False
+        x = self.x11() if self._x_is_up() else None
+        if x is None:
+            return False
+        try:
+            atom = x.atom("_NET_WM_STATE_%s" % name)
+            x.send_root_message(w.id, "_NET_WM_STATE",
+                                [action, atom, 0, 0, 0])
+        except Exception as e:
+            self.vprint("_NET_WM_STATE ClientMessage failed: %s\n" % e)
+            return False
+        return True
 
     def set_title(self, w: UWindow, title: str, mode: str) -> int:  # -N/-I/-T
         if not w.is_x:
@@ -758,6 +798,15 @@ class Core:
             return 1
         if param == "toggle":
             param = "off" if self._showing_desktop() == 1 else "on"
+        # Mutter's own show-desktop mode is reachable from the X plane:
+        # _NET_SHOWING_DESKTOP on the X root is what real wmctrl sends, and
+        # on GNOME it really works -- every window is hidden, `-k off`
+        # brings them all back untouched, and `-m`, which reads the same
+        # property, agrees. That is the mode; the bridge's
+        # minimize-everything stand-in exists because the shell exports no
+        # API for it, and is the fallback for a session with no X plane.
+        if self._x_showing_desktop(param == "on"):
+            return 0
         show_fn = self._backend_hook("show_desktop")
         if show_fn is None:
             _warn("Wayland compositors have no 'showing the desktop' mode; "
@@ -769,13 +818,41 @@ class Core:
             _warn("%s; ignoring" % e)
         return 0
 
+    def _x_showing_desktop(self, show: bool) -> bool:
+        """_NET_SHOWING_DESKTOP to the X root, real wmctrl's own request.
+
+        False when the X plane is not there to take it, and false when the
+        window manager does not answer -- Mutter reports the mode by
+        updating the root property, so a missing update means an Xwayland
+        whose WM half is not up, and the caller falls back to the
+        compositor's own stand-in rather than doing nothing at all."""
+        x = self.x11() if self._x_is_up() else None
+        if x is None:
+            return False
+        want = 1 if show else 0
+        if self._showing_desktop() == want:
+            return True          # already in that mode: nothing to ask for
+        try:
+            x.send_root_message(x.root(), "_NET_SHOWING_DESKTOP",
+                                [want, 0, 0, 0, 0])
+        except Exception as e:
+            self.vprint("_NET_SHOWING_DESKTOP ClientMessage failed: %s\n" % e)
+            return False
+        deadline = time.monotonic() + 1.0
+        while True:
+            if self._showing_desktop() == want:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
     def _showing_desktop(self):
         """The X root's _NET_SHOWING_DESKTOP (Mutter keeps it for the
         XWayland plane, and -k drives it there too), or None when there is
         no X plane to ask -- `-k toggle` then reads as "currently off",
         which is what real wmctrl does with an absent property, minus the
         NULL dereference."""
-        x = self.x11()
+        x = self.x11() if self._x_is_up() else None
         if x is None:
             return None
         vals = _xtry(lambda: x.get_prop_ints(x.root(), "_NET_SHOWING_DESKTOP"))

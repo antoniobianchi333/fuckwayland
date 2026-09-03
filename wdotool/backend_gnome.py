@@ -413,6 +413,13 @@ class GnomeBackend(WindowBackend):
         raise CmdError("windowstate %s is not supported by the gnome backend (%s)"
                        % (state, _GAP_REASONS.get(state, "Mutter has no API for it")))
 
+    def unsupported_states(self) -> "set[str]":
+        """_NET_WM_STATE names the bridge answers "not applied" to: Mutter
+        exports no Wayland setter for them, so they are cosmetic no-ops
+        here. wwmctl asks so it knows when to reach an XWayland window
+        through the X server instead, where Mutter honours them."""
+        return set(_COSMETIC_STATES) | set(_GAP_REASONS)
+
     def window_desktop(self, wid: int) -> int:
         return self.find(wid).desktop
 

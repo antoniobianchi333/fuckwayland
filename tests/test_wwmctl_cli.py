@@ -148,6 +148,7 @@ class FakeX11:
         self.machines = machines or {}
         self.wm_name = wm_name
         self.calls = []
+        self.atoms = {}
 
     def root(self):
         return 1
@@ -176,6 +177,12 @@ class FakeX11:
 
     def set_name(self, win, name, icon, long_):
         self.calls.append(("set_name", win, name, icon, long_))
+
+    def atom(self, name, only_if_exists=False):
+        return self.atoms.setdefault(name, 0x180 + len(self.atoms))
+
+    def send_root_message(self, win, type_name, data):
+        self.calls.append(("client_message", win, type_name, tuple(data)))
 
 
 # standard fixture: one XWayland window, one native, one bare/N-A-ish
@@ -745,6 +752,32 @@ class GitGenerationOptionsTest(unittest.TestCase):
             rc, out, err, b = run(["-i", opt, "0x999999"])
             self.assertEqual((rc, out, err), (1, "", ""))
             self.assertEqual(b.calls, [])
+
+
+class XStateFallbackTest(unittest.TestCase):
+    """wwmctl-6: a state the compositor backend refuses is retried on the
+    X plane for an XWayland window, which is where real wmctrl sends it."""
+
+    def test_refused_state_is_retried_on_the_x_plane(self):
+        x = FakeX11()
+        rc, _o, err, b = run(["-r", "Mail", "-b", "add,below"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"],
+                         [("client_message", 0x40000C, "_NET_WM_STATE",
+                           (1, x.atom("_NET_WM_STATE_BELOW"), 0, 0, 0))])
+        self.assertEqual(b.calls, [])   # the backend refused it
+
+    def test_without_an_x_plane_the_refusal_still_warns(self):
+        rc, _o, err, _b = run(["-r", "Mail", "-b", "add,below"], x11=None)
+        self.assertEqual(rc, 0)
+        self.assertIn("ignoring", err)
+
+    def test_a_native_window_never_gets_a_client_message(self):
+        x = FakeX11()
+        rc, _o, err, _b = run(["-r", "FootWin", "-b", "add,below"], x11=x)
+        self.assertEqual(rc, 0)
+        self.assertIn("ignoring", err)
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"], [])
 
 
 class WarnAndSucceedTest(unittest.TestCase):
