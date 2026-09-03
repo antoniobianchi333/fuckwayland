@@ -352,6 +352,47 @@ class TestPointerMapping(unittest.TestCase):
         os.environ["SWAYSOCK"] = "/nonexistent/wdotool-no-sway"
         self.assertIs(daemon._Daemon()._rel_absolute(), True)
 
+class TestPointerModel(unittest.TestCase):
+    """B6: the daemon's pointer model, and refusing to invent one."""
+
+    def test_seed_pointer_replaces_the_model(self):
+        d = make_daemon((0, 0, 5760, 1080), rel_abs=True)
+        d.op_mousemove_abs(100, 100, [])
+        d.op_seed_pointer(2880, 540, [])       # "the compositor says..."
+        self.assertEqual((d.px, d.py), (2880, 540))
+        self.assertTrue(d.pos_known)
+        self.assertEqual(d.tablet.events[-1], ("SYN",))  # nothing injected
+        d.tablet.events.clear()
+        d.op_mousemove_rel(20, 0, [])
+        self.assertEqual((d.px, d.py), (2900, 540))
+
+    def test_seed_pointer_clamps(self):
+        d = make_daemon()
+        d.op_seed_pointer(99999, -5, [])
+        self.assertEqual((d.px, d.py), (1919, 0))
+
+    def test_pointer_without_devices_is_an_error_not_zero_zero(self):
+        os.environ["WDOTOOL_UINPUT_PATH"] = "/nonexistent/wdotool-uinput"
+        self.addCleanup(os.environ.pop, "WDOTOOL_UINPUT_PATH", None)
+        d = daemon._Daemon()
+        d.geom = (0, 0, 1920, 1080)
+        # serve_client turns this into {"ok": false, "error": ...}, so the
+        # client raises CmdError and getmouselocation exits 1 with the real
+        # reason instead of printing "x:0 y:0" with rc 0.
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError) as cm:
+                d.handle({"op": "pointer"})
+        self.assertIn("uinput", str(cm.exception))
+
+    def test_pointer_answers_once_seeded(self):
+        os.environ["WDOTOOL_UINPUT_PATH"] = "/nonexistent/wdotool-uinput"
+        self.addCleanup(os.environ.pop, "WDOTOOL_UINPUT_PATH", None)
+        d = daemon._Daemon()
+        d.geom = (0, 0, 1920, 1080)
+        d.op_seed_pointer(640, 400, [])
+        self.assertEqual(d.handle({"op": "pointer"}),
+                         {"ok": True, "x": 640, "y": 400, "known": True})
+
 class TestProtocol(unittest.TestCase):
     """Full client<->daemon protocol against a really spawned (forked) daemon."""
 

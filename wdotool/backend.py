@@ -165,6 +165,13 @@ class WindowBackend:
         find_xauthority)."""
         return None
 
+    def pointer(self) -> tuple[int, int] | None:
+        """The compositor's real pointer position in global layout
+        coordinates, or None when the compositor offers no pointer query
+        (sway's IPC does not). Callers fall back to the input daemon's
+        model of the last position it injected."""
+        return None
+
     def window_at(self, x: int, y: int) -> int | None:
         """Backend-native pointer hit-test: the topmost window under the
         point, skipping desktop/dock layers, 0 for none; None means "use the

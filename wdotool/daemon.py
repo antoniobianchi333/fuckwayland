@@ -5,6 +5,13 @@ hotplug latency — paid once), tracks the injected pointer position, and serves
 one JSON object per line on a unix socket. `{"ok":true,...}` or
 `{"ok":false,"error":"..."}`; a response may carry `"warnings":[...]` which the
 client prints to its stderr.
+
+The daemon owns the pointer *model* (px, py): the position it last injected.
+It is only a model -- REL events, a physical mouse, or another daemon move
+the compositor's pointer behind its back -- so clients that can ask the
+compositor for the real position (the GNOME bridge's GetPointer) push it
+back with the `seed_pointer` op before a relative move (see B1/B6 in
+DESIGN.md).
 """
 
 import fcntl
@@ -470,12 +477,23 @@ class _Daemon:
                 self.op_click(_num(req.get("btn"), "button", 0, 255),
                               _num(req.get("repeat", 1), "repeat", 0, MAX_REPEAT),
                               _num(req.get("delay_ms", 100), "delay_ms", 0, MAX_DELAY_MS))
+            elif op == "seed_pointer":
+                self.op_seed_pointer(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
+                                     _num(req.get("y"), "y", _I32_MIN, _I32_MAX),
+                                     warnings)
             elif op == "pointer":
-                return {"ok": True, "x": self.px, "y": self.py}
+                # B6: never answer "0,0" for a daemon that has no pointer.
+                # A daemon that could not open /dev/uinput has injected
+                # nothing and knows nothing; it must fail with that reason
+                # instead of reporting the origin with rc 0.
+                if not self.pos_known:
+                    self._need_devices()
+                return {"ok": True, "x": self.px, "y": self.py,
+                        "known": self.pos_known}
             elif op == "geometry":
                 gx, gy, w, h = self.geometry(warnings)
                 return {"ok": True, "x": gx, "y": gy, "w": w, "h": h,
-                        "warnings": warnings}
+                        "fallback": self.geom_fallback, "warnings": warnings}
             elif op == "ping":
                 return {"ok": True, "pid": os.getpid()}
             else:
@@ -702,9 +720,19 @@ class DaemonClient:
         resp = self._rpc(op="pointer")
         return (resp["x"], resp["y"])
 
+    def seed_pointer(self, x: int, y: int):
+        """Tell the daemon where the compositor's pointer really is (B6)."""
+        self._rpc(op="seed_pointer", x=x, y=y)
+
     def geometry(self) -> tuple[int, int]:
         resp = self._rpc(op="geometry")
         return (resp["w"], resp["h"])
+
+    def geometry_status(self) -> tuple[int, int, bool]:
+        """(w, h, fallback): `fallback` is True when the compositor could not
+        be asked and the numbers are the built-in guess (B5)."""
+        resp = self._rpc(op="geometry")
+        return (resp["w"], resp["h"], bool(resp.get("fallback")))
 
     def geometry_full(self) -> tuple[int, int, int, int]:
         """(min_x, min_y, w, h) of the output layout — the origin matters on

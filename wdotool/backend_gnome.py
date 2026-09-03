@@ -542,13 +542,16 @@ class GnomeBackend(WindowBackend):
         data = self._json("ListMonitors")
         return data if isinstance(data, list) else []
 
-    def real_pointer(self) -> tuple[int, int]:
-        """Diagnostic, no command uses it: the compositor's actual pointer
-        (not the daemon-tracked injected one that getmouselocation reports
-        by design), for checking that injected moves land where the tools
-        think they do (PLAN critique 3, VERIFY-CHECKLIST)."""
+    def pointer(self) -> tuple[int, int] | None:
+        """The compositor's real pointer (B6). Mutter knows where the pointer
+        is whoever moved it -- our tablet, a REL event, a physical mouse or
+        another wdotool daemon -- so getmouselocation reports this and the
+        input daemon's model is corrected from it before a relative move."""
         x, y, _mods = self._call("GetPointer")
         return int(x), int(y)
+
+    # Historical name kept for the diagnostics scripts in vm/ and gnome/.
+    real_pointer = pointer
 
     def bridge_version(self) -> int:
         return int(self._call("GetVersion")[0])

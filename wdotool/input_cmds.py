@@ -80,6 +80,42 @@ def _activate_settle(ctx, wid):
     time.sleep(0.05)
 
 
+def _backend_pointer(ctx):
+    """The compositor's real pointer position, or None when this compositor
+    has no pointer query (sway/i3 IPC has none) or there is no session."""
+    try:
+        fn = getattr(ctx.backend(), "pointer", None)
+        if fn is None:
+            return None
+        hit = fn()
+    except CmdError:
+        return None
+    if hit is None:
+        return None
+    return (int(hit[0]), int(hit[1]))
+
+
+def _pointer(ctx, seed=True):
+    """Where the pointer really is (B6).
+
+    The input daemon only knows the last position *it* injected; REL events,
+    a physical mouse, another daemon (one per euid and per XDG_RUNTIME_DIR)
+    or the compositor itself move the pointer behind its back, and a daemon
+    that has just started knows nothing at all. So ask the compositor first
+    and, when it answers, correct the daemon's model from it so a following
+    mousemove_relative counts from the real position (B1). Compositors
+    without a pointer query keep the tracked model."""
+    real = _backend_pointer(ctx)
+    if real is None:
+        return ctx.daemon().pointer()
+    if seed:
+        try:
+            ctx.daemon().seed_pointer(*real)
+        except CmdError:
+            pass  # no daemon available: the compositor's reading still stands
+    return real
+
+
 def _target_windows(ctx, window_arg):
     """Resolved window list for a --window value, or [None] for 'current'."""
     if window_arg is None:
@@ -397,7 +433,7 @@ def cmd_mousemove(ctx, args):
     daemon = ctx.daemon()
     for wid in _target_windows(ctx, window_arg):
         if wid is None:
-            ctx._last_mouse = daemon.pointer()  # noqa: SLF001 — restore state
+            ctx._last_mouse = _pointer(ctx)  # noqa: SLF001 — restore state
         tx, ty = x, y
         if opts.get("polar"):
             if wid is not None:
@@ -454,6 +490,11 @@ def cmd_mousemove_relative(ctx, args):
         x, y = _polar_to_xy(x, y, 0, 0)
     if opts.get("clearmodifiers"):
         _clear_modifiers(ctx)
+    # B1/B6: move from where the pointer really is. On a compositor that can
+    # be asked, this also decides pixel-exactness: the daemon then emits the
+    # target as an absolute warp instead of REL events that libinput's
+    # acceleration curve would scale.
+    _pointer(ctx)
     ctx.daemon().mousemove_rel(x, y)
     return i + 2
 
@@ -502,7 +543,7 @@ def cmd_getmouselocation(ctx, args):
     if want_help:
         print(usage, end="")
         return len(args)
-    x, y = ctx.daemon().pointer()
+    x, y = _pointer(ctx)
     window = _window_under_pointer(ctx, x, y)
     if opts.get("shell"):
         prefix = str(opts.get("prefix", ""))[:16]

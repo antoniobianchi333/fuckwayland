@@ -28,6 +28,11 @@ class FakeDaemon:
 
     def mousemove_rel(self, dx, dy):
         self.calls.append(("rel", dx, dy))
+        self.pos = (self.pos[0] + dx, self.pos[1] + dy)
+
+    def seed_pointer(self, x, y):
+        self.calls.append(("seed", x, y))
+        self.pos = (x, y)
 
     def button(self, btn, down):
         self.calls.append(("button", btn, down))
@@ -462,6 +467,100 @@ class TestBehaveScreenEdge(unittest.TestCase):
             input_cmds.cmd_behave_screen_edge(ctx, ["left"])
         self.assertIn("Invalid number of arguments", str(cm.exception))
 
+
+class PointerBackend(WindowBackend):
+    """A backend that can be asked where the pointer is (GNOME's bridge)."""
+
+    name = "pointer-fake"
+
+    def __init__(self, pos=(2880, 540), wins=(), fail=None):
+        self.pos = pos
+        self.wins = list(wins)
+        self.fail = fail
+        self.queries = 0
+
+    def list(self):
+        return self.wins
+
+    def activate(self, wid):
+        pass
+
+    def pointer(self):
+        self.queries += 1
+        if self.fail is not None:
+            raise self.fail
+        return self.pos
+
+class TestRealPointer(unittest.TestCase):
+    """B6/B1: the compositor is the source of truth for the pointer, and the
+    daemon's model is corrected from it before a relative move."""
+
+    def ctx(self, backend):
+        ctx = Context()
+        ctx._daemon = FakeDaemon()
+        ctx._backend = backend
+        return ctx
+
+    def test_getmouselocation_reports_the_compositor(self):
+        b = PointerBackend(pos=(2880, 540),
+                           wins=[Window(id=9, x=2000, y=500, w=1000, h=200)])
+        ctx = self.ctx(b)
+        ctx._daemon.pos = (0, 0)          # a daemon that has injected nothing
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            input_cmds.cmd_getmouselocation(ctx, [])
+        self.assertEqual(out.getvalue(), "x:2880 y:540 screen:0 window:9\n")
+        self.assertEqual(b.queries, 1)
+        # ... and the daemon's model is corrected from it
+        self.assertEqual(ctx._daemon.calls, [("seed", 2880, 540)])
+        self.assertEqual(ctx._daemon.pos, (2880, 540))
+
+    def test_relative_move_counts_from_the_real_position(self):
+        b = PointerBackend(pos=(1662, 601))   # a physical mouse moved it here
+        ctx = self.ctx(b)
+        ctx._daemon.pos = (1200, 601)         # what this daemon last injected
+        input_cmds.cmd_mousemove_relative(ctx, ["500", "0"])
+        self.assertEqual(ctx._daemon.calls,
+                         [("seed", 1662, 601), ("rel", 500, 0)])
+        self.assertEqual(ctx._daemon.pos, (2162, 601))
+
+    def test_restore_captures_the_real_position(self):
+        b = PointerBackend(pos=(77, 88))
+        ctx = self.ctx(b)
+        input_cmds.cmd_mousemove(ctx, ["100", "200"])
+        input_cmds.cmd_mousemove(ctx, ["restore"])
+        self.assertEqual(ctx._daemon.calls[-1], ("abs", 77, 88))
+
+    def test_a_backend_without_a_pointer_query_keeps_the_model(self):
+        ctx = make_ctx()                      # FakeBackend: no pointer()
+        ctx._daemon.pos = (300, 400)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            input_cmds.cmd_getmouselocation(ctx, [])
+        self.assertEqual(out.getvalue(), "x:300 y:400 screen:0 window:0\n")
+        self.assertNotIn("seed", [c[0] for c in ctx._daemon.calls])
+
+    def test_no_session_falls_back_to_the_model(self):
+        b = PointerBackend(fail=CmdError("gnome backend: the bridge vanished"))
+        ctx = self.ctx(b)
+        ctx._daemon.pos = (5, 6)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            input_cmds.cmd_getmouselocation(ctx, [])
+        self.assertEqual(out.getvalue(), "x:5 y:6 screen:0 window:0\n")
+
+    def test_a_daemon_that_cannot_be_seeded_is_not_fatal(self):
+        b = PointerBackend(pos=(11, 22))
+        ctx = self.ctx(b)
+
+        def boom(x, y):
+            raise CmdError("cannot start wdotool daemon")
+
+        ctx._daemon.seed_pointer = boom
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            input_cmds.cmd_getmouselocation(ctx, [])
+        self.assertEqual(out.getvalue(), "x:11 y:22 screen:0 window:0\n")
 
 if __name__ == "__main__":
     unittest.main()

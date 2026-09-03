@@ -558,9 +558,17 @@ class BackendTests(_Base):
             self.b.set_window_desktop(CALC, 5)
         self.assertEqual(self.calls("MoveToWorkspace"), [(CALC, 2), (CALC, -1), (CALC, 5)])
 
+    def test_pointer_reports_the_compositors_own(self):
+        # B6: Mutter knows where the pointer is whoever moved it, so this is
+        # what getmouselocation reports and what seeds the daemon's model.
+        self.assertEqual(self.b.pointer(), (640, 400))
+        self.bridge.pointer = (2881, 17, 0)
+        self.assertEqual(self.b.pointer(), (2881, 17))
+        self.assertEqual(self.b.real_pointer(), (2881, 17))  # historical alias
+        self.assertEqual(len(self.calls("GetPointer")), 3)
+
     def test_display_size_and_extras(self):
         self.assertEqual(self.b.display_size(), (1920, 1080))
-        self.assertEqual(self.b.real_pointer(), (640, 400))
         self.assertEqual(self.b.bridge_version(), 1)
         mons = self.b.monitors()
         self.assertEqual((mons[0]["connector"], mons[0]["primary"]), ("Virtual-1", True))
