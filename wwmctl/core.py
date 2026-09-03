@@ -4,6 +4,7 @@ compositor backend, with X11 enrichment for XWayland windows when available.
 Dual-plane design per WWMCTL.md:
 - the window LIST and all ACTIONS come from the compositor backend
   (wdotool.backend_detect.detect(); backend-native ids address windows),
+  with -e sent as one move_resize() where the backend offers it,
 - XWayland windows are printed with their REAL X11 window id (the backend's
   views() carry it -- GNOME bridge `xid`; sway's raw tree exposes it as the
   node's "window" field) so xprop/real-wmctrl interoperate, and X-only
@@ -479,13 +480,28 @@ class Core:
         keep_anchor = x == -1 and y == -1 and self._bare_resize_gravity()
         fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw, keep_anchor)
         fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh, keep_anchor)
-        if ww != -1 or hh != -1:
+        resizing = ww != -1 or hh != -1
+        # a move was asked for, or the gravity's anchor requires one
+        moving = x != -1 or y != -1 or (fx, fy) != (w.fx, w.fy)
+        both = getattr(backend, "move_resize", None)
+        if resizing and moving and callable(both):
+            # One request when the backend can take one (KWin). Sending a
+            # resize and a move a few milliseconds apart is a race against a
+            # Wayland client: the compositor's rectangle only changes when
+            # the client acks the configure, so the move, reading the
+            # not-yet-changed size back, re-requests the old one and cancels
+            # the resize. Observed live on KWin 6.6 with konsole.
+            try:
+                both(w.node_id, fx, fy, fw, fh)
+            except CmdError as e:
+                _warn("%s; ignoring" % e)
+            return 0
+        if resizing:
             try:
                 backend.resize(w.node_id, fw, fh)
             except CmdError as e:
                 _warn("%s; ignoring" % e)
-        # a move was asked for, or the gravity's anchor requires one
-        if x != -1 or y != -1 or (fx, fy) != (w.fx, w.fy):
+        if moving:
             try:
                 backend.move_window(w.node_id, fx, fy)
             except CmdError as e:

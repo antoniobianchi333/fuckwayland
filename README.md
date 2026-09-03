@@ -53,9 +53,10 @@ There is no X server to lie to, so wdotool goes underneath instead:
 - The first invocation forks a small daemon that owns the devices (creating them
   costs ~600ms of hotplug; you pay it once) and tracks the injected pointer.
 - **Window management** talks to the compositor: sway/i3 IPC (complete), GNOME
-  Shell through the bundled bridge extension (complete, see [GNOME](#gnome)), KWin
-  scripting (best-effort), and the wlr-foreign-toplevel protocol as the generic
-  fallback. Window ids are real, stable, decimal — like X window ids,
+  Shell through the bundled bridge extension (complete, see [GNOME](#gnome)), KDE
+  Plasma through KWin scripting (complete, and nothing to install — KWin lets any
+  session-bus client load a script), and the wlr-foreign-toplevel protocol as the
+  generic fallback. Window ids are real, stable, decimal — like X window ids,
   scripts pipe them around unchanged.
 - Runs fine under `sudo`: the graphical session's sockets are found by scanning
   `/run/user/*`.

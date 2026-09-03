@@ -580,6 +580,27 @@ class MoveResizeTest(unittest.TestCase):
                          (1, "Value of gravity mustn't be negative. Use zero"
                              " to use the default gravity of the window.\n"))
 
+    def test_e_uses_move_resize_when_the_backend_has_one(self):
+        """KWin: a resize and a move a few ms apart race a Wayland client's
+        configure ack, and the move re-requests the size it read back. A
+        backend that can take both at once gets one call; sway, which
+        cannot, keeps the two."""
+        b = self._floating()
+
+        def move_resize(wid, x, y, w, h):
+            b.calls.append(("move_resize", wid, x, y, w, h))
+        b.move_resize = move_resize
+        rc, _o, err, b = run(["-r", "Mail", "-e", "0,10,20,300,200"],
+                             backend=b)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(b.calls, [("move_resize", 5, 10, 20, 300, 200)])
+
+    def test_e_move_only_still_moves_with_move_resize(self):
+        b = self._floating()
+        b.move_resize = lambda *a: b.calls.append(("move_resize",) + a)
+        rc, _o, _e, b = run(["-r", "Mail", "-e", "0,10,-1,-1,-1"], backend=b)
+        self.assertEqual(b.calls, [("move", 5, 10, 0)])
+
     def test_e_verbose_grflags(self):
         rc, _o, err, _b = run(["-v", "-r", "Mail", "-e", "5,10,-1,300,-1"],
                               backend=self._floating())
