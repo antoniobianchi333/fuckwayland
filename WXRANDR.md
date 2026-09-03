@@ -57,7 +57,7 @@ What maps:
 | `--pos`, `--left-of/--right-of/--above/--below` | positions in Mutter's logical space, resolved against pending sizes like everywhere else |
 | `--same-as` | one logical monitor with several members (Mutter requires the same mode, rotation and scale: otherwise `xrandr: cannot mirror B onto A: ...`) |
 | `--primary` | the real primary flag (exactly one; what Mutter reports overrides the state file). GNOME 50 keeps a stale `primary=true` on the previous logical monitor after a temporary re-primary (until that monitor is rebuilt), so when several are flagged the legacy `GetResources` output property `primary` — which tracks the real one, as XWayland shows — breaks the tie |
-| `--off` | the connector is left out of the configuration |
+| `--off` | the connector is left out of the configuration. A disabled output cannot stay primary on Mutter (X keeps the flag and prints `connected primary` for it): the primary moves to the first enabled output and the query shows it there |
 | `--listmonitors` | one RandR monitor per active output, the primary listed first (the X server orders monitors that way; verified against real xrandr on GNOME 50) |
 | several `--output` stanzas | one `ApplyMonitorsConfig` call — atomic; after it, wxrandr waits for `MonitorsChanged` (≤ 5 s) and re-reads |
 | `--newmode/--addmode/--rmmode/--delmode` | state file as on sway/wlr; *applying* a custom mode works only when a real mode with that size and rate exists, else `cannot find mode NAME` |
@@ -68,15 +68,28 @@ without a position (`--auto` on a disabled output; xrandr would put it at 0,0, w
 Mutter rejects as an overlap, so it is placed right of the rightmost output), a scale
 Mutter cannot do (snapped), `--filter`/`--set`/`--transform`/`--panning` as elsewhere.
 
+Holes: X tolerates a gap, Mutter does not (every logical monitor must share an edge
+with another). So an output that touched a neighbour's right or bottom edge keeps
+touching it when that edge moves because the neighbour changed mode, rotation or
+scale: `--output A --rotate left`, `--output A --mode SMALLER`, `--scale`, `-s`, `-o`
+in the middle of a row shift the outputs right of (below) it along, chains included,
+one warning each — `xrandr: output C moved to +3000+0 to stay adjacent to A`. Explicit
+positions are the user's: an output given `--pos`/`--right-of`/... in the same call
+never moves and nothing follows it (its old neighbours may not be neighbours any
+more), and an output whose neighbour went `--off` is not moved either; those layouts
+get Mutter's own verdict — re-place the neighbour in the same call
+(`--output C --right-of A`). The `--verbose`/`--dryrun` plan and the `--fb` check
+show the shifted layout.
+
 What fails, one line and exit 1, with Mutter's own text: a hole (`xrandr: Logical
-monitors not adjacent` — Mutter wants every logical monitor to share an edge with
-another; note that this bites `--output A --mode SMALLER` while B keeps its old x —
-re-place B in the same call, `--output B --right-of A`), overlapping positions
+monitors not adjacent`, see above), overlapping positions
 (`Logical monitors overlap`), turning everything off (`Monitors config incomplete`),
 `ApplyMonitorsConfigAllowed=false` (`Monitor configuration via D-Bus is disabled`).
-A configuration serial that went stale between our read and the apply (someone else
-changed the layout) is re-read and retried once, then
-`output configuration cancelled by a concurrent change; try again`.
+A configuration serial that went stale between our read and the apply is re-read:
+when the monitors and the layout are still the ones the plan was built from (GNOME
+bumps the serial on its own as well) the same call is retried once; otherwise — a
+hotplug or someone else's re-layout in that window, which the plan knows nothing
+about — it is `output configuration cancelled by a concurrent change; try again`.
 
 Persistence: by default the apply uses method 1 (temporary — xrandr semantics, no
 dialog; the layout lasts until the next hotplug/login). `--persistent` (a wxrandr
@@ -86,8 +99,20 @@ one-line warning; confirming it makes Mutter write `~/.config/monitors.xml`, oth
 the previous layout comes back after 20 s (verified on GNOME 46: nothing is written
 before the confirmation, and there is no D-Bus call to confirm from outside the
 shell). `--dryrun` additionally submits the exact configuration with method 0 (verify
-only) and prints `mutter verify: ok`, or Mutter's rejection as the fatal a real run
-would give.
+only) and prints `mutter verify: ok` on stderr (stdout stays xrandr's own dryrun
+lines), or Mutter's rejection as the fatal a real run would give.
+
+Launching it (verified on 24.04 and 26.04): a GNOME custom keyboard shortcut runs the
+command with the session's environment, nothing to set up — but bind a chord Mutter
+does not own: `<Ctrl><Alt>F1`–`F12` are its VT switches (`switch-to-session-N`),
+gsd-media-keys logs `Failed to grab accelerator` and the chord changes the VT instead;
+`<Super>F8` works. A `cron @reboot` job, or any script with an empty environment,
+needs no exports at all (the session is found from the runtime dir owning the Wayland
+socket), only to wait until the session bus is up and owns the name — on the rig
+`org.gnome.Mutter.DisplayConfig` appears 3–4 s after the session; loop on
+`python3 -m wxrandr --listmonitors` until it exits 0. Toggle scripts: `--output C
+--right-of B` on a disabled output only positions it (xrandr semantics); to turn it
+on say `--output C --auto --right-of B`.
 
 Coordinates are Mutter's logical ones (what `wl_output`/xdg-output and GNOME
 Settings show). Real `xrandr` through XWayland agrees byte for byte on GNOME 46 and,

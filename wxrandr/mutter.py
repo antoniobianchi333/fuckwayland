@@ -26,7 +26,17 @@ any client on the user bus — no extension, no root:
   ids it handed out (no custom modes). Rejections come back as D-Bus errors
   whose text is relayed verbatim after `xrandr: `.
 - MonitorsChanged fires after a successful apply; the serial bumps on every
-  change and a stale serial is AccessDenied (re-read + retry once here).
+  change and a stale serial is AccessDenied: the state is re-read and the
+  same plan re-sent once, but only when the monitors and layout it was built
+  from are still what Mutter has (a serial bump alone); a hotplug or a
+  concurrent re-layout in that window is "cancelled by a concurrent change".
+- Holes: X tolerates a gap, Mutter does not, so an output that touched a
+  neighbour's right/bottom edge keeps touching it when that edge moves
+  (`--output A --rotate left` / `--mode SMALLER` / `-s` / `-o` in the middle of
+  a row shift the outputs to its right along, one warning each) unless it
+  was positioned explicitly in the same invocation (keep_adjacent). An
+  output whose neighbour went `--off` is not moved: Mutter's own
+  "not adjacent" is the answer, re-place it in the same call.
 - GNOME 50 quirk (verified): after a temporary re-primary the old logical
   monitor keeps `primary=true` in GetCurrentState until it is rebuilt, so
   several may be flagged; the legacy GetResources output property
@@ -59,6 +69,8 @@ APPLY_SIG = "uua(iiduba(ssa{sv}))a{sv}"
 VERIFY, TEMPORARY, PERSISTENT = 0, 1, 2
 LAYOUT_LOGICAL, LAYOUT_PHYSICAL = 1, 2
 MONITORS_CHANGED_TIMEOUT = 5.0
+CANCELLED = ("output configuration cancelled by a concurrent change; "
+             "try again\n")
 _MATCH = "type='signal',interface='%s',member='MonitorsChanged'" % IFACE
 PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the '
                    "dialog or the layout reverts\n")
@@ -170,6 +182,66 @@ def _canon(plan) -> list:
                   for p in plan)
 
 
+def _positioned(t: core.Target) -> bool:
+    """The invocation says where this output goes (--pos or a relation)."""
+    s = t.stanza
+    return s is not None and (s.pos is not None or s.relation is not None)
+
+
+def keep_adjacent(targets: list, dims: dict, pos: dict) -> list:
+    """Mutter allows no gaps (X does): an output that shared its left (top)
+    edge with a neighbour's right (bottom) edge before this invocation keeps
+    touching it when that edge moves because the neighbour changed mode,
+    rotation or scale (or followed another one itself). Explicit positions
+    are the user's: an output placed here (--pos / --left-of ...) never
+    moves, and nothing follows one — its old neighbours may no longer be
+    neighbours at all — so Mutter's verdict on such a layout stands.
+    Neighbours that went --off pull nothing either (nothing to stay adjacent
+    to; Mutter reports the hole). Mutates `pos` (every enabled output,
+    min x = min y = 0 as core.resolve_positions leaves it) and returns
+    [(name, (x, y), neighbour)] for each output it moved, in move order."""
+    old = {t.name: (t.output.x, t.output.y, t.output.w, t.output.h)
+           for t in targets if t.output.active}
+    fixed = {t.name for t in targets if _positioned(t)}
+    movable = [t.name for t in targets
+               if t.enabled and t.name in old and t.name in pos
+               and t.name not in fixed]
+    moves = {}
+    for _ in range(len(movable) + 1):
+        changed = False
+        for n in movable:
+            ox, oy, ow, oh = old[n]
+            x, y = pos[n]
+            # neighbours still enabled whose old right (bottom) edge was n's
+            # old left (top) edge with strict overlap; n goes to the
+            # farthest of their new edges (touch one, overlap none)
+            lefts = [(pos[m][0] + dims[m][0], m)
+                     for m, (mx, my, mw, mh) in old.items()
+                     if m != n and m in pos and m not in fixed
+                     and mx + mw == ox and my < oy + oh and oy < my + mh]
+            tops = [(pos[m][1] + dims[m][1], m)
+                    for m, (mx, my, mw, mh) in old.items()
+                    if m != n and m in pos and m not in fixed
+                    and my + mh == oy and mx < ox + ow and ox < mx + mw]
+            nx, via_x = max(lefts) if lefts else (x, None)
+            ny, via_y = max(tops) if tops else (y, None)
+            if (nx, ny) != (x, y):
+                pos[n] = (nx, ny)
+                moves[n] = (pos[n], via_x if nx != x else via_y)
+                changed = True
+        if not changed:
+            break
+    if moves:
+        min_x = min(p[0] for p in pos.values())
+        min_y = min(p[1] for p in pos.values())
+        if min_x or min_y:
+            for n, (x, y) in list(pos.items()):
+                pos[n] = (x - min_x, y - min_y)
+            for n in moves:
+                moves[n] = (pos[n], moves[n][1])
+    return [(n, p, via) for n, (p, via) in moves.items()]
+
+
 # -- detection ----------------------------------------------------------------
 
 def probe(addr: str | None = None):
@@ -274,6 +346,7 @@ class MutterOutputs:
             raise Fatal("%s is not on the session bus (not a GNOME "
                         "session?)\n" % DEST)
         self.serial = 0
+        self.fingerprint = None      # monitors + layout the serial stood for
         self.props = {}
         self.layout_mode = LAYOUT_LOGICAL
         self.global_scale_required = False
@@ -303,6 +376,7 @@ class MutterOutputs:
         wl = {} if self.wl_socket is False else wl_output_info(
             self.wl_socket or None)
         self.serial = serial
+        self.fingerprint = self._fingerprint(monitors, logical)
         self.props = props
         self.layout_mode = _int(props.get("layout-mode")) or LAYOUT_LOGICAL
         self.global_scale_required = bool(props.get("global-scale-required",
@@ -365,6 +439,21 @@ class MutterOutputs:
             for lm in logical])
         state.primary = self.primary
         return outs
+
+    @staticmethod
+    def _fingerprint(monitors, logical) -> tuple:
+        """What a plan was built from: the connectors with their mode ids
+        and current mode, and the logical layout (order-free). Equal
+        fingerprints under different serials mean nothing that matters to
+        the plan changed (GNOME bumps the serial on its own as well)."""
+        mons = tuple((spec[0], tuple(m[0] for m in modes),
+                      next((m[0] for m in modes if m[6].get("is-current")),
+                           None))
+                     for spec, modes, _p in monitors)
+        lms = tuple(sorted((lm[0], lm[1], float(lm[2]), int(lm[3]),
+                            bool(lm[4]), tuple(sorted(s[0] for s in lm[5])))
+                           for lm in logical))
+        return mons, lms
 
     def _primary_lm(self, logical, lm_of):
         """The logical monitor that is really primary. One flagged: that one.
@@ -483,6 +572,9 @@ class MutterOutputs:
         dims = {n: logical_size(real[n].w, real[n].h, by_name[n].sway_tf,
                                 scales[n], self.layout_mode) for n in real}
         pos = core.resolve_positions(targets, dims)
+        for n, (x, y), via in keep_adjacent(targets, dims, pos):
+            warn("output %s moved to +%d+%d to stay adjacent to %s\n"
+                 % (n, x, y, via))
         self._auto_place(targets, dims, pos)
         groups, index = [], {}
         for t in targets:
@@ -541,20 +633,26 @@ class MutterOutputs:
                       (self.serial, method, self.to_wire(plan), {}))
 
     def _send(self, method: int, plan: list):
-        """ApplyMonitorsConfig with one stale-serial retry; every other
-        rejection is Mutter's own message as a Fatal."""
+        """ApplyMonitorsConfig with one stale-serial retry, and only when
+        the re-read state still has the monitors and layout the plan was
+        built from (a plan re-sent after a hotplug would silently leave the
+        new monitor out, one re-sent after someone else's re-layout would
+        undo it); every other rejection is Mutter's own message as a
+        Fatal."""
         try:
             self._call_apply(method, plan)
         except DBusError as e:
             if not _is_stale(e):
                 raise Fatal(_text(e))
-            self.serial = self.get_current_state()[0]
+            serial, monitors, logical, _props = self.get_current_state()
+            if self._fingerprint(monitors, logical) != self.fingerprint:
+                raise Fatal(CANCELLED)
+            self.serial = serial
             try:
                 self._call_apply(method, plan)
             except DBusError as e2:
                 if _is_stale(e2):
-                    raise Fatal("output configuration cancelled by a "
-                                "concurrent change; try again\n")
+                    raise Fatal(CANCELLED)
                 raise Fatal(_text(e2))
 
     def verify(self, state: core.State, targets: list):

@@ -513,6 +513,22 @@ class Session:
             return self.mutter.predicted_dims(t, self.state)
         return core.predicted_dims(t, self.state)
 
+    def positions(self, targets, dims) -> dict:
+        """Pending positions the way the backend will lay them out: xrandr's
+        set_positions everywhere; on Mutter (no holes allowed) also the
+        follow-your-neighbour shift the apply performs, so the plan, --fb and
+        screen-size checks see the real layout (the warnings are printed
+        once, by the apply/verify)."""
+        pos = core.resolve_positions(targets, dims)
+        if self.backend == "mutter":
+            from wxrandr import mutter as mutter_mod
+            moved = {n for n, _p, _via in
+                     mutter_mod.keep_adjacent(targets, dims, pos)}
+            for t in targets:
+                if t.name in moved:
+                    t.changed = True   # its crtc line belongs in the plan
+        return pos
+
     def apply(self, targets):
         if self.backend == "sway":
             return core.apply_sway(self.ipc, self.state, targets)
@@ -724,7 +740,7 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
     targets = core.build_targets(outputs, opts.stanzas, sess.state,
                                  opts.global_auto)
     dims = {t.name: sess.dims(t) for t in targets if t.enabled}
-    pos = core.resolve_positions(targets, dims)
+    pos = sess.positions(targets, dims)
     _check_fb(opts, targets, dims, pos)
     _check_screen_size(opts, targets, dims, pos)
     if opts.verbose:
@@ -743,9 +759,10 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
         if sess.backend == "mutter":
             # method 0: Mutter validates the exact call a real run would
             # make (adjacency, overlap, primary, scales); a rejection is the
-            # same one-line `xrandr: <mutter message>` the apply would give
+            # same one-line `xrandr: <mutter message>` the apply would give.
+            # The verdict goes to stderr: stdout stays xrandr's dryrun bytes.
             sess.mutter.verify(sess.state, targets)
-            print("mutter verify: ok")
+            sys.stderr.write("mutter verify: ok\n")
         sess.state.save()
         return outputs
     for cmd in filter_cmds:

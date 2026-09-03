@@ -168,7 +168,9 @@ Relative placement, rotation, mirroring (`--same-as` becomes one logical monitor
 scales snapped to what Mutter offers, `--primary`, `--off` and `--dryrun` (Mutter
 verifies the configuration without applying it) all map; Mutter's own validation
 errors ("Logical monitors not adjacent", "Logical monitors overlap") come back as
-one-line `xrandr:` failures. Changes are temporary like xrandr's; `--persistent`
+one-line `xrandr:` failures — and since Mutter, unlike X, allows no gaps, an output
+that changes size (`--rotate`, `--mode`, `--scale`, `-s`, `-o`) keeps its neighbours
+touching it, with a warning. Changes are temporary like xrandr's; `--persistent`
 writes `monitors.xml` (GNOME then asks "Keep changes?"). It finds the session from a
 custom keyboard shortcut, under `sudo`, or from `ssh root@` with no environment.
 

@@ -101,7 +101,9 @@ class FakeMutter:
         self.allowed = True
         self.global_scale_required = False
         self.supports_changing_layout = True
-        self.bump_after_get = False     # simulate a concurrent change
+        self.bump_after_get = False     # simulate a concurrent change (serial only)
+        self.plug_after_get = None      # connector to hot-plug after the next GetCurrentState
+        self.move_after_get = False     # someone else re-lays out after the next GetCurrentState
         self.always_stale = False
         self.sticky_primary = False     # GNOME 50: old primary flag not cleared in place
         self.calls = []                 # every ApplyMonitorsConfig (serial, method, lms, props)
@@ -297,6 +299,15 @@ class _MutterConn(tdm._Conn):
                 if svc.bump_after_get:
                     svc.serial += 1
                     svc.bump_after_get = False
+                if svc.plug_after_get:
+                    svc.monitors.append(MONITORS[svc.plug_after_get])
+                    svc.serial += 1
+                    svc.plug_after_get = None
+                if svc.move_after_get:
+                    x, y, s, t, p, mons = svc.logical[-1]
+                    svc.logical[-1] = (x, y + 100, s, t, p, mons)
+                    svc.serial += 1
+                    svc.move_after_get = False
             self.send(Message.method_return(m, tdm.GET_CURRENT_STATE_SIG, state))
         elif m.member == "ApplyMonitorsConfig":
             if m.signature != tdm.APPLY_MONITORS_CONFIG_SIG:
@@ -601,6 +612,63 @@ class Helpers(unittest.TestCase):
               "members": [("c", "n", True)]}]
         b = [a[1], dict(a[0], members=list(reversed(a[0]["members"])))]
         self.assertEqual(mutter._canon(a), mutter._canon(b))
+
+    def test_keep_adjacent(self):
+        def out(name, x, y, w, h, active=True):
+            o = core.OutputState(name=name, active=active)
+            o.x, o.y, o.w, o.h = x, y, w, h
+            return o
+
+        def tgt(o, stanza=None, enabled=True):
+            return core.Target(output=o, stanza=stanza, enabled=enabled)
+        # A | B | C in a row, D below A: B gets narrower, A gets shorter
+        a, b, c, d = (out("A", 0, 0, 1920, 1080), out("B", 1920, 0, 2560, 1600),
+                      out("C", 4480, 0, 1280, 1024), out("D", 0, 1080, 1920, 1080))
+        targets = [tgt(a), tgt(b), tgt(c), tgt(d)]
+        dims = {"A": (1920, 720), "B": (1600, 2560), "C": (1280, 1024), "D": (1920, 1080)}
+        pos = {"A": (0, 0), "B": (1920, 0), "C": (4480, 0), "D": (0, 1080)}
+        moves = mutter.keep_adjacent(targets, dims, pos)
+        self.assertEqual(pos, {"A": (0, 0), "B": (1920, 0), "C": (3520, 0), "D": (0, 720)})
+        self.assertEqual(sorted(moves), [("C", (3520, 0), "B"), ("D", (0, 720), "A")])
+        # explicit positions are the user's: a positioned output stays put...
+        pos = {"A": (0, 0), "B": (1920, 0), "C": (4480, 0), "D": (0, 1080)}
+        targets[2].stanza = Stanza(name="C", pos=(4480, 0))
+        self.assertEqual(mutter.keep_adjacent(targets, dims, pos), [("D", (0, 720), "A")])
+        self.assertEqual(pos["C"], (4480, 0))
+        # ...and nothing follows a positioned one (it may have left the row)
+        targets[2].stanza = None
+        targets[1].stanza = Stanza(name="B", relation=("below", "A"))
+        pos = {"A": (0, 0), "B": (0, 720), "C": (4480, 0), "D": (0, 1080)}
+        self.assertEqual(mutter.keep_adjacent(targets, dims, pos), [("D", (0, 720), "A")])
+        self.assertEqual(pos["C"], (4480, 0))
+        targets[1].stanza = None
+        # a disabled neighbour pulls nothing (Mutter reports the hole)
+        targets[1].enabled = False
+        pos = {"A": (0, 0), "C": (4480, 0), "D": (0, 1080)}
+        self.assertEqual(mutter.keep_adjacent(targets, dims, pos), [("D", (0, 720), "A")])
+        self.assertEqual(pos["C"], (4480, 0))
+        # a chain follows through: A narrower moves B, and C follows B (D,
+        # which B also touched, is off here: B may not overlap it)
+        targets[1].enabled = True
+        targets[3].enabled = False
+        dims = {"A": (1280, 720), "B": (2560, 1600), "C": (1280, 1024)}
+        pos = {"A": (0, 0), "B": (1920, 0), "C": (4480, 0)}
+        moves = mutter.keep_adjacent(targets, dims, pos)
+        self.assertEqual(pos, {"A": (0, 0), "B": (1280, 0), "C": (3840, 0)})
+        self.assertEqual(moves, [("B", (1280, 0), "A"), ("C", (3840, 0), "B")])
+        # with D still 1920 wide under A, B stays: touch one, overlap none
+        targets[3].enabled = True
+        dims = {"A": (1280, 720), "B": (2560, 1600), "C": (1280, 1024), "D": (1920, 1080)}
+        pos = {"A": (0, 0), "B": (1920, 0), "C": (4480, 0), "D": (0, 1080)}
+        self.assertEqual(mutter.keep_adjacent(targets, dims, pos), [("D", (0, 720), "A")])
+        self.assertEqual(pos["B"], (1920, 0))
+        # a grown neighbour pushes; an unchanged layout moves nothing
+        dims = {"A": (1920, 1080), "B": (2560, 1600), "C": (1280, 1024), "D": (1920, 1080)}
+        pos = {"A": (0, 0), "B": (1920, 0), "C": (4480, 0), "D": (0, 1080)}
+        self.assertEqual(mutter.keep_adjacent(targets, dims, pos), [])
+        dims["A"] = (2560, 1080)
+        self.assertEqual(mutter.keep_adjacent(targets, dims, pos),
+                         [("B", (2560, 0), "A"), ("C", (5120, 0), "B")])
 
     def test_find_session_bus_anchors_on_wayland_socket(self):
         tmp = tempfile.mkdtemp(prefix="wxrandr-sess-")
@@ -910,6 +978,102 @@ class Apply(MutterCase):
         self.assertEqual(err, "xrandr: Logical monitors not adjacent\n")
         self.assertEqual(self.lms(), before)
 
+    def test_rotate_in_the_middle_keeps_the_row_adjacent(self):
+        # review F1: X leaves a gap right of the now-narrower DP-1; Mutter
+        # would refuse it, so HDMI-1 (not positioned here) follows DP-1's edge
+        code, out, err = self.run_cli("--output", "DP-1", "--rotate", "left")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "xrandr: output HDMI-1 moved to +3520+0 to stay adjacent "
+                              "to DP-1\n")
+        self.assertEqual(self.lms(), [
+            (0, 0, 1.0, 0, True, [("eDP-1", "1920x1080@60.020")]),
+            (1920, 0, 1.0, 1, False, [("DP-1", "2560x1600@59.972")]),
+            (3520, 0, 1.0, 0, False, [("HDMI-1", "1280x1024@60.020")])])
+        self.assertEqual(len(self.applied()), 1)
+        # and back: the neighbour follows the edge growing again
+        code, out, err = self.run_cli("--output", "DP-1", "--rotate", "normal")
+        self.assertEqual((code, err), (0, "xrandr: output HDMI-1 moved to +4480+0 to "
+                                          "stay adjacent to DP-1\n"))
+        self.assertEqual([lm[:2] for lm in self.lms()], [(0, 0), (1920, 0), (4480, 0)])
+
+    def test_smaller_mode_in_the_middle_and_a_chain(self):
+        code, out, err = self.run_cli("--output", "DP-1", "--mode", "1920x1200")
+        self.assertEqual((code, err), (0, "xrandr: output HDMI-1 moved to +3840+0 to "
+                                          "stay adjacent to DP-1\n"))
+        self.assertEqual([lm[:2] for lm in self.lms()], [(0, 0), (1920, 0), (3840, 0)])
+        # the first output shrinks: both neighbours to its right move, in order
+        code, out, err = self.run_cli("--output", "eDP-1", "--mode", "1280x720")
+        self.assertEqual((code, err), (0, "xrandr: output DP-1 moved to +1280+0 to stay "
+                                          "adjacent to eDP-1\nxrandr: output HDMI-1 moved "
+                                          "to +3200+0 to stay adjacent to DP-1\n"))
+        self.assertEqual([lm[:2] for lm in self.lms()], [(0, 0), (1280, 0), (3200, 0)])
+        code, out, _ = self.run_cli()
+        self.assertIn("current 4480 x 1200", out)
+
+    def test_scale_change_in_the_middle(self):
+        code, out, err = self.run_cli("--output", "DP-1", "--scale", "2x2")
+        self.assertEqual((code, err), (0, "xrandr: output HDMI-1 moved to +3200+0 to "
+                                          "stay adjacent to DP-1\n"))
+        self.assertEqual(self.lms()[1][:3], (1920, 0, 2.0))
+        self.assertEqual(self.lms()[2][:2], (3200, 0))
+
+    def test_randr_1_0_size_and_orientation_in_a_row(self):
+        # -s / -o act on the first output; its neighbours keep touching it
+        code, out, err = self.run_cli("-s", "1280x720")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "xrandr: output DP-1 moved to +1280+0 to stay adjacent to "
+                              "eDP-1\nxrandr: output HDMI-1 moved to +3840+0 to stay "
+                              "adjacent to DP-1\n")
+        self.assertEqual(self.lms()[0][5], [("eDP-1", "1280x720@59.860")])
+        self.assertEqual([lm[:2] for lm in self.lms()], [(0, 0), (1280, 0), (3840, 0)])
+        code, out, err = self.run_cli("-o", "left")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "xrandr: output DP-1 moved to +720+0 to stay adjacent to "
+                              "eDP-1\nxrandr: output HDMI-1 moved to +3280+0 to stay "
+                              "adjacent to DP-1\n")
+        self.assertEqual(self.lms()[0][3], 1)
+        self.assertEqual([lm[:2] for lm in self.lms()], [(0, 0), (720, 0), (3280, 0)])
+
+    def test_below_follows_a_shorter_top_neighbour(self):
+        self.mock.mutter = FakeMutter(
+            ["eDP-1", "DP-1", "HDMI-1"],
+            [(0, 0, 1.0, 0, True, [("eDP-1", "1920x1080@60.020")]),
+             (1920, 0, 1.0, 0, False, [("DP-1", "2560x1600@59.972")]),
+             (0, 1080, 1.0, 0, False, [("HDMI-1", "1280x1024@60.020")])])
+        code, out, err = self.run_cli("--output", "eDP-1", "--mode", "1280x720")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "xrandr: output DP-1 moved to +1280+0 to stay adjacent to "
+                              "eDP-1\nxrandr: output HDMI-1 moved to +0+720 to stay "
+                              "adjacent to eDP-1\n")
+        self.assertEqual([lm[:2] for lm in self.lms()], [(0, 0), (1280, 0), (0, 720)])
+
+    def test_explicit_position_is_not_moved(self):
+        before = self.lms()
+        code, out, err = self.run_cli("--output", "DP-1", "--rotate", "left",
+                                      "--output", "HDMI-1", "--pos", "4480x0")
+        self.assertEqual((code, err), (1, "xrandr: Logical monitors not adjacent\n"))
+        self.assertEqual(self.lms(), before)
+        # ...and the documented workaround needs no help (no warning)
+        code, out, err = self.run_cli("--output", "DP-1", "--rotate", "left",
+                                      "--output", "HDMI-1", "--right-of", "DP-1")
+        self.assertEqual((code, out, err), (0, "", ""))
+        self.assertEqual(self.lms()[2][:2], (3520, 0))
+
+    def test_dryrun_and_verbose_plan_show_the_followed_layout(self):
+        before = self.lms()
+        code, out, err = self.run_cli("--dryrun", "--output", "DP-1", "--rotate", "left")
+        self.assertEqual(code, 0)
+        self.assertIn("screen 0: 4800x2560", out)   # 3520 + 1280, not 4480 + 1280
+        self.assertIn('crtc 2:    1280x1024  60.02 +3520+0 "HDMI-1"', out)
+        self.assertEqual(err, "xrandr: output HDMI-1 moved to +3520+0 to stay adjacent to "
+                              "DP-1\nmutter verify: ok\n")
+        self.assertEqual(self.lms(), before)
+        # --fb is checked against the followed layout too
+        code, out, err = self.run_cli("--dryrun", "--fb", "4800x2560", "--output", "DP-1",
+                                      "--rotate", "left")
+        self.assertEqual(code, 0)
+        self.assertNotIn("not large enough", err)
+
     def test_off_at_the_end_and_lastmode(self):
         code, out, err = self.run_cli("--output", "HDMI-1", "--off")
         self.assertEqual((code, out, err), (0, "", ""))
@@ -1029,9 +1193,10 @@ class Apply(MutterCase):
     def test_dryrun_verifies_with_method_0(self):
         before = self.lms()
         code, out, err = self.run_cli("--dryrun", "--output", "HDMI-1", "--off")
-        self.assertEqual((code, err), (0, ""))
+        # the verdict is stderr: stdout stays xrandr's own dryrun lines
+        self.assertEqual((code, err), (0, "mutter verify: ok\n"))
         self.assertIn("crtc 2: disable\n", out)
-        self.assertTrue(out.endswith("mutter verify: ok\n"))
+        self.assertNotIn("mutter verify", out)
         self.assertEqual([c[1] for c in self.svc.calls], [0])
         self.assertEqual(self.lms(), before)
         self.assertEqual(self.svc.serial, 42)
@@ -1045,7 +1210,7 @@ class Apply(MutterCase):
     def test_dryrun_plan_uses_mutter_dims(self):
         code, out, err = self.run_cli("--dryrun", "--output", "DP-1", "--scale", "1.5",
                                       "--output", "HDMI-1", "--right-of", "DP-1")
-        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((code, err), (0, "mutter verify: ok\n"))
         # 2560/1.5 = 1706.67 -> 1707 (roundf), wlroots would say 1706
         self.assertIn('"HDMI-1"', out)
         self.assertIn("+%d+0" % (1920 + 1707), out)
@@ -1057,6 +1222,30 @@ class Apply(MutterCase):
         self.assertEqual((code, out, err), (0, "", ""))
         self.assertEqual([c[0] for c in self.svc.calls], [42, 43])
         self.assertEqual([lm[5][0][0] for lm in self.lms()], ["eDP-1", "DP-1"])
+
+    def test_stale_serial_after_a_hotplug_is_not_retried(self):
+        # review F2: the plan was built without the new monitor; re-sending it
+        # would silently leave that monitor disabled
+        self.mock.mutter = two_monitors()
+        self.svc.plug_after_get = "HDMI-1"
+        code, out, err = self.run_cli("--output", "DP-1", "--scale", "2")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "xrandr: output configuration cancelled by a concurrent "
+                              "change; try again\n")
+        self.assertEqual(len(self.svc.calls), 1)
+        self.assertEqual(self.lms()[1][2], 1.0)
+        # the next invocation sees the plugged monitor and works
+        code, out, err = self.run_cli("--output", "DP-1", "--scale", "2")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(self.lms()[1][2], 2.0)
+
+    def test_stale_serial_after_someone_elses_layout_is_not_retried(self):
+        self.mock.mutter = two_monitors()
+        self.svc.move_after_get = True
+        code, out, err = self.run_cli("--output", "DP-1", "--scale", "2")
+        self.assertEqual((code, err), (1, "xrandr: output configuration cancelled by a "
+                                          "concurrent change; try again\n"))
+        self.assertEqual(len(self.svc.calls), 1)
 
     def test_stale_serial_twice_is_fatal(self):
         self.svc.always_stale = True
