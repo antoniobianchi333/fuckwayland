@@ -11,7 +11,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from wdotool import cli
+import time
+
+from wdotool import cli, window_cmds
 from wdotool.backend import Window, WindowBackend
 from wdotool.ctx import CmdError, Context
 
@@ -376,6 +378,90 @@ class HelpTest(unittest.TestCase):
             err.startswith("windowraise: unrecognized option '--bogus'\n")
         )
 
+
+class BoundedSyncTest(unittest.TestCase):
+    """B3: no --sync wait runs for ever any more."""
+
+    class _Stuck(FakeBackend):
+        """Every action succeeds and changes nothing -- the shape Mutter has
+        when it snaps a resize or defers a focus change."""
+
+        def activate(self, wid):
+            self.calls.append(("activate", wid))
+
+        def resize(self, wid, w, h):
+            self.calls.append(("resize", wid, w, h))
+
+        def move_window(self, wid, x, y):
+            self.calls.append(("move", wid, x, y))
+
+        def minimize(self, wid):
+            self.calls.append(("minimize", wid))
+
+        def is_mapped(self, wid):
+            return True
+
+    def setUp(self):
+        self.backup = os.environ.get("WDOTOOL_SYNC_TIMEOUT")
+        os.environ["WDOTOOL_SYNC_TIMEOUT"] = "0.3"
+
+    def tearDown(self):
+        if self.backup is None:
+            os.environ.pop("WDOTOOL_SYNC_TIMEOUT", None)
+        else:
+            os.environ["WDOTOOL_SYNC_TIMEOUT"] = self.backup
+
+    def stuck(self):
+        return self._Stuck([
+            Window(id=11, title="xterm", class_="XTerm", pid=1,
+                   x=0, y=0, w=496, h=392, focused=False, visible=True),
+        ])
+
+    def test_windowactivate_sync_gives_up(self):
+        t0 = time.monotonic()
+        rc, _o, err, _c = run(["windowactivate", "--sync", "11"], self.stuck())
+        self.assertEqual(rc, 1)
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertEqual(
+            err, "wdotool: gave up waiting for window 11 to become active after 0.3s\n")
+
+    def test_windowminimize_sync_gives_up(self):
+        rc, _o, err, _c = run(["windowminimize", "--sync", "11"], self.stuck())
+        self.assertEqual(rc, 1)
+        self.assertIn("gave up waiting for window 11 to be minimized", err)
+
+    def test_windowmove_sync_gives_up(self):
+        rc, _o, err, _c = run(["windowmove", "--sync", "11", "700", "800"],
+                              self._Stuck([Window(id=11, x=0, y=0, w=10, h=10)]))
+        self.assertEqual(rc, 1)
+        self.assertIn("gave up waiting for window 11 to move", err)
+
+    def test_windowsize_sync_accepts_a_snapped_size(self):
+        """B3a: Mutter snaps an xterm asked for 497x392 to 496x392, so the
+        size never changes and the old loop waited for ever."""
+        t0 = time.monotonic()
+        rc, _o, err, _c = run(["windowsize", "--sync", "11", "497", "392"],
+                              self.stuck())
+        self.assertEqual((rc, err), (0, ""))
+        self.assertLess(time.monotonic() - t0, 0.3)
+
+    def test_windowsize_sync_still_gives_up_on_a_refused_resize(self):
+        rc, _o, err, _c = run(["windowsize", "--sync", "11", "1000", "900"],
+                              self.stuck())
+        self.assertEqual(rc, 1)
+        self.assertIn("gave up waiting for window 11 to be resized", err)
+
+    def test_a_wait_that_succeeds_is_untouched(self):
+        rc, _o, err, _c = run(["windowsize", "--sync", "11", "800", "600"])
+        self.assertEqual((rc, err), (0, ""))
+
+    def test_zero_timeout_restores_the_unbounded_wait(self):
+        os.environ["WDOTOOL_SYNC_TIMEOUT"] = "0"
+        self.assertEqual(window_cmds._sync_timeout(), 0.0)
+        os.environ["WDOTOOL_SYNC_TIMEOUT"] = "nonsense"
+        self.assertEqual(window_cmds._sync_timeout(), window_cmds.SYNC_TIMEOUT)
+        os.environ.pop("WDOTOOL_SYNC_TIMEOUT")
+        self.assertEqual(window_cmds._sync_timeout(), window_cmds.SYNC_TIMEOUT)
 
 if __name__ == "__main__":
     unittest.main()
