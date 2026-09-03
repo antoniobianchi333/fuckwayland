@@ -18,6 +18,7 @@ from wdotool.backend import Window, WindowBackend
 from wdotool.ctx import CmdError, Context, NoSessionError
 
 
+
 class FakeBackend(WindowBackend):
     name = "fake"
 
@@ -98,6 +99,7 @@ def run(argv, backend=None):
     return (rc if rc else ctx.exit_code), out.getvalue(), err.getvalue(), ctx
 
 
+
 class SearchTest(unittest.TestCase):
     def test_basic_and_stack(self):
         rc, out, err, ctx = run(["search", "--class", "beta"])
@@ -175,6 +177,7 @@ class SearchTest(unittest.TestCase):
         self.assertIn("Failed to compile regex", err)
 
 
+
 class QueryTest(unittest.TestCase):
     def test_getactivewindow_prints_when_last(self):
         rc, out, _e, ctx = run(["getactivewindow"])
@@ -227,6 +230,7 @@ class QueryTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(out, "")
         self.assertIn("no windows on the stack", err)
+
 
 
 class ActionTest(unittest.TestCase):
@@ -336,6 +340,7 @@ class ActionTest(unittest.TestCase):
         self.assertIn("behave is not supported", err)
 
 
+
 class DesktopTest(unittest.TestCase):
     def test_get_set(self):
         self.assertEqual(run(["get_desktop"])[1], "0\n")
@@ -365,6 +370,7 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual((rc, out), (0, "0\n2\n"))
 
 
+
 class HelpTest(unittest.TestCase):
     def test_help_consumes_all_and_succeeds(self):
         rc, out, _e, _ = run(["windowmove", "--help", "these", "are", "eaten"])
@@ -377,6 +383,7 @@ class HelpTest(unittest.TestCase):
         self.assertTrue(
             err.startswith("windowraise: unrecognized option '--bogus'\n")
         )
+
 
 
 class BoundedSyncTest(unittest.TestCase):
@@ -463,6 +470,7 @@ class BoundedSyncTest(unittest.TestCase):
         os.environ.pop("WDOTOOL_SYNC_TIMEOUT")
         self.assertEqual(window_cmds._sync_timeout(), window_cmds.SYNC_TIMEOUT)
 
+
 class ClassNameSearchTest(unittest.TestCase):
     """B4: --classname matches the WM_CLASS *instance* of X/XWayland windows,
     --class the class part; native toplevels have no instance and keep
@@ -492,6 +500,7 @@ class ClassNameSearchTest(unittest.TestCase):
         for flag in ("--class", "--classname"):
             rc, out, _e, _c = run(["search", flag, "gnome.Calc"], self.backend())
             self.assertEqual((rc, out), (0, "22\n"), flag)
+
 
 class NoSessionExitCodeTest(unittest.TestCase):
     """B5: rc 2 for "no Wayland session", rc 1 for "nothing matched"."""
@@ -530,6 +539,7 @@ class NoSessionExitCodeTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(err, "xdo_get_active_window reported an error\n")
 
+
 class InvalidWindowIdTest(unittest.TestCase):
     """B8: a negative or out-of-range id is one line and rc 1, never a
     D-Bus marshalling traceback."""
@@ -546,6 +556,7 @@ class InvalidWindowIdTest(unittest.TestCase):
         ctx = Context()
         self.assertEqual(ctx._resolve_one("18446744073709551615"), 2 ** 64 - 1)
         self.assertEqual(ctx._resolve_one("0"), 0)
+
 
 class SetNumDesktopsTest(unittest.TestCase):
     """B9: actually ask the compositor; only a capability gap warns."""
@@ -587,6 +598,7 @@ class SetNumDesktopsTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("not supported by the fake backend", err)
         self.assertTrue(err.endswith("; ignoring\n"))
+
 
 class SearchUsageTest(unittest.TestCase):
     """B14: cmd_search.c is the one command that prints "Invalid usage"

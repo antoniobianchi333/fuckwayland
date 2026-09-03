@@ -111,8 +111,10 @@ class DaemonClient:
     def button(self, btn: int, down: bool): ...   # 1=L 2=M 3=R 4..7=wheel 8..12=side/extra/fwd/back/task
     def click(self, btn: int, repeat: int, delay_ms: int): ...
     def pointer(self) -> tuple[int, int]: ...
+    def seed_pointer(self, x: int, y: int): ...   # adopt the compositor's real pointer
     def geometry(self) -> tuple[int, int]: ...    # (w, h) of the full output layout
     def geometry_full(self) -> tuple[int, int, int, int]: ...  # (min_x, min_y, w, h)
+    def geometry_status(self) -> tuple[int, int, bool]: ...    # (w, h, is_a_guess)
 def daemon_main() -> int: ...
 ```
 
@@ -136,13 +138,56 @@ Daemon notes (B):
   zxdg_output logical size/position when advertised), with a 3s socket timeout so a
   wedged compositor falls back instead of hanging the daemon. Cache is the full
   layout box `(min_x, min_y, w, h)` — multi-output layouts can have non-zero or
-  negative origins. Fallback (0, 0, 1920, 1080) + warn. Abs scaling maps offsets
-  from the layout origin: `(x - min_x) * 32767 // max(w - 1, 1)`. The `geometry`
-  op returns `x y w h`; `DaemonClient.geometry()` keeps returning `(w, h)`,
-  `geometry_full()` adds the origin.
-- pointer position: track injected position in layout coordinates (abs sets, rel
-  adds, clamp to the layout box — so it hit-tests directly against backend window
-  rects). Authoritative for scripting; physical-mouse drift is out of scope.
+  negative origins. Fallback (0, 0, 1920, 1080) + warn, and the `geometry` reply
+  says `fallback: true` so `getdisplaygeometry` can refuse to print a guess
+  (rc 2) instead of pretending. `DaemonClient.geometry()` keeps returning
+  `(w, h)`, `geometry_full()` adds the origin, `geometry_status()` adds the flag.
+- **abs scaling (B7)**: `ceil((x - min_x) * 32768 / w)`, clamped to 0..32767.
+  libinput maps an absolute axis with `scale_axis()`, `v * w / (max - min + 1)`
+  = `v * w / 32768`, and the compositor truncates that to a pixel; the forward
+  map that round-trips exactly through that inverse is the *ceiling*, since
+  `floor(ceil(x*32768/w) * w/32768) == x` for every `x` in `[0, w)` while
+  `w <= 32768`. The old floor map `(x - min_x) * 32767 // (w - 1)` landed one
+  pixel short wherever the division was inexact — 257 of 301 x values near the
+  origin of a 5760px layout.
+- **always land the move (B2)**: the kernel drops an `EV_ABS` whose value equals
+  the axis' current value, so re-sending the coordinates the tablet reported
+  last time was a silent no-op — and REL events, a physical mouse or another
+  daemon may have moved the pointer since. When the computed axis pair equals
+  the last one written, one axis is nudged by a single unit (1/32768 of the
+  layout: sub-pixel) in its own report first. A fresh uinput device reads 0,0,
+  which is why a first `mousemove 0 0` is nudged too.
+- **relative moves (B1)**: `REL_X`/`REL_Y` go through the compositor's pointer
+  acceleration, so `mousemove_relative 500 0` moved 462px on GNOME 46 and 267px
+  on GNOME 50 while xdotool's `XWarpPointer` is exact. Everywhere but sway/i3
+  the daemon emits the *target* `(px+dx, py+dy)` as an absolute warp instead.
+  sway/i3 keep the REL path (that rig runs `pointer_accel 0`, and the daemon
+  tests pin the `EV_REL` contract); `WDOTOOL_REL_MODE=abs|rel` forces either.
+  The switch is decided once per daemon by looking for a sway/i3 IPC socket.
+- **pointer position (B6)**: the daemon tracks the position it last injected —
+  a *model*, not the truth. Clients that can ask the compositor (the GNOME
+  bridge's `GetPointer`) do so first and push the answer back with
+  `seed_pointer`, so `getmouselocation` reports reality and a following
+  relative move counts from it. sway's IPC has no pointer query, so the model
+  stands there. A daemon that never opened `/dev/uinput` refuses the `pointer`
+  op with that reason rather than answering `0,0` with rc 0.
+- **spawn hygiene (B10/B11)**: the double-forked grandchild closes every fd
+  above stdio (it used to keep the client's session-D-Bus socket ESTABLISHED
+  for its whole life), `chdir("/")`, keeps only the environment it needs
+  (`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `HOME`, `PATH`, `USER`, `LOGNAME`,
+  `LANG`, `LC_ALL`, `SUDO_UID`, `PKEXEC_UID`, `WDOTOOL_*`), and re-execs as
+  `wdotool __daemon` or `python -m wdotool __daemon` so `ps` shows the daemon
+  and not the command that happened to spawn it. When it was started from a
+  GNOME custom shortcut it also leaves the launcher's transient
+  `app-*.scope`: a systemd scope stays active while any process is in its
+  cgroup and neither fork nor setsid changes cgroups, so the daemon used to
+  hold that scope (and the shortcut's shell script, as far as systemd was
+  concerned) open for its whole life. It writes its pid into a sibling cgroup
+  under the user manager's delegated subtree — one write, no `systemd-run`
+  subprocess and none of its environment surprises. `session-*.scope` and
+  service units are left alone: a daemon started from a login session should
+  still die with it. A failure at any step is not fatal, just the old
+  behaviour.
 - hardening: the socket is bound under umask 0o177 and chmod 0600 (root daemon
   serves root only; non-root users spawn their own per-user daemon and hit the
   clean "/dev/uinput ... run it as root" error). Per-request catch-all keeps a
@@ -151,6 +196,30 @@ Daemon notes (B):
   closed on failure and creation is retried on the next request.
 - Protocol: one JSON object per line each way; `{"ok":true,...}` /
   `{"ok":false,"error":"..."}`. Ops mirror the client API 1:1.
+
+### `--sync` waits (B3)
+
+`window_cmds._wait_until` polls with a deadline: `WDOTOOL_SYNC_TIMEOUT`
+seconds, 10 by default, `0` for the old unbounded loop. On expiry it raises
+`CmdError("wdotool: gave up waiting for <what> after <n>s")` — one line, rc 1.
+xdotool's own waits are bounded too (`xdo.c` loops `MAX_TRIES` = 500 x 30ms =
+15s) but then return success silently; we prefer a diagnosis. `search --sync`
+stays unbounded: its manpage entry is the one that promises to block until
+there are results.
+
+`windowsize --sync` additionally accepts a size the compositor has *snapped*
+to. Mutter honours the client's resize increments, so an xterm asked for
+497x392 stays at 496x392 and "the size changed" is never true; the wait ends
+when the size changed at all (xdotool's rule) **or** the current size is
+within `_SNAP_TOL` (32px, about one character cell) of the request.
+
+### Exit codes (B5)
+
+`CmdError.exit_code` is 1. `NoSessionError` (`ctx.py`) carries 2 and means
+"no Wayland session / window backend found at all": no compositor, no session
+bus, GNOME Shell absent, the screen locked, the greeter, the bridge extension
+not running. `cli.run_chain` returns `exit_code`. That is the whole
+difference between "not logged in yet" and "no such window" for a script.
 
 ## Backend notes (C)
 

@@ -302,6 +302,97 @@ again. Journal clean throughout.
   `<Ctrl><Super>F7` and the like work fine (verified: custom keybinding →
   script → `wdotool search … windowactivate type`).
 
+## Known limitations on GNOME
+
+Found by stress-testing the tools against real GNOME 46 (24.04) and GNOME 50
+(26.04) sessions on a three-head 5760x1080 rig. These are the things that
+behave differently from xdotool on X11 and that no amount of code in this
+repo can fix; the bugs that *were* fixable have been.
+
+**Keyboard**
+
+* **L1 — the injected keyboard is a US-QWERTY keyboard.** `key`/`type` send
+  raw evdev keycodes, and the compositor interprets them through the
+  session's *active* layout. With a `de`, `fr` or Dvorak layout active, even
+  plain ASCII comes out wrong: `type y` produces `z` on a German layout,
+  `key ctrl+z` reaches the application as `ctrl+y`. There is no protocol to
+  ask a Wayland compositor to type a character. Set the layout to `us` for
+  the duration of a script (`gsettings set org.gnome.desktop.input-sources
+  sources "[('xkb','us')]"`), or drive applications by keysym-independent
+  means. This is the single biggest behavioural difference from xdotool.
+* **L2 — `type` skips characters that are not on the US layout**, with one
+  warning per character ("Can't type character 'é' … Skipping."). Same cause
+  as L1.
+* **L7 — `--clearmodifiers` releases but does not restore.** X11 lets
+  xdotool read the modifier state, clear it and put it back; Wayland has no
+  way to read it, so wdotool releases all eight modifier keys and leaves
+  them released. A modifier a *user* is physically holding stays logically
+  released until they release and press it again.
+* **L11 — a held `keydown` autorepeats.** The compositor applies its own
+  key-repeat to an injected key held down, exactly as it does for a physical
+  key. `keydown a; sleep 2; keyup a` types a row of `a`s. xdotool on X11
+  behaves the same way; scripts that want one keystroke should use `key`.
+* **L12 — injected hotkey chords race the program they launch.** A chord
+  injected with `key super+1` is delivered to the shell, which starts the
+  bound application; if the script goes straight on to `type`, the modifier
+  release and the new keystrokes can interleave with the launch and the
+  shell can see stray `Super+<digit>` presses. Put a `search --sync` on the
+  new window between the chord and the typing.
+
+**Pointer**
+
+* **L3 — `getmouselocation`'s `window` field is a Mutter window id**, the
+  same 64-bit number every other wdotool command uses — not an X11 window
+  id, even for XWayland clients, and `0` when the pointer is over the
+  desktop, the top bar or a dock. Piping it into `xprop -id` does not work;
+  use `wxprop -id`, which speaks the same ids.
+* **L13 — `click --window W` activates W but does not move the pointer.**
+  There is no send-event on Wayland: the click is a real button press
+  wherever the pointer happens to be. Move the pointer first
+  (`mousemove --window W x y click 1`) when the position matters.
+
+**Windows and the session**
+
+* **L5 — shell grabs eat injected input.** While the Activities overview,
+  the run dialog (`Alt+F2`) or the print/file dialogs of the shell itself
+  have a keyboard grab, injected keys and buttons go to the grab, not to the
+  window `getactivewindow` reports — and `windowactivate` does not dismiss
+  it. An injected `super` needs *two* Escapes to close the overview
+  afterwards. Check for and dismiss the overview before a scripted run.
+* **L6 — the lock screen and the greeter.** Behind the lock screen the
+  bridge extension is not running, so every window/workspace command fails
+  fast with rc 2 ("no Wayland session found"), and on the GDM greeter the
+  backend says so explicitly. `type`, `key` and `mousemove` still inject:
+  `/dev/uinput` does not care that the screen is locked, and neither does
+  the compositor. Treat a machine where anyone can reach `/dev/uinput` as a
+  machine where anyone can type into the lock screen.
+* **L8 — `selectwindow` returns on the next focus *change*.** Mutter offers
+  no click-to-select-a-window primitive, so the bridge waits for the next
+  focus change instead of a click. Clicking the window that already has
+  focus never returns; click another window first.
+* **L9 — `--sync` on a maximized, fullscreen or modal-attached window.**
+  Mutter constrains moves and resizes of such windows and silently refuses
+  them, exactly as an X11 window manager does, so the size or position never
+  changes. Since the fix for B3 every `--sync` wait is bounded (10 s by
+  default, `WDOTOOL_SYNC_TIMEOUT` overrides it): the command now prints
+  `wdotool: gave up waiting for …` and exits 1 instead of hanging for ever.
+  Unmaximize first if you mean it.
+* **L10 — `windowsize --usehints` is pixels.** Size hints
+  (`WM_NORMAL_HINTS` increments — a terminal's character cell) are not
+  exported by Mutter for Wayland clients, so `--usehints` warns once and
+  interprets width/height as pixels. Note that Mutter *does* still snap the
+  result to the client's grid: asking an xterm for 497x392 leaves it at
+  496x392. `windowsize --sync` accepts that snapped size as the answer.
+* **L4 — one daemon per uid *and* per runtime dir.** The input daemon's
+  socket is `$XDG_RUNTIME_DIR/wdotool.sock`, `/run/wdotool.sock` for root,
+  and `/tmp/wdotool-<uid>.sock` when there is no `XDG_RUNTIME_DIR` at all —
+  so a cron job without a runtime dir gets a *different* daemon from the one
+  the desktop session uses, with its own pointer model. Since the fix for B6
+  the models are reconciled from the compositor on GNOME (`getmouselocation`
+  and `mousemove_relative` both ask Mutter first), so the split no longer
+  moves the pointer to the wrong place; it still means two sets of virtual
+  input devices. Export `XDG_RUNTIME_DIR=/run/user/$(id -u)` in cron jobs.
+
 ## `/dev/uinput` without root (`--udev`)
 
 Input injection (`wdotool key/type/click/mousemove`) goes through

@@ -11,6 +11,7 @@ from wdotool.backend import Window, WindowBackend
 from wdotool.ctx import CmdError, Context
 
 
+
 class FakeDaemon:
     def __init__(self):
         self.calls = []
@@ -50,6 +51,7 @@ class FakeDaemon:
         return (0, 0, 1920, 1080)
 
 
+
 class FakeBackend(WindowBackend):
     name = "fake"
 
@@ -69,6 +71,7 @@ def make_ctx(wins=()):
     ctx._daemon = FakeDaemon()
     ctx._backend = FakeBackend(wins)
     return ctx
+
 
 
 class TestParse(unittest.TestCase):
@@ -129,6 +132,7 @@ class TestParse(unittest.TestCase):
     def test_bad_option_before_help_raises(self):
         with self.assertRaises(CmdError):
             self.parse(["--bogus", "--help"])
+
 
 
 class TestKey(unittest.TestCase):
@@ -235,6 +239,7 @@ class TestKey(unittest.TestCase):
         )
 
 
+
 class TestType(unittest.TestCase):
     def test_basic(self):
         ctx = make_ctx()
@@ -300,6 +305,7 @@ class TestType(unittest.TestCase):
         self.assertEqual(ctx._backend.activated, [])
 
 
+
 class TestClick(unittest.TestCase):
     def test_basic(self):
         ctx = make_ctx()
@@ -336,6 +342,7 @@ class TestClick(unittest.TestCase):
         self.assertEqual(ctx._backend.activated, [])
 
 
+
 class TestMouseUpDown(unittest.TestCase):
     def test_mousedown(self):
         ctx = make_ctx()
@@ -352,6 +359,7 @@ class TestMouseUpDown(unittest.TestCase):
         ctx = make_ctx()
         with self.assertRaises(CmdError):
             input_cmds.cmd_mousedown(ctx, [])
+
 
 
 class TestMousemove(unittest.TestCase):
@@ -390,6 +398,7 @@ class TestMousemove(unittest.TestCase):
             input_cmds.cmd_mousemove(ctx, ["100"])
 
 
+
 class TestMousemoveRelative(unittest.TestCase):
     def test_basic(self):
         ctx = make_ctx()
@@ -412,6 +421,7 @@ class TestMousemoveRelative(unittest.TestCase):
         ctx = make_ctx()
         with self.assertRaises(CmdError):
             input_cmds.cmd_mousemove_relative(ctx, ["5"])
+
 
 
 class TestGetmouselocation(unittest.TestCase):
@@ -473,6 +483,7 @@ class TestGetmouselocation(unittest.TestCase):
         self.assertEqual(ctx.stack, [0])  # stack still updated
 
 
+
 class TestBehaveScreenEdge(unittest.TestCase):
     def test_unsupported(self):
         ctx = make_ctx()
@@ -491,6 +502,7 @@ class TestBehaveScreenEdge(unittest.TestCase):
         with self.assertRaises(CmdError) as cm:
             input_cmds.cmd_behave_screen_edge(ctx, ["left"])
         self.assertIn("Invalid number of arguments", str(cm.exception))
+
 
 
 class PointerBackend(WindowBackend):
@@ -515,6 +527,7 @@ class PointerBackend(WindowBackend):
         if self.fail is not None:
             raise self.fail
         return self.pos
+
 
 class TestRealPointer(unittest.TestCase):
     """B6/B1: the compositor is the source of truth for the pointer, and the
@@ -586,6 +599,7 @@ class TestRealPointer(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             input_cmds.cmd_getmouselocation(ctx, [])
         self.assertEqual(out.getvalue(), "x:11 y:22 screen:0 window:0\n")
+
 
 class TestStrtonum(unittest.TestCase):
     """B14: C strtoul(s, NULL, 0), not Python's int(s, 0)."""

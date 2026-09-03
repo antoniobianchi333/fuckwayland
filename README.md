@@ -120,7 +120,7 @@ Wayland forces a few honest approximations:
 | | |
 |---|---|
 | `key`/`type` `--window` | activates the target first, then injects (no XSendEvent) |
-| `getmouselocation` | reports the injected pointer, not the physical one |
+| `getmouselocation` | asks the compositor where the pointer is (GNOME); falls back to the injected position where it cannot (sway) |
 | `--clearmodifiers` | releases all modifier keys; can't read or restore prior state |
 | `type` non-US chars | US layout table; unreachable characters warn and skip |
 | `search --role` | roles don't exist on Wayland; matches against empty string |
@@ -130,6 +130,50 @@ Wayland forces a few honest approximations:
 
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
 scratchpad on sway.
+
+GNOME has a longer list of honest differences (keyboard layouts, shell grabs,
+the lock screen, `selectwindow`): see **Known limitations on GNOME** in
+[gnome/README.md](gnome/README.md).
+
+### Session readiness and exit codes
+
+`wdotool` separates "there is no session to talk to" from "the session is
+fine and nothing matched", so a cron job or a boot script can poll for a
+desktop without guessing:
+
+| rc | meaning |
+|---|---|
+| 0 | the command did what it says |
+| 1 | the session is up and the command failed — no matching window, no active window, a wait that timed out |
+| 2 | **no Wayland session found**: no compositor, no session bus, GNOME Shell absent, the screen locked, the greeter, or the bridge extension not running |
+
+```sh
+# wait for a usable desktop, then act
+until wdotool getdisplaygeometry >/dev/null 2>&1; do sleep 2; done
+```
+
+`getdisplaygeometry` is the cheapest probe: it needs no window and no
+`/dev/uinput`. It never invents a size — with no compositor reachable it
+warns and exits 2 rather than printing a made-up `1920 1080`.
+
+### `--sync` waits are bounded
+
+Every `--sync` wait (`windowactivate`, `windowfocus`, `windowmap`,
+`windowunmap`, `windowminimize`, `windowmove`, `windowsize`) gives up after
+10 seconds with `wdotool: gave up waiting for …` and rc 1. Set
+`WDOTOOL_SYNC_TIMEOUT` (seconds; `0` waits for ever) to change it. The one
+exception is `search --sync`, which blocks until there are results — that is
+what its manpage entry promises, and it is how scripts wait for an
+application they have just launched.
+
+### Pointer accuracy
+
+`mousemove` and `mousemove_relative` are pixel-exact: the target is emitted
+as an absolute position on a virtual tablet mapped across the whole output
+layout, so neither pointer acceleration nor an already-identical coordinate
+can lose the move. On sway/i3, relative moves keep using relative events
+(that rig runs `pointer_accel 0`); `WDOTOOL_REL_MODE=abs|rel` forces either
+mode anywhere.
 
 ## wwmctl
 

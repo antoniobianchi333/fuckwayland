@@ -15,6 +15,7 @@ from wdotool import daemon, keymap, uinput
 from wdotool.ctx import CmdError
 
 
+
 class RecorderDev:
     def __init__(self):
         self.events = []
@@ -67,6 +68,7 @@ def abs_report(dev):
         if ev[0] == uinput.EV_ABS:
             vals[ev[1]] = ev[2]
     return vals[uinput.ABS_X], vals[uinput.ABS_Y]
+
 
 
 class TestInjectionLogic(unittest.TestCase):
@@ -235,6 +237,7 @@ class TestInjectionLogic(unittest.TestCase):
                 d.op_button(1, True)
 
 
+
 class TestPointerMapping(unittest.TestCase):
     """B1/B2/B7: where an injected move actually lands."""
 
@@ -361,6 +364,7 @@ class TestPointerMapping(unittest.TestCase):
         os.environ["SWAYSOCK"] = "/nonexistent/wdotool-no-sway"
         self.assertIs(daemon._Daemon()._rel_absolute(), True)
 
+
 class TestPointerModel(unittest.TestCase):
     """B6: the daemon's pointer model, and refusing to invent one."""
 
@@ -402,6 +406,7 @@ class TestPointerModel(unittest.TestCase):
         self.assertEqual(d.handle({"op": "pointer"}),
                          {"ok": True, "x": 640, "y": 400, "known": True})
 
+
 class TestGeometryFallback(unittest.TestCase):
     """B5: the daemon says when the layout size is only a guess."""
 
@@ -416,6 +421,7 @@ class TestGeometryFallback(unittest.TestCase):
         d.geom = (0, 0, 640, 480)
         resp = d.handle({"op": "geometry"})
         self.assertFalse(resp["fallback"])
+
 
 class TestTransientScope(unittest.TestCase):
     """B11: leaving the launcher's transient systemd scope."""
@@ -445,6 +451,7 @@ class TestTransientScope(unittest.TestCase):
         self.assertIsNone(daemon.transient_scope_target(self.APP, 1001))
         self.assertIsNone(daemon.transient_scope_target("", 1000))
         self.assertIsNone(daemon.transient_scope_target("1:name=systemd:/x", 1000))
+
 
 class TestSpawnHygiene(unittest.TestCase):
     """B10: what a daemon inherits from the command that spawned it."""
@@ -508,6 +515,7 @@ class TestSpawnHygiene(unittest.TestCase):
         with open("/proc/%d/cmdline" % pid, "rb") as f:
             cmdline = f.read().decode("utf-8", "replace").split("\0")
         self.assertIn("__daemon", cmdline)
+
 
 class TestProtocol(unittest.TestCase):
     """Full client<->daemon protocol against a really spawned (forked) daemon."""
