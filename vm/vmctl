@@ -913,6 +913,60 @@ echo "WAIT"
 """
 
 
+PAINT_SCRIPT = r"""
+# The graphical session is "active" a few seconds before the shell has drawn
+# anything; on a slow host a screenshot taken right away still shows the
+# kernel console. GNOME logs a line once its UI is up.
+if pgrep -x gnome-shell >/dev/null 2>&1; then
+  if journalctl -b --no-pager -o cat _COMM=gnome-shell 2>/dev/null | grep -q "GNOME Shell started"; then
+    echo PAINTED
+  else
+    echo WAIT
+  fi
+else
+  echo NOSHELL
+fi
+"""
+
+
+def _shot_md5(inst, idx):
+    """md5 of a screendump of head idx (None if the dump fails)."""
+    import hashlib, tempfile
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        path = Path(f.name)
+    try:
+        qmp(inst.qmp_sock, "screendump",
+            {"filename": str(path), "device": GPU, "head": idx, "format": "png"}, timeout=30)
+        return hashlib.md5(path.read_bytes()).hexdigest()
+    except Exception:
+        return None
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def wait_first_paint(inst, timeout=60):
+    """Block until the desktop has drawn its first frame: GNOME's
+    "GNOME Shell started" journal line, or (other desktops) head 0's
+    screendump changing from what it showed when the session became active.
+    Returns the number of seconds waited (or None on timeout)."""
+    t0 = time.monotonic()
+    before = _shot_md5(inst, 0)
+    while time.monotonic() - t0 < timeout:
+        p = ssh_script(inst.port, PAINT_SCRIPT, timeout=30)
+        verdict = (p.stdout.strip().splitlines() or [""])[-1] if p.returncode == 0 else "WAIT"
+        if verdict == "PAINTED":
+            return time.monotonic() - t0
+        if verdict == "NOSHELL":
+            now = _shot_md5(inst, 0)
+            if now and before and now != before:
+                return time.monotonic() - t0
+        time.sleep(1.5)
+    return None
+
+
 def cmd_session(a):
     inst = Instance(a.name).require_running()
     t0 = time.monotonic()
@@ -928,6 +982,12 @@ def cmd_session(a):
             print("WAYLAND_DISPLAY=wayland-0")
             print("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus")
             log(f"{inst.name}: wayland session {sid} for user test active after {time.monotonic() - t0:.0f}s")
+            if not getattr(a, "no_paint", False):
+                waited = wait_first_paint(inst)
+                if waited is None:
+                    log(f"{inst.name}: warning: no first frame detected within 60s; continuing")
+                else:
+                    log(f"{inst.name}: desktop painted its first frame {waited:.0f}s later")
             return
         state = partial[-1] if partial else line
         if state != last:
@@ -1068,6 +1128,8 @@ def main(argv=None):
     p = sub.add_parser("session", help="wait for user test's Wayland session and print its env")
     p.add_argument("name")
     p.add_argument("--timeout", type=int, default=180)
+    p.add_argument("--no-paint", action="store_true",
+                   help="do not wait for the desktop's first frame")
     p.set_defaults(fn=cmd_session)
 
     p = sub.add_parser("user", help="run a command in the guest as user test with the session env")

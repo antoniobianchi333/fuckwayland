@@ -51,6 +51,29 @@ KVM access, and the Ubuntu cloud images in `~/images/`
 override the directory with `VMIMAGES=`). `vmctl` is stdlib-only Python.
 `selftest.sh` additionally wants ImageMagick's `identify` (to prove a screenshot is not a flat colour).
 
+## Fresh host setup
+
+Any Linux box (physical, or a VM whose hypervisor exposes KVM to it,
+so that `/dev/kvm` exists inside it) works. On Ubuntu 24.04:
+
+```console
+$ sudo apt-get install -y qemu-system-x86 qemu-system-gui qemu-utils cloud-image-utils \
+      dbus libglib2.0-bin socat imagemagick openssh-client
+$ sudo usermod -aG kvm "$USER"          # re-login afterwards
+$ mkdir -p ~/images && cd ~/images
+$ curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+$ curl -LO https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img
+$ vm/vmctl build noble-gnome && vm/vmctl build resolute-gnome   # ~7 min each on 4 vCPU
+$ vm/selftest.sh noble-gnome && vm/selftest.sh resolute-gnome
+```
+
+`qemu-system-gui` provides the dbus display module (`qemu-system-x86_64 -display help`
+must list `dbus`). Golden images keep an absolute backing-file path to `~/images`, so
+copying `~/vm-data/golden` and `~/images` to another host with the same home directory
+layout works too. Sizing: a desktop VM needs 2 vCPU / 3 GB; a golden build 4 vCPU / 6 GB
+(`--cpus 2` on small hosts). A 4 vCPU / 16 GB host runs one build or two desktop VMs at a
+time comfortably; 8 vCPU / 32 GB runs four.
+
 ## Files
 
 | path | what |
@@ -90,7 +113,7 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 | `vmctl head <name> <idx> <WxH>\|off` | `SetUIInfo` on head `idx` (0-based; `0` = Virtual-1, which can only be resized). A running GNOME picks the change up in well under a second. |
 | `vmctl heads <name>` | guest DRM connectors (status, enabled, preferred mode) after `echo detect > .../status` — the kernel's cached mode list is stale until something re-probes. |
 | `vmctl shot <name> <idx> <out.png>` / `vmctl shot <name> --all <out>` | QMP `screendump` of one head (or every plugged head → `<out>-<idx>.png`). Written by QEMU straight to the host path. **The mouse cursor is not in it** (see Gotchas). |
-| `vmctl session <name> [--timeout 180]` | wait until `loginctl` shows a session for user `test` with `Type=wayland`, `State=active` and `/run/user/1000/wayland-0` exists; print `SESSION_ID`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`. |
+| `vmctl session <name> [--timeout 180]` | wait until `loginctl` shows a session for user `test` with `Type=wayland`, `State=active` and `/run/user/1000/wayland-0` exists, **then until the desktop has painted its first frame** (GNOME: the `GNOME Shell started` journal line; other desktops: head 0's screendump changing; `--no-paint` skips this); print `SESSION_ID`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`. |
 | `vmctl user <name> [-t] -- cmd...` | run `cmd` as `test` via `sudo -u test -H env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus ...`, plus `DISPLAY`, `XAUTHORITY` (mutter's Xwayland auth file), `XDG_CURRENT_DESKTOP` etc. imported from the session's `systemctl --user show-environment` (fallback `DISPLAY=:0` when `/tmp/.X11-unix/X0` exists), plus `XDG_SESSION_ID` = logind's display session of `test` and `XDG_SESSION_TYPE` = that session's real `Type` (not a hardcoded `wayland`) — so `xrandr`/`wmctrl`/`xdotool`/`xprop` and `loginctl show-session $XDG_SESSION_ID` work in it. |
 
 ## Flavors
@@ -242,6 +265,12 @@ A cron-started tool must therefore wait for the session and set them itself:
 `XAUTHORITY` from `systemctl --user show-environment` — exactly what `vmctl user` does.
 
 ## Gotchas
+
+* **The session is "active" before anything is drawn.** logind reports the Wayland
+  session active a few seconds before gnome-shell paints; a screendump taken then still
+  shows the kernel console (mirrored on every head by fbdev), and on a slow host the
+  window is several seconds wide. `vmctl session` therefore also waits for the first
+  frame, and `selftest.sh` asserts that head 0 (top bar, dock) differs from head 1.
 
 * `vmctl start --heads N` sizes heads `0..N-1` to 1920x1080 (`--head-size` changes it) before
   the guest boots, so Virtual-1 is the primary monitor (top bar, dock) at logical (0,0) and

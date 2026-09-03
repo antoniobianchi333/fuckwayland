@@ -72,6 +72,15 @@ step "vmctl heads $name"
 step "vmctl shot $name --all $out/shot (each must show a desktop, not a flat colour)"
 "$VM" shot "$name" --all "$out/shot"
 for f in "$out"/shot-*.png; do check_shot "$f"; done
+if [ -f "$out/shot-0.png" ] && [ -f "$out/shot-1.png" ] && command -v md5sum >/dev/null; then
+    # the primary head carries the top bar and the dock: it must differ from a
+    # secondary head. Identical images mean the screendumps were taken before
+    # the shell painted (or the kernel console is still on all heads).
+    if [ "$(md5sum < "$out/shot-0.png")" = "$(md5sum < "$out/shot-1.png")" ]; then
+        echo "FAIL: shot-0.png and shot-1.png are identical: the desktop had not painted yet"; exit 1
+    fi
+    echo "   shot-0.png differs from shot-1.png (primary head has the top bar/dock)"
+fi
 step "vmctl head $name 3 1280x1024: expect a 4th monitor"
 "$VM" head "$name" 3 1280x1024
 expect_monitors 4
