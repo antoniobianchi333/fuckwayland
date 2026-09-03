@@ -34,6 +34,10 @@ toolchain, byte-parity oracles, agents never commit.
 - `wxprop/cli.py` — option parsing exactly per xprop (it has its own hand-rolled
   parser; order matters, `-f name format [dformat]` triples, trailing
   `[format [dformat]] atom` groups), usage/-help/-grammar text byte-parity.
+  `-version` is the one exception and is deliberate: it prints `xprop 1.2.8`
+  on every flavor so a version-sniffing script sees a clone that implements
+  everything it may ask for, while the oracle installed there is 1.2.6
+  (24.04) or 1.2.7 (26.04).
 - `wxprop/core.py` — plane resolution, property assembly, -spy loops.
 - `wxprop/fmt.py` — THE parity heart: xprop's formatting machinery from xprop.c:
   per-type default formats (0s/8s/32x/32c/32a...), dformats, the built-in fallback
@@ -169,6 +173,17 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   root's own `PropertyNotify`s for everything Mutter owns, the bridge for
   the six synthesized names (an X-side update of one of those is *not*
   reprinted: it would show the X-only view).
+* **Limitations, not defects.** xdg-shell has no window-type hint, so the
+  bridge reports `NORMAL` for a GTK dialog: wxprop prints
+  `_NET_WM_WINDOW_TYPE_NORMAL` where the window's XWayland twin would print
+  `DIALOG`. Under `-len` truncation, out-of-range `?$n=` thunks read
+  *uninitialised heap* in real xprop — the same binary prints `window
+  gravity: Forget` for a full dump and an empty value for the same
+  truncation with explicit atoms, and `-len 8` on a `_NET_WM_ICON` renders
+  an icon out of whatever followed the buffer. Byte parity there is
+  unattainable in principle; `fmt._oob_thunk` prints a stable value and
+  `format_icons` stops at the budget. Real `xprop -id 99999999999999999999`
+  segfaults; we report the id.
 * **Click-to-select** (no `-root`/`-id`/`-name`) is the bridge's
   `SelectWindow` with the stderr hint: focus the target window (a
   different one) and wxprop continues with it on whichever plane it lives.

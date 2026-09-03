@@ -103,6 +103,21 @@ oracle installed on the box: `wmctrl --help` is consulted once and cached, and
 (we may *be* `/usr/bin/wmctrl`) the 1.07 text is printed, the documented parity
 target of this clone.
 
+**Limitations of the compositor plane, not defects.**
+
+* `shaded` and `modal` in `-b` are no-ops on both sides: Mutter does not
+  implement window shading, and `_NET_WM_STATE_MODAL` on an existing window
+  changes nothing an oracle run can observe either.
+* `hidden` is a deliberate improvement, not parity: EWMH says a client may
+  not set `_NET_WM_STATE_HIDDEN` and real wmctrl's request is dropped on the
+  floor; we minimize the window, which is what the person typing
+  `-b add,hidden` meant.
+* The oracle's own defects, kept as they are because we are not bug-compatible
+  where the bug is visibly wrong: real `wmctrl -lG` double-counts the reparent
+  offset on Mutter (its geometry column is off by the frame extents); real
+  `wmctrl -l` prints `N/A` for a window whose `WM_NAME` is Latin-1 rather than
+  the title.
+
 **Known desktop-id mapping hole**: sway workspace *number* N prints as desktop
 N-1, but a workspace literally numbered 0 and *named* (numberless) workspaces
 both print as desktop `-1` — colliding with wmctrl's `-1` = sticky/all-desktops
@@ -277,6 +292,12 @@ untouched) and the generic `list()` fallback.
   target window to select it` and returns with the next window that gains
   focus (focus a *different* window, as on sway). `:ACTIVE:` is Mutter's
   focus window.
+  **Limitation, not a bug:** `:SELECT:` returns when focus moves to a
+  *different* window. Real wmctrl grabs the pointer and waits for a click,
+  which can land on the window that already has focus; the bridge waits on
+  a focus *change*, so re-selecting the focused window never returns. No
+  Wayland compositor lets a client grab the pointer for another client's
+  windows, and the shell exports no click-to-pick API.
 * **Errors.** Every failure is one line on stderr, exit 1: the bridge not
   installed (`gnome backend: the fuckwayland bridge extension is not
   running in GNOME Shell; run gnome/install-bridge.sh and restart the
