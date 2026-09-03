@@ -232,11 +232,17 @@ and enabled the extension without a logout, and left `Eval('1+1')` at
 `GetPointer` exactly, i.e. the injected tablet pointer and Mutter's frame
 rects share one coordinate space.
 
+X ids (TV-1, on 50.1): the bridge's `xid` for xterm (`0x60000c`) is the
+entry in `xprop -root _NET_CLIENT_LIST` and `wmctrl -l`; `xprop -id` on it
+gives `WM_CLASS = "xterm", "XTerm"` (= `wm_class_instance`/`wm_class`),
+`_NET_WM_PID` = `pid`, `_NET_WM_NAME` = `title`, and `_NET_WM_DESKTOP`
+follows `set_desktop_for_window` (1) and `STICKY` (`0xffffffff`,
+`_NET_WM_STATE_STICKY`). Note that on 26.04 even the desktop user needs
+`XAUTHORITY=$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` to talk to Xwayland
+(`XInfo`/`session.find_xauthority()` return exactly that file).
+
 Not exercised live yet: `ConfirmDisplayChange` (no display change was
-triggered), the Looking-Glass probes of §6 of the checklist, and an `xprop
--id <xid>` cross-check of the reported X ids (the ids look right —
-`0x800020` on 46, `0x600020` on 50 for the first xterm — but the X-plane
-comparison is still open).
+triggered) and the Looking-Glass probes of §6 of the checklist.
 
 ## GNOME 46 vs 50 and other honest limits
 

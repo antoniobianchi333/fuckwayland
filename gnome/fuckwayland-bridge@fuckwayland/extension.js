@@ -240,6 +240,8 @@ function isX11(w) {
 }
 
 // X11 client window id of an XWayland window, 0 for native ones.
+// VERIFIED (50.1): the id equals the window's _NET_CLIENT_LIST entry and
+// xprop's WM_CLASS/_NET_WM_PID agree with wm_class_instance/wm_class/pid.
 //
 // meta_x11_display_lookup_xwindow(MetaX11Display*, MetaWindow*) -> Window is
 // META_EXPORT in mutter 46 and 50 (meta-x11-display.h) and is the only public
