@@ -207,9 +207,21 @@ untouched) and the generic `list()` fallback.
   centre on the requested rectangle's, `9` SouthEast its bottom-right at
   `X+W,Y+H`, `10` Static the client itself at `X,Y`; `0` means "the
   window's own `WM_SIZE_HINTS` gravity" and is taken as NorthWest, the
-  ICCCM default. A `-1` keeps that point where it is, so `-e 9,-1,-1,W,H`
-  pins the bottom-right corner and grows the window up and to the left,
-  while `-e 0,-1,-1,W,H` is a resize alone. The frame extents — Mutter's
+  ICCCM default. What a `-1` keeps depends on the request as a whole, as
+  Mutter has it: in a **bare resize** (`-e G,-1,-1,W,H`, both coordinates
+  omitted) it keeps the gravity's reference point, so `9,-1,-1,W,H` pins
+  the bottom-right corner and grows the window up and to the left while
+  `0,-1,-1,W,H` is a resize alone; where the request **does** carry a
+  coordinate, a `-1` on the other axis keeps that axis' unchanged frame
+  edge (`9,-1,200,W,H` leaves the left edge alone). Anchoring both cases
+  the same way put us up to 80 px from where real wmctrl leaves the
+  window. Some rows of the grid stay 1–16 px apart from the oracle: real
+  wmctrl hands Mutter `_NET_MOVERESIZE_WINDOW` with the omitted fields
+  still filled in as `(unsigned long)-1`, and Mutter's own arithmetic for
+  them is neither the frame rectangle nor the client one. Where an axis is
+  omitted the oracle can also *resize* it (`-e 0,300,200,-1,300` grows a
+  496-wide xterm to 520): `-1` means unchanged here, per `wmctrl -h`. The
+  frame extents — Mutter's
   server-side titlebar, i.e. the difference between its frame rect and
   the X client rectangle `-lG` prints — turn that client rectangle into
   the `Resize` (frame size) and `Move` (frame top-left) the bridge takes:
@@ -265,11 +277,9 @@ like `0x14a3062e`), `-d` (`WA: 66,32 3774x1048  Workspace 1` on two
 get current desktop properties`: Mutter's X root carries no
 `_NET_CURRENT_DESKTOP`), `-m` byte-identical to real `wmctrl -m`, `-a`,
 `-c :ACTIVE:`, `-i` with either id, `-e` against real `wmctrl` on the
-same window (GNOME 46; `xeyes`, `_NET_FRAME_EXTENTS 0,0,37,0`): identical
-rectangles for gravity `0`/`1`/`10` and for every bare resize
-(`9,-1,-1,300,250` on a `200,150 500x400` frame → `400,263 300x287`,
-the `700,550` corner kept; `2,-1,-1,300,250` → `300,150`), 1–2 px apart
-only where Mutter's own gravity arithmetic is (above); xterm snaps
+same window (GNOME 46; `xterm`, `_NET_FRAME_EXTENTS 0,0,37,0`): identical
+rectangles for gravity `0`/`1`/`10` with both coordinates given or both
+omitted, and within 1–16 px elsewhere (the `-1` arithmetic above); xterm snaps
 `500x400` to `496x392` on its size increments, `-b add,fullscreen` /
 `maximized_vert` seen by real `xprop`, `shaded,below`/`skip_taskbar`
 warn+exit 0, `-N/-I/-T` read back by real `xprop`, `-t 1`, `-R`, `-s`,

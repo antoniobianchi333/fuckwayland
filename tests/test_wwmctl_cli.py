@@ -648,6 +648,49 @@ class SetTitleTest(unittest.TestCase):
         self.assertIn("ignoring", err)
 
 
+class PlaceAxisTest(unittest.TestCase):
+    """core._place_axis, the -e gravity arithmetic, as a table. Frame edge
+    100, frame size 640, asked for a 300-wide client in a 300-wide frame
+    (zero extents) unless the row says otherwise."""
+
+    F_OLD, FS_OLD, CS_NEW, FS_NEW = 100, 640, 300, 300
+
+    def place(self, pos, req, keep_anchor=True, static=False, lead=0,
+              fs_new=None):
+        return core._place_axis(pos, static, req, lead, self.F_OLD,
+                                self.FS_OLD, self.CS_NEW,
+                                self.FS_NEW if fs_new is None else fs_new,
+                                keep_anchor)
+
+    def test_explicit_coordinate_places_the_gravity_point(self):
+        for pos, want in ((0, 500), (1, 500), (2, 500)):
+            self.assertEqual(self.place(pos, 500), want, pos)
+        # a frame wider than the client shifts the leading edge back
+        self.assertEqual(self.place(2, 500, fs_new=320), 480)
+        self.assertEqual(self.place(1, 500, fs_new=320), 490)
+        self.assertEqual(self.place(0, 500, fs_new=320), 500)
+
+    def test_bare_resize_keeps_the_gravity_point(self):
+        # both coordinates -1: the reference point does not move
+        self.assertEqual(self.place(0, -1), 100)          # left edge
+        self.assertEqual(self.place(1, -1), 270)          # centre 420
+        self.assertEqual(self.place(2, -1), 440)          # right edge 740
+
+    def test_a_kept_axis_next_to_a_given_one_keeps_its_edge(self):
+        # wwmctl-4: Mutter's rule when the request carries a coordinate
+        for pos in (0, 1, 2):
+            self.assertEqual(self.place(pos, -1, keep_anchor=False), 100,
+                             pos)
+
+    def test_static_gravity_addresses_the_client(self):
+        self.assertEqual(self.place(0, 500, static=True, lead=37), 463)
+        self.assertEqual(self.place(2, 500, static=True, lead=37), 463)
+        for keep in (True, False):
+            self.assertEqual(
+                self.place(2, -1, static=True, lead=37, keep_anchor=keep),
+                100, keep)
+
+
 class GitGenerationOptionsTest(unittest.TestCase):
     """wwmctl-5: the options wmctrl 1.07+git20240228 added. We accept them
     on every flavor -- rejecting `wmctrl -j` on 24.04 would only make a

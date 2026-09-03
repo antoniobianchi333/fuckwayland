@@ -440,8 +440,16 @@ class Core:
         fw, fh = cw + left + right, ch + top + bottom
         col, row = _GRAVITY_CORNER.get(grav, (0, 0))
         static = grav == _GRAVITY_STATIC
-        fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw)
-        fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh)
+        # A -1 keeps an axis, but what "keep" means to Mutter depends on
+        # the request as a whole: with BOTH coordinates -1 (a bare resize)
+        # it holds the gravity's reference point, so a SouthEast resize
+        # grows up and to the left; with one coordinate given and the other
+        # -1 it holds the unchanged frame edge instead. Anchoring both ways
+        # put us up to 80 px from where real wmctrl leaves the window
+        # (measured on GNOME 46, `9,-1,200,400,300`).
+        keep_anchor = x == -1 and y == -1
+        fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw, keep_anchor)
+        fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh, keep_anchor)
         if ww != -1 or hh != -1:
             try:
                 backend.resize(w.node_id, fw, fh)
@@ -924,7 +932,8 @@ def _anchor(pos: int, size: int) -> int:
 
 
 def _place_axis(pos: int, static: bool, req: int, lead: int,
-                f_old: int, fs_old: int, cs_new: int, fs_new: int) -> int:
+                f_old: int, fs_old: int, cs_new: int, fs_new: int,
+                keep_anchor: bool = True) -> int:
     """The frame's new leading edge on one axis.
 
     `pos` is the gravity's reference point (see _GRAVITY_CORNER), `static`
@@ -932,12 +941,20 @@ def _place_axis(pos: int, static: bool, req: int, lead: int,
     the leading frame extent (left or top), `f_old`/`fs_old` the frame's
     current edge and size, `cs_new`/`fs_new` the client and frame sizes the
     request asks for. A request positions the frame's reference point on
-    the same point of the requested client rectangle; a -1 keeps the frame's
-    reference point where it is, which is what makes a bare resize move the
-    window under any gravity but NorthWest."""
+    the same point of the requested client rectangle.
+
+    `keep_anchor` says what a -1 means, and it is a property of the whole
+    request rather than of this axis: for `G,-1,-1,W,H` -- a bare resize --
+    Mutter keeps the gravity's reference point, so SouthEast grows up and
+    to the left; where the other axis carries a coordinate, it keeps this
+    axis's frame edge instead. Both were measured against Mutter on GNOME
+    46; the second case is why `9,-1,200,400,300` used to land 80 px from
+    where real wmctrl leaves the window."""
     if static:                       # the client itself is addressed
         return f_old if req == -1 else req - lead
     if req == -1:
+        if not keep_anchor:
+            return f_old
         return f_old + _anchor(pos, fs_old) - _anchor(pos, fs_new)
     return req + _anchor(pos, cs_new) - _anchor(pos, fs_new)
 

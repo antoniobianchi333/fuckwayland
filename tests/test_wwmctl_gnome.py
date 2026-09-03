@@ -477,6 +477,27 @@ class ActionTests(GnomeCliBase):
         self.assertEqual(self.calls("Resize")[-1], (XTERM, 150, 237))
         self.assertEqual(self.calls("Move")[-1], (XTERM, 640, 323))
 
+    def test_e_x_minus_one_with_a_y_keeps_the_left_edge(self):
+        """wwmctl-4: only a bare `G,-1,-1,W,H` is anchored on the gravity
+        point. Give one coordinate and Mutter keeps the other axis'
+        unchanged frame edge -- measured on GNOME 46, where anchoring it
+        left `9,-1,200,...` 80 px away from where real wmctrl leaves the
+        window. Frame 100,80 640x480 over client 100,117 640x443."""
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,200,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 287)])
+        # x: the frame's left edge stays at 100 (was 440 with the anchor)
+        # y: SouthEast puts the frame's bottom on the requested client's,
+        #    200 + 250 - 287
+        self.assertEqual(self.calls("Move"), [(XTERM, 100, 163)])
+
+    def test_e_y_minus_one_with_an_x_keeps_the_top_edge(self):
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "5,300,-1,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 287)])
+        # Center on x: 300 + 150 - 150; y keeps the frame's top (was 177)
+        self.assertEqual(self.calls("Move"), [(XTERM, 300, 80)])
+
     def test_e_without_frame_extents_is_the_frame_rectangle(self):
         # a native window: the frame is the client, so every gravity puts
         # X,Y,W,H on the rectangle -lG prints
