@@ -32,12 +32,41 @@ class RecorderDev:
         pass
 
 
-def make_daemon(geom=(0, 0, 1920, 1080)):
+def make_daemon(geom=(0, 0, 1920, 1080), rel_abs=False):
+    """A daemon on recorder devices. `rel_abs` pins the relative-move mode
+    (B1) so no test depends on whether a sway socket happens to exist where
+    it runs; False is the sway/i3 contract (REL events), True the warp."""
     d = daemon._Daemon()
     d.kb, d.mouse, d.tablet = RecorderDev(), RecorderDev(), RecorderDev()
     d.dev_error = None
     d.geom = geom
+    d._rel_abs = rel_abs
     return d
+
+
+def compositor_pixel(axis_value: int, span: int) -> int:
+    """The pixel a tablet axis value lands on: libinput's scale_axis()
+    (value * span / (max - min + 1)) truncated to a pixel."""
+    return axis_value * span // 32768
+
+
+def _close_quietly(fd):
+    with contextlib.suppress(OSError):
+        os.close(fd)
+
+
+def _kill_quietly(pid):
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGTERM)
+
+
+def abs_report(dev):
+    """(ABS_X, ABS_Y) of the last report a recorder tablet emitted."""
+    vals = {}
+    for ev in dev.events:
+        if ev[0] == uinput.EV_ABS:
+            vals[ev[1]] = ev[2]
+    return vals[uinput.ABS_X], vals[uinput.ABS_Y]
 
 
 class TestInjectionLogic(unittest.TestCase):
@@ -118,12 +147,14 @@ class TestInjectionLogic(unittest.TestCase):
                          [("KEY", 30, 1), ("KEY", 48, 1)])
 
     def test_mousemove_abs_scaling_and_tracking(self):
+        # B7: ceil(x * 32768 / span), the exact inverse of the compositor's
+        # floor(v * span / 32768).
         d = make_daemon()
         d.op_mousemove_abs(100, 200, [])
         self.assertEqual((d.px, d.py), (100, 200))
         self.assertEqual(d.tablet.events, [
-            (uinput.EV_ABS, uinput.ABS_X, 100 * 32767 // 1919),
-            (uinput.EV_ABS, uinput.ABS_Y, 200 * 32767 // 1079),
+            (uinput.EV_ABS, uinput.ABS_X, -((-100 * 32768) // 1920)),
+            (uinput.EV_ABS, uinput.ABS_Y, -((-200 * 32768) // 1080)),
             ("SYN",),
         ])
 
@@ -131,11 +162,13 @@ class TestInjectionLogic(unittest.TestCase):
         d = make_daemon()
         d.op_mousemove_abs(99999, -5, [])
         self.assertEqual((d.px, d.py), (1919, 0))
-        self.assertEqual(d.tablet.events[0], (uinput.EV_ABS, uinput.ABS_X, 32767))
-        self.assertEqual(d.tablet.events[1], (uinput.EV_ABS, uinput.ABS_Y, 0))
+        ax, ay = abs_report(d.tablet)
+        self.assertEqual(compositor_pixel(ax, 1920), 1919)
+        self.assertEqual(ay, 0)
 
-    def test_mousemove_rel_tracks_and_clamps(self):
-        d = make_daemon()
+    def test_mousemove_rel_emits_rel_on_sway(self):
+        """sway/i3 keep the REL path (the rig runs pointer_accel 0)."""
+        d = make_daemon(rel_abs=False)
         d.px, d.py = 10, 10
         d.op_mousemove_rel(-50, 5, [])
         self.assertEqual((d.px, d.py), (0, 15))
@@ -192,6 +225,132 @@ class TestInjectionLogic(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 d.op_button(1, True)
 
+
+class TestPointerMapping(unittest.TestCase):
+    """B1/B2/B7: where an injected move actually lands."""
+
+    def test_abs_round_trips_through_the_compositor_inverse(self):
+        """B7: every x must survive daemon -> tablet -> compositor. The old
+        (x-gx)*32767//(w-1) map lost a pixel wherever the division was
+        inexact: 257 of 301 x values near the origin of the 3x1920 rig."""
+        for geom in ((0, 0, 5760, 1080), (0, 0, 1920, 1080),
+                     (-1920, 0, 3200, 1080), (100, 50, 800, 600)):
+            gx, gy, w, h = geom
+            d = make_daemon(geom)
+            probes = (list(range(gx, gx + 400))                   # origin head
+                      + list(range(gx + w - 400, gx + w))         # far edge
+                      + list(range(gx + w // 3 - 30, gx + w // 3 + 30)))
+            for x in probes:
+                d.tablet.events.clear()
+                d.op_mousemove_abs(x, gy, [])
+                ax, _ = abs_report(d.tablet)
+                self.assertEqual(gx + compositor_pixel(ax, w), x,
+                                 "geom=%r x=%d axis=%d" % (geom, x, ax))
+            for y in (gy, gy + 1, gy + h // 2, gy + h - 2, gy + h - 1):
+                d.tablet.events.clear()
+                d.op_mousemove_abs(gx, y, [])
+                _, ay = abs_report(d.tablet)
+                self.assertEqual(gy + compositor_pixel(ay, h), y,
+                                 "geom=%r y=%d axis=%d" % (geom, y, ay))
+
+    def test_axis_values_stay_in_range(self):
+        for span in (1, 2, 800, 1920, 5760, 32768, 65536):
+            for delta in (0, 1, span // 2, span - 1):
+                v = daemon._Daemon._axis(delta, span)
+                self.assertTrue(0 <= v <= 32767, (span, delta, v))
+
+    def test_repeated_absolute_move_is_nudged(self):
+        """B2: the kernel drops an EV_ABS whose value has not changed, so
+        `mousemove X Y` twice used to be a silent no-op the second time."""
+        d = make_daemon()
+        d.op_mousemove_abs(1500, 700, [])
+        first = list(d.tablet.events)
+        d.tablet.events.clear()
+        d.op_mousemove_abs(1500, 700, [])
+        ax, ay = abs_report(d.tablet)
+        # a nudged X on its own report, then the real coordinates
+        self.assertEqual(d.tablet.events[0][:2], (uinput.EV_ABS, uinput.ABS_X))
+        self.assertNotEqual(d.tablet.events[0][2], ax)
+        self.assertEqual(abs(d.tablet.events[0][2] - ax), 1)
+        self.assertEqual(d.tablet.events[1], ("SYN",))
+        self.assertEqual(d.tablet.events[2:], first)
+        self.assertEqual((d.px, d.py), (1500, 700))
+
+    def test_absolute_move_after_relative_still_warps(self):
+        """B2, the field case: mousemove 1500 700; mousemove_relative 100 0;
+        mousemove 1500 700 must put the pointer back."""
+        d = make_daemon(rel_abs=False)
+        d.op_mousemove_abs(1500, 700, [])
+        d.op_mousemove_rel(100, 0, [])          # REL: tablet axes unchanged
+        d.tablet.events.clear()
+        d.op_mousemove_abs(1500, 700, [])
+        self.assertEqual(d.tablet.events[0][:2], (uinput.EV_ABS, uinput.ABS_X))
+        self.assertEqual(d.tablet.events[1], ("SYN",))
+        ax, ay = abs_report(d.tablet)
+        self.assertEqual((compositor_pixel(ax, 1920), compositor_pixel(ay, 1080)),
+                         (1500, 700))
+
+    def test_first_move_to_the_origin_is_nudged(self):
+        """A fresh uinput device starts at axis 0,0, so a first
+        `mousemove 0 0` would be dropped without the nudge."""
+        d = make_daemon()
+        d.op_mousemove_abs(0, 0, [])
+        self.assertEqual(d.tablet.events[0], (uinput.EV_ABS, uinput.ABS_X, 1))
+        self.assertEqual(d.tablet.events[1], ("SYN",))
+        self.assertEqual(abs_report(d.tablet), (0, 0))
+        self.assertEqual((d.px, d.py), (0, 0))
+
+    def test_nudge_at_the_far_edge_goes_down(self):
+        d = make_daemon()
+        d.op_mousemove_abs(1919, 1079, [])
+        top = abs_report(d.tablet)
+        d.tablet.events.clear()
+        d.op_mousemove_abs(1919, 1079, [])
+        self.assertEqual(d.tablet.events[0][2], top[0] + (-1 if top[0] == 32767 else 1))
+
+    def test_relative_move_warps_by_default(self):
+        """B1: REL events go through libinput's acceleration curve, so a
+        relative move is emitted as an absolute warp to the target."""
+        d = make_daemon(rel_abs=True)
+        d.op_mousemove_abs(1200, 601, [])
+        d.tablet.events.clear()
+        d.op_mousemove_rel(500, 0, [])
+        self.assertEqual((d.px, d.py), (1700, 601))
+        self.assertEqual(d.mouse.events, [])  # no REL_X/REL_Y at all
+        ax, ay = abs_report(d.tablet)
+        self.assertEqual((compositor_pixel(ax, 1920), compositor_pixel(ay, 1080)),
+                         (1700, 601))
+
+    def test_relative_warp_clamps_to_the_layout(self):
+        d = make_daemon((0, 0, 5760, 1080), rel_abs=True)
+        d.op_mousemove_abs(5000, 500, [])
+        d.op_mousemove_rel(9999, -9999, [])
+        self.assertEqual((d.px, d.py), (5759, 0))
+        ax, ay = abs_report(d.tablet)
+        self.assertEqual(compositor_pixel(ax, 5760), 5759)
+        self.assertEqual(compositor_pixel(ay, 1080), 0)
+
+    def test_rel_mode_selection(self):
+        env = os.environ.get("WDOTOOL_REL_MODE")
+        sway = os.environ.get("SWAYSOCK")
+        self.addCleanup(lambda: (os.environ.__setitem__("WDOTOOL_REL_MODE", env)
+                                 if env is not None else
+                                 os.environ.pop("WDOTOOL_REL_MODE", None)))
+        self.addCleanup(lambda: (os.environ.__setitem__("SWAYSOCK", sway)
+                                 if sway is not None else
+                                 os.environ.pop("SWAYSOCK", None)))
+        for value, want in (("abs", True), ("warp", True), ("rel", False),
+                            ("relative", False)):
+            os.environ["WDOTOOL_REL_MODE"] = value
+            d = daemon._Daemon()
+            self.assertIs(d._rel_absolute(), want, value)
+        # no override: sway/i3 keep REL, everything else warps
+        os.environ.pop("WDOTOOL_REL_MODE", None)
+        with tempfile.NamedTemporaryFile(prefix="wdotool-swaysock-") as sock:
+            os.environ["SWAYSOCK"] = sock.name
+            self.assertIs(daemon._Daemon()._rel_absolute(), False)
+        os.environ["SWAYSOCK"] = "/nonexistent/wdotool-no-sway"
+        self.assertIs(daemon._Daemon()._rel_absolute(), True)
 
 class TestProtocol(unittest.TestCase):
     """Full client<->daemon protocol against a really spawned (forked) daemon."""

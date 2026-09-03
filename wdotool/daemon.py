@@ -164,6 +164,12 @@ class _Daemon:
         self.dev_error = "uinput devices not initialized"
         self.down: set[int] = set()  # keycodes we injected as down
         self._next_ok = 0.0  # monotonic deadline for the next keystroke
+        # Last (ABS_X, ABS_Y) written to the tablet; a fresh uinput device
+        # starts at 0,0, which is what the kernel will compare against.
+        self._last_abs = (0, 0)
+        self._rel_abs = None      # relative moves as absolute warps? (B1)
+        self.pos_known = False    # has px/py ever been established? (B6)
+        self.geom_fallback = False  # last geometry() used FALLBACK_GEOMETRY
 
     def _key_gap(self, delay: float):
         """Inter-keystroke pause. Sleeps `delay` seconds but never lets the
@@ -180,6 +186,7 @@ class _Daemon:
             self.kb = uinput.keyboard()
             self.mouse = uinput.rel_mouse()
             self.tablet = uinput.abs_pointer()
+            self._last_abs = (0, 0)  # fresh device: kernel axis state is 0,0
             self.dev_error = None
             if os.environ.get("WDOTOOL_FAKE_UINPUT") != "1":
                 time.sleep(0.6)  # compositor hotplug settle
@@ -235,29 +242,102 @@ class _Daemon:
                     warnings.append(msg)
             return FALLBACK_GEOMETRY
 
+    @staticmethod
+    def _axis(delta: int, span: int) -> int:
+        """Layout offset -> tablet axis value (B7).
+
+        libinput maps an absolute axis with scale_axis(): the pointer lands at
+        `value * span / (max - min + 1)` = `v * span / 32768`, which the
+        compositor then floors (or rounds) to a pixel. The forward map that
+        round-trips through that inverse exactly is the CEILING of
+        `delta * 32768 / span`, not a floor: floor(ceil(d*32768/S) * S/32768)
+        == d for every d in [0, S) while S <= 32768. The old
+        `d * 32767 // (S - 1)` floor map landed one pixel short wherever the
+        division was inexact -- 257 of 301 x values near the layout origin on
+        a 5760px-wide three-head rig."""
+        span = max(span, 1)
+        return min(max(-((-delta * 32768) // span), 0), 32767)
+
+    def _warp(self, x, y, gx, gy, w, h):
+        """Put the pointer at the global layout coordinate (x, y) with the
+        absolute tablet. The compositor maps the tablet's axes across the FULL
+        output layout, so scale the offset from the layout origin, not the raw
+        (possibly negative) global coordinate."""
+        ax = self._axis(x - gx, w)
+        ay = self._axis(y - gy, h)
+        # B2: the kernel drops an EV_ABS whose value equals the axis' current
+        # value, so re-sending the coordinates the tablet reported last time
+        # is a silent no-op -- and the pointer may well have moved since, via
+        # REL events, a physical mouse, or another daemon. Nudge one axis by a
+        # single unit first (1/32768 of the layout: sub-pixel on any real
+        # screen) so the second report is always a change and always lands.
+        if (ax, ay) == self._last_abs:
+            nudge = ax + 1 if ax < 32767 else ax - 1
+            self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, nudge)
+            self.tablet.syn()
+        self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, ax)
+        self.tablet.emit(uinput.EV_ABS, uinput.ABS_Y, ay)
+        self.tablet.syn()
+        self._last_abs = (ax, ay)
+        self.px, self.py = x, y
+        self.pos_known = True
+
+    def _rel_absolute(self) -> bool:
+        """Should a relative move be emitted as an absolute warp? (B1)
+
+        REL_X/REL_Y go through the compositor's pointer-acceleration curve, so
+        `mousemove_relative 500 0` lands wherever libinput's profile puts it:
+        on a stock GNOME (adaptive profile) 500 requested pixels moved the
+        pointer 462 on 24.04 and 267 on 26.04, and only `accel-profile flat`
+        was exact. xdotool's XWarpPointer is pixel-exact, so everywhere but
+        sway/i3 the relative move is emitted as an absolute warp to
+        (px+dx, py+dy) instead.
+
+        sway/i3 keep the REL path: this repo's sway rig runs `pointer_accel 0`
+        (REL is already exact there) and the sway/daemon tests pin the EV_REL
+        contract. WDOTOOL_REL_MODE=rel|abs forces either, on any compositor."""
+        if self._rel_abs is None:
+            mode = os.environ.get("WDOTOOL_REL_MODE", "").strip().lower()
+            if mode in ("abs", "absolute", "warp"):
+                self._rel_abs = True
+            elif mode in ("rel", "relative"):
+                self._rel_abs = False
+            else:
+                from wdotool import session
+                self._rel_abs = not bool(session.find_sway_socket())
+        return self._rel_abs
+
     def op_mousemove_abs(self, x, y, warnings):
         self._need_devices()
         gx, gy, w, h = self.geometry(warnings)
         x = min(max(x, gx), gx + w - 1)
         y = min(max(y, gy), gy + h - 1)
-        # The compositor maps the tablet's 0..32767 axes across the FULL output
-        # layout, so scale the offset from the layout origin, not the raw
-        # (possibly negative) global coordinate.
-        self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, (x - gx) * 32767 // max(w - 1, 1))
-        self.tablet.emit(uinput.EV_ABS, uinput.ABS_Y, (y - gy) * 32767 // max(h - 1, 1))
-        self.tablet.syn()
-        self.px, self.py = x, y
+        self._warp(x, y, gx, gy, w, h)
 
     def op_mousemove_rel(self, dx, dy, warnings):
         self._need_devices()
         gx, gy, w, h = self.geometry(warnings)
-        self.px = min(max(self.px + dx, gx), gx + w - 1)
-        self.py = min(max(self.py + dy, gy), gy + h - 1)
+        tx = min(max(self.px + dx, gx), gx + w - 1)
+        ty = min(max(self.py + dy, gy), gy + h - 1)
+        if self._rel_absolute():
+            self._warp(tx, ty, gx, gy, w, h)
+            return
+        self.px, self.py = tx, ty
+        self.pos_known = True
         if dx:
             self.mouse.emit(uinput.EV_REL, uinput.REL_X, dx)
         if dy:
             self.mouse.emit(uinput.EV_REL, uinput.REL_Y, dy)
         self.mouse.syn()
+
+    def op_seed_pointer(self, x, y, warnings):
+        """Adopt the compositor's real pointer position (B6). No injection:
+        the client has just asked the compositor where the pointer is and is
+        correcting the model before a relative move or a getmouselocation."""
+        gx, gy, w, h = self.geometry(warnings)
+        self.px = min(max(x, gx), gx + w - 1)
+        self.py = min(max(y, gy), gy + h - 1)
+        self.pos_known = True
 
     # -- buttons -----------------------------------------------------------
 
