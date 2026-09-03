@@ -6,6 +6,7 @@ command name), raise CmdError to abort the chain.
 """
 
 import math
+import re
 import sys
 import time
 
@@ -65,12 +66,24 @@ def _atoi(s) -> int:
         return 0
 
 
+_STRTOUL_RE = re.compile(
+    r"[ \t\n\r\f\v]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)")
+
+
 def _strtonum(s) -> int:
-    """C strtoul(s, NULL, 0): 0x/0-prefixed bases accepted."""
-    try:
-        return int(str(s).strip(), 0)
-    except ValueError:
-        return _atoi(s)
+    """C strtoul(s, NULL, 0): optional sign, then 0x-hex / 0-octal / decimal,
+    stopping at the first character that does not fit the base.
+
+    Python's int(s, 0) is a different function and got two cases wrong
+    (B14): it rejects C's octal `0755` (we then fell back to atoi and read
+    755) and accepts `0b101` as binary where strtoul stops at the 'b' and
+    returns 0."""
+    m = _STRTOUL_RE.match(str(s))
+    if not m:
+        return 0
+    sign, digits = m.group(1), m.group(2)
+    base = 16 if digits[:2].lower() == "0x" else 8 if digits.startswith("0") else 10
+    return int(sign + digits, base)
 
 
 def _activate_settle(ctx, wid):
@@ -78,6 +91,42 @@ def _activate_settle(ctx, wid):
     compositor a moment to move focus, then inject normally."""
     ctx.backend().activate(wid)
     time.sleep(0.05)
+
+
+def _backend_pointer(ctx):
+    """The compositor's real pointer position, or None when this compositor
+    has no pointer query (sway/i3 IPC has none) or there is no session."""
+    try:
+        fn = getattr(ctx.backend(), "pointer", None)
+        if fn is None:
+            return None
+        hit = fn()
+    except CmdError:
+        return None
+    if hit is None:
+        return None
+    return (int(hit[0]), int(hit[1]))
+
+
+def _pointer(ctx, seed=True):
+    """Where the pointer really is (B6).
+
+    The input daemon only knows the last position *it* injected; REL events,
+    a physical mouse, another daemon (one per euid and per XDG_RUNTIME_DIR)
+    or the compositor itself move the pointer behind its back, and a daemon
+    that has just started knows nothing at all. So ask the compositor first
+    and, when it answers, correct the daemon's model from it so a following
+    mousemove_relative counts from the real position (B1). Compositors
+    without a pointer query keep the tracked model."""
+    real = _backend_pointer(ctx)
+    if real is None:
+        return ctx.daemon().pointer()
+    if seed:
+        try:
+            ctx.daemon().seed_pointer(*real)
+        except CmdError:
+            pass  # no daemon available: the compositor's reading still stands
+    return real
 
 
 def _target_windows(ctx, window_arg):
@@ -146,6 +195,12 @@ def _key_common(ctx, args, default_name, direction):
 
     daemon = ctx.daemon()
     failed = 0
+    # xdo.c converts the key sequence to keycodes once per press/release
+    # pass: `key` runs both (down then up), `keydown`/`keyup` only one. Every
+    # failing pass prints BOTH diagnostics and adds 1 to the command's exit
+    # status, so `key 'a b'` exits 2 with five stderr lines while
+    # `keydown 'a b'` exits 1 with three (B12).
+    passes = 2 if direction == "press" else 1
     for wid in _target_windows(ctx, window_arg):
         if wid is not None:
             _activate_settle(ctx, wid)
@@ -158,10 +213,13 @@ def _key_common(ctx, args, default_name, direction):
                 except CmdError as e:
                     if not str(e).startswith("Error: Invalid key sequence"):
                         raise
-                    print(e, file=sys.stderr)
+                    for _ in range(passes):
+                        print(e, file=sys.stderr)
+                        print("Failure converting key sequence '%s' to keycodes"
+                              % seq, file=sys.stderr)
                     print(f"xdo_send_keysequence_window reported an error for string '{seq}'",
                           file=sys.stderr)
-                    failed += 1
+                    failed += passes
             if repeat_delay > 0 and r < repeat - 1:
                 time.sleep(repeat_delay / 1000)
     if failed:
@@ -397,7 +455,7 @@ def cmd_mousemove(ctx, args):
     daemon = ctx.daemon()
     for wid in _target_windows(ctx, window_arg):
         if wid is None:
-            ctx._last_mouse = daemon.pointer()  # noqa: SLF001 — restore state
+            ctx._last_mouse = _pointer(ctx)  # noqa: SLF001 — restore state
         tx, ty = x, y
         if opts.get("polar"):
             if wid is not None:
@@ -454,6 +512,11 @@ def cmd_mousemove_relative(ctx, args):
         x, y = _polar_to_xy(x, y, 0, 0)
     if opts.get("clearmodifiers"):
         _clear_modifiers(ctx)
+    # B1/B6: move from where the pointer really is. On a compositor that can
+    # be asked, this also decides pixel-exactness: the daemon then emits the
+    # target as an absolute warp instead of REL events that libinput's
+    # acceleration curve would scale.
+    _pointer(ctx)
     ctx.daemon().mousemove_rel(x, y)
     return i + 2
 
@@ -502,7 +565,7 @@ def cmd_getmouselocation(ctx, args):
     if want_help:
         print(usage, end="")
         return len(args)
-    x, y = ctx.daemon().pointer()
+    x, y = _pointer(ctx)
     window = _window_under_pointer(ctx, x, y)
     if opts.get("shell"):
         prefix = str(opts.get("prefix", ""))[:16]

@@ -118,6 +118,10 @@ class SwayBackend(WindowBackend):
                         id=node["id"],
                         title=node.get("name") or "",
                         class_=node.get("app_id") or wp.get("class") or "",
+                        # WM_CLASS instance of an X11 client under Xwayland;
+                        # native Wayland views have none (search --classname
+                        # then falls back to class_ = app_id).
+                        instance=wp.get("instance") or "",
                         pid=node.get("pid") or 0,
                         x=rect.get("x", 0),
                         y=rect.get("y", 0),

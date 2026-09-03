@@ -19,7 +19,11 @@ from wdotool.ctx import CmdError
 class Window:
     id: int = 0
     title: str = ""
-    class_: str = ""  # app_id on Wayland; doubles as WM_CLASS class and instance
+    class_: str = ""  # app_id on Wayland; the WM_CLASS *class* for X clients
+    # WM_CLASS *instance* of an X/XWayland client ("" when the backend cannot
+    # tell it apart from class_); `search --classname` matches this, falling
+    # back to class_ so native Wayland toplevels still match their app_id.
+    instance: str = ""
     pid: int = 0
     x: int = 0
     y: int = 0
@@ -75,7 +79,13 @@ class WindowBackend:
     name = "none"
 
     def _unsupported(self, op: str):
-        raise CmdError(f"{op} is not supported by the {self.name} backend")
+        # `unsupported` marks a capability gap (as opposed to a failed
+        # operation) so callers can downgrade it to a warning -- see
+        # set_num_desktops, which must not fail a chain on a compositor with
+        # a fixed workspace count.
+        err = CmdError(f"{op} is not supported by the {self.name} backend")
+        err.unsupported = True
+        raise err
 
     # required
     def list(self) -> list[Window]:
@@ -138,6 +148,12 @@ class WindowBackend:
         action: 0=remove 1=add 2=toggle"""
         self._unsupported("windowstate")
 
+    def set_num_desktops(self, n: int):
+        """Ask the compositor for exactly n workspaces (set_num_desktops).
+        Raises a CmdError with .unsupported set where the count is not the
+        caller's to choose (dynamic workspaces)."""
+        self._unsupported("set_num_desktops")
+
     def window_desktop(self, wid: int) -> int:
         return self.find(wid).desktop
 
@@ -163,6 +179,13 @@ class WindowBackend:
         """(DISPLAY, XAUTHORITY) of the session's Xwayland, or None when the
         backend cannot tell (callers fall back to session.find_x_display /
         find_xauthority)."""
+        return None
+
+    def pointer(self) -> tuple[int, int] | None:
+        """The compositor's real pointer position in global layout
+        coordinates, or None when the compositor offers no pointer query
+        (sway's IPC does not). Callers fall back to the input daemon's
+        model of the last position it injected."""
         return None
 
     def window_at(self, x: int, y: int) -> int | None:

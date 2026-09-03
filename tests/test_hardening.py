@@ -37,11 +37,14 @@ class RecorderDev:
         self.closed = True
 
 
-def make_daemon(geom=(0, 0, 1920, 1080)):
+def make_daemon(geom=(0, 0, 1920, 1080), rel_abs=False):
     d = daemon._Daemon()
     d.kb, d.mouse, d.tablet = RecorderDev(), RecorderDev(), RecorderDev()
     d.dev_error = None
     d.geom = geom
+    # Pin the relative-move mode so these tests never depend on whether a
+    # sway socket happens to exist where they run (see B1 / _rel_absolute).
+    d._rel_abs = rel_abs
     return d
 
 
@@ -66,28 +69,66 @@ class TestBBox(unittest.TestCase):
         self.assertEqual(daemon._bbox_of(boxes), (0, -1080, 1920, 2160))
 
 
+def compositor_x(axis_value: int, span: int) -> int:
+    """libinput scale_axis() + the compositor's pixel truncation: the pixel a
+    tablet axis value lands on is floor(v * span / (max - min + 1))."""
+    return axis_value * span // 32768
+
+
 class TestMultiOutputPointer(unittest.TestCase):
     GEOM = (-1920, 0, 3200, 1080)  # HEADLESS-2 at -1920,0 + 1280x720... etc.
+
+    def _abs_values(self, d):
+        """(ABS_X, ABS_Y) of the last report the tablet emitted."""
+        vals = {}
+        for ev in d.tablet.events:
+            if ev[0] == uinput.EV_ABS:
+                vals[ev[1]] = ev[2]
+        return vals[uinput.ABS_X], vals[uinput.ABS_Y]
 
     def test_abs_maps_layout_origin_to_zero(self):
         d = make_daemon(self.GEOM)
         d.op_mousemove_abs(-1920, 0, [])
         self.assertEqual((d.px, d.py), (-1920, 0))
-        self.assertEqual(d.tablet.events[0], (uinput.EV_ABS, uinput.ABS_X, 0))
-        self.assertEqual(d.tablet.events[1], (uinput.EV_ABS, uinput.ABS_Y, 0))
+        self.assertEqual(self._abs_values(d), (0, 0))
 
-    def test_abs_maps_layout_max_to_32767(self):
+    def test_abs_maps_layout_max_to_last_pixel(self):
+        # B7: the far edge need not be exactly 32767 -- what matters is that
+        # the compositor's inverse maps it back to the last pixel.
         d = make_daemon(self.GEOM)
         d.op_mousemove_abs(1279, 1079, [])
         self.assertEqual((d.px, d.py), (1279, 1079))
-        self.assertEqual(d.tablet.events[0], (uinput.EV_ABS, uinput.ABS_X, 32767))
-        self.assertEqual(d.tablet.events[1], (uinput.EV_ABS, uinput.ABS_Y, 32767))
+        ax, ay = self._abs_values(d)
+        self.assertEqual(compositor_x(ax, 3200), 3199)
+        self.assertEqual(compositor_x(ay, 1080), 1079)
+
+    def test_abs_round_trips_on_every_head(self):
+        """B7: every global x must survive daemon -> tablet -> compositor.
+        The old (x-gx)*32767//(w-1) floor map lost a pixel wherever the
+        division was inexact (257 of 301 x values near the origin on the
+        3-head rig)."""
+        for geom in ((-1920, 0, 3200, 1080),      # two heads, negative origin
+                     (0, 0, 5760, 1080),          # the 3x1920 stress rig
+                     (0, 0, 1920, 1080),
+                     (100, 50, 800, 600)):
+            gx, gy, w, h = geom
+            d = make_daemon(geom)
+            xs = (list(range(gx, gx + 320))
+                  + list(range(gx + w - 320, gx + w))
+                  + list(range(gx + w // 2 - 40, gx + w // 2 + 40)))
+            for x in xs:
+                d.tablet.events.clear()
+                d.op_mousemove_abs(x, gy, [])
+                ax, _ay = self._abs_values(d)
+                self.assertEqual(gx + compositor_x(ax, w), x,
+                                 "geom %r x=%d axis=%d" % (geom, x, ax))
 
     def test_abs_zero_is_scaled_from_origin(self):
         d = make_daemon(self.GEOM)
         d.op_mousemove_abs(0, 0, [])
-        self.assertEqual(d.tablet.events[0],
-                         (uinput.EV_ABS, uinput.ABS_X, 1920 * 32767 // 3199))
+        ax, _ay = self._abs_values(d)
+        self.assertEqual(ax, -((-1920 * 32768) // 3200))
+        self.assertEqual(compositor_x(ax, 3200), 1920)
 
     def test_abs_clamps_at_negative_edge(self):
         d = make_daemon(self.GEOM)

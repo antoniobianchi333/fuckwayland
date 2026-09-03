@@ -191,8 +191,13 @@ class FakeDaemon:
     def connect_or_spawn(cls):
         return cls()
 
+    fallback = False
+
     def geometry(self):
         return (2560, 1440)
+
+    def geometry_status(self):
+        return (2560, 1440, self.fallback)
 
 orig_dc = daemon_mod.DaemonClient
 daemon_mod.DaemonClient = FakeDaemon
@@ -210,6 +215,14 @@ try:
     assert rc == 1
     assert err == ("getdisplaygeometry: unrecognized option '--badopt'\n"
                    "Usage: getdisplaygeometry\n"), err
+    # B5: no compositor reachable -> the daemon answers with the built-in
+    # guess. getdisplaygeometry must NOT print it with rc 0; it is the one
+    # command that used to "succeed" with no session at all.
+    FakeDaemon.fallback = True
+    rc, out, err = run(["getdisplaygeometry"])
+    assert rc == 2, (rc, out, err)
+    assert out == "" and "no Wayland session found" in err, (out, err)
+    FakeDaemon.fallback = False
 finally:
     daemon_mod.DaemonClient = orig_dc
 

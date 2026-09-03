@@ -14,7 +14,7 @@ KWin does offer it, so a KWin backend failure still falls through."""
 import os
 
 from wdotool import session
-from wdotool.ctx import CmdError
+from wdotool.ctx import CmdError, NoSessionError
 
 KWIN_NAME = "org.kde.KWin"
 GNOME_NAME = "org.gnome.Shell"
@@ -134,8 +134,10 @@ def detect():
         pass
     bus_note = ("no session D-Bus reachable" if session_names() is None
                 else "no KWin or GNOME Shell on the session D-Bus")
-    raise CmdError(
-        "Cannot find a Wayland window-management backend: no sway/i3 IPC "
-        "socket, %s, and the compositor does not offer wlr-foreign-toplevel. "
+    # rc 2, not 1: "there is no session to talk to" is a different answer to
+    # a script than "the session is up and nothing matched" (B5).
+    raise NoSessionError(
+        "wdotool: no Wayland session found: no sway/i3 IPC socket, %s, and "
+        "the compositor does not offer wlr-foreign-toplevel. "
         "Set WDOTOOL_BACKEND=sway|wlr|kwin|gnome to force one." % bus_note
     )

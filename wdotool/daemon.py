@@ -5,6 +5,13 @@ hotplug latency — paid once), tracks the injected pointer position, and serves
 one JSON object per line on a unix socket. `{"ok":true,...}` or
 `{"ok":false,"error":"..."}`; a response may carry `"warnings":[...]` which the
 client prints to its stderr.
+
+The daemon owns the pointer *model* (px, py): the position it last injected.
+It is only a model -- REL events, a physical mouse, or another daemon move
+the compositor's pointer behind its back -- so clients that can ask the
+compositor for the real position (the GNOME bridge's GetPointer) push it
+back with the `seed_pointer` op before a relative move (see B1/B6 in
+DESIGN.md).
 """
 
 import fcntl
@@ -31,6 +38,15 @@ MAX_REPEAT = 1_000_000
 MAX_DELAY_MS = 300_000
 _I32_MIN, _I32_MAX = -(2**31), 2**31 - 1
 _MAX_REQUEST = 16 << 20  # bytes per request line
+
+# Env the daemon keeps when it is spawned from a client (B10). Everything
+# else -- the launcher's D-Bus address, DESKTOP_*, anything derived from the
+# client's argv -- is dropped: an input daemon that outlives the command that
+# started it must not pin that command's session state. WDOTOOL_* is kept as
+# a prefix (uinput path, fake-uinput mode, WDOTOOL_REL_MODE).
+_KEEP_ENV = ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HOME", "PATH", "USER",
+             "LOGNAME", "LANG", "LC_ALL", "SUDO_UID", "PKEXEC_UID")
+_DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 def _num(val, what: str, lo: int, hi: int) -> int:
@@ -143,6 +159,87 @@ def _wayland_bbox() -> tuple[int, int, int, int]:
 
 _SHIFTS = (keymap.KEY_LEFTSHIFT, keymap.KEY_RIGHTSHIFT)
 
+CGROUP_ROOT = "/sys/fs/cgroup"
+# Name of the cgroup the daemon moves itself into; a plain directory under
+# the user manager's delegated subtree, not a systemd unit.
+_ESCAPE_CGROUP = "wdotool-daemon"
+
+
+def transient_scope_target(cgroup_line: str, euid: int) -> str | None:
+    """Cgroup directory a freshly spawned daemon should move itself into, or
+    None when it should stay where it is (B11).
+
+    GNOME runs a custom keyboard shortcut inside a transient systemd scope
+    (`app-gnome-<name>-<pid>.scope`). A scope stays *active* while any process
+    remains in its cgroup, and neither fork nor setsid changes a cgroup -- so
+    the double-forked daemon kept the launcher's scope (and the shell script
+    that started it, as far as systemd was concerned) alive for as long as the
+    daemon ran; observed at 10+ minutes on 24.04 / systemd 255. `systemd-run
+    --user --scope` is the textbook migration but re-runs the command in an
+    environment of systemd's choosing, which is exactly what B10 is trying to
+    control. Writing our own pid into a sibling cgroup under the user
+    manager's *delegated* subtree does the same job with one write, no new
+    process and no environment surprises.
+
+    Only transient app scopes are escaped. A `session-N.scope` (a normal
+    login) or a system service is left alone: a daemon started there should
+    still die with its session. Root is never in a user scope, so the root
+    daemon keeps its cgroup too."""
+    if euid == 0:
+        return None
+    path = (cgroup_line or "").strip()
+    if path.startswith("0::"):
+        path = path[3:]
+    if not path.startswith("/"):
+        return None
+    leaf = path.rsplit("/", 1)[-1]
+    if not (leaf.startswith("app-") and leaf.endswith(".scope")):
+        return None
+    marker = "/user@%d.service" % euid
+    idx = path.find(marker + "/")
+    if idx < 0:
+        return None
+    return CGROUP_ROOT + path[:idx + len(marker)] + "/" + _ESCAPE_CGROUP
+
+
+def _escape_transient_scope():
+    """Best effort; a failure is a documented limitation, never fatal."""
+    try:
+        with open("/proc/self/cgroup") as f:
+            line = f.readline()
+        target = transient_scope_target(line, os.geteuid())
+        if target is None:
+            return
+        os.makedirs(target, exist_ok=True)
+        with open(os.path.join(target, "cgroup.procs"), "w") as f:
+            f.write("%d\n" % os.getpid())
+    except OSError:
+        pass
+
+
+def clean_env(env=None) -> dict:
+    """The environment a spawned daemon keeps (B10)."""
+    src = os.environ if env is None else env
+    out = {k: v for k, v in src.items()
+           if k in _KEEP_ENV or k.startswith("WDOTOOL_")}
+    if not out.get("PATH"):
+        out["PATH"] = _DEFAULT_PATH
+    return out
+
+
+def _close_inherited_fds():
+    """Close everything above stdio (B10): a daemon forked out of a running
+    command inherits that command's open files -- most importantly the session
+    D-Bus socket, which keeps a bus connection ESTABLISHED for the daemon's
+    whole life and made the daemon look like a D-Bus client in `ss`."""
+    try:
+        limit = os.sysconf("SC_OPEN_MAX")
+    except (ValueError, OSError):
+        limit = 4096
+    if not isinstance(limit, int) or limit < 3 or limit > 65536:
+        limit = 65536
+    os.closerange(3, limit)
+
 
 class _Daemon:
     # Injection rate cap. Keystrokes injected faster than the compositor
@@ -164,6 +261,12 @@ class _Daemon:
         self.dev_error = "uinput devices not initialized"
         self.down: set[int] = set()  # keycodes we injected as down
         self._next_ok = 0.0  # monotonic deadline for the next keystroke
+        # Last (ABS_X, ABS_Y) written to the tablet; a fresh uinput device
+        # starts at 0,0, which is what the kernel will compare against.
+        self._last_abs = (0, 0)
+        self._rel_abs = None      # relative moves as absolute warps? (B1)
+        self.pos_known = False    # has px/py ever been established? (B6)
+        self.geom_fallback = False  # last geometry() used FALLBACK_GEOMETRY
 
     def _key_gap(self, delay: float):
         """Inter-keystroke pause. Sleeps `delay` seconds but never lets the
@@ -180,6 +283,7 @@ class _Daemon:
             self.kb = uinput.keyboard()
             self.mouse = uinput.rel_mouse()
             self.tablet = uinput.abs_pointer()
+            self._last_abs = (0, 0)  # fresh device: kernel axis state is 0,0
             self.dev_error = None
             if os.environ.get("WDOTOOL_FAKE_UINPUT") != "1":
                 time.sleep(0.6)  # compositor hotplug settle
@@ -222,10 +326,13 @@ class _Daemon:
         tracked in these global layout coordinates."""
         try:
             self.geom = _wayland_bbox()
+            self.geom_fallback = False
             return self.geom
         except Exception as e:
             if self.geom:
+                self.geom_fallback = False
                 return self.geom
+            self.geom_fallback = True
             if not self.geom_warned:
                 self.geom_warned = True
                 msg = (f"wdotool: cannot query Wayland output geometry ({e}); "
@@ -235,29 +342,102 @@ class _Daemon:
                     warnings.append(msg)
             return FALLBACK_GEOMETRY
 
+    @staticmethod
+    def _axis(delta: int, span: int) -> int:
+        """Layout offset -> tablet axis value (B7).
+
+        libinput maps an absolute axis with scale_axis(): the pointer lands at
+        `value * span / (max - min + 1)` = `v * span / 32768`, which the
+        compositor then floors (or rounds) to a pixel. The forward map that
+        round-trips through that inverse exactly is the CEILING of
+        `delta * 32768 / span`, not a floor: floor(ceil(d*32768/S) * S/32768)
+        == d for every d in [0, S) while S <= 32768. The old
+        `d * 32767 // (S - 1)` floor map landed one pixel short wherever the
+        division was inexact -- 257 of 301 x values near the layout origin on
+        a 5760px-wide three-head rig."""
+        span = max(span, 1)
+        return min(max(-((-delta * 32768) // span), 0), 32767)
+
+    def _warp(self, x, y, gx, gy, w, h):
+        """Put the pointer at the global layout coordinate (x, y) with the
+        absolute tablet. The compositor maps the tablet's axes across the FULL
+        output layout, so scale the offset from the layout origin, not the raw
+        (possibly negative) global coordinate."""
+        ax = self._axis(x - gx, w)
+        ay = self._axis(y - gy, h)
+        # B2: the kernel drops an EV_ABS whose value equals the axis' current
+        # value, so re-sending the coordinates the tablet reported last time
+        # is a silent no-op -- and the pointer may well have moved since, via
+        # REL events, a physical mouse, or another daemon. Nudge one axis by a
+        # single unit first (1/32768 of the layout: sub-pixel on any real
+        # screen) so the second report is always a change and always lands.
+        if (ax, ay) == self._last_abs:
+            nudge = ax + 1 if ax < 32767 else ax - 1
+            self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, nudge)
+            self.tablet.syn()
+        self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, ax)
+        self.tablet.emit(uinput.EV_ABS, uinput.ABS_Y, ay)
+        self.tablet.syn()
+        self._last_abs = (ax, ay)
+        self.px, self.py = x, y
+        self.pos_known = True
+
+    def _rel_absolute(self) -> bool:
+        """Should a relative move be emitted as an absolute warp? (B1)
+
+        REL_X/REL_Y go through the compositor's pointer-acceleration curve, so
+        `mousemove_relative 500 0` lands wherever libinput's profile puts it:
+        on a stock GNOME (adaptive profile) 500 requested pixels moved the
+        pointer 462 on 24.04 and 267 on 26.04, and only `accel-profile flat`
+        was exact. xdotool's XWarpPointer is pixel-exact, so everywhere but
+        sway/i3 the relative move is emitted as an absolute warp to
+        (px+dx, py+dy) instead.
+
+        sway/i3 keep the REL path: this repo's sway rig runs `pointer_accel 0`
+        (REL is already exact there) and the sway/daemon tests pin the EV_REL
+        contract. WDOTOOL_REL_MODE=rel|abs forces either, on any compositor."""
+        if self._rel_abs is None:
+            mode = os.environ.get("WDOTOOL_REL_MODE", "").strip().lower()
+            if mode in ("abs", "absolute", "warp"):
+                self._rel_abs = True
+            elif mode in ("rel", "relative"):
+                self._rel_abs = False
+            else:
+                from wdotool import session
+                self._rel_abs = not bool(session.find_sway_socket())
+        return self._rel_abs
+
     def op_mousemove_abs(self, x, y, warnings):
         self._need_devices()
         gx, gy, w, h = self.geometry(warnings)
         x = min(max(x, gx), gx + w - 1)
         y = min(max(y, gy), gy + h - 1)
-        # The compositor maps the tablet's 0..32767 axes across the FULL output
-        # layout, so scale the offset from the layout origin, not the raw
-        # (possibly negative) global coordinate.
-        self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, (x - gx) * 32767 // max(w - 1, 1))
-        self.tablet.emit(uinput.EV_ABS, uinput.ABS_Y, (y - gy) * 32767 // max(h - 1, 1))
-        self.tablet.syn()
-        self.px, self.py = x, y
+        self._warp(x, y, gx, gy, w, h)
 
     def op_mousemove_rel(self, dx, dy, warnings):
         self._need_devices()
         gx, gy, w, h = self.geometry(warnings)
-        self.px = min(max(self.px + dx, gx), gx + w - 1)
-        self.py = min(max(self.py + dy, gy), gy + h - 1)
+        tx = min(max(self.px + dx, gx), gx + w - 1)
+        ty = min(max(self.py + dy, gy), gy + h - 1)
+        if self._rel_absolute():
+            self._warp(tx, ty, gx, gy, w, h)
+            return
+        self.px, self.py = tx, ty
+        self.pos_known = True
         if dx:
             self.mouse.emit(uinput.EV_REL, uinput.REL_X, dx)
         if dy:
             self.mouse.emit(uinput.EV_REL, uinput.REL_Y, dy)
         self.mouse.syn()
+
+    def op_seed_pointer(self, x, y, warnings):
+        """Adopt the compositor's real pointer position (B6). No injection:
+        the client has just asked the compositor where the pointer is and is
+        correcting the model before a relative move or a getmouselocation."""
+        gx, gy, w, h = self.geometry(warnings)
+        self.px = min(max(x, gx), gx + w - 1)
+        self.py = min(max(y, gy), gy + h - 1)
+        self.pos_known = True
 
     # -- buttons -----------------------------------------------------------
 
@@ -318,6 +498,10 @@ class _Daemon:
         keys, warnings = keymap.parse_keyseq(spec)  # ValueError on bad sequence
         d = delay_ms / 1000
         if direction == "press":
+            # xdo_send_keysequence_window converts the sequence once per pass
+            # (press, then release), so every "(symbol) No such key name"
+            # diagnostic is printed twice by the real xdotool (B12).
+            warnings = warnings * 2
             self._press(keys, d / 2)
             self._release(keys, d / 2)
         elif direction == "down":
@@ -390,12 +574,23 @@ class _Daemon:
                 self.op_click(_num(req.get("btn"), "button", 0, 255),
                               _num(req.get("repeat", 1), "repeat", 0, MAX_REPEAT),
                               _num(req.get("delay_ms", 100), "delay_ms", 0, MAX_DELAY_MS))
+            elif op == "seed_pointer":
+                self.op_seed_pointer(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
+                                     _num(req.get("y"), "y", _I32_MIN, _I32_MAX),
+                                     warnings)
             elif op == "pointer":
-                return {"ok": True, "x": self.px, "y": self.py}
+                # B6: never answer "0,0" for a daemon that has no pointer.
+                # A daemon that could not open /dev/uinput has injected
+                # nothing and knows nothing; it must fail with that reason
+                # instead of reporting the origin with rc 0.
+                if not self.pos_known:
+                    self._need_devices()
+                return {"ok": True, "x": self.px, "y": self.py,
+                        "known": self.pos_known}
             elif op == "geometry":
                 gx, gy, w, h = self.geometry(warnings)
                 return {"ok": True, "x": gx, "y": gy, "w": w, "h": h,
-                        "warnings": warnings}
+                        "fallback": self.geom_fallback, "warnings": warnings}
             elif op == "ping":
                 return {"ok": True, "pid": os.getpid()}
             else:
@@ -530,11 +725,45 @@ class DaemonClient:
             return None
 
     @staticmethod
+    def _exec_plan() -> "list[tuple[str, list[str], dict]]":
+        """(path, argv, env) candidates for re-execing as the daemon, best
+        first (B10). Re-execing is what gives the daemon a clean argv (`ps`
+        showed the *client's* command line before), a fresh address space and
+        no inherited state; `wdotool __daemon` / `python -m wdotool __daemon`
+        are both predictable and both match `pkill -f __daemon`. Paths are
+        resolved before the caller chdir()s to /."""
+        env = clean_env()
+        plan = []
+        exe = sys.argv[0] if sys.argv else ""
+        if exe:
+            exe = os.path.abspath(exe)
+        if (os.path.basename(exe) in ("wdotool", "xdotool")
+                and os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            plan.append((exe, [exe, "__daemon"], dict(env)))
+        if sys.executable:
+            menv = dict(env)
+            try:
+                import wdotool as _pkg
+                # The parent of the package directory; for a zipapp this is
+                # the .pyz itself, which is a valid PYTHONPATH entry too.
+                parent = os.path.dirname(
+                    os.path.dirname(os.path.abspath(_pkg.__file__)))
+            except Exception:  # noqa: BLE001 -- diagnostics only
+                parent = ""
+            if parent:
+                menv["PYTHONPATH"] = parent
+            plan.append((sys.executable,
+                         [sys.executable, "-m", "wdotool", "__daemon"], menv))
+        return plan
+
+    @staticmethod
     def _spawn():
-        """Daemonize: fork, setsid, fork; grandchild redirects stdio to the
-        daemon log, then re-execs as `<wdotool> __daemon` when argv[0] is the
-        wdotool/xdotool executable (so ps shows a predictable name and
-        `pkill -f __daemon` works), else runs daemon_main() in-process."""
+        """Daemonize: fork, setsid, fork; the grandchild redirects stdio to
+        the daemon log, closes every inherited fd, leaves the launcher's
+        transient scope, drops the client's environment and cwd, and re-execs
+        as `wdotool __daemon` (or `python -m wdotool __daemon`); if no re-exec
+        is possible it runs daemon_main() in-process with the same clean
+        state."""
         pid = os.fork()
         if pid:
             os.waitpid(pid, 0)
@@ -546,6 +775,7 @@ class DaemonClient:
                 os._exit(0)  # session leader exits; grandchild is the daemon
             sys.stdout.flush()
             sys.stderr.flush()
+            plan = DaemonClient._exec_plan()  # resolves paths before chdir
             null = os.open(os.devnull, os.O_RDONLY)
             try:
                 # O_NOFOLLOW: never append through a planted symlink in /tmp.
@@ -559,13 +789,19 @@ class DaemonClient:
             os.dup2(log, 2)
             os.close(null)
             os.close(log)
-            exe = sys.argv[0] if sys.argv else ""
-            if (os.path.basename(exe) in ("wdotool", "xdotool")
-                    and os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            _close_inherited_fds()
+            _escape_transient_scope()
+            try:
+                os.chdir("/")  # never hold the client's cwd busy
+            except OSError:
+                pass
+            for path, argv, env in plan:
                 try:
-                    os.execv(exe, [exe, "__daemon"])
+                    os.execve(path, argv, env)
                 except OSError:
-                    pass  # fall back to running the daemon in this process
+                    continue  # try the next plan, else run in-process
+            os.environ.clear()
+            os.environ.update(clean_env(dict(plan[0][2]) if plan else None))
             code = daemon_main()
         except BaseException:
             traceback.print_exc()
@@ -622,9 +858,19 @@ class DaemonClient:
         resp = self._rpc(op="pointer")
         return (resp["x"], resp["y"])
 
+    def seed_pointer(self, x: int, y: int):
+        """Tell the daemon where the compositor's pointer really is (B6)."""
+        self._rpc(op="seed_pointer", x=x, y=y)
+
     def geometry(self) -> tuple[int, int]:
         resp = self._rpc(op="geometry")
         return (resp["w"], resp["h"])
+
+    def geometry_status(self) -> tuple[int, int, bool]:
+        """(w, h, fallback): `fallback` is True when the compositor could not
+        be asked and the numbers are the built-in guess (B5)."""
+        resp = self._rpc(op="geometry")
+        return (resp["w"], resp["h"], bool(resp.get("fallback")))
 
     def geometry_full(self) -> tuple[int, int, int, int]:
         """(min_x, min_y, w, h) of the output layout — the origin matters on

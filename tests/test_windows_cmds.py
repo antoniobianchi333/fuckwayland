@@ -11,9 +11,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from wdotool import cli
+import time
+
+from wdotool import cli, window_cmds
 from wdotool.backend import Window, WindowBackend
-from wdotool.ctx import CmdError, Context
+from wdotool.ctx import CmdError, Context, NoSessionError
+
 
 
 class FakeBackend(WindowBackend):
@@ -96,6 +99,7 @@ def run(argv, backend=None):
     return (rc if rc else ctx.exit_code), out.getvalue(), err.getvalue(), ctx
 
 
+
 class SearchTest(unittest.TestCase):
     def test_basic_and_stack(self):
         rc, out, err, ctx = run(["search", "--class", "beta"])
@@ -173,6 +177,7 @@ class SearchTest(unittest.TestCase):
         self.assertIn("Failed to compile regex", err)
 
 
+
 class QueryTest(unittest.TestCase):
     def test_getactivewindow_prints_when_last(self):
         rc, out, _e, ctx = run(["getactivewindow"])
@@ -225,6 +230,7 @@ class QueryTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(out, "")
         self.assertIn("no windows on the stack", err)
+
 
 
 class ActionTest(unittest.TestCase):
@@ -334,6 +340,7 @@ class ActionTest(unittest.TestCase):
         self.assertIn("behave is not supported", err)
 
 
+
 class DesktopTest(unittest.TestCase):
     def test_get_set(self):
         self.assertEqual(run(["get_desktop"])[1], "0\n")
@@ -363,6 +370,7 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual((rc, out), (0, "0\n2\n"))
 
 
+
 class HelpTest(unittest.TestCase):
     def test_help_consumes_all_and_succeeds(self):
         rc, out, _e, _ = run(["windowmove", "--help", "these", "are", "eaten"])
@@ -376,6 +384,238 @@ class HelpTest(unittest.TestCase):
             err.startswith("windowraise: unrecognized option '--bogus'\n")
         )
 
+
+
+class BoundedSyncTest(unittest.TestCase):
+    """B3: no --sync wait runs for ever any more."""
+
+    class _Stuck(FakeBackend):
+        """Every action succeeds and changes nothing -- the shape Mutter has
+        when it snaps a resize or defers a focus change."""
+
+        def activate(self, wid):
+            self.calls.append(("activate", wid))
+
+        def resize(self, wid, w, h):
+            self.calls.append(("resize", wid, w, h))
+
+        def move_window(self, wid, x, y):
+            self.calls.append(("move", wid, x, y))
+
+        def minimize(self, wid):
+            self.calls.append(("minimize", wid))
+
+        def is_mapped(self, wid):
+            return True
+
+    def setUp(self):
+        self.backup = os.environ.get("WDOTOOL_SYNC_TIMEOUT")
+        os.environ["WDOTOOL_SYNC_TIMEOUT"] = "0.3"
+
+    def tearDown(self):
+        if self.backup is None:
+            os.environ.pop("WDOTOOL_SYNC_TIMEOUT", None)
+        else:
+            os.environ["WDOTOOL_SYNC_TIMEOUT"] = self.backup
+
+    def stuck(self):
+        return self._Stuck([
+            Window(id=11, title="xterm", class_="XTerm", pid=1,
+                   x=0, y=0, w=496, h=392, focused=False, visible=True),
+        ])
+
+    def test_windowactivate_sync_gives_up(self):
+        t0 = time.monotonic()
+        rc, _o, err, _c = run(["windowactivate", "--sync", "11"], self.stuck())
+        self.assertEqual(rc, 1)
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertEqual(
+            err, "wdotool: gave up waiting for window 11 to become active after 0.3s\n")
+
+    def test_windowminimize_sync_gives_up(self):
+        rc, _o, err, _c = run(["windowminimize", "--sync", "11"], self.stuck())
+        self.assertEqual(rc, 1)
+        self.assertIn("gave up waiting for window 11 to be minimized", err)
+
+    def test_windowmove_sync_gives_up(self):
+        rc, _o, err, _c = run(["windowmove", "--sync", "11", "700", "800"],
+                              self._Stuck([Window(id=11, x=0, y=0, w=10, h=10)]))
+        self.assertEqual(rc, 1)
+        self.assertIn("gave up waiting for window 11 to move", err)
+
+    def test_windowsize_sync_accepts_a_snapped_size(self):
+        """B3a: Mutter snaps an xterm asked for 497x392 to 496x392, so the
+        size never changes and the old loop waited for ever."""
+        t0 = time.monotonic()
+        rc, _o, err, _c = run(["windowsize", "--sync", "11", "497", "392"],
+                              self.stuck())
+        self.assertEqual((rc, err), (0, ""))
+        self.assertLess(time.monotonic() - t0, 0.3)
+
+    def test_windowsize_sync_still_gives_up_on_a_refused_resize(self):
+        rc, _o, err, _c = run(["windowsize", "--sync", "11", "1000", "900"],
+                              self.stuck())
+        self.assertEqual(rc, 1)
+        self.assertIn("gave up waiting for window 11 to be resized", err)
+
+    def test_a_wait_that_succeeds_is_untouched(self):
+        rc, _o, err, _c = run(["windowsize", "--sync", "11", "800", "600"])
+        self.assertEqual((rc, err), (0, ""))
+
+    def test_zero_timeout_restores_the_unbounded_wait(self):
+        os.environ["WDOTOOL_SYNC_TIMEOUT"] = "0"
+        self.assertEqual(window_cmds._sync_timeout(), 0.0)
+        os.environ["WDOTOOL_SYNC_TIMEOUT"] = "nonsense"
+        self.assertEqual(window_cmds._sync_timeout(), window_cmds.SYNC_TIMEOUT)
+        os.environ.pop("WDOTOOL_SYNC_TIMEOUT")
+        self.assertEqual(window_cmds._sync_timeout(), window_cmds.SYNC_TIMEOUT)
+
+
+class ClassNameSearchTest(unittest.TestCase):
+    """B4: --classname matches the WM_CLASS *instance* of X/XWayland windows,
+    --class the class part; native toplevels have no instance and keep
+    matching their app_id through both."""
+
+    def backend(self):
+        return FakeBackend([
+            Window(id=11, title="xterm", class_="XTerm", instance="myinst",
+                   pid=1, x=0, y=0, w=10, h=10, visible=True),
+            Window(id=22, title="calc", class_="org.gnome.Calculator",
+                   pid=2, x=0, y=0, w=10, h=10, visible=True),
+        ])
+
+    def test_classname_finds_the_instance(self):
+        rc, out, _e, _c = run(["search", "--classname", "myinst"], self.backend())
+        self.assertEqual((rc, out), (0, "11\n"))
+
+    def test_class_does_not_match_the_instance(self):
+        rc, out, _e, _c = run(["search", "--class", "myinst"], self.backend())
+        self.assertEqual((rc, out), (1, ""))
+
+    def test_class_matches_the_class_part(self):
+        rc, out, _e, _c = run(["search", "--class", "XTerm"], self.backend())
+        self.assertEqual((rc, out), (0, "11\n"))
+
+    def test_native_toplevel_matches_app_id_through_both(self):
+        for flag in ("--class", "--classname"):
+            rc, out, _e, _c = run(["search", flag, "gnome.Calc"], self.backend())
+            self.assertEqual((rc, out), (0, "22\n"), flag)
+
+
+class NoSessionExitCodeTest(unittest.TestCase):
+    """B5: rc 2 for "no Wayland session", rc 1 for "nothing matched"."""
+
+    class _NoSession(WindowBackend):
+        name = "none"
+
+    def run_without_backend(self, argv):
+        ctx = Context()
+
+        def boom():
+            raise NoSessionError("wdotool: no Wayland session found: nothing here")
+
+        ctx.backend = boom
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.run_chain(ctx, "wdotool", argv)
+        return (rc if rc else ctx.exit_code), out.getvalue(), err.getvalue()
+
+    def test_no_session_is_rc_2(self):
+        for argv in (["search", "--name", "x"], ["getactivewindow"],
+                     ["windowactivate", "11"], ["get_num_desktops"]):
+            rc, _o, err = self.run_without_backend(argv)
+            self.assertEqual(rc, 2, argv)
+            self.assertEqual(err, "wdotool: no Wayland session found: nothing here\n")
+
+    def test_no_match_stays_rc_1(self):
+        rc, out, err, _c = run(["search", "--name", "nothing-matches-this"])
+        self.assertEqual((rc, out, err), (1, "", ""))
+
+    def test_no_active_window_stays_rc_1(self):
+        b = make_backend()
+        for w in b.windows.values():
+            w.focused = False
+        rc, _o, err, _c = run(["getactivewindow"], b)
+        self.assertEqual(rc, 1)
+        self.assertEqual(err, "xdo_get_active_window reported an error\n")
+
+
+class InvalidWindowIdTest(unittest.TestCase):
+    """B8: a negative or out-of-range id is one line and rc 1, never a
+    D-Bus marshalling traceback."""
+
+    def test_bad_ids(self):
+        for bad in ("-5", "0x10000000000000000", "18446744073709551616",
+                    "notanumber"):
+            rc, out, err, _c = run(["getwindowname", "--", bad])
+            self.assertEqual(rc, 1, bad)
+            self.assertEqual(out, "", bad)
+            self.assertEqual(err, "Invalid window id '%s'\n" % bad, bad)
+
+    def test_the_largest_valid_id_is_still_accepted(self):
+        ctx = Context()
+        self.assertEqual(ctx._resolve_one("18446744073709551615"), 2 ** 64 - 1)
+        self.assertEqual(ctx._resolve_one("0"), 0)
+
+
+class SetNumDesktopsTest(unittest.TestCase):
+    """B9: actually ask the compositor; only a capability gap warns."""
+
+    class _Counting(FakeBackend):
+        def __init__(self, windows, fail=None):
+            super().__init__(windows)
+            self.fail = fail
+
+        def set_num_desktops(self, n):
+            self.calls.append(("set_num_desktops", n))
+            if self.fail is not None:
+                raise self.fail
+
+    def test_calls_the_backend(self):
+        b = self._Counting([])
+        rc, _o, err, _c = run(["set_num_desktops", "3"], b)
+        self.assertEqual(rc, 0)
+        self.assertEqual(b.calls, [("set_num_desktops", 3)])
+        self.assertEqual(err, "")
+
+    def test_unsupported_only_warns(self):
+        err_obj = CmdError("dynamic workspaces are enabled")
+        err_obj.unsupported = True
+        b = self._Counting([], fail=err_obj)
+        rc, _o, err, _c = run(["set_num_desktops", "3"], b)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            err, "wdotool: set_num_desktops: dynamic workspaces are enabled; ignoring\n")
+
+    def test_a_real_failure_fails(self):
+        b = self._Counting([], fail=CmdError("SetNWorkspaces: no reply"))
+        rc, _o, err, _c = run(["set_num_desktops", "3"], b)
+        self.assertEqual(rc, 1)
+        self.assertEqual(err, "SetNWorkspaces: no reply\n")
+
+    def test_a_backend_without_the_capability_warns(self):
+        rc, _o, err, _c = run(["set_num_desktops", "3"], FakeBackend([]))
+        self.assertEqual(rc, 0)
+        self.assertIn("not supported by the fake backend", err)
+        self.assertTrue(err.endswith("; ignoring\n"))
+
+
+class SearchUsageTest(unittest.TestCase):
+    """B14: cmd_search.c is the one command that prints "Invalid usage"
+    between getopt's message and the usage block."""
+
+    def test_limit_without_an_argument(self):
+        rc, _o, err, _c = run(["search", "--limit"])
+        self.assertEqual(rc, 1)
+        lines = err.splitlines()
+        self.assertEqual(lines[0], "search: option '--limit' requires an argument")
+        self.assertEqual(lines[1], "Invalid usage")
+        self.assertEqual(lines[2], "Usage: xdotool search [options] regexp_pattern")
+
+    def test_other_commands_do_not_print_it(self):
+        rc, _o, err, _c = run(["windowsize", "--nope"])
+        self.assertEqual(rc, 1)
+        self.assertNotIn("Invalid usage", err)
 
 if __name__ == "__main__":
     unittest.main()

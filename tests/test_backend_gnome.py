@@ -26,7 +26,7 @@ from wdotool import backend_detect, backend_gnome, dbus_mini, session  # noqa: E
 from wdotool.backend import View, Window, Workspace                    # noqa: E402
 from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,        # noqa: E402
                                    OBJECT_PATH, SHELL_NAME, GnomeBackend)
-from wdotool.ctx import CmdError                                       # noqa: E402
+from wdotool.ctx import CmdError, NoSessionError                       # noqa: E402
 from wdotool.dbus_mini import Bus, DBusError, Message, Variant         # noqa: E402
 
 XTERM, EDITOR, CALC, DESKTOP = 4194305, 4194306, 4194307, 4194301
@@ -407,8 +407,12 @@ class BackendTests(_Base):
         self.assertEqual([w.id for w in wins], [DESKTOP, EDITOR, CALC, XTERM])
         xterm = wins[-1]
         self.assertEqual(xterm, Window(id=XTERM, title="test@vm: ~", class_="XTerm",
-                                       pid=1201, x=100, y=80, w=640, h=480,
+                                       instance="xterm", pid=1201,
+                                       x=100, y=80, w=640, h=480,
                                        focused=True, visible=True, desktop=0))
+        # B4: native toplevels carry no WM_CLASS instance, so --classname
+        # falls back to class_ = the app_id for them.
+        self.assertEqual(wins[2].instance, "")
         editor = wins[1]
         self.assertEqual(editor.class_, "org.gnome.TextEditor")  # gtk_app_id fallback
         self.assertFalse(editor.visible)  # minimized
@@ -558,9 +562,37 @@ class BackendTests(_Base):
             self.b.set_window_desktop(CALC, 5)
         self.assertEqual(self.calls("MoveToWorkspace"), [(CALC, 2), (CALC, -1), (CALC, 5)])
 
+    def test_pointer_reports_the_compositors_own(self):
+        # B6: Mutter knows where the pointer is whoever moved it, so this is
+        # what getmouselocation reports and what seeds the daemon's model.
+        self.assertEqual(self.b.pointer(), (640, 400))
+        self.bridge.pointer = (2881, 17, 0)
+        self.assertEqual(self.b.pointer(), (2881, 17))
+        self.assertEqual(self.b.real_pointer(), (2881, 17))  # historical alias
+        self.assertEqual(len(self.calls("GetPointer")), 3)
+
+    def test_set_num_desktops_calls_the_bridge(self):
+        # B9: the command used to print "managed by the compositor; ignoring"
+        # and never call anything. The mock bridge answers Unsupported (its
+        # dynamic-workspaces are on), which must be marked as a capability
+        # gap rather than a plain failure.
+        with self.assertRaises(CmdError) as cm:
+            self.b.set_num_desktops(3)
+        self.assertEqual(self.calls("SetNWorkspaces"), [(3,)])
+        self.assertTrue(getattr(cm.exception, "unsupported", False))
+        self.assertIn("dynamic workspaces", str(cm.exception))
+
+    def test_invalid_window_id_is_one_line_not_a_marshal_traceback(self):
+        # B8: -5 and 2**64 cannot be carried as a D-Bus 't'; ctx rejects them
+        # first, and _call is the belt-and-braces guard behind it.
+        for bad in (-5, 2 ** 64):
+            with self.assertRaises(CmdError) as cm:
+                self.b._call("GetWindow", "t", (bad,))
+            self.assertIn("invalid argument", str(cm.exception))
+            self.assertEqual(len(str(cm.exception).splitlines()), 1)
+
     def test_display_size_and_extras(self):
         self.assertEqual(self.b.display_size(), (1920, 1080))
-        self.assertEqual(self.b.real_pointer(), (640, 400))
         self.assertEqual(self.b.bridge_version(), 1)
         mons = self.b.monitors()
         self.assertEqual((mons[0]["connector"], mons[0]["primary"]), ("Virtual-1", True))
@@ -669,6 +701,40 @@ class BackendTests(_Base):
         with self.assertRaises(CmdError) as cm:
             self.b._call("SetState", "tss", (XTERM, "FULLSCREEN", "flip"))
         self.assertIn("action must be add|remove|toggle", str(cm.exception))
+
+
+class SessionReadinessTests(_Base):
+    """B5: "there is no backend to talk to" is rc 2, distinct from rc 1 for
+    "the session is up and nothing matched"."""
+
+    def test_every_constructor_failure_is_a_no_session_error(self):
+        cases = [
+            dict(own_shell=True, own_bridge=False),                   # no bridge
+            dict(own_shell=True, own_bridge=False, shell_mode="gdm"),  # greeter
+            dict(own_shell=True, own_bridge=False,
+                 shell_mode="unlock-dialog"),                          # locked
+            dict(own_shell=False, own_bridge=False),                   # no shell
+        ]
+        for kw in cases:
+            bridge = MockBridge(self.mock.address, **kw)
+            try:
+                with self.assertRaises(NoSessionError) as cm:
+                    GnomeBackend()
+                self.assertEqual(cm.exception.exit_code, 2, kw)
+            finally:
+                bridge.close()
+
+    def test_a_missing_window_stays_rc_1(self):
+        bridge = MockBridge(self.mock.address)
+        try:
+            b = GnomeBackend()
+            self.addCleanup(b.bus.close)
+            with self.assertRaises(CmdError) as cm:
+                b.find(999)
+            self.assertNotIsInstance(cm.exception, NoSessionError)
+            self.assertEqual(getattr(cm.exception, "exit_code", 1), 1)
+        finally:
+            bridge.close()
 
 
 class ConstructorTests(_Base):

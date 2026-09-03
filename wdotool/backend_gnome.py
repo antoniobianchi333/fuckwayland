@@ -18,6 +18,9 @@ org.gnome.Shell.Introspect uses), printed in decimal like every backend.
 Field mapping (bridge object -> Window):
   class_   wm_class, else gtk_app_id, else sandboxed_app_id (Mutter reports
            the Wayland app_id as wm_class for native clients)
+  instance wm_class_instance -- the WM_CLASS *instance* of an XWayland client
+           (`xterm -name myinst` -> "myinst"), "" for native toplevels, where
+           `search --classname` then falls back to class_ = the app_id
   x,y,w,h  get_frame_rect(): logical pixels, SSD frame included, no CSD
            shadow -- the same space the input daemon's pointer lives in
   focused  has_focus()
@@ -40,12 +43,13 @@ never probes that privileged interface."""
 
 import json
 import os
+import struct
 import sys
 import time
 
 from wdotool import session
 from wdotool.backend import View, Window, WindowBackend, Workspace
-from wdotool.ctx import CmdError
+from wdotool.ctx import CmdError, NoSessionError
 from wdotool.dbus_mini import ERR, Bus, DBusError
 
 BUS_NAME = "org.fuckwayland.Bridge"
@@ -131,7 +135,7 @@ class GnomeBackend(WindowBackend):
             try:
                 bus = Bus()
             except DBusError as e:
-                raise CmdError("gnome backend: %s" % _no_bus_text(e)) from None
+                raise NoSessionError("gnome backend: %s" % _no_bus_text(e)) from None
         self.bus = bus
         if names is None:
             try:
@@ -140,10 +144,15 @@ class GnomeBackend(WindowBackend):
                 raise CmdError("gnome backend: ListNames failed: %s" % e) from None
         if BUS_NAME not in names:
             if SHELL_NAME not in names:
-                raise CmdError("gnome backend: %s is not on the session bus "
-                               "(no GNOME session?)" % SHELL_NAME)
+                raise NoSessionError("gnome backend: %s is not on the session "
+                                     "bus (no GNOME session?)" % SHELL_NAME)
             if not (_autoload_wanted() and self._try_autoload()):
-                raise CmdError(self._missing_bridge_text())
+                # Every reason the bridge can be missing (not installed, not
+                # enabled, screen locked, greeter, shell restarting) means the
+                # same thing to a script: there is no window backend to talk
+                # to yet. That is rc 2, distinct from "no matching window"
+                # (rc 1) -- see B5 / SESSION READINESS in README.md.
+                raise NoSessionError(self._missing_bridge_text())
 
     # -- plumbing -----------------------------------------------------------
 
@@ -154,6 +163,12 @@ class GnomeBackend(WindowBackend):
                                  timeout=timeout)
         except DBusError as e:
             raise self._map_error(member, e) from None
+        except (ValueError, OverflowError, struct.error) as e:
+            # An argument the wire format cannot carry (a negative or
+            # >64-bit window id reached us from somewhere): one line, rc 1,
+            # never a marshalling traceback (B8).
+            raise CmdError("gnome backend: %s: invalid argument: %s"
+                           % (member, e)) from None
 
     @staticmethod
     def _map_error(member: str, e: DBusError) -> CmdError:
@@ -161,7 +176,10 @@ class GnomeBackend(WindowBackend):
         if n.startswith(IFACE + "."):
             kind = n[len(IFACE) + 1:]
             if kind in ("NotFound", "Unsupported"):
-                return CmdError(e.message or "%s: %s" % (member, kind))
+                err = CmdError(e.message or "%s: %s" % (member, kind))
+                if kind == "Unsupported":
+                    err.unsupported = True  # a capability gap, not a failure
+                return err
             return CmdError("gnome backend: %s: %s" % (member, e.message or kind))
         if n in (ERR + "ServiceUnknown", ERR + "NameHasNoOwner"):
             return CmdError(_GONE)
@@ -280,6 +298,7 @@ class GnomeBackend(WindowBackend):
             title=d.get("title") or "",
             class_=d.get("wm_class") or d.get("gtk_app_id")
             or d.get("sandboxed_app_id") or "",
+            instance=d.get("wm_class_instance") or "",
             pid=int(d.get("pid") or 0),
             x=int(d.get("x", 0)), y=int(d.get("y", 0)),
             w=int(d.get("width", 0)), h=int(d.get("height", 0)),
@@ -408,6 +427,12 @@ class GnomeBackend(WindowBackend):
 
     def num_desktops(self) -> int:
         return int(self._call("GetNWorkspaces")[0])
+
+    def set_num_desktops(self, n: int):
+        # The bridge answers Unsupported when Mutter's dynamic-workspaces is
+        # on (then the shell owns the count); _map_error marks that so
+        # set_num_desktops can warn instead of failing (B9).
+        self._call("SetNWorkspaces", "i", (n,))
 
     def select_window(self) -> int:
         # SelectWindow(0) waits for the next focus change without a deadline;
@@ -542,13 +567,16 @@ class GnomeBackend(WindowBackend):
         data = self._json("ListMonitors")
         return data if isinstance(data, list) else []
 
-    def real_pointer(self) -> tuple[int, int]:
-        """Diagnostic, no command uses it: the compositor's actual pointer
-        (not the daemon-tracked injected one that getmouselocation reports
-        by design), for checking that injected moves land where the tools
-        think they do (PLAN critique 3, VERIFY-CHECKLIST)."""
+    def pointer(self) -> tuple[int, int] | None:
+        """The compositor's real pointer (B6). Mutter knows where the pointer
+        is whoever moved it -- our tablet, a REL event, a physical mouse or
+        another wdotool daemon -- so getmouselocation reports this and the
+        input daemon's model is corrected from it before a relative move."""
         x, y, _mods = self._call("GetPointer")
         return int(x), int(y)
+
+    # Historical name kept for the diagnostics scripts in vm/ and gnome/.
+    real_pointer = pointer
 
     def bridge_version(self) -> int:
         return int(self._call("GetVersion")[0])

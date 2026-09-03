@@ -37,11 +37,15 @@ def _out(line: str):
     sys.stdout.flush()
 
 
-def _opts(ctx, args, shortopts, longopts, usage, shortmap=None):
+def _opts(ctx, args, shortopts, longopts, usage, shortmap=None,
+          invalid_usage=False):
     """Leading-option parse via cli.getopt_long_only. Returns (opts, nopts)
     with short chars canonicalized through shortmap, or None after printing
     usage for --help (caller returns len(args)). Bad options raise CmdError
-    carrying getopt's message + usage, like the C default: branches."""
+    carrying getopt's message + usage, like the C default: branches.
+
+    `invalid_usage` adds the extra "Invalid usage" line that cmd_search.c --
+    alone among the commands -- prints between the two (B14)."""
     cmd = getattr(ctx, "cmd_name", "?")
     shortmap = dict(shortmap or ())
     shortmap.setdefault("h", "help")
@@ -52,7 +56,8 @@ def _opts(ctx, args, shortopts, longopts, usage, shortmap=None):
             sys.stdout.write(usage)
             sys.stdout.flush()
             return None
-        raise CmdError("%s\n%s" % (e, usage.rstrip("\n"))) from None
+        head = "%s\nInvalid usage" % e if invalid_usage else str(e)
+        raise CmdError("%s\n%s" % (head, usage.rstrip("\n"))) from None
     opts = [(shortmap.get(n, n), v) for n, v in raw]
     if any(n == "help" for n, _ in opts):
         sys.stdout.write(usage)
@@ -129,7 +134,7 @@ def cmd_search(ctx, args):
         "If none of --name, --classname, --class, or --role are specified, the \n"
         "defaults are: --name --classname --class --role\n" % cmd
     )
-    parsed = _opts(ctx, args, "h", _SEARCH_LONGOPTS, usage)
+    parsed = _opts(ctx, args, "h", _SEARCH_LONGOPTS, usage, invalid_usage=True)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
@@ -229,9 +234,15 @@ def cmd_search(ctx, args):
             if want_name:
                 conds.append(rx.search(w.title or "") is not None)
             if want_class:
+                # WM_CLASS class for X clients, app_id for native toplevels.
                 conds.append(rx.search(w.class_ or "") is not None)
             if want_classname:
-                conds.append(rx.search(w.class_ or "") is not None)
+                # WM_CLASS *instance* -- `xterm -name myinst` is findable by
+                # "myinst" like it is under X11 (B4). Native Wayland
+                # toplevels have no instance, so they keep matching their
+                # app_id and --class/--classname stay equivalent there.
+                conds.append(
+                    rx.search(w.instance or w.class_ or "") is not None)
             if want_role:
                 # Window roles do not exist on Wayland; match against ""
                 # exactly like libxdo does for a window with no role set.
@@ -410,8 +421,41 @@ def cmd_getwindowgeometry(ctx, args):
 # ---------------------------------------------------------------------------
 # window actions
 
-def _wait_until(pred, interval=0.03):
+# Bounded --sync waits (B3). xdotool's waits are bounded too -- xdo.c loops
+# MAX_TRIES (500) x 30ms = 15s and then quietly returns success -- but ours
+# looped for ever, so a windowsize --sync that Mutter snapped to a different
+# size, or ten concurrent `windowactivate --sync`, hung until the script was
+# killed (8-9 of 10 hung for 614s in the stress run). Ten seconds is generous
+# for any compositor round trip we make; WDOTOOL_SYNC_TIMEOUT overrides it in
+# seconds, and 0 restores the old wait-for-ever behaviour.
+#
+# `search --sync` is deliberately NOT bounded: its manpage entry is the one
+# that promises to "block until there are results", for scripts that launch
+# an application and wait for its window. selectwindow and behave are
+# likewise unbounded by definition.
+SYNC_TIMEOUT = 10.0
+
+
+def _sync_timeout() -> float:
+    raw = os.environ.get("WDOTOOL_SYNC_TIMEOUT")
+    if raw is None:
+        return SYNC_TIMEOUT
+    try:
+        val = float(raw)
+    except ValueError:
+        return SYNC_TIMEOUT
+    return val if val > 0 else 0.0
+
+
+def _wait_until(pred, what, interval=0.03, timeout=None):
+    """Poll `pred` until it holds; give up after the --sync timeout with one
+    line on stderr and a failing exit status."""
+    limit = _sync_timeout() if timeout is None else timeout
+    deadline = None if limit <= 0 else time.monotonic() + limit
     while not pred():
+        if deadline is not None and time.monotonic() >= deadline:
+            raise CmdError("wdotool: gave up waiting for %s after %gs"
+                           % (what, limit))
         time.sleep(interval)
 
 
@@ -428,7 +472,7 @@ def _is_mapped(ctx, wid) -> bool:
 
 
 def _simple_action(ctx, args, cmdname, usage_body, act, sync_pred=None,
-                   has_sync=False):
+                   has_sync=False, sync_what="%d"):
     """Shared skeleton for [options] [window=%1] action commands."""
     usage = usage_body
     longopts = [("help", False)] + ([("sync", False)] if has_sync else [])
@@ -441,7 +485,7 @@ def _simple_action(ctx, args, cmdname, usage_body, act, sync_pred=None,
     for wid in ctx.resolve_windows(warg):
         act(ctx, wid)
         if opsync and sync_pred is not None:
-            _wait_until(lambda: sync_pred(ctx, wid))
+            _wait_until(lambda w=wid: sync_pred(ctx, w), sync_what % wid)
     return nopts + used
 
 
@@ -456,7 +500,7 @@ def cmd_windowactivate(ctx, args):
         ctx, args, cmd, usage,
         lambda c, wid: c.backend().activate(wid),
         sync_pred=lambda c, wid: c.backend().find(wid).focused,
-        has_sync=True,
+        has_sync=True, sync_what="window %d to become active",
     )
 
 
@@ -470,7 +514,7 @@ def cmd_windowfocus(ctx, args):
         ctx, args, cmd, usage,
         lambda c, wid: c.backend().focus(wid),
         sync_pred=lambda c, wid: c.backend().find(wid).focused,
-        has_sync=True,
+        has_sync=True, sync_what="window %d to take focus",
     )
 
 
@@ -499,7 +543,7 @@ def cmd_windowmap(ctx, args):
         ctx, args, cmd, usage,
         lambda c, wid: c.backend().map(wid),
         sync_pred=_is_mapped,
-        has_sync=True,
+        has_sync=True, sync_what="window %d to be mapped",
     )
 
 
@@ -514,7 +558,7 @@ def cmd_windowunmap(ctx, args):
         ctx, args, cmd, usage,
         lambda c, wid: c.backend().unmap(wid),
         sync_pred=lambda c, wid: not _is_mapped(c, wid),
-        has_sync=True,
+        has_sync=True, sync_what="window %d to be unmapped",
     )
 
 
@@ -529,7 +573,7 @@ def cmd_windowminimize(ctx, args):
         ctx, args, cmd, usage,
         lambda c, wid: c.backend().minimize(wid),
         sync_pred=lambda c, wid: not _is_mapped(c, wid),
-        has_sync=True,
+        has_sync=True, sync_what="window %d to be minimized",
     )
 
 
@@ -646,8 +690,23 @@ def cmd_windowmove(ctx, args):
                     ox == w2.x and oy == w2.y
                     and abs(x - w2.x) > 10 and abs(y - w2.y) > 50
                 )
-            _wait_until(moved)
+            _wait_until(moved, "window %d to move" % wid)
     return nopts + used + 2
+
+
+# Mutter, like any window manager honouring WM_NORMAL_HINTS increments,
+# snaps a resize to the client's cell grid: an xterm asked for 497x392 stays
+# at 496x392, so "the size changed" never became true and windowsize --sync
+# waited for ever (B3a). xdotool's equivalent loop is bounded and its X11
+# clients usually take the exact pixels; on Wayland we additionally treat a
+# size the compositor has snapped to -- within one cell-ish tolerance of the
+# request -- as the answer, the way xdotool treats a size that already
+# satisfies the window's hints as done.
+_SNAP_TOL = 32  # px; a terminal cell is at most ~24px tall, ~12px wide
+
+
+def _snapped(cur_w, cur_h, req_w, req_h) -> bool:
+    return abs(cur_w - req_w) <= _SNAP_TOL and abs(cur_h - req_h) <= _SNAP_TOL
 
 
 def cmd_windowsize(ctx, args):
@@ -707,9 +766,13 @@ def cmd_windowsize(ctx, args):
                 "xdo_set_window_size on window:%d reported an error" % wid
             ) from None
         if opsync:
-            _wait_until(
-                lambda: (lambda c: (c.w, c.h) != (ow, oh))(ctx.backend().find(wid))
-            )
+            def resized(wid=wid, ow=ow, oh=oh, rw=w_px, rh=h_px):
+                cur2 = ctx.backend().find(wid)
+                if (cur2.w, cur2.h) != (ow, oh):
+                    return True          # changed at all -- xdotool's rule
+                return _snapped(cur2.w, cur2.h, rw, rh)
+
+            _wait_until(resized, "window %d to be resized" % wid)
     return nopts + used + 2
 
 
