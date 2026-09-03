@@ -4,17 +4,21 @@ Gtk.Fixed inside a scrolled window, every output is a CSS-coloured
 Gtk.EventBox with a label, dragged with plain button/motion events and
 snapped on drop.
 
+Apply runs the backend on a worker thread (a slow or hung compositor must
+not freeze the window); the result comes back through GLib.idle_add.  A
+failed Apply keeps the edited layout (arandr raises before re-reading).
+
 Test hooks (env): ``WARANDR_TEST_LAYOUT_DUMP=FILE`` appends one JSON line
-per redraw / menu popup with root-window coordinates of the boxes, toolbar
-buttons and menu items, so xdotool can drive the editor deterministically;
-``WARANDR_TEST_SAVE_AS=FILE`` makes Save As write there without the file
-chooser.
+per redraw / menu popup / status-bar change with root-window coordinates of
+the boxes, toolbar buttons and menu items, so xdotool can drive the editor
+deterministically; ``WARANDR_TEST_SAVE_AS=FILE`` makes Save As write there
+without the file chooser.
 """
 
 import json
 import os
-import shlex
 import sys
+import threading
 
 import gi
 
@@ -27,7 +31,7 @@ from .model import (REFLECTIONS, ROTATIONS, SCALES, LayoutError,  # noqa: E402
                     fmt_rate)
 
 TITLE = "Screen Layout Editor"
-ZOOMS = (2, 4, 8, 16, 32)
+ZOOMS = (4, 8, 16)     # arandr's View menu; Zoom In/Out walk this list
 MARGIN = 12
 SNAP_PX = 5            # arandr: tolerance = factor * 5 layout pixels
 PALETTE = ("#9ad0f5", "#f5b99a", "#b8e2a0", "#f0d98a", "#d5b3f0", "#f5a3c8",
@@ -97,11 +101,20 @@ class OutputBox(Gtk.EventBox):
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
                         | Gdk.EventMask.BUTTON_RELEASE_MASK
                         | Gdk.EventMask.POINTER_MOTION_MASK
-                        | Gdk.EventMask.BUTTON_MOTION_MASK)
+                        | Gdk.EventMask.BUTTON_MOTION_MASK
+                        | Gdk.EventMask.ENTER_NOTIFY_MASK
+                        | Gdk.EventMask.LEAVE_NOTIFY_MASK)
         self.connect("button-press-event", self._press)
         self.connect("motion-notify-event", self._motion)
         self.connect("button-release-event", self._release)
+        # no tooltip (it would pop over the context menu): the description
+        # goes to the status bar while the pointer is inside the box
+        self.connect("enter-notify-event",
+                     lambda *_: self.app.show_hover(self.info) or False)
+        self.connect("leave-notify-event",
+                     lambda *_: self.app.show_hover(None) or False)
         self._drag = None
+        self.info = self.name
 
     # Gtk.Fixed hands children their *natural* size, which for a label is
     # the full text: report the box size as both minimum and natural so the
@@ -164,16 +177,19 @@ class OutputBox(Gtk.EventBox):
                 ctx.add_class(cls)
             else:
                 ctx.remove_class(cls)
-        tip = self.name
+        info = self.name
         if output.active and output.mode:
-            tip += ": %s" % output.mode.label
+            info += ": %s" % output.mode.label
             if output.rate:
-                tip += " @ %s Hz" % fmt_rate(output.rate)
-            tip += ", %s" % output.rotation
-            tip += ", at %d,%d" % (output.x, output.y)
+                info += " @ %s Hz" % fmt_rate(output.rate)
+            info += ", %s" % output.rotation
+            if output.mirror_of:
+                info += ", mirror of %s" % output.mirror_of
+            else:
+                info += ", at %d,%d" % (output.x, output.y)
         else:
-            tip += ": inactive" if output.connected else ": disconnected"
-        self.set_tooltip_text(tip)
+            info += ": inactive" if output.connected else ": disconnected"
+        self.info = info
 
     # -- mouse ----------------------------------------------------------------
 
@@ -211,12 +227,15 @@ class OutputBox(Gtk.EventBox):
         out = self.app.layout.get(self.name)
         pos = out.tentative
         out.tentative = None
+        rejected = None
         if pos is not None and pos != (out.x, out.y):
             try:
                 self.app.layout.move(self.name, *pos)
             except LayoutError as e:
-                self.app.show_status("not moved: %s" % e)
-        self.app.redraw()
+                rejected = e
+        self.app.redraw()          # redraw resets the status bar first ...
+        if rejected is not None:   # ... then the message goes on top
+            self.app.show_message("%s not moved: %s" % (self.name, rejected))
         return True
 
 
@@ -226,7 +245,8 @@ class Application:
         self.factor = 8
         self.selected = None
         self.layout = None
-        self._menus = []
+        self._popup = None       # the one popup menu that can be open
+        self._busy = False       # an Apply is running on the worker thread
         self.window = Gtk.Window(title=TITLE)
         self.window.set_default_size(720, 520)
         self.window.set_icon_name("video-display")
@@ -260,7 +280,15 @@ class Application:
         vbox.pack_start(self.scroller, True, True, 0)
 
         self.status = Gtk.Statusbar()
-        self.status_ctx = self.status.get_context_id("command")
+        # one line, three sources by priority: a transient message (rejected
+        # drop, saved file; gone after a few seconds or at the next redraw),
+        # else the hovered output's description, else the command Apply
+        # would run
+        self.status_ctx = self.status.get_context_id("status")
+        self._command = self._message = self._hover = None
+        self._message_serial = 0
+        # RUN_LAST signal: connect_after, so the label is already updated
+        self.status.connect_after("text-pushed", self._status_changed)
         vbox.pack_start(self.status, False, False, 0)
 
         self.boxes = {}
@@ -291,7 +319,9 @@ class Application:
         layout.append(self._item("Save _As...", self.do_save_as,
                                  "<Control>s"))
         layout.append(Gtk.SeparatorMenuItem())
-        layout.append(self._item("_Apply", self.do_apply, "<Control>Return"))
+        self.apply_item = self._item("_Apply", self.do_apply,
+                                     "<Control>Return")
+        layout.append(self.apply_item)
         layout.append(self._item("Script _Properties", self.do_properties,
                                  "<Alt>Return"))
         layout.append(Gtk.SeparatorMenuItem())
@@ -307,7 +337,7 @@ class Application:
         view.append(Gtk.SeparatorMenuItem())
         group = None
         self._zoom_items = {}
-        for f in (4, 8, 16):
+        for f in ZOOMS:
             r = Gtk.RadioMenuItem.new_with_label_from_widget(group, "1:%d" % f)
             group = group or r
             r.set_active(f == self.factor)
@@ -357,9 +387,47 @@ class Application:
     # -- state ----------------------------------------------------------------
 
     def show_status(self, text):
-        self.status.pop(self.status_ctx)
-        self.status.push(self.status_ctx, text)
-        self.status.set_tooltip_text(text)
+        """The permanent line (the command); clears a transient message."""
+        self._command = text
+        self._message = None
+        self._refresh_status()
+
+    def show_message(self, text, seconds=6):
+        """A transient line, on top of everything until the next redraw or
+        for `seconds`."""
+        self._message = text
+        self._message_serial += 1
+        GLib.timeout_add_seconds(seconds, self._expire_message,
+                                 self._message_serial)
+        self._refresh_status()
+
+    def _expire_message(self, serial):
+        if serial == self._message_serial and self._message is not None:
+            self._message = None
+            self._refresh_status()
+        return False
+
+    def show_hover(self, text):
+        self._hover = text or None
+        self._refresh_status()
+
+    def _refresh_status(self):
+        text = self._message or self._hover or self._command or ""
+        if text != self.status_text():
+            self.status.pop(self.status_ctx)
+            self.status.push(self.status_ctx, text)
+        self.status.set_tooltip_text(self._command or "")
+
+    def status_text(self):
+        """What the status bar shows right now."""
+        area = self.status.get_message_area()
+        for w in area.get_children():
+            if isinstance(w, Gtk.Label):
+                return w.get_text()
+        return ""
+
+    def _status_changed(self, *_):
+        _dump("status", {"text": self.status_text()})
 
     def command_text(self):
         return self.layout.command_line(self.backend.word)
@@ -441,7 +509,8 @@ class Application:
             except Exception:
                 xid = None
         _dump("layout", {"boxes": boxes, "buttons": buttons, "xid": xid,
-                         "factor": self.factor,
+                         "factor": self.factor, "status": self.status_text(),
+                         "busy": self._busy,
                          "command": self.layout.args() if self.layout
                          else None})
         return False
@@ -467,12 +536,13 @@ class Application:
     # -- zoom -----------------------------------------------------------------
 
     def set_factor(self, f):
-        f = max(ZOOMS[0], min(ZOOMS[-1], f))
+        if f not in ZOOMS:
+            f = min(ZOOMS, key=lambda z: abs(z - f))
         if f == self.factor:
             return
         self.factor = f
-        if f in self._zoom_items and not self._zoom_items[f].get_active():
-            self._zoom_items[f].set_active(True)
+        if not self._zoom_items[f].get_active():
+            self._zoom_items[f].set_active(True)   # radio follows Ctrl+/-
         self.redraw()
 
     def _zoom_radio(self, item, f):
@@ -480,10 +550,12 @@ class Application:
             self.set_factor(f)
 
     def zoom_in(self):
-        self.set_factor(self.factor // 2)
+        i = ZOOMS.index(self.factor)
+        self.set_factor(ZOOMS[max(i - 1, 0)])
 
     def zoom_out(self):
-        self.set_factor(self.factor * 2)
+        i = ZOOMS.index(self.factor)
+        self.set_factor(ZOOMS[min(i + 1, len(ZOOMS) - 1)])
 
     def zoom_fit(self):
         x0, y0, x1, y1 = self.layout.bounding_box()
@@ -518,18 +590,32 @@ class Application:
                 if not o.connected and not o.active:
                     it.set_sensitive(False)
                 menu.append(it)
-            menu.show_all()
             self._track_menu(menu, "outputs")
-            self._menus.append(menu)
-            menu.popup_at_pointer(ev)
+            self._popup_menu(menu, ev)
             return True
         return False
 
     def popup_output_menu(self, name, ev):
-        menu = self.output_menu(name)
+        self._popup_menu(self.output_menu(name), ev)
+
+    def _popup_menu(self, menu, ev):
+        """Pop `menu` up and own it only while it is open: the previous
+        popup is released here, and this one on its deactivate (from idle,
+        after the chosen item's handler ran)."""
         menu.show_all()
-        self._menus.append(menu)
-        menu.popup_at_pointer(ev)
+        menu.connect("deactivate", lambda m: GLib.idle_add(
+            self._release_popup, m))
+        self._popup = menu
+        if ev is not None:
+            menu.popup_at_pointer(ev)
+        else:                       # no event (programmatic): at the canvas
+            menu.popup_at_widget(self.canvas_bg, Gdk.Gravity.NORTH_WEST,
+                                 Gdk.Gravity.NORTH_WEST, None)
+
+    def _release_popup(self, menu):
+        if self._popup is menu:
+            self._popup = None
+        return False
 
     def _edit(self, what, fn):
         try:
@@ -541,7 +627,8 @@ class Application:
 
     def output_menu(self, name):
         """arandr's per-output menu (Active, Primary, Resolution,
-        Orientation) plus Refresh rate, Reflection, Scale and Mirror of."""
+        Orientation) followed, after a separator, by Refresh rate,
+        Reflection, Mirror of and — Wayland only — Scale."""
         lay = self.layout
         o = lay.get(name)
         menu = Gtk.Menu()
@@ -584,32 +671,33 @@ class Application:
         radio_submenu("_Resolution", [(m.label, m.name) for m in o.modes],
                       o.mode.name if o.mode else None,
                       lambda v: lay.set_mode(name, v))
+        radio_submenu("_Orientation",
+                      [(r, r) for r in ROTATIONS if r in o.rotations
+                       or r == o.rotation],
+                      o.rotation, lambda v: lay.set_rotation(name, v))
+        menu.append(Gtk.SeparatorMenuItem())
         rates = o.mode.rates if o.mode else []
         radio_submenu("Refresh ra_te",
                       [("%s Hz" % fmt_rate(r), r) for r in rates],
                       o.mode.nearest_rate(o.rate) if o.mode else None,
                       lambda v: lay.set_rate(name, v), bool(rates))
-        radio_submenu("_Orientation",
-                      [(r, r) for r in ROTATIONS if r in o.rotations
-                       or r == o.rotation],
-                      o.rotation, lambda v: lay.set_rotation(name, v))
         radio_submenu("Re_flection",
                       [({"normal": "none", "x": "X axis", "y": "Y axis",
                          "xy": "X and Y axis"}[r], r) for r in REFLECTIONS],
                       o.reflection, lambda v: lay.set_reflection(name, v))
-        scales = list(SCALES)
-        if o.scale not in scales:
-            scales.append(o.scale)
-            scales.sort()
-        radio_submenu("_Scale", [("%g" % s, s) for s in scales], o.scale,
-                      lambda v: lay.set_scale(name, v),
-                      sensitive=self.backend.wayland)
         others = [p for p in lay.active_outputs()
                   if p is not o and not p.mirror_of]
         radio_submenu("_Mirror of",
                       [("none", None)] + [(p.name, p.name) for p in others],
                       o.mirror_of, lambda v: lay.set_mirror(name, v),
                       sensitive=bool(others) or bool(o.mirror_of))
+        if self.backend.wayland:       # X11 has no per-output HiDPI scale
+            scales = list(SCALES)
+            if o.scale not in scales:
+                scales.append(o.scale)
+                scales.sort()
+            radio_submenu("_Scale", [("%g" % s, s) for s in scales], o.scale,
+                          lambda v: lay.set_scale(name, v))
         return menu
 
     # -- actions --------------------------------------------------------------
@@ -672,6 +760,8 @@ class Application:
         _dump("saved", {"path": path})
 
     def do_apply(self):
+        if self._busy:
+            return
         if not self.layout.active_outputs():
             r = _msg(self.window, Gtk.MessageType.WARNING,
                      "Your configuration does not include an active monitor. "
@@ -679,20 +769,46 @@ class Application:
                      Gtk.ButtonsType.YES_NO)
             if r != Gtk.ResponseType.YES:
                 return
-        cmd = self.command_text()
-        self.show_status("running: " + cmd)
-        try:
-            rc, out, err = self.backend.apply(self.layout)
-        except randr.RandrError as e:
-            rc, out, err = 1, "", str(e)
+        self._set_busy(True)
+        self.show_status("running: " + self.command_text())
+        layout = self.layout
+
+        def work():
+            try:
+                rc, out, err = self.backend.apply(layout)
+            except randr.RandrError as e:
+                rc, out, err = 1, "", str(e)
+            fresh = exc = None
+            if rc == 0:
+                try:
+                    fresh = self.backend.snapshot()
+                except randr.RandrError as e:
+                    exc = e
+            GLib.idle_add(self._applied, layout, rc, out, err, fresh, exc)
+        threading.Thread(target=work, name="warandr-apply",
+                         daemon=True).start()
+
+    def _set_busy(self, busy):
+        self._busy = busy
+        self.toolbuttons["apply"].set_sensitive(not busy)
+        self.apply_item.set_sensitive(not busy)
+
+    def _applied(self, layout, rc, out, err, fresh, exc):
+        """Back on the main loop with the worker's result."""
+        self._set_busy(False)
         _dump("applied", {"rc": rc, "stderr": err})
-        if rc != 0:
+        if rc != 0 or fresh is None:
+            self.redraw()                # the edited layout stays
             _msg(self.window, Gtk.MessageType.ERROR,
                  "XRandR failed:\n%s" % (err.strip() or out.strip()
-                                         or "exit status %d" % rc))
-        template = self.layout.template
-        self.reload()
-        self.layout.template = template
+                                         or "exit status %d" % rc)
+                 if rc != 0 else
+                 "Cannot read the screen configuration:\n%s" % exc)
+            return False
+        fresh.template = layout.template
+        if self.layout is layout:        # nothing was loaded meanwhile
+            self.set_layout(fresh)
+        return False
 
     def do_properties(self):
         d = Gtk.Dialog(title="Script Properties", transient_for=self.window,
@@ -734,6 +850,12 @@ class Application:
 
 
 def run(backend, filename=None):
+    ok, _argv = Gtk.init_check([])
+    if not ok:
+        disp = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        sys.stderr.write("warandr: cannot open display%s\n"
+                         % (" " + disp if disp else " (DISPLAY is not set)"))
+        return 1
     try:
         app = Application(backend, filename)
     except randr.RandrError as e:

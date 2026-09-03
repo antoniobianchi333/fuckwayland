@@ -21,8 +21,9 @@ _GEOM_RE = re.compile(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$")
 _XID_RE = re.compile(r"^\(0x[0-9a-fA-F]+\)$")
 _MM_RE = re.compile(r"^(\d+)mm$")
 _QUERY_RATE_RE = re.compile(r"\s*(\d+\.\d+)([* ]?)([+ ]?)")
-_VERBOSE_MODE_RE = re.compile(
-    r"^  (\S+) \((0x[0-9a-fA-F]+)\)\s+([\d.]+)MHz(.*)$")
+_VERBOSE_MODE_RE = re.compile(          # names may contain spaces (--newmode)
+    r"^  (.+?) \((0x[0-9a-fA-F]+)\)\s+([\d.]+)MHz(.*)$")
+_FIRST_RATE_RE = re.compile(r"\s(?=\d+\.\d+(?:[* +]|$))")
 _H_RE = re.compile(r"^h: width\s+(\d+) ")
 _V_RE = re.compile(r"^v: height\s+(\d+) .*clock\s+([\d.]+)Hz")
 _TRANSFORM_RE = re.compile(r"^Transform:\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)")
@@ -171,7 +172,7 @@ def _parse_header(line):
             if "y axis" in text:
                 o.reflections.add("y")
         elif _XID_RE.match(tok):
-            o.mode_xid = int(tok.strip("()"), 16)
+            o.mode_xid = int(tok.strip("()"), 16)     # --verbose only
         elif not seen_geometry and _GEOM_RE.match(tok):
             m = _GEOM_RE.match(tok)
             o.w, o.h, o.x, o.y = (int(m.group(k)) for k in (1, 2, 3, 4))
@@ -241,10 +242,14 @@ def parse(text):
                 scr.verbose = True
                 cur_mode = _parse_verbose_mode(cur, vm)
                 continue
+            if scr.verbose:
+                continue     # never a query row inside --verbose output
             _parse_query_row(cur, line)
             continue
         cur = _parse_header(line)
         cur_mode = None
+        if cur.mode_xid is not None:
+            scr.verbose = True
         scr.outputs.append(cur)
     for o in scr.outputs:
         _finish(o)
@@ -278,13 +283,16 @@ def _parse_detail(o, s):
 
 def _parse_query_row(o, line):
     """``   1920x1080     60.00*+  50.00  `` — name padded to 12, then
-    `` %6.2f`` + current flag + preferred flag per rate."""
+    `` %6.2f`` + current flag + preferred flag per rate.  The name ends where
+    the first rate column starts (a custom name may contain spaces)."""
     body = line[3:]
-    parts = body.split(None, 1)
-    if not parts:
+    m = _FIRST_RATE_RE.search(body)
+    if m:
+        name, rest = body[:m.start()].strip(), body[m.start():]
+    else:
+        name, rest = body.strip(), ""
+    if not name:
         return
-    name = parts[0]
-    rest = body[len(name):]
     m = re.match(r"^(\d+)x(\d+)", name)
     if m:
         w, h = int(m.group(1)), int(m.group(2))

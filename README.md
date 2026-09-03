@@ -234,8 +234,9 @@ $ warandr --save ~/.screenlayout/desk.sh   # an arandr-compatible layout script
 
 On top of arandr's menu (Active, Primary, Resolution, Orientation) every output also
 gets Refresh rate, Reflection, Mirror of, and — Wayland only — Scale (1 … 3, the
-compositor's HiDPI factor). Overlaps are refused unless they are exact mirrors, and
-the layout is kept anchored at 0,0. It needs the GTK 3 bindings every stock Ubuntu
+compositor's HiDPI factor). Overlaps are refused unless they are clones (same
+origin, like `--same-as`), the layout is kept anchored at 0,0, Apply runs off the
+main loop and a failed Apply keeps your edits. It needs the GTK 3 bindings every stock Ubuntu
 desktop already has (`python3-gi`, `gir1.2-gtk-3.0`) and nothing else — no cairo:
 the canvas is plain widgets. `warandr.desktop` puts it in the Settings menu.
 Contract: `WARANDR.md`.

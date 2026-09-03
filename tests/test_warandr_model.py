@@ -157,13 +157,15 @@ class Edits(unittest.TestCase):
         lay.move("B", -1280, 0)
         self.assertEqual((lay.get("B").x, lay.get("A").x), (0, 1280))
 
-    def test_exact_mirror_overlap_allowed(self):
+    def test_same_origin_is_a_clone(self):
         lay = synthetic()
         lay.get("B").mode = Mode("1920x1080", 1920, 1080, [60.0])
         lay.move("B", 0, 0)        # identical rect: a clone, legal
         lay.get("B").mode = lay.get("B").modes[0]
+        lay.check()                # same origin, different size: still a
+        lay.set_primary("B", True)  # clone (xrandr --same-as), editable
         with self.assertRaises(LayoutError):
-            lay.check()            # same origin, different size: overlap
+            lay.move("B", 100, 0)  # any other intersection is an overlap
 
     def test_mirror_of(self):
         lay = synthetic()
@@ -180,6 +182,57 @@ class Edits(unittest.TestCase):
         self.assertEqual((b.x, b.y), (1920, 0))   # parked right of A
         with self.assertRaises(LayoutError):
             lay.set_mirror("A", "A")
+
+    def test_from_screen_marks_clones(self):
+        # the screen already runs `DP-2 --same-as DP-1` (a projector), which
+        # xrandr reports as two outputs at 0,0 of different sizes: warandr
+        # reads that back as Mirror of, so the layout stays editable and the
+        # relation round-trips as --same-as (arandr writes two --pos 0x0 and
+        # allows the overlap)
+        st = fake_xrandr.load_default()
+        st["outputs"][2]["x"] = 0
+        text = fake_xrandr.render(st, True)
+        lay = Layout.from_screen(xrandr_parse.parse(text))
+        dp2 = lay.get("DP-2")
+        self.assertEqual(dp2.mirror_of, "DP-1")
+        self.assertEqual((dp2.x, dp2.y), (0, 0))
+        lay.set_primary("HDMI-1", True)            # was: "DP-1 overlaps DP-2"
+        lay.set_rotation("DP-1", "left")           # the mirror follows
+        self.assertEqual(dp2.mirror_of, "DP-1")
+        args = lay.args()
+        self.assertEqual(args[args.index("DP-2"):args.index("DP-2") + 5],
+                         ["DP-2", "--mode", "1280x720", "--same-as", "DP-1"])
+        fresh = Layout.from_screen(xrandr_parse.parse(text))
+        fresh.load_script(lay.to_script())
+        self.assertEqual(fresh.args(), lay.args())
+        # three at one origin: both later ones mirror the first, no chain
+        st["outputs"][1]["x"] = 0
+        lay = Layout.from_screen(xrandr_parse.parse(
+            fake_xrandr.render(st, True)))
+        self.assertEqual([o.mirror_of for o in lay.outputs],
+                         [None, "DP-1", "DP-1", None])
+        lay.set_active("DP-1", False)
+        self.assertEqual([o.mirror_of for o in lay.outputs],
+                         [None, None, "HDMI-1", None])
+
+    def test_chained_same_as_flattened(self):
+        lay = synthetic()
+        c = lay.add(Output("C", modes=[Mode("800x600", 800, 600, [60.0])]))
+        c.active, c.mode, c.x = True, c.modes[0], 3200
+        lay.load_script("#!/bin/sh\nxrandr --output A --mode 1920x1080 "
+                        "--same-as B --output B --mode 1280x1024 --same-as C "
+                        "--output C --mode 800x600 --pos 500x500\n")
+        self.assertEqual([(o.name, o.mirror_of, o.x, o.y)
+                          for o in lay.outputs],
+                         [("A", "C", 0, 0), ("B", "C", 0, 0),
+                          ("C", None, 0, 0)])
+        self.assertEqual(lay.args().count("--same-as"), 2)
+        with self.assertRaises(LayoutError) as cm:
+            lay.load_script("#!/bin/sh\nxrandr --output A --same-as B "
+                            "--output B --same-as A\n")
+        self.assertIn("mirrors itself", str(cm.exception))
+        with self.assertRaises(LayoutError):
+            lay.load_script("#!/bin/sh\nxrandr --output A --same-as A\n")
 
     def test_mirror_chain_rejected_and_rebased(self):
         lay = synthetic()
@@ -262,7 +315,35 @@ class Edits(unittest.TestCase):
         x11.get("B").x = 2880                      # room for 1920 * 1.5
         x11.set_scale("A", 1.5)
         self.assertEqual(x11.get("A").size(), (2880, 1620))
-        self.assertNotIn("--scale", x11.args())    # never emitted on X11
+        # X11 too: what is drawn is what xrandr is told (it accepts --scale)
+        self.assertIn("1.5x1.5", x11.args())
+        self.assertEqual(x11.args()[x11.args().index("--scale") - 2:]
+                         [:2], ["--rotate", "normal"])
+
+    def test_scale_back_to_one_is_explicit(self):
+        # xrandr and wxrandr keep an existing scale when --scale is absent:
+        # an output read at scale 2 and set to 1 must say --scale 1x1
+        lay = synthetic(hidpi=True)
+        a = lay.get("A")
+        a.scale = a.screen_scale = 2.0
+        self.assertIn("2x2", lay.args())
+        lay.set_scale("A", 1.0)
+        self.assertIn("1x1", lay.args())
+        lay.get("B").screen_scale = 1.0
+        self.assertEqual(lay.args().count("--scale"), 1)
+        # an untouched, unscaled screen still says nothing (arandr's line)
+        self.assertNotIn("--scale", fixture_layout().args())
+
+    def test_x11_scale_script_round_trip(self):
+        lay = fixture_layout(hidpi=False)
+        lay.load_script("#!/bin/sh\nxrandr --output DP-1 --primary --mode "
+                        "1920x1080 --pos 0x0 --rotate normal --scale 2x2 "
+                        "--output HDMI-1 --mode 1280x1024 --pos 3840x0 "
+                        "--rotate normal --output DP-2 --off\n")
+        self.assertEqual(lay.get("DP-1").size(), (3840, 2160))
+        self.assertEqual(lay.get("HDMI-1").x, 3840)
+        self.assertIn("--scale", lay.args())      # the gap is real on screen
+        self.assertEqual(lay.args()[lay.args().index("--scale") + 1], "2x2")
 
     def test_screen_bound(self):
         lay = synthetic()
@@ -308,14 +389,15 @@ class CommandLine(unittest.TestCase):
 
 
 class Scripts(unittest.TestCase):
-    def test_default_script(self):
-        text = fixture_layout().to_script()
-        lines = text.split("\n")
-        self.assertEqual(lines[0], "#!/bin/sh")
-        self.assertTrue(lines[1].startswith("# "))
-        self.assertEqual(lines[2], ARANDR_LINE)
-        self.assertEqual(lines[3], "")
-        self.assertEqual(len(lines), 4)
+    def test_default_script_is_arandrs(self):
+        # a fresh save is byte-identical to what arandr 0.1.11 writes for
+        # the same screen: shebang, the one line, nothing else
+        with open(ARANDR_SAVED) as f:
+            arandr = f.read()
+        self.assertEqual(fixture_layout().to_script(), arandr)
+        self.assertEqual(fixture_layout().to_script(),
+                         "#!/bin/sh\n" + ARANDR_LINE + "\n")
+        self.assertEqual(model.DEFAULT_TEMPLATE, ["#!/bin/sh", "%(xrandr)s"])
 
     def test_round_trip(self):
         lay = fixture_layout(hidpi=True)
@@ -377,6 +459,19 @@ class Scripts(unittest.TestCase):
         self.assertEqual(lay.get("HDMI-1").rotation, "left")
         self.assertFalse(lay.get("DP-1").primary)  # arandr: reset unless set
 
+    def test_partial_script_moves_primary(self):
+        # `xrandr --output HDMI-1 --primary` on a screen whose primary is
+        # DP-1 just moves it; the old flag must not survive as a second one
+        lay = fixture_layout()
+        self.assertTrue(lay.get("DP-1").primary)
+        lay.load_script("#!/bin/sh\nxrandr --output HDMI-1 --primary\n")
+        self.assertEqual([o.name for o in lay.outputs if o.primary],
+                         ["HDMI-1"])
+        # without --primary anywhere, an unmentioned primary stays
+        lay = fixture_layout()
+        lay.load_script("#!/bin/sh\nxrandr --output DP-2 --off\n")
+        self.assertTrue(lay.get("DP-1").primary)
+
     def test_load_errors(self):
         lay = fixture_layout()
         before = lay.args()
@@ -393,7 +488,7 @@ class Scripts(unittest.TestCase):
             "#!/bin/sh\nxrandr --output DP-1 --brightness 0.5\n":
                 "Unsupported option",
             "#!/bin/sh\nxrandr --output DP-1 --pos 0x0 --output HDMI-1 "
-            "--pos 0x0\n": "overlaps",
+            "--pos 100x0\n": "overlaps",
             "#!/bin/sh\nxrandr --output DP-1 --primary --output HDMI-1 "
             "--primary\n": "More than one primary",
             "#!/bin/sh\nxrandr --pos 0x0\n": "must be used after --output",
@@ -479,8 +574,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o700)
         with open(path) as f:
             text = f.read()
-        self.assertEqual(text.split("\n")[0], "#!/bin/sh")
-        self.assertIn(ARANDR_LINE, text)
+        self.assertEqual(text, "#!/bin/sh\n" + ARANDR_LINE + "\n")
         # a saved file re-based on the current outputs
         with open(path, "w") as f:
             f.write("#!/bin/sh\nxrandr --output DP-2 --off\n")

@@ -303,9 +303,11 @@ class LaptopCapture(unittest.TestCase):
         self.assertEqual(dp1.size(), (1080, 1920))
         self.assertEqual(dp1.reflection, "x")
         self.assertEqual(dp1.mode_named("fancy").label, "fancy (1280x720)")
+        # the X11 transform is written back as --scale: what is drawn is
+        # what xrandr is told (arandr would leave it implicit)
         self.assertEqual(lay.args(), [
             "--output", "eDP-1", "--primary", "--mode", "1920x1080",
-            "--pos", "0x0", "--rotate", "normal",
+            "--pos", "0x0", "--rotate", "normal", "--scale", "1.5x1.5",
             "--output", "HDMI-1", "--off",
             "--output", "DP-1", "--mode", "1920x1080", "--pos", "2880x0",
             "--rotate", "left", "--reflect", "x",
@@ -438,6 +440,42 @@ class Rows(unittest.TestCase):
         self.assertEqual(o.modes[0].name, "3840x2160_30.00")
         self.assertEqual((o.modes[0].w, o.modes[0].h), (3840, 2160))
         self.assertEqual(o.modes[0].rates[0].hz, 30.0)
+
+    def test_mode_name_with_space(self):
+        # `xrandr --newmode "my mode" ...` is legal; the query row pads the
+        # name to 12 columns, the rates start at the first ` %6.2f`
+        o = xp.ParsedOutput("X")
+        xp._parse_query_row(o, "   my mode       75.28    60.00*+")
+        self.assertEqual(o.modes[0].name, "my mode")
+        self.assertEqual([r.hz for r in o.modes[0].rates], [75.28, 60.0])
+        self.assertTrue(o.modes[0].rates[1].current)
+        xp._parse_query_row(o, "   1920x1080     60.00*+")
+        self.assertEqual(o.modes[1].name, "1920x1080")
+
+    def test_verbose_mode_name_with_space(self):
+        # a --newmode name with a space used to fall through to the query
+        # row parser, inventing a mode and re-sizing the previous one
+        text = LAPTOP_VERBOSE.replace(
+            "  fancy (0x4a) 74.500MHz", "  my mode (0x4a) 74.500MHz")
+        s = xp.parse(text)
+        dp1 = s.get("DP-1")
+        self.assertEqual([m.name for m in dp1.modes], ["1920x1080", "my mode"])
+        self.assertEqual((dp1.modes[0].w, dp1.modes[0].h), (1920, 1080))
+        self.assertEqual(dp1.modes[0].rates[0].hz, 60.0)
+        m = dp1.mode_named("my mode")
+        self.assertEqual((m.w, m.h, m.rates[0].hz), (1280, 720, 59.86))
+        self.assertEqual(m.xids, [0x4a])
+        lay = Layout.from_screen(s)
+        self.assertEqual(lay.get("DP-1").mode_named("my mode").label,
+                         "my mode (1280x720)")
+        # and an unparseable 2-space line inside --verbose is ignored, not
+        # taken for a query row
+        text2 = text.replace("  my mode (0x4a) 74.500MHz -HSync +VSync\n",
+                             "  my mode (0x4a) 74.500MHz -HSync +VSync\n"
+                             "  junk line without an xid\n")
+        s2 = xp.parse(text2)
+        self.assertEqual([m.name for m in s2.get("DP-1").modes],
+                         ["1920x1080", "my mode"])
 
     def test_header_variants(self):
         o = xp._parse_header("DP-1 unknown connection (normal left inverted "

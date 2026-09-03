@@ -60,12 +60,17 @@ def state_path():
                         "fake_xrandr_%d.json" % os.getuid())
 
 
+def load_default():
+    """A fresh copy of the default screen (tests mutate it)."""
+    return json.loads(json.dumps(DEFAULT))
+
+
 def load():
     try:
         with open(state_path()) as f:
             return json.load(f)
     except (OSError, ValueError):
-        return json.loads(json.dumps(DEFAULT))
+        return load_default()
 
 
 def save(st):

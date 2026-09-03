@@ -1,6 +1,7 @@
 """Layout model: outputs with their configuration, arandr's edge snapping,
-overlap rejection (exact mirrors excepted), origin normalisation, the xrandr
-command line, and the ``#!/bin/sh`` layout-script format arandr reads."""
+overlap rejection (clones — same origin — excepted), origin normalisation,
+the xrandr command line, and the ``#!/bin/sh`` layout-script format arandr
+reads."""
 
 import math
 import re
@@ -14,11 +15,7 @@ SCALES = (1.0, 1.25, 1.5, 1.75, 2.0, 3.0)
 COMMAND_WORDS = ("xrandr", "wxrandr")
 SHEBANG = "#!/bin/sh"
 PLACEHOLDER = "%(xrandr)s"
-DEFAULT_TEMPLATE = [
-    SHEBANG,
-    "# screen layout saved by warandr - edit: warandr FILE, apply: sh FILE",
-    PLACEHOLDER,
-]
+DEFAULT_TEMPLATE = [SHEBANG, PLACEHOLDER]        # arandr's DEFAULTTEMPLATE
 
 
 class LayoutError(Exception):
@@ -79,6 +76,10 @@ class Output:
         self.rotation = "normal"
         self.reflection = "normal"
         self.scale = 1.0
+        # the scale the screen was running when it was read: both xrandr and
+        # wxrandr keep an existing scale when --scale is not given, so
+        # returning to 1 must be said explicitly
+        self.screen_scale = 1.0
         self.x = 0
         self.y = 0
         self.mirror_of = None
@@ -173,8 +174,26 @@ class Layout:
                     o.mode = o.mode_named(cm.name)
                     o.rate = cr.hz if cr is not None else o.mode.default_rate()
                     o.scale = _derive_scale(po, o, hidpi)
+                    o.screen_scale = o.scale
             lay.outputs.append(o)
+        lay._mark_clones()
         return lay
+
+    def _mark_clones(self):
+        """An active output sharing its origin with an earlier active one is
+        a clone of it (what ``--same-as`` produces, whatever the sizes):
+        record it as *Mirror of* so it is drawn as one, follows its target
+        and round-trips as ``--same-as``."""
+        anchors = []
+        for o in self.active_outputs():
+            if o.mode is None:
+                continue
+            for a in anchors:
+                if (a.x, a.y) == (o.x, o.y):
+                    o.mirror_of = a.name
+                    break
+            else:
+                anchors.append(o)
 
     def add(self, output):
         output.hidpi = self.hidpi
@@ -220,35 +239,47 @@ class Layout:
                 o.y -= y0
 
     def _sync_mirrors(self):
+        """Mirrors take their target's position.  A script may chain them
+        (``A --same-as B --output B --same-as C``): xrandr iterates positions
+        to a fixpoint, we flatten every chain onto its root so the model
+        only ever holds one level; a cycle is an error."""
         for o in self.outputs:
-            if o.mirror_of:
+            if not o.mirror_of:
+                continue
+            seen = [o.name]
+            t = o
+            while t.mirror_of:
+                if t.mirror_of in seen:
+                    raise LayoutError("%s mirrors itself%s" % (
+                        o.name, (" through " + " -> ".join(seen[1:]))
+                        if len(seen) > 1 else ""))
+                seen.append(t.mirror_of)
                 try:
-                    t = self.get(o.mirror_of)
+                    t = self.get(t.mirror_of)
                 except LayoutError:
-                    o.mirror_of = None
-                    continue
+                    t = None
+                    break
                 if not t.active:
-                    o.mirror_of = None
-                    continue
-                o.x, o.y = t.x, t.y
-
-    def _mirror_pair(self, a, b):
-        return (a.mirror_of == b.name or b.mirror_of == a.name or
-                (a.mirror_of is not None and a.mirror_of == b.mirror_of))
+                    t = None
+                    break
+            if t is None or t is o:
+                o.mirror_of = None
+                continue
+            o.mirror_of = t.name
+            o.x, o.y = t.x, t.y
 
     def check(self):
-        """Raise LayoutError for overlapping outputs (unless they are exact
-        mirrors: same origin and same size, or an explicit Mirror-of) and for
-        outputs beyond the server's maximum screen size."""
+        """Raise LayoutError for overlapping outputs — two active outputs may
+        intersect only as clones, i.e. with the same origin (what xrandr's
+        ``--same-as`` makes, whatever their sizes) — and for outputs beyond
+        the server's maximum screen size."""
         act = self.active_outputs()
         for i, a in enumerate(act):
             for b in act[i + 1:]:
                 ra, rb = a.rect(), b.rect()
                 if not _intersects(ra, rb):
                     continue
-                same_origin = (ra[0], ra[1]) == (rb[0], rb[1])
-                if same_origin and (ra[2:] == rb[2:] or
-                                    self._mirror_pair(a, b)):
+                if (ra[0], ra[1]) == (rb[0], rb[1]):
                     continue
                 raise LayoutError("%s overlaps %s" % (a.name, b.name))
         x0, y0, x1, y1 = self.bounding_box()
@@ -422,7 +453,10 @@ class Layout:
         """One stanza per output, arandr's order and shape (``--output N
         [--primary] --mode M --pos XxY --rotate R`` / ``--output N --off``)
         plus ``--rate``, ``--same-as``, ``--reflect``, ``--scale`` only when
-        they carry information."""
+        they carry information.  ``--scale`` is written whenever the output
+        is scaled *or was scaled when the screen was read* (``1x1`` then):
+        xrandr and wxrandr both keep an existing scale when it is not
+        mentioned."""
         args = []
         for o in self.outputs:
             args += ["--output", o.name]
@@ -442,7 +476,8 @@ class Layout:
             args += ["--rotate", o.rotation]
             if o.reflection != "normal":
                 args += ["--reflect", o.reflection]
-            if o.hidpi and abs(o.scale - 1.0) >= 1e-6:
+            if abs(o.scale - 1.0) >= 1e-6 or \
+                    abs(o.screen_scale - 1.0) >= 1e-6:
                 args += ["--scale", "%sx%s" % (fmt_scale(o.scale),
                                                 fmt_scale(o.scale))]
         return args
@@ -495,6 +530,11 @@ class Layout:
         stanzas = _parse_stanzas(argv)
 
         def do():
+            if any(s.get("primary") for s in stanzas):
+                # xrandr --primary *moves* the primary: a script that only
+                # mentions the new one must not leave the old one flagged
+                for o in self.outputs:
+                    o.primary = False
             for s in stanzas:
                 o = self.get(s["name"])
                 o.primary = False
