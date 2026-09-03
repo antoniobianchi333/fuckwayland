@@ -39,6 +39,15 @@ MAX_DELAY_MS = 300_000
 _I32_MIN, _I32_MAX = -(2**31), 2**31 - 1
 _MAX_REQUEST = 16 << 20  # bytes per request line
 
+# Env the daemon keeps when it is spawned from a client (B10). Everything
+# else -- the launcher's D-Bus address, DESKTOP_*, anything derived from the
+# client's argv -- is dropped: an input daemon that outlives the command that
+# started it must not pin that command's session state. WDOTOOL_* is kept as
+# a prefix (uinput path, fake-uinput mode, WDOTOOL_REL_MODE).
+_KEEP_ENV = ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HOME", "PATH", "USER",
+             "LOGNAME", "LANG", "LC_ALL", "SUDO_UID", "PKEXEC_UID")
+_DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 
 def _num(val, what: str, lo: int, hi: int) -> int:
     """Validate one numeric request field: JSON numbers only (bool excluded),
@@ -149,6 +158,87 @@ def _wayland_bbox() -> tuple[int, int, int, int]:
 
 
 _SHIFTS = (keymap.KEY_LEFTSHIFT, keymap.KEY_RIGHTSHIFT)
+
+CGROUP_ROOT = "/sys/fs/cgroup"
+# Name of the cgroup the daemon moves itself into; a plain directory under
+# the user manager's delegated subtree, not a systemd unit.
+_ESCAPE_CGROUP = "wdotool-daemon"
+
+
+def transient_scope_target(cgroup_line: str, euid: int) -> str | None:
+    """Cgroup directory a freshly spawned daemon should move itself into, or
+    None when it should stay where it is (B11).
+
+    GNOME runs a custom keyboard shortcut inside a transient systemd scope
+    (`app-gnome-<name>-<pid>.scope`). A scope stays *active* while any process
+    remains in its cgroup, and neither fork nor setsid changes a cgroup -- so
+    the double-forked daemon kept the launcher's scope (and the shell script
+    that started it, as far as systemd was concerned) alive for as long as the
+    daemon ran; observed at 10+ minutes on 24.04 / systemd 255. `systemd-run
+    --user --scope` is the textbook migration but re-runs the command in an
+    environment of systemd's choosing, which is exactly what B10 is trying to
+    control. Writing our own pid into a sibling cgroup under the user
+    manager's *delegated* subtree does the same job with one write, no new
+    process and no environment surprises.
+
+    Only transient app scopes are escaped. A `session-N.scope` (a normal
+    login) or a system service is left alone: a daemon started there should
+    still die with its session. Root is never in a user scope, so the root
+    daemon keeps its cgroup too."""
+    if euid == 0:
+        return None
+    path = (cgroup_line or "").strip()
+    if path.startswith("0::"):
+        path = path[3:]
+    if not path.startswith("/"):
+        return None
+    leaf = path.rsplit("/", 1)[-1]
+    if not (leaf.startswith("app-") and leaf.endswith(".scope")):
+        return None
+    marker = "/user@%d.service" % euid
+    idx = path.find(marker + "/")
+    if idx < 0:
+        return None
+    return CGROUP_ROOT + path[:idx + len(marker)] + "/" + _ESCAPE_CGROUP
+
+
+def _escape_transient_scope():
+    """Best effort; a failure is a documented limitation, never fatal."""
+    try:
+        with open("/proc/self/cgroup") as f:
+            line = f.readline()
+        target = transient_scope_target(line, os.geteuid())
+        if target is None:
+            return
+        os.makedirs(target, exist_ok=True)
+        with open(os.path.join(target, "cgroup.procs"), "w") as f:
+            f.write("%d\n" % os.getpid())
+    except OSError:
+        pass
+
+
+def clean_env(env=None) -> dict:
+    """The environment a spawned daemon keeps (B10)."""
+    src = os.environ if env is None else env
+    out = {k: v for k, v in src.items()
+           if k in _KEEP_ENV or k.startswith("WDOTOOL_")}
+    if not out.get("PATH"):
+        out["PATH"] = _DEFAULT_PATH
+    return out
+
+
+def _close_inherited_fds():
+    """Close everything above stdio (B10): a daemon forked out of a running
+    command inherits that command's open files -- most importantly the session
+    D-Bus socket, which keeps a bus connection ESTABLISHED for the daemon's
+    whole life and made the daemon look like a D-Bus client in `ss`."""
+    try:
+        limit = os.sysconf("SC_OPEN_MAX")
+    except (ValueError, OSError):
+        limit = 4096
+    if not isinstance(limit, int) or limit < 3 or limit > 65536:
+        limit = 65536
+    os.closerange(3, limit)
 
 
 class _Daemon:
@@ -631,11 +721,45 @@ class DaemonClient:
             return None
 
     @staticmethod
+    def _exec_plan() -> "list[tuple[str, list[str], dict]]":
+        """(path, argv, env) candidates for re-execing as the daemon, best
+        first (B10). Re-execing is what gives the daemon a clean argv (`ps`
+        showed the *client's* command line before), a fresh address space and
+        no inherited state; `wdotool __daemon` / `python -m wdotool __daemon`
+        are both predictable and both match `pkill -f __daemon`. Paths are
+        resolved before the caller chdir()s to /."""
+        env = clean_env()
+        plan = []
+        exe = sys.argv[0] if sys.argv else ""
+        if exe:
+            exe = os.path.abspath(exe)
+        if (os.path.basename(exe) in ("wdotool", "xdotool")
+                and os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            plan.append((exe, [exe, "__daemon"], dict(env)))
+        if sys.executable:
+            menv = dict(env)
+            try:
+                import wdotool as _pkg
+                # The parent of the package directory; for a zipapp this is
+                # the .pyz itself, which is a valid PYTHONPATH entry too.
+                parent = os.path.dirname(
+                    os.path.dirname(os.path.abspath(_pkg.__file__)))
+            except Exception:  # noqa: BLE001 -- diagnostics only
+                parent = ""
+            if parent:
+                menv["PYTHONPATH"] = parent
+            plan.append((sys.executable,
+                         [sys.executable, "-m", "wdotool", "__daemon"], menv))
+        return plan
+
+    @staticmethod
     def _spawn():
-        """Daemonize: fork, setsid, fork; grandchild redirects stdio to the
-        daemon log, then re-execs as `<wdotool> __daemon` when argv[0] is the
-        wdotool/xdotool executable (so ps shows a predictable name and
-        `pkill -f __daemon` works), else runs daemon_main() in-process."""
+        """Daemonize: fork, setsid, fork; the grandchild redirects stdio to
+        the daemon log, closes every inherited fd, leaves the launcher's
+        transient scope, drops the client's environment and cwd, and re-execs
+        as `wdotool __daemon` (or `python -m wdotool __daemon`); if no re-exec
+        is possible it runs daemon_main() in-process with the same clean
+        state."""
         pid = os.fork()
         if pid:
             os.waitpid(pid, 0)
@@ -647,6 +771,7 @@ class DaemonClient:
                 os._exit(0)  # session leader exits; grandchild is the daemon
             sys.stdout.flush()
             sys.stderr.flush()
+            plan = DaemonClient._exec_plan()  # resolves paths before chdir
             null = os.open(os.devnull, os.O_RDONLY)
             try:
                 # O_NOFOLLOW: never append through a planted symlink in /tmp.
@@ -660,13 +785,19 @@ class DaemonClient:
             os.dup2(log, 2)
             os.close(null)
             os.close(log)
-            exe = sys.argv[0] if sys.argv else ""
-            if (os.path.basename(exe) in ("wdotool", "xdotool")
-                    and os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            _close_inherited_fds()
+            _escape_transient_scope()
+            try:
+                os.chdir("/")  # never hold the client's cwd busy
+            except OSError:
+                pass
+            for path, argv, env in plan:
                 try:
-                    os.execv(exe, [exe, "__daemon"])
+                    os.execve(path, argv, env)
                 except OSError:
-                    pass  # fall back to running the daemon in this process
+                    continue  # try the next plan, else run in-process
+            os.environ.clear()
+            os.environ.update(clean_env(dict(plan[0][2]) if plan else None))
             code = daemon_main()
         except BaseException:
             traceback.print_exc()

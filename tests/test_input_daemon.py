@@ -408,6 +408,98 @@ class TestGeometryFallback(unittest.TestCase):
         resp = d.handle({"op": "geometry"})
         self.assertFalse(resp["fallback"])
 
+class TestTransientScope(unittest.TestCase):
+    """B11: leaving the launcher's transient systemd scope."""
+
+    APP = ("0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+           "app-gnome-hotkey.sh-4711.scope")
+
+    def test_app_scope_gets_a_sibling_cgroup(self):
+        self.assertEqual(
+            daemon.transient_scope_target(self.APP, 1000),
+            "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/"
+            "wdotool-daemon")
+
+    def test_login_session_scope_is_left_alone(self):
+        line = ("0::/user.slice/user-1000.slice/session-3.scope")
+        self.assertIsNone(daemon.transient_scope_target(line, 1000))
+
+    def test_service_unit_is_left_alone(self):
+        line = ("0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+                "org.gnome.SettingsDaemon.MediaKeys.service")
+        self.assertIsNone(daemon.transient_scope_target(line, 1000))
+
+    def test_root_is_left_alone(self):
+        self.assertIsNone(daemon.transient_scope_target(self.APP, 0))
+
+    def test_foreign_uid_or_garbage(self):
+        self.assertIsNone(daemon.transient_scope_target(self.APP, 1001))
+        self.assertIsNone(daemon.transient_scope_target("", 1000))
+        self.assertIsNone(daemon.transient_scope_target("1:name=systemd:/x", 1000))
+
+class TestSpawnHygiene(unittest.TestCase):
+    """B10: what a daemon inherits from the command that spawned it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="wdotool-spawn-")
+        self.backup = {k: os.environ.get(k)
+                       for k in ("XDG_RUNTIME_DIR", "WDOTOOL_UINPUT_PATH",
+                                 "WDOTOOL_FAKE_UINPUT", "WAYLAND_DISPLAY",
+                                 "SWAYSOCK", "I3SOCK",
+                                 "DBUS_SESSION_BUS_ADDRESS", "WDOTOOL_SPAWN_MARKER")}
+        os.environ["XDG_RUNTIME_DIR"] = self.tmp.name
+        os.environ["WDOTOOL_UINPUT_PATH"] = "/dev/null"
+        os.environ["WDOTOOL_FAKE_UINPUT"] = "1"
+        os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/nonexistent/bus"
+        os.environ["WDOTOOL_SPAWN_MARKER"] = "kept"
+        for k in ("WAYLAND_DISPLAY", "SWAYSOCK", "I3SOCK"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self.backup.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def test_clean_env_keeps_only_what_the_daemon_needs(self):
+        env = daemon.clean_env()
+        self.assertNotIn("DBUS_SESSION_BUS_ADDRESS", env)
+        self.assertEqual(env.get("XDG_RUNTIME_DIR"), self.tmp.name)
+        self.assertEqual(env.get("WDOTOOL_SPAWN_MARKER"), "kept")
+        self.assertTrue(env.get("PATH"))
+        self.assertEqual(daemon.clean_env({})["PATH"], daemon._DEFAULT_PATH)
+
+    def test_spawned_daemon_drops_fds_cwd_and_env(self):
+        # An fd the client had open: stands in for the session D-Bus socket
+        # the daemon used to keep ESTABLISHED for its whole life.
+        marker = os.open(os.path.join(self.tmp.name, "inherited"),
+                         os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(_close_quietly, marker)
+        client = daemon.DaemonClient.connect_or_spawn()
+        self.addCleanup(client.close)
+        pid = client._rpc(op="ping")["pid"]
+        self.addCleanup(_kill_quietly, pid)
+
+        fds = sorted(int(n) for n in os.listdir("/proc/%d/fd" % pid))
+        targets = []
+        for fd in fds:
+            try:
+                targets.append(os.readlink("/proc/%d/fd/%d" % (pid, fd)))
+            except OSError:
+                targets.append("")
+        self.assertNotIn(os.path.join(self.tmp.name, "inherited"), targets)
+        self.assertEqual(os.readlink("/proc/%d/cwd" % pid), "/")
+        with open("/proc/%d/environ" % pid, "rb") as f:
+            env = dict(kv.split("=", 1) for kv in
+                       f.read().decode("utf-8", "replace").split("\0") if "=" in kv)
+        self.assertNotIn("DBUS_SESSION_BUS_ADDRESS", env)
+        self.assertEqual(env.get("WDOTOOL_SPAWN_MARKER"), "kept")
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            cmdline = f.read().decode("utf-8", "replace").split("\0")
+        self.assertIn("__daemon", cmdline)
+
 class TestProtocol(unittest.TestCase):
     """Full client<->daemon protocol against a really spawned (forked) daemon."""
 
