@@ -313,8 +313,21 @@ class Application:
 
         # the always-visible backend indicator, right of the one status line
         # (a Gtk.Statusbar is a Gtk.Box): `backend: mutter (Wayland)`, with
-        # the whole of `--print-backend --verbose` in its tooltip
+        # the whole of `--print-backend --verbose` in its tooltip.  It is
+        # also the shortest way to change the backend: an indicator that
+        # shows a setting should open it, so the label sits in an event box
+        # that pops up the very same Layout ▸ Backend menu.
         self.backend_label = Gtk.Label()
+        self.backend_button = Gtk.EventBox()
+        self.backend_button.add(self.backend_label)
+        self.backend_button.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
+                                       | Gdk.EventMask.ENTER_NOTIFY_MASK
+                                       | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+        self.backend_button.connect("button-press-event", self._indicator_press)
+        self.backend_button.connect("enter-notify-event",
+                                    self._indicator_cursor, True)
+        self.backend_button.connect("leave-notify-event",
+                                    self._indicator_cursor, False)
         self.status = Gtk.Statusbar()
         # one line, three sources by priority: a transient message (rejected
         # drop, saved file; gone after a few seconds or at the next redraw),
@@ -325,7 +338,7 @@ class Application:
         self._message_serial = 0
         # RUN_LAST signal: connect_after, so the label is already updated
         self.status.connect_after("text-pushed", self._status_changed)
-        self.status.pack_end(self.backend_label, False, False, 6)
+        self.status.pack_end(self.backend_button, False, False, 6)
         vbox.pack_start(self.status, False, False, 0)
 
         self.boxes = {}
@@ -401,6 +414,30 @@ class Application:
         bar.append(m)
         self.menubar = bar
         return bar
+
+    def _indicator_press(self, _widget, event):
+        """A click anywhere on the indicator opens Layout ▸ Backend, at the
+        pointer.  The menu object is the menubar's own, so the radio state,
+        the insensitive entries and their reasons are shared — there is one
+        backend menu, reachable from two places."""
+        menu = getattr(self, "backend_menu_item", None)
+        submenu = menu.get_submenu() if menu is not None else None
+        if submenu is None:            # menubar not built yet: nothing to open
+            return False
+        submenu.show_all()
+        submenu.popup_at_pointer(event)
+        return True
+
+    def _indicator_cursor(self, widget, _event, entering):
+        """Point the cursor at the indicator so it reads as clickable."""
+        window = widget.get_window()
+        if window is None:
+            return False
+        cursor = None
+        if entering:
+            cursor = Gdk.Cursor.new_from_name(widget.get_display(), "pointer")
+        window.set_cursor(cursor)
+        return False
 
     def _build_backend_menu(self):
         """Layout ▸ Backend: which tool talks to the screen.  It sits with
@@ -478,7 +515,9 @@ class Application:
 
     def _refresh_backend(self):
         self.backend_label.set_text(self.backend.indicator())
-        self.backend_label.set_tooltip_text(self.backend.detail())
+        tip = self.backend.detail() + "\n\nClick to change the backend."
+        self.backend_label.set_tooltip_text(tip)
+        self.backend_button.set_tooltip_text(tip)
         self._sync_backend_menu()
         _dump("backend", {"name": self.backend.name,
                           "forced": self.backend.forced,
@@ -696,6 +735,7 @@ class Application:
                          if win is not None else None,
                          "settled": settled, "backend": self.backend.name,
                          "backend_label": self.backend.label,
+                         "backend_indicator": _root_origin(self.backend_button),
                          "factor": self.factor, "status": self.status_text(),
                          "busy": self._busy,
                          "command": self.layout.args() if self.layout

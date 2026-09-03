@@ -397,6 +397,37 @@ class GuiDrive(XvfbCase):
             text = fh.read()
         self.assertEqual(text, "#!/bin/sh\nxrandr %s\n" % " ".join(EXPECTED))
 
+    def test_clicking_the_indicator_opens_the_backend_menu(self):
+        """The indicator is not just a readout: an indicator that shows a
+        setting should open it, so a click pops the same Layout ▸ Backend
+        menu — same radio state, same insensitive entries."""
+        d, n = self.backend_dump(lambda d: d["available"])
+        self.assertEqual(d["name"], "x11")
+        lay = self.layout()
+        rect = lay["backend_indicator"]
+        self.assertIsNotNone(rect, "the indicator reported no geometry")
+        self.assertGreater(rect[2], 0, rect)     # it has a width to click
+
+        self.click(rect)
+        menu, n2 = self.wait_dump("menu", lambda d: d["name"] == "backend"
+                                  and "Automatic" in d["items"], after=n)
+        # the very same menu the menubar opens: same entries, same states
+        self.assertEqual(sorted(menu["items"], key=lambda k: menu["items"][k][1]),
+                         BACKEND_MENU)
+        self.assertEqual(menu["active"],
+                         {lbl: lbl == "Automatic" for lbl in BACKEND_MENU})
+        self.assertEqual(
+            {lbl: menu["sensitive"][lbl] for lbl in BACKEND_MENU},
+            {"Automatic": True, "X11 (xrandr)": True, "sway": False,
+             "wlroots (wlr)": False, "GNOME (mutter)": True,
+             "KDE (kwin)": False})
+
+        # and it drives: pick GNOME from the menu the indicator opened
+        self.click(menu["items"]["GNOME (mutter)"])
+        d2, _ = self.backend_dump(lambda d: d["forced"] == "mutter", after=n2)
+        self.assertEqual(d2["name"], "mutter")
+        self.assertEqual(d2["indicator"], "backend: mutter (Wayland)")
+
     def test_backend_indicator_menu_and_switch(self):
         # the indicator is up from the first frame and names the live
         # backend; the availability table arrives from `wxrandr --backends`
