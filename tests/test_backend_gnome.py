@@ -23,8 +23,8 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 from test_dbus_mini import MockBus                                   # noqa: E402
 from wdotool import backend_detect, backend_gnome, dbus_mini, session  # noqa: E402
 from wdotool.backend import View, Window, Workspace                    # noqa: E402
-from wdotool.backend_gnome import (BUS_NAME, IFACE, OBJECT_PATH,      # noqa: E402
-                                   SHELL_NAME, GnomeBackend)
+from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,        # noqa: E402
+                                   OBJECT_PATH, SHELL_NAME, GnomeBackend)
 from wdotool.ctx import CmdError                                       # noqa: E402
 from wdotool.dbus_mini import Bus, DBusError, Message, Variant         # noqa: E402
 
@@ -82,7 +82,8 @@ class MockBridge:
     mutated by the actions; `calls` records (member, args)."""
 
     def __init__(self, address, own_shell=True, own_bridge=True,
-                 eval_unsafe=False, select_delay=0.2, select_id=EDITOR):
+                 eval_unsafe=False, select_delay=0.2, select_id=EDITOR,
+                 shell_mode="user", ext_info=None):
         self.bus = Bus(address)
         self.bus.serve_calls = True
         self.windows = fixture_windows()
@@ -90,6 +91,8 @@ class MockBridge:
         self.active_ws = 0
         self.n_ws = 3
         self.eval_unsafe = eval_unsafe
+        self.shell_mode = shell_mode
+        self.ext_info = ext_info  # None: uuid unknown to the shell
         self.select_delay = select_delay
         self.select_id = select_id
         self.xinfo = (":0", "/run/user/1000/.mutter-Xwaylandauth.AB12CD")
@@ -151,7 +154,14 @@ class MockBridge:
         if m.interface == dbus_mini.PROPS_IFACE and m.member == "Get":
             if a == (IFACE, "Version"):
                 return "v", (Variant("u", 1),)
+            if a == (SHELL_NAME, "Mode"):
+                return "v", (Variant("s", self.shell_mode),)
             raise DBusError(dbus_mini.ERR + "InvalidArgs", "no such property")
+        if m.interface == SHELL_NAME + ".Extensions" and m.member == "GetExtensionInfo":
+            self.calls.append(("GetExtensionInfo", a))
+            info = dict(self.ext_info or {}) if a[0] == EXT_UUID else {}
+            return "a{sv}", ({k: Variant("d", float(v)) if isinstance(v, (int, float))
+                              else Variant("s", str(v)) for k, v in info.items()},)
         if m.interface == SHELL_NAME and m.member == "Eval":
             self.calls.append(("Eval", a))
             if not self.eval_unsafe:
@@ -664,9 +674,25 @@ class ConstructorTests(_Base):
             msg = str(cm.exception)
             self.assertIn("gnome/install-bridge.sh", msg)
             self.assertIn("restart the session", msg)
-            self.assertEqual([m for m, _ in bridge.calls], ["Eval"])
+            self.assertEqual([m for m, _ in bridge.calls], ["Eval", "GetExtensionInfo"])
         finally:
             bridge.close()
+
+    def test_locked_screen_and_disabled_extension_are_diagnosed(self):
+        cases = [
+            (dict(shell_mode="unlock-dialog"), "screen locked"),
+            (dict(ext_info={"uuid": EXT_UUID, "state": 2}), "installed but not enabled"),
+            (dict(ext_info={"uuid": EXT_UUID, "state": 3, "error": "boom"}), "failed to load: boom"),
+            (dict(ext_info={"uuid": EXT_UUID, "state": 4, "shell-version": "x"}), "out of date"),
+        ]
+        for kw, expect in cases:
+            bridge = MockBridge(self.mock.address, own_bridge=False, **kw)
+            try:
+                with self.assertRaises(CmdError) as cm:
+                    GnomeBackend()
+                self.assertIn(expect, str(cm.exception), kw)
+            finally:
+                bridge.close()
 
     def test_no_shell_at_all(self):
         bridge = MockBridge(self.mock.address, own_shell=False, own_bridge=False)

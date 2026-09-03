@@ -8,8 +8,9 @@
 //
 // Targets GNOME Shell 45..50 (Ubuntu 24.04 = 46, Ubuntu 26.04 = 50), ESM.
 // Every Mutter API that drifted between those releases is feature-detected at
-// runtime. Places that could not be exercised on a live shell while writing
-// this are marked TODO-VERIFY.
+// runtime. Verified live on Ubuntu 24.04 (gnome-shell 46.0) and 26.04
+// (gnome-shell 50.1); the few places that could not be exercised there are
+// still marked TODO-VERIFY (see gnome/README.md "Verified live").
 //
 // Wire: well-known name org.fuckwayland.Bridge (the object also answers under
 // org.gnome.Shell because it lives on gnome-shell's own connection), object
@@ -497,11 +498,12 @@ const METHODS = {
         // binds the Xwayland sockets at startup (meta_xwayland_init), which
         // is before the lazy Xwayland spawn -- this is how a root caller
         // finds the X plane and its cookie file.
-        // TODO-VERIFY (46+50): both variables are non-empty right after
-        // login, before any X11 client has started. If DISPLAY comes back
-        // empty the client must fall back to /tmp/.X11-unix scanning; the
-        // XAUTHORITY fallback below scans the runtime dir for Mutter's
-        // cookie file.
+        // VERIFIED (46.0 and 50.1): both are set in gnome-shell's own
+        // environment right after login (':0' and
+        // $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.XXXXXX). If DISPLAY ever
+        // comes back empty the client falls back to /tmp/.X11-unix scanning
+        // (wdotool.session.find_x_display); the XAUTHORITY fallback below
+        // scans the runtime dir for Mutter's cookie file.
         const display = GLib.getenv('DISPLAY') || '';
         const xauth = GLib.getenv('XAUTHORITY') || findXauthority();
         return [display, xauth];
@@ -1087,9 +1089,10 @@ export default class FuckwaylandBridge extends Extension {
         const mm = safe(() => global.backend.get_monitor_manager(), null);
         if (!mm)
             return map;
-        // TODO-VERIFY (50): get_monitors() yields Meta.Monitor objects whose
-        // get_connector() is in the mutter-18 typelib (meta-monitor.h is a
-        // public header there and the function has a gtk-doc comment).
+        // VERIFIED (50.1): get_monitors() yields Meta.Monitor objects with
+        // get_connector() (mutter-18 typelib); ListMonitors reports
+        // connector "Virtual-1" in the QEMU rig. On 46 this route is absent
+        // and the connector stays "" (verified).
         if (isFn(mm, 'get_monitors') && isFn(mm, 'get_monitor_for_connector')) {
             for (const m of safe(() => mm.get_monitors(), [])) {
                 const c = safe(() => m.get_connector(), '');
@@ -1100,11 +1103,11 @@ export default class FuckwaylandBridge extends Extension {
             if (map.size)
                 return map;
         }
-        // TODO-VERIFY (49+): gjs.guide's 49 porting notes list
+        // Fallback only (never needed on 50.1, where the route above already
+        // filled the map): gjs.guide's 49 porting notes list
         // MonitorManager.get_logical_monitors(), LogicalMonitor.get_number()
         // and LogicalMonitor.get_monitors(); only get_logical_monitors() is in
-        // the on-disk 50 header, so this stays a probed fallback behind the
-        // route above.
+        // the on-disk 50 header, so every call is probed.
         if (isFn(mm, 'get_logical_monitors')) {
             for (const lm of safe(() => mm.get_logical_monitors(), [])) {
                 const idx = safe(() => lm.get_number(), -1);

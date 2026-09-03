@@ -213,6 +213,31 @@ installer's live paths: re-run while loaded → "is live", `--uninstall` →
 immediate "bridge not running" error from the tools, re-install → live again
 without a logout.
 
+Ubuntu 26.04 / GNOME Shell 50.1 (gnome-shell 50.1-0ubuntu1.2, gjs 1.88.0,
+Xwayland 24.1.10, kernel 7.0, sudo-rs 0.2.13): the identical run passes,
+including per-axis `MAXIMIZED_VERT` through `set_maximize_flags()` (500x768
+at y=32), `ListMonitors.connector = "Virtual-1"` (the `get_monitors()` +
+`get_connector()` route), `XInfo` = `(':0', '/run/user/1000/.mutter-Xwaylandauth.*')`,
+and the installer under sudo-rs. Extra checks there: 200 `ListWindows` calls
+take 0.21 s wall in total (~1 ms each) with gnome-shell at 366 MB RSS;
+**lock screen**: `loginctl lock-session` → the journal shows `disabled` and
+`org.fuckwayland.Bridge` is gone (the tools say "bridge is unavailable while
+GNOME Shell is in 'unlock-dialog' mode"), unlock → `enabled`/`acquired` again
+within a second; **`--try-unsafe`**: after `--uninstall` + reboot (shell has
+never seen the uuid), `WDOTOOL=... sh gnome/install-bridge.sh --try-unsafe`
+run as the plain user (uinput via the udev ACL) drove Looking Glass, loaded
+and enabled the extension without a logout, and left `Eval('1+1')` at
+`(false, '')` — unsafe mode off again; `--check` state 1 afterwards.
+`getmouselocation` after `mousemove 400 300` matches the bridge's
+`GetPointer` exactly, i.e. the injected tablet pointer and Mutter's frame
+rects share one coordinate space.
+
+Not exercised live yet: `ConfirmDisplayChange` (no display change was
+triggered), the Looking-Glass probes of §6 of the checklist, and an `xprop
+-id <xid>` cross-check of the reported X ids (the ids look right —
+`0x800020` on 46, `0x600020` on 50 for the first xterm — but the X-plane
+comparison is still open).
+
 ## GNOME 46 vs 50 and other honest limits
 
 * **Partial maximization** works on every release: GNOME 46–48 take the
@@ -230,7 +255,8 @@ without a logout.
 * **`connector`** in `ListMonitors` needs `MonitorManager.get_monitors()` and
   `Meta.Monitor.get_connector()` (Mutter 49+); on 46 it is `""`.
 * **Lock screen**: extensions run only in the `user` session mode by default,
-  so the bridge vanishes while the screen is locked. Add
+  so the bridge vanishes while the screen is locked (verified: `disabled` on
+  lock, `enabled` on unlock; the tools report the mode). Add
   `"session-modes": ["user", "unlock-dialog"]` to `metadata.json` if a test
   rig needs it alive there.
 * No `Eval`, no input injection, no screenshots: the bridge is the

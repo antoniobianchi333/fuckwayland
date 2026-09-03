@@ -47,8 +47,8 @@ There is no X server to lie to, so wdotool goes underneath instead:
   needs root — or, if you'd rather not: one udev rule (`sudo sh
   gnome/install-bridge.sh --udev` installs `gnome/60-fuckwayland-uinput.rules`,
   which tags `/dev/uinput` for the logged-in user's ACL and opens it to the `input`
-  group) and it runs as a plain user, no relogin needed. Media keys work too (`key XF86AudioMute` and friends map
-  straight to their evdev codes).
+  group) and it runs as a plain user, no relogin needed. Media keys work too
+  (`key XF86AudioMute` and friends map straight to their evdev codes).
 - The first invocation forks a small daemon that owns the devices (creating them
   costs ~600ms of hotplug; you pay it once) and tracks the injected pointer.
 - **Window management** talks to the compositor: sway/i3 IPC (complete), GNOME
@@ -84,8 +84,9 @@ sudo sh gnome/install-bridge.sh --udev   # optional: /dev/uinput for the logged-
 * **The extension** (`gnome/fuckwayland-bridge@fuckwayland`, ~1100 lines of
   JavaScript, see `gnome/README.md`) is installed per user by default
   (`--system` for `/usr/share/gnome-shell/extensions`). gnome-shell only scans
-  extension directories at login, so the first install needs a logout/login;
-  after that the installer can enable and disable it live. Everything
+  extension directories at login, so the first install needs a logout/login
+  (or `--try-unsafe`, which drives Looking Glass through `wdotool` to load it
+  in place); after that the installer can enable and disable it live. Everything
   `wdotool`/`wwmctl`/`wxprop` do on GNOME goes through it: `search`,
   `windowactivate`, `windowmove`, `windowstate`, desktops/workspaces,
   `selectwindow`, `getmouselocation`'s window, X ids of XWayland windows.

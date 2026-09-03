@@ -125,7 +125,7 @@ class GnomeBackend(WindowBackend):
                 raise CmdError("gnome backend: %s is not on the session bus "
                                "(no GNOME session?)" % SHELL_NAME)
             if not self._try_autoload():
-                raise CmdError(_HINT)
+                raise CmdError(self._missing_bridge_text())
 
     # -- plumbing -----------------------------------------------------------
 
@@ -154,6 +154,45 @@ class GnomeBackend(WindowBackend):
             return CmdError("gnome backend: session bus connection lost (%s)"
                             % e.message)
         return CmdError("gnome backend: %s failed: %s" % (member, e))
+
+    def _missing_bridge_text(self) -> str:
+        """Why is the bridge name missing? Extensions only run in the shell's
+        `user` session mode (the name goes away behind the lock screen), and
+        an installed extension may simply be disabled; both are readable by
+        anyone on the bus. Falls back to the generic install hint."""
+        try:
+            mode = self.bus.get_property(SHELL_NAME, "/org/gnome/Shell", SHELL_NAME,
+                                         "Mode", timeout=CALL_TIMEOUT)
+        except DBusError:
+            mode = "user"
+        if mode and mode != "user":
+            return ("gnome backend: the fuckwayland bridge is unavailable while "
+                    "GNOME Shell is in '%s' mode (screen locked?); extensions run "
+                    "only in the unlocked session" % mode)
+        try:
+            (info,) = self.bus.call(SHELL_NAME, "/org/gnome/Shell",
+                                    SHELL_NAME + ".Extensions", "GetExtensionInfo",
+                                    "s", (EXT_UUID,), timeout=CALL_TIMEOUT)
+        except DBusError:
+            info = {}
+        if info:
+            state = int(info.get("state", 0) or 0)
+            if state == 1:
+                return ("gnome backend: the fuckwayland bridge extension reports "
+                        "active but %s is not owned; gnome/install-bridge.sh --check"
+                        % BUS_NAME)
+            if state == 3:
+                return ("gnome backend: the fuckwayland bridge extension failed "
+                        "to load: %s (gnome/install-bridge.sh --check)"
+                        % (info.get("error") or "see journalctl --user _COMM=gnome-shell"))
+            if state == 4:
+                return ("gnome backend: the fuckwayland bridge extension is marked "
+                        "out of date for this GNOME Shell (%s); reinstall a "
+                        "matching gnome/ from the repo" % info.get("shell-version"))
+            return ("gnome backend: the fuckwayland bridge extension is installed "
+                    "but not enabled (state %d); run gnome/install-bridge.sh "
+                    "(or: gnome-extensions enable %s)" % (state, EXT_UUID))
+        return _HINT
 
     def _try_autoload(self) -> bool:
         """Eval-based load of an installed extension; False unless the shell
