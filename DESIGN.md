@@ -113,6 +113,34 @@ xrandr): `-v` is `--verbose` in wmctrl and unknown to xprop, and a looser
 rule would read `wmctrl -v -l` as a help request and answer it with a
 Wayland error where `wmctrl -l` correctly says which package to install.
 
+**Backend precedence and the argv look-ahead (wxrandr, warandr).** One
+rule, everywhere: **`--backend NAME` beats `$WXRANDR_BACKEND` beats
+auto-detection**, `auto` is the default, and detection is unchanged. `NAME`
+is `auto`, `x11` or one of wxrandr's own backends (`sway`, `wlr`,
+`mutter`/`gnome`, `kwin`/`kde`); `x11` *is* this handover. Which means the
+hook above has to know about the flag before anything is parsed:
+`wxrandr.cli.scan_backend_argv()` walks argv with xrandr's own option
+arities and reports `--backend NAME` / `--backend=NAME` and whether
+`--print-backend`/`--backends` are present — so `--backend sway` on an X11
+session runs our own code, `--backend x11` on a Wayland session hands over
+(`maybe_exec_real(..., force=True)`; API note, this file being frozen: the
+keyword was added for exactly that, and it does not override `entry`), the
+two informational options never hand over (the original would only answer
+`unrecognized option`), and an *output* named `--backend` (`--output
+--backend --off`) is a value, not a flag. The flag itself is stripped from
+the argv the original is exec'd with: real xrandr has no such option. Forcing
+a backend that is not available here is one line naming what was missing and
+exit 1, never a silent fallback; a `--backend` with no value is still
+the flag (the scan returns `""`), so its error is ours on both kinds of
+session. `$WXRANDR_BACKEND` keeps its older behaviour (no pre-check), because
+those bytes are pinned — except for the single value `x11`, which the hook
+does read: the handover is settled before parsing, so a variable that only
+reached `Session` could ask this process to be something it can no longer
+become, and would have to answer with a fatal about a flag nobody typed.
+warandr sits on top of all of it and never hands over at all: it *chooses*
+which tool to run and runs it as a child, which is what lets the window
+switch backends while it is open.
+
 **Environment repair.** On the X11 path a missing or dead `$DISPLAY` /
 `$XAUTHORITY` is replaced with the session's own (logind's `DISPLAY=`, the
 socket scan, the display manager's cookie), so `sudo xdotool key a`,

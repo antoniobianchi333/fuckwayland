@@ -1,7 +1,11 @@
 """warandr command line — arandr's (``warandr [savedfile]``, --version,
 --randr-display, --force-version) plus non-GUI conveniences for scripts:
 ``--save FILE`` writes the current layout as a layout script, ``--command``
-prints the command Apply would run."""
+prints the command Apply would run, ``--backend NAME`` pins the backend for
+this run (the GUI's Layout ▸ Backend, spelled the same as wxrandr's own
+flag) and ``--print-backend`` prints the backend token and exits; with
+``--verbose`` it adds the whole of what the window's indicator explains,
+again spelled like wxrandr's own ``--print-backend --verbose``."""
 
 import argparse
 import os
@@ -35,6 +39,17 @@ def _parser():
                         "no GUI")
     p.add_argument("--command", action="store_true",
                    help="print the command Apply would run and exit; no GUI")
+    p.add_argument("--backend", metavar="NAME",
+                   help="force the backend for this run: %s (aliases gnome, "
+                        "kde); auto is the default and picks the supported "
+                        "one. Beats $WXRANDR_BACKEND, which beats detection"
+                        % ", ".join(randr.BACKENDS))
+    p.add_argument("--print-backend", action="store_true",
+                   help="print the backend token (x11, sway, wlr, mutter, "
+                        "kwin) and exit; no GUI")
+    p.add_argument("--verbose", action="store_true",
+                   help="with --print-backend: add what runs, why it was "
+                        "picked, and what that tool says about the session")
     return p
 
 
@@ -46,11 +61,11 @@ def load_layout(backend, savedfile):
     return layout
 
 
-def write_script(layout, path, word=None):
+def write_script(layout, path, word=None, note=None):
     if not path.endswith(".sh"):
         path += ".sh"
     with open(path, "w") as f:
-        f.write(layout.to_script(word))
+        f.write(layout.to_script(word, note))
     os.chmod(path, stat.S_IRWXU)
     return path
 
@@ -60,14 +75,21 @@ def main(argv=None):
         argv = sys.argv[1:]
     args = _parser().parse_args(argv)
     try:
-        backend = randr.choose()
+        backend = randr.choose(forced=args.backend)
         backend.set_display(args.randr_display)
+        if args.print_backend:
+            backend.identify()
+            for line in (backend.report() if args.verbose
+                         else [backend.name]):
+                print(line)
+            return 0
         if args.save or args.command:
             layout = load_layout(backend, args.savedfile)
             if args.command:
-                print(layout.command_line())
+                print(layout.command_line(backend.run_word))
             if args.save:
-                write_script(layout, args.save)
+                write_script(layout, args.save, backend.word,
+                             backend.script_note())
             return 0
     except (randr.RandrError, LayoutError, OSError) as e:
         sys.stderr.write("warandr: %s\n" % e)
@@ -77,4 +99,4 @@ def main(argv=None):
     except (ImportError, ValueError, AttributeError) as e:
         sys.stderr.write(GTK_HINT % e)
         return 1
-    return gui.run(backend, args.savedfile)
+    return gui.run(backend, args.savedfile, args.randr_display)

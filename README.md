@@ -323,6 +323,31 @@ touching it, with a warning. Changes are temporary like xrandr's; `--persistent`
 writes `monitors.xml` (GNOME then asks "Keep changes?"). It finds the session from a
 custom keyboard shortcut, under `sudo`, or from `ssh root@` with no environment.
 
+Which backend it is using is never a guess: `--print-backend` prints the token
+(`--verbose` adds the session, why it was chosen, the compositor and the
+protocol version), `--backends` lists them all with their availability here and
+a reason where there is none, and `--backend NAME` forces one for that
+invocation — beating `$WXRANDR_BACKEND`, which beats detection. `--backend x11`
+means "hand over to the real xrandr", even on Wayland; a Wayland backend runs
+our own code even on X11; an unavailable one is one line saying what was
+missing, never a silent fallback.
+
+```console
+$ wxrandr --print-backend --verbose
+mutter
+session: wayland
+chosen by: detection
+compositor: Mutter
+protocol: org.gnome.Mutter.DisplayConfig (D-Bus)
+available: yes
+$ wxrandr --backends
+  sway    unavailable  no sway or i3 IPC socket ($SWAYSOCK)
+  kwin    unavailable  the compositor does not advertise kde_output_management_v2
+* mutter  available    org.gnome.Mutter.DisplayConfig on the session bus
+  wlr     unavailable  the compositor does not advertise zwlr_output_manager_v1
+  x11     available    /usr/bin/xrandr
+```
+
 ## warandr
 
 `arandr` — the little GTK window where you drag your monitors around — reborn for
@@ -349,6 +374,23 @@ main loop and a failed Apply keeps your edits. It needs the GTK 3 bindings every
 desktop already has (`python3-gi`, `gir1.2-gtk-3.0`) and nothing else — no cairo:
 the canvas is plain widgets. `warandr.desktop` puts it in the Settings menu.
 Contract: `WARANDR.md`.
+
+Which backend it is talking to is in the window at all times — the status bar's
+right-hand corner says `backend: mutter (Wayland)` or `backend: xrandr (X11)`,
+with the full explanation in its tooltip — and **Layout ▸ Backend** changes it:
+Automatic, X11 (xrandr), sway, wlroots, GNOME (mutter), KDE (kwin), the ones
+this session cannot reach greyed out with the reason. Picking one re-reads the
+screen through it and redraws; if it cannot be reached you get the dialog and
+the previous one back, never an empty window. The same spellings work on the
+command line, so a hotkey can pin one:
+
+```console
+$ warandr --print-backend            # mutter
+$ warandr --print-backend --verbose  # ...and what runs, why, and what it found
+$ warandr --backend x11              # the GUI, talking to the real xrandr
+$ warandr --backend mutter --command
+wxrandr --backend mutter --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal
+```
 
 On a stock GNOME desktop (verified on Ubuntu 24.04 and 26.04, Wayland session):
 `scripts/build-pyz.sh`, copy `dist/warandr` and `dist/wxrandr` to `/usr/local/bin/`

@@ -488,10 +488,17 @@ class Layout:
 
     # -- scripts ------------------------------------------------------------
 
-    def to_script(self, word=None):
+    def to_script(self, word=None, note=None):
+        """The layout script.  `note` is warandr's one comment about a
+        *forced* backend; it goes only into the default template, because a
+        loaded file's own template is written back untouched (arandr's
+        rule), and it is only ever a comment: `sh script.sh` on a plain X11
+        box must not care which backend the window used."""
         lines = list(self.template)
         if PLACEHOLDER not in lines:
             lines.append(PLACEHOLDER)
+        if note and lines == list(DEFAULT_TEMPLATE):
+            lines.insert(1, "# " + note)
         cmd = self.command_line(word)
         return "\n".join(cmd if ln == PLACEHOLDER else ln
                          for ln in lines) + "\n"

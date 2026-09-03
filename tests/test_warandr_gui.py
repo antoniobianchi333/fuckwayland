@@ -15,6 +15,13 @@ test clicks real pixels:
   Apply -> the recorded argv is exactly the arandr-shaped command
   Save As (WARANDR_TEST_SAVE_AS) -> arandr's two-line layout script
   a failing apply shows the error dialog, keeps the edits, editor survives
+  the status bar's backend indicator names the live backend at all times
+  Layout ▸ Backend -> radios, the unreachable ones insensitive with the
+                      reason in their tooltip
+                   -> GNOME (mutter): the layout is re-read *through* it,
+                      the canvas redrawn, and Apply, the command in the
+                      status bar and a saved script are that backend's
+  a backend that cannot be reached -> the dialog, and the previous one back
 
 Every popup dump also carries the *modelled* item positions — what the
 editor computes from where GTK asked for the popup (at the pointer, right
@@ -74,6 +81,11 @@ EXPECTED = ["--output", "DP-1", "--primary", "--mode", "1920x1080",
             "--output", "HDMI-2", "--off"]
 ARANDR_MENU = ["Active", "Primary", "Resolution", "Orientation",
                "Refresh rate", "Reflection", "Mirror of"]
+BACKEND_MENU = ["Automatic", "X11 (xrandr)", "sway", "wlroots (wlr)",
+                "GNOME (mutter)", "KDE (kwin)"]
+# what tests/fixtures/fake_xrandr.py simulates for `--backends`
+FAKE_AVAILABLE = {"sway": False, "kwin": False, "mutter": True,
+                  "wlr": False, "x11": True}
 
 
 def _base_env(tmp, display):
@@ -129,10 +141,12 @@ class GuiDrive(XvfbCase):
         self.tmp = tempfile.mkdtemp(prefix="warandr-gui-")
         self.dump = os.path.join(self.tmp, "dump.jsonl")
         self.log = os.path.join(self.tmp, "apply.log")
+        self.qlog = os.path.join(self.tmp, "query.log")
         self.saved = os.path.join(self.tmp, "saved")
         env = _base_env(self.tmp, self.display)
         env.update({
             "FAKE_XRANDR_LOG": self.log,
+            "FAKE_XRANDR_QUERY_LOG": self.qlog,
             "WARANDR_TEST_LAYOUT_DUMP": self.dump,
             "WARANDR_TEST_SAVE_AS": self.saved,
         })
@@ -237,6 +251,28 @@ class GuiDrive(XvfbCase):
                 return [json.loads(ln) for ln in fh if ln.strip()]
         except OSError:
             return []
+
+    def queries(self):
+        """One entry per query the fake answered: which backend it was
+        asked as."""
+        try:
+            with open(self.qlog) as fh:
+                return [json.loads(ln) for ln in fh if ln.strip()]
+        except OSError:
+            return []
+
+    def backend_dump(self, pred=lambda d: True, after=0):
+        return self.wait_dump("backend", pred, after=after)
+
+    def open_backend_menu(self, after):
+        """Layout ▸ Backend, and the submenu's dump."""
+        lay = self.layout()
+        self.click(lay["menubar"]["Layout"])
+        menu, n = self.wait_dump("menu", lambda d: d["name"] == "layout"
+                                 and "Backend" in d["items"], after=after)
+        self.click(menu["items"]["Backend"])
+        return self.wait_dump("menu", lambda d: d["name"] == "backend"
+                              and "Automatic" in d["items"], after=n)
 
     # -- the drive ----------------------------------------------------------
 
@@ -361,6 +397,159 @@ class GuiDrive(XvfbCase):
             text = fh.read()
         self.assertEqual(text, "#!/bin/sh\nxrandr %s\n" % " ".join(EXPECTED))
 
+    def test_clicking_the_indicator_opens_the_backend_menu(self):
+        """The indicator is not just a readout: an indicator that shows a
+        setting should open it, so a click pops the same Layout ▸ Backend
+        menu — same radio state, same insensitive entries."""
+        d, n = self.backend_dump(lambda d: d["available"])
+        self.assertEqual(d["name"], "x11")
+        lay = self.layout()
+        rect = lay["backend_indicator"]
+        self.assertIsNotNone(rect, "the indicator reported no geometry")
+        self.assertGreater(rect[2], 0, rect)     # it has a width to click
+
+        self.click(rect)
+        menu, n2 = self.wait_dump("menu", lambda d: d["name"] == "backend"
+                                  and "Automatic" in d["items"], after=n)
+        # the very same menu the menubar opens: same entries, same states
+        self.assertEqual(sorted(menu["items"], key=lambda k: menu["items"][k][1]),
+                         BACKEND_MENU)
+        self.assertEqual(menu["active"],
+                         {lbl: lbl == "Automatic" for lbl in BACKEND_MENU})
+        self.assertEqual(
+            {lbl: menu["sensitive"][lbl] for lbl in BACKEND_MENU},
+            {"Automatic": True, "X11 (xrandr)": True, "sway": False,
+             "wlroots (wlr)": False, "GNOME (mutter)": True,
+             "KDE (kwin)": False})
+
+        # and it drives: pick GNOME from the menu the indicator opened
+        self.click(menu["items"]["GNOME (mutter)"])
+        d2, _ = self.backend_dump(lambda d: d["forced"] == "mutter", after=n2)
+        self.assertEqual(d2["name"], "mutter")
+        self.assertEqual(d2["indicator"], "backend: mutter (Wayland)")
+
+    def test_backend_indicator_menu_and_switch(self):
+        # the indicator is up from the first frame and names the live
+        # backend; the availability table arrives from `wxrandr --backends`
+        d, n = self.backend_dump(lambda d: d["available"])
+        self.assertEqual(d["indicator"], "backend: xrandr (X11)")
+        self.assertEqual(d["name"], "x11")
+        self.assertIsNone(d["forced"])
+        self.assertEqual(d["available"], FAKE_AVAILABLE)
+        lay = self.layout()
+        self.assertEqual(lay["backend"], "x11")
+        self.assertEqual(lay["backend_label"], "xrandr (X11)")
+        self.assertTrue(lay["status"].startswith("xrandr --output "), lay)
+
+        # Layout ▸ Backend: arandr's grammar, radios, and the backends this
+        # session cannot reach are insensitive with the reason in a tooltip
+        menu, n = self.open_backend_menu(n)
+        order = sorted(menu["items"], key=lambda k: menu["items"][k][1])
+        self.assertEqual(order, BACKEND_MENU)
+        self.assert_modelled(menu)
+        self.assertEqual(menu["active"],
+                         {lbl: lbl == "Automatic" for lbl in BACKEND_MENU})
+        self.assertEqual(
+            {lbl: menu["sensitive"][lbl] for lbl in BACKEND_MENU},
+            {"Automatic": True, "X11 (xrandr)": True, "sway": False,
+             "wlroots (wlr)": False, "GNOME (mutter)": True,
+             "KDE (kwin)": False})
+        self.assertEqual(menu["tooltips"]["sway"],
+                         "not available in this session: no sway or i3 IPC "
+                         "socket ($SWAYSOCK)")
+        self.assertEqual(menu["tooltips"]["GNOME (mutter)"], "")
+        self.shot("warandr-7-backend-menu")
+
+        # choosing one re-reads the layout *through* it and redraws
+        before, mark = len(self.queries()), len(self.dumps())
+        self.click(menu["items"]["GNOME (mutter)"])
+        d, n = self.backend_dump(lambda d: d["forced"] == "mutter", after=mark)
+        self.assertEqual(d["indicator"], "backend: mutter (Wayland)")
+        self.assertEqual(d["word"], "wxrandr --backend mutter")
+        self.assertEqual([q["backend"] for q in self.queries()[before:]],
+                         ["mutter"])
+        lay, _i = self.wait_dump("layout", lambda d: d["backend"] == "mutter",
+                                 after=mark)
+        n = len(self.dumps())
+        self.assertEqual(set(lay["boxes"]), {"DP-1", "HDMI-1", "DP-2"})
+        self.assertTrue(lay["settled"], lay)
+        # (the pointer is left where the menu item was; park it on the
+        # menubar so the status line is the command, not a hover)
+        self.xdo("mousemove", 600, 5)
+        _d, _i = self.wait_dump(
+            "status", lambda d: d["text"] == "wxrandr --backend mutter "
+            + " ".join(lay["command"]), after=mark)
+        self.shot("warandr-8-backend-switched")
+
+        # ...and everything after it is that backend's: the per-output menu
+        # grows the Wayland-only Scale, Apply runs it, the saved script says
+        # wxrandr and records the forced choice as a comment
+        self.click(lay["boxes"]["DP-1"], button=3)
+        out, n = self.wait_dump("menu", lambda d: d["name"] == "output:DP-1"
+                                and "Scale" in d["items"], after=n)
+        self.xdo("key", "Escape")
+        time.sleep(0.3)
+        lay = self.layout()
+        self.click(lay["buttons"]["apply"])
+        applied, n = self.wait_dump("applied", after=n)
+        self.assertEqual(applied["rc"], 0, applied)
+        self.assertEqual(self.calls()[-1][:2], ["--backend", "mutter"])
+        self.assertEqual(self.calls()[-1][2:], lay["command"])
+        lay, n = self.wait_dump("layout", lambda d: not d["busy"], after=n)
+        self.click(lay["buttons"]["save_as"])
+        saved, n = self.wait_dump("saved", after=n)
+        with open(saved["path"]) as fh:
+            text = fh.read()
+        self.assertEqual(text.split("\n")[:2],
+                         ["#!/bin/sh",
+                          "# warandr: backend mutter forced "
+                          "(wxrandr --backend mutter)"])
+        self.assertTrue(text.split("\n")[2].startswith("wxrandr --output "),
+                        text)
+        self.assertNotIn("--backend", text.split("\n")[2])
+
+        # back to Automatic: the X11 backend and arandr's own script again
+        menu, n = self.open_backend_menu(n)
+        self.assertEqual(menu["active"]["GNOME (mutter)"], True)
+        mark = len(self.dumps())
+        self.click(menu["items"]["Automatic"])
+        d, n = self.backend_dump(lambda d: d["forced"] is None, after=mark)
+        self.assertEqual(d["indicator"], "backend: xrandr (X11)")
+        lay, n = self.wait_dump("layout", lambda d: d["backend"] == "x11",
+                                after=mark)
+        self.xdo("mousemove", 600, 5)
+        self.wait_dump("status", lambda d: d["text"] == "xrandr "
+                       + " ".join(lay["command"]), after=mark)
+
+    def test_unreachable_backend_shows_the_dialog_and_reverts(self):
+        self.env["FAKE_XRANDR_BACKEND_FAIL"] = "mutter"
+        self.app.terminate()
+        self.app.wait(5)
+        lay, n = self.launch()
+        d, n = self.backend_dump(lambda d: d["available"], after=n)
+        self.assertEqual(d["indicator"], "backend: xrandr (X11)")
+        menu, n = self.open_backend_menu(n)
+        self.click(menu["items"]["GNOME (mutter)"])
+        d, n = self.backend_dump(lambda d: not d["ok"], after=n)
+        self.assertEqual(d["wanted"], "mutter")
+        self.assertIn("the fake says so", d["error"])
+        self.assertIsNone(d["forced"])
+        time.sleep(0.5)
+        self.shot("warandr-9-backend-refused")
+        self.xdo("key", "Return")               # the modal dialog
+        time.sleep(0.5)
+        # the window is neither empty nor switched: the layout, the
+        # indicator and the radio are the previous, working choice
+        lay = self.layout()
+        self.assertEqual(set(lay["boxes"]), {"DP-1", "HDMI-1", "DP-2"})
+        self.assertEqual(lay["backend"], "x11")
+        self.assertTrue(lay["status"].startswith("xrandr --output "), lay)
+        self.assertIsNone(self.app.poll())
+        menu, n = self.open_backend_menu(len(self.dumps()))
+        self.assertEqual(menu["active"]["Automatic"], True)
+        self.assertEqual(menu["active"]["GNOME (mutter)"], False)
+        self.xdo("key", "Escape", "key", "Escape")
+
     def test_apply_failure_keeps_edits(self):
         self.env["FAKE_XRANDR_FAIL"] = "xrandr: Configure crtc 1 failed"
         # the editor inherits env at launch: relaunch with the failure set
@@ -463,6 +652,90 @@ class GuiProbe(XvfbCase):
                           "-", "Refresh rate", "Reflection", "Mirror of"])
         self.assertEqual(res["menu_wayland"], res["menu_x11"] + ["Scale"])
         self.assertEqual(res["wayland_word"], "wxrandr")
+
+
+class BackendCli(unittest.TestCase):
+    """warandr's own `--backend NAME` / `--print-backend`, spelled like
+    wxrandr's so a hotkey can pin one.  No display needed."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="warandr-cli-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.env = _base_env(self.tmp, "")
+        self.env.pop("DISPLAY")
+        self.env["FAKE_XRANDR_STATE"] = os.path.join(self.tmp, "state.json")
+
+    def warandr(self, *args):
+        return subprocess.run([sys.executable, "-m", "warandr"] + list(args),
+                              env=self.env, capture_output=True, text=True,
+                              timeout=60)
+
+    def test_print_backend_is_one_token(self):
+        p = self.warandr("--print-backend")
+        self.assertEqual((p.returncode, p.stdout), (0, "x11\n"))
+        p = self.warandr("--backend", "mutter", "--print-backend")
+        self.assertEqual((p.returncode, p.stdout), (0, "mutter\n"))
+        p = self.warandr("--backend", "gnome", "--print-backend")
+        self.assertEqual(p.stdout, "mutter\n")
+        p = self.warandr("--backend", "x11", "--print-backend")
+        self.assertEqual(p.stdout, "x11\n")
+
+    def test_print_backend_verbose_explains_the_choice(self):
+        """`--verbose` is the command-line spelling of what the window's
+        indicator explains in its tooltip: the token stays the first line,
+        for scripts, and each question is answered once."""
+        p = self.warandr("--print-backend", "--verbose")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        lines = p.stdout.splitlines()
+        self.assertEqual(lines[:2], ["x11", "kind: X11"])
+        self.assertTrue(lines[2].startswith("runs: "), lines)
+        self.assertEqual([ln for ln in lines
+                          if ln.startswith("chosen by:")],
+                         ["chosen by: WARANDR_XRANDR"])
+        p = self.warandr("--backend", "mutter", "--print-backend",
+                         "--verbose")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        lines = p.stdout.splitlines()
+        self.assertEqual(lines[:2], ["mutter", "kind: Wayland"])
+        self.assertIn("compositor: Mutter (fake)", lines)
+        self.assertIn("available: yes", lines)
+        self.assertEqual(len([ln for ln in lines
+                              if ln.startswith("chosen by:")]), 1)
+        # ...and without it, still exactly the one token
+        p = self.warandr("--backend", "mutter", "--print-backend")
+        self.assertEqual((p.returncode, p.stdout), (0, "mutter\n"))
+
+    def test_a_forced_backend_reaches_the_command_and_the_script(self):
+        p = self.warandr("--backend", "mutter", "--command")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(p.stdout.startswith("wxrandr --backend mutter "
+                                            "--output DP-1 "), p.stdout)
+        out = os.path.join(self.tmp, "layout.sh")
+        p = self.warandr("--backend", "mutter", "--save", out)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(out) as fh:
+            lines = fh.read().split("\n")
+        self.assertEqual(lines[:2], ["#!/bin/sh",
+                                     "# warandr: backend mutter forced "
+                                     "(wxrandr --backend mutter)"])
+        self.assertTrue(lines[2].startswith("wxrandr --output DP-1 "))
+        # ...and without one, arandr's own two lines
+        p = self.warandr("--save", out)
+        with open(out) as fh:
+            self.assertEqual(len(fh.read().rstrip("\n").split("\n")), 2)
+
+    def test_an_unknown_name_is_one_line(self):
+        p = self.warandr("--backend", "banana", "--print-backend")
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
+        self.assertEqual(p.stderr, "warandr: unknown backend 'banana' "
+                         "(valid: auto, x11, sway, wlr, mutter, kwin)\n")
+        self.assertNotIn("Traceback", p.stderr)
+
+    def test_help_lists_the_new_options(self):
+        p = self.warandr("--help")
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("--backend NAME", p.stdout)
+        self.assertIn("--print-backend", p.stdout)
 
 
 @unittest.skipUnless(HAVE_GTK, "GTK 3 not importable")

@@ -23,15 +23,39 @@ install python3-gi gir1.2-gtk-3.0`.
 
 First match wins:
 
+0. an explicit choice — `warandr --backend NAME`, or the GUI's
+   **Layout ▸ Backend**. `NAME` is `auto` (the default: everything below),
+   `x11`, or one of wxrandr's own backends `sway|wlr|mutter|kwin` (aliases
+   `gnome`, `kde`), spelled exactly as wxrandr's own flag. `x11` runs the
+   real `xrandr`; a Wayland backend runs wxrandr with `--backend NAME`,
+   which inside wxrandr beats `$WXRANDR_BACKEND` and its detection — so the
+   documented rule holds end to end: **flag > environment > detection**.
+   There is no silent fallback: a Wayland backend with no wxrandr to run it
+   is an error (`the mutter backend needs wxrandr, which is not here ...`),
+   not plain xrandr.
 1. `$WARANDR_XRANDR` — a command line to run instead (shlex-split). Its kind
    is Wayland when it mentions `wxrandr`, X11 otherwise; `$WARANDR_BACKEND`
-   (`x11`/`wayland`) overrides the kind. Tests point this at the fake.
+   (`x11`/`wayland`) overrides the kind. Tests point this at the fake. A
+   forced Wayland backend appends `--backend NAME` to it (it is still "the
+   command to run instead"), a forced `x11` does not.
 2. `$WAYLAND_DISPLAY` set and the `wxrandr` package importable (the repo
    checkout, or the pyz that bundles it): run the **same interpreter** with
    `-m wxrandr`, `PYTHONPATH` pointing at wherever the package was found (a
    zipapp path works — zipimport). No second copy of wxrandr is needed.
 3. `$WAYLAND_DISPLAY` set and `wxrandr` on `PATH`.
 4. `xrandr`.
+
+warandr **never hands its own process over** to the real tool (no `execve`,
+unlike the four clones): it chooses which one to *run*, as a child — which is
+what makes the choice switchable while the window is open.
+
+Which backend it turned out to be is asked, once, off the main loop:
+`wxrandr --print-backend --verbose` gives the token (`mutter`, `sway`, ...)
+and the fuller explanation, `wxrandr --backends` the availability table the
+Backend menu greys itself with (both are layout-free and answer on X11 too).
+The X11 runner is the real xrandr, which has no such options, so its answer
+is composed locally; a wxrandr too old to know them leaves the coarse name
+`wxrandr (Wayland)` and greys nothing.
 
 The kind decides two things: the **command word** written into layout scripts
 (`wxrandr` on Wayland, `xrandr` on X11; both are accepted when loading) and the
@@ -139,13 +163,46 @@ current backend's, so an X11 arandr file re-saved on Wayland says `wxrandr`.
 arandr itself can load our files when they use only arandr's vocabulary
 (`--rate/--reflect/--scale/--same-as` make its parser bail — documented gap).
 
+**A forced backend is recorded, as a comment.** A layout script has to stay
+arandr's and stay runnable by `sh` on a plain X11 box, and `--backend` is not
+an option the real `xrandr` would ignore — it would abort on it — so the note
+is a comment and nothing else:
+
+```
+#!/bin/sh
+# warandr: backend mutter forced (wxrandr --backend mutter)
+wxrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal
+```
+
+It appears only when a backend was forced (an untouched auto save is
+byte-identical to arandr's, as before) and only in the *default* template, so
+a file loaded from disk is still written back byte-identically — arandr's
+template rule wins. Nothing reads it back: it documents which backend the
+window was talking to when the layout was captured, so that a hotkey script
+that misbehaves on another machine says why. To pin the backend in a script,
+edit the command word's line yourself (`wxrandr --backend mutter --output
+...`) — on that machine, where it is true.
+
 ## GUI (`warandr/gui.py`)
 
 Window "Screen Layout Editor" (arandr's title). Menus: **Layout** (New, Open,
 Save As, Apply ⌃⏎, Script Properties ⌥⏎, Quit), **View** (Zoom In/Out/Fit
 stepping through arandr's 1:4 / 1:8 / 1:16 radios, which follow; default
 1:8), **Outputs** (one submenu per output, disconnected ones greyed),
-**Help** (About). Toolbar: Apply | New,
+**Help** (About). Layout also carries **Backend ▸** (right after Script
+Properties, with the two things it governs — arandr has no such menu, and
+View is about how the canvas is drawn, not about who answers): radio items
+*Automatic*, *X11 (xrandr)*, *sway*, *wlroots (wlr)*, *GNOME (mutter)*,
+*KDE (kwin)*. A backend this session cannot reach is **insensitive** with the
+reason in its tooltip (GTK 3 pops no tooltip over an insensitive item, so the
+same table is spelled out in Script Properties ▸ Backend); the current choice
+is never greyed out from under the user. Choosing one re-reads the layout
+through that backend and redraws the canvas — a `New`, so unapplied edits go,
+like arandr's New — and from then on Apply, the command in the status bar,
+Save As and the per-output menu (Scale is Wayland-only) are that backend's.
+One that cannot be reached leaves everything as it was: the dialog says
+`Cannot use the mutter backend: ...` in the Apply-failure style, the radio
+goes back, and the window is never left empty. Toolbar: Apply | New,
 Open, Save As | zoom. Canvas: dark grey, one box per connected-or-active
 output, a distinct pastel per output (server order), black border, name big
 and underlined when primary (arandr), resolution (and `= mirror target` /
@@ -161,7 +218,15 @@ output) and, on Wayland only, **Scale** ▸. Right-click on empty canvas: the
 outputs menu. Empty-layout Apply asks first, like arandr. The status bar
 shows, by priority, a transient message (refused drop, saved file; cleared
 by the next redraw or after a few seconds), the hovered output's
-description, or the command Apply would run. Save As reports `saved PATH`
+description, or the command Apply would run — which is the *whole* command,
+so a forced backend shows there too (`wxrandr --backend mutter --output
+...`); a saved script still gets the bare command word. Right of that line,
+always visible, is the backend indicator: `backend: mutter (Wayland)`,
+`backend: xrandr (X11)` — the compositor backend on Wayland (once
+`--print-backend` has answered, `wxrandr` until then), the tool itself on
+X11. Its tooltip is the fuller explanation, `--print-backend --verbose`'s
+lines under what warandr runs and why it picked it; the same text is a
+paragraph in the About dialog and a page of Script Properties. Save As reports `saved PATH`
 and, when the script's command word is not on `PATH` (a stock desktop has
 no `wxrandr`), appends `- note: wxrandr is not on PATH, the script needs
 it` — arandr's scripts call bare `xrandr`, ours call bare `wxrandr`, and a
@@ -173,8 +238,33 @@ exits 1 with one line (`warandr: cannot open display ...`).
 `warandr [--randr-display D] [--force-version] [savedfile]` (arandr's, the
 last one accepted and ignored — warandr never refuses a RandR version), plus
 `--save FILE` (write the current layout — or SAVEDFILE re-based on the
-current outputs — as a layout script, no GUI) and `--command` (print what
-Apply would run). Exit 1 with `warandr: ...` on backend/parse/file errors.
+current outputs — as a layout script, no GUI), `--command` (print what
+Apply would run, the `--backend` flag included when one is forced) and the
+two backend spellings, the same as wxrandr's so a hotkey can pin one:
+`--backend NAME` (applies to the GUI, `--command` and `--save` alike; an
+unknown name is `warandr: unknown backend 'banana' (valid: auto, x11, sway,
+wlr, mutter, kwin)`) and `--print-backend`, which prints the token
+(`x11`, `mutter`, ...) and exits without a GUI — with `--verbose`, the same
+explanation the indicator's tooltip carries, under a first line that is
+still the bare token, spelled like wxrandr's own `--print-backend
+--verbose`:
+
+```console
+$ warandr --print-backend --verbose
+mutter
+kind: Wayland
+runs: /usr/bin/python3 -m wxrandr
+chosen by: wxrandr package at /usr/lib/python3/dist-packages
+session: wayland
+compositor: Mutter
+protocol: org.gnome.Mutter.DisplayConfig (D-Bus)
+available: yes
+```
+
+(One `chosen by:` line, never two: warandr passed the `--backend` flag that
+wxrandr would otherwise report back to it, so the inner answer is dropped
+where it only restates the outer one.) Exit 1 with `warandr: ...`
+on backend/parse/file errors.
 
 ## Launching on GNOME (verified live: Ubuntu 24.04 / GNOME 46, 26.04 / GNOME 50)
 
@@ -228,9 +318,14 @@ Apply would run). Exit 1 with `warandr: ...` on backend/parse/file errors.
 - `WARANDR_TEST_LAYOUT_DUMP=FILE`: append one JSON line per redraw
   (`{"kind":"layout","boxes":{name:[x,y,w,h]},"buttons":{...},
   "menubar":{...},"xid":..,"coords":..,"window":[w,h],"settled":..,
+  "backend":..,"backend_label":..,
   "factor":..,"status":..,"busy":..,"command":[...]}`), per popup menu
   (`"kind":"menu","name":..,"items":{label:[x,y,w,h]},"modelled":{...},
+  "sensitive":{label:bool},"tooltips":{label:text},"active":{label:bool},
   "coords":..`), per status-bar change (`"kind":"status","text":..`), per
+  backend indicator refresh (`"kind":"backend","name":..,"forced":..,
+  "indicator":..,"word":..,"available":{name:bool},"ok":true`, and
+  `"ok":false,"wanted":..,"error":..` for a refused switch), per
   apply (`rc`, `stderr`) and per save (`path`), so xdotool/wdotool can click
   real widgets. Coordinates: `"coords":"root"` — root-window pixels — on X11;
   `"coords":"window"` on Wayland, where a toplevel's position is unknowable
@@ -264,11 +359,16 @@ console script. Tests: `tests/test_warandr_parse.py` (Xvfb captures, an
 xrandr 1.5.4 laptop capture, wxrandr renders for 1–4 outputs),
 `tests/test_warandr_model.py` (geometry, snapping, edits, command line,
 scripts incl. `tests/fixtures/arandr-saved.sh` — a genuine arandr 0.1.11
-save — backend choice, CLI), `tests/test_warandr_gui.py` (Xvfb + xdotool
+save — backend choice, forcing one and asking which it is, the saved
+script's backend comment, CLI), `tests/test_warandr_gui.py` (Xvfb + xdotool
 drive of the real editor against `tests/fixtures/fake_xrandr.py`, a RandR
 simulator rendering through wxrandr's renderers, including the popup
-position model against GDK's X11 truth; `tests/fixtures/gui_probe.py`, the
-editor in-process with a stub backend — Apply off the main loop, failure
-keeps edits, layout dumps that wait for the allocation, popup release, zoom
-radios, menu shapes, the Save As PATH hint; a no-display run; skipped
+position model against GDK's X11 truth, plus the backend indicator,
+Layout ▸ Backend with its greyed-out entries, a switch that re-reads through
+the new backend and one that is refused, and warandr's own
+`--backend`/`--print-backend`/`--print-backend --verbose`;
+`tests/fixtures/gui_probe.py`, the editor in-process with a stub backend —
+Apply off the main loop, failure keeps edits, layout dumps that wait for the
+allocation, popup release, zoom radios, menu shapes, the Save As PATH hint;
+a no-display run; skipped
 without GTK/Xvfb).
