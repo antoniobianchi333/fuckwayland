@@ -35,6 +35,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -871,8 +872,15 @@ def cmd_status(a):
 
 def cmd_ssh(a):
     inst = Instance(a.name).require_running()
-    cmd = ssh_cmd(inst.port, 5, tty=False) + list(a.cmd)
-    os.execvp("ssh", cmd)
+    # ssh joins the words of a remote command with spaces and the guest's shell
+    # re-splits them, so a multi-word command has to be quoted here: without it
+    # `-- sh -c 'a; b'` reaches the guest as three words and runs `sh -c a`.
+    # A single word is handed over untouched -- that is the ssh convention for
+    # passing a whole command line ("a | b") to the remote shell.
+    cmd = list(a.cmd)
+    if len(cmd) > 1:
+        cmd = [shlex.join(cmd)]
+    os.execvp("ssh", ssh_cmd(inst.port, 5, tty=False) + cmd)
 
 
 def cmd_scp(a):
@@ -898,6 +906,8 @@ def cmd_head(a):
         set_ui_info(inst.bus, a.idx, 0, 0)
         heads[a.idx] = "off"
         log(f"{inst.name}: head {a.idx} (Virtual-{a.idx + 1}) unplugged")
+        if inst.session_kind() == "x11":
+            drop_x11_output(inst, a.idx)
     else:
         w, h = parse_size(a.size)
         set_ui_info(inst.bus, a.idx, w, h)
@@ -906,6 +916,47 @@ def cmd_head(a):
     inst.meta["heads"] = {str(k): v for k, v in heads.items()}
     inst.meta["nheads"] = max(i for i, v in heads.items() if v != "off") + 1
     inst.save()
+
+
+X11_DROP_SCRIPT = r"""
+# @OUT@ has just been unplugged.  The DRM connector goes away, but RandR keeps
+# the output's CRTC -- with its mode and position -- until something disables
+# it, so `xrandr --listmonitors` still reports a monitor that is not there.
+# The desktop's display daemon normally does it; Xfce 4.20's has been seen
+# sitting on a removed output for over a minute.  Give it a few seconds, then
+# disable the output here.
+st=connected
+for _ in 1 2 3 4 5; do
+  line=$(xrandr --query 2>/dev/null | sed -n 's/^@OUT@ //p' | head -1)
+  case "$line" in
+    "")                   echo unknown-output; exit 0 ;;   # no such output (or no X)
+    disconnected\ [0-9]*)  st=stuck ;;                      # gone, but X still scans it out
+    disconnected*)        echo released; exit 0 ;;         # X let go of it
+    *)                    st=connected ;;                  # X has not seen the unplug yet
+  esac
+  sleep 1
+done
+[ "$st" = stuck ] || { echo "$st"; exit 0; }
+xrandr --output @OUT@ --off >/dev/null 2>&1 && echo disabled || echo disable-failed
+"""
+
+
+def drop_x11_output(inst, idx):
+    """Best-effort: after unplugging head `idx`, make the X server let go of the
+    output (see X11_DROP_SCRIPT).  Never fails the command -- the session may not
+    be up yet, and on a Wayland flavor this is not called at all."""
+    out = f"Virtual-{idx + 1}"
+    try:
+        p = user_shell(inst, X11_DROP_SCRIPT.replace("@OUT@", out), timeout=45)
+    except Fail as e:
+        log(f"{inst.name}: could not reach the X session to release {out}: {e}")
+        return
+    state = (p.stdout.strip().splitlines() or [""])[-1] if p.returncode == 0 else "unreachable"
+    if state == "disabled":
+        log(f"{inst.name}: {out} was still enabled in the X server after the unplug; "
+            f"disabled it (xrandr --output {out} --off)")
+    elif state in ("connected", "disable-failed", "unreachable"):
+        log(f"{inst.name}: warning: the X server still holds {out} ({state})")
 
 
 HEADS_SCRIPT = r"""
@@ -1025,9 +1076,69 @@ def paint_env(desktop):
         shlex.quote(" ".join(d.get("shell") or ())), d.get("splash") or ""))
 
 
+PAINT_MIN_STDDEV = 0.02   # below this a head is one flat colour and nothing has been
+                          # painted on it yet (selftest.sh fails a screendump under
+                          # 0.01; a desktop that is up measures 0.05 and more)
+
+
+def _ppm_stddev(data):
+    """Standard deviation (0..1) of the pixels of a binary PPM, over a sample of
+    its bytes; None if the data is not a P6 PPM with 8-bit channels."""
+    if not data.startswith(b"P6"):
+        return None
+    pos, fields = 2, []
+    while len(fields) < 3 and pos < len(data):
+        c = data[pos:pos + 1]
+        if c.isspace():
+            pos += 1
+        elif c == b"#":
+            while pos < len(data) and data[pos:pos + 1] not in (b"\n", b"\r"):
+                pos += 1
+        else:
+            start = pos
+            while pos < len(data) and not data[pos:pos + 1].isspace():
+                pos += 1
+            try:
+                fields.append(int(data[start:pos]))
+            except ValueError:
+                return None
+    if len(fields) != 3 or fields[2] != 255 or pos >= len(data):
+        return None
+    pix = data[pos + 1:fields[0] * fields[1] * 3 + pos + 1]
+    if not pix:
+        return None
+    stride = max(1, len(pix) // 30000)
+    if stride % 3 == 0:            # keep the sample from landing on one channel
+        stride += 1
+    vals = pix[::stride]
+    mean = sum(vals) / len(vals)
+    return (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5 / 255.0
+
+
+def _flat_heads(inst):
+    """The active heads whose screendump is (near enough) a single flat colour.
+    Empty when every head carries a picture -- and also when QEMU cannot write a
+    PPM, in which case the caller simply gets the guest-side verdict."""
+    flat = []
+    for idx in inst.active_heads():
+        with tempfile.NamedTemporaryFile(suffix=".ppm", delete=False) as f:
+            path = Path(f.name)
+        try:
+            qmp(inst.qmp_sock, "screendump",
+                {"filename": str(path), "device": GPU, "head": idx, "format": "ppm"}, timeout=30)
+            sd = _ppm_stddev(path.read_bytes())
+        except Exception:
+            sd = None
+        finally:
+            path.unlink(missing_ok=True)
+        if sd is not None and sd < PAINT_MIN_STDDEV:
+            flat.append(idx)
+    return flat
+
+
 def _shot_md5(inst, idx):
     """md5 of a screendump of head idx (None if the dump fails)."""
-    import hashlib, tempfile
+    import hashlib
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         path = Path(f.name)
     try:
@@ -1044,24 +1155,30 @@ def _shot_md5(inst, idx):
 
 
 def wait_first_paint(inst, before=None, timeout=60):
-    """Block until the desktop has drawn its first frame: GNOME's "GNOME Shell
-    started" journal line; other desktops: the compositor owns head 0's scanout
-    framebuffer (DRM debugfs) and the shell/panel processes are up with no
-    splash screen left -- or, when the guest offers nothing to go by, head 0's
-    screendump differs from `before` (its md5 from before the session came up).
-    Returns the number of seconds waited (None on timeout)."""
+    """Block until the desktop has drawn its first frame on *every* head: GNOME's
+    "GNOME Shell started" journal line; other desktops: the compositor owns head
+    0's scanout framebuffer (DRM debugfs) and the shell/panel processes are up
+    with no splash screen left -- or, when the guest offers nothing to go by,
+    head 0's screendump differs from `before` (its md5 from before the session
+    came up).  All of those look at head 0 alone, and a secondary head can lag it
+    by seconds (Xfce paints its panel first and xfdesktop's wallpaper per monitor
+    afterwards), so the guest's verdict is confirmed against the pixels: no head
+    may still be one flat colour.  Returns the seconds waited (None on timeout)."""
     t0 = time.monotonic()
     desktop = inst.desktop()
     last = ""
     while time.monotonic() - t0 < timeout:
         p = ssh_script(inst.port, paint_env(desktop) + PAINT_SCRIPT, timeout=30)
         verdict = (p.stdout.strip().splitlines() or [""])[-1] if p.returncode == 0 else "WAIT ssh"
-        if verdict == "PAINTED":
-            return time.monotonic() - t0
         if verdict == "UNKNOWN":
             now = _shot_md5(inst, 0)
             if now and before and now != before:
+                verdict = "PAINTED"
+        if verdict == "PAINTED":
+            flat = _flat_heads(inst)
+            if not flat:
                 return time.monotonic() - t0
+            verdict = "WAIT flat head " + ",".join(str(i) for i in flat)
         if verdict != last:
             log(f"{inst.name}: waiting for the first frame: {verdict}")
             last = verdict
@@ -1129,7 +1246,10 @@ imp() {   # import plain-valued session variables from "K=V" words, never overri
 imp $(systemctl --user show-environment 2>/dev/null)
 case "$VMCTL_DESKTOP" in kde) comp=kwin_wayland ;; xfce) comp=xfce4-session ;; sway) comp=sway ;; *) comp=gnome-shell ;; esac
 p=$(pgrep -u "$(id -u)" -x "$comp" 2>/dev/null | head -1)
-[ -n "$p" ] && imp $(tr '\0' '\n' < /proc/$p/environ 2>/dev/null)
+# 2> before < : a kwin_wayland that carries file capabilities has an environ
+# only root may read, and the shell's own "Permission denied" would go to the
+# caller's stderr if the redirection of fd 2 came second.
+[ -n "$p" ] && imp $(tr '\0' '\n' 2>/dev/null < /proc/$p/environ)
 RT=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 if [ -z "$WAYLAND_DISPLAY" ] && [ "$VMCTL_SESSION" = wayland ]; then
   s=$(find "$RT" -maxdepth 1 -type s -name 'wayland-[0-9]*' 2>/dev/null | sort | head -1)
@@ -1172,6 +1292,24 @@ exec "$@"
 """
 
 
+def user_argv(inst, cmd):
+    """The remote argv running `cmd` (a list) as user test inside the desktop
+    session, with the session environment USER_WRAPPER reconstructs."""
+    return ["sudo", "-u", "test", "-H", "env",
+            "XDG_RUNTIME_DIR=/run/user/1000",
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+            "USER=test", "LOGNAME=test",
+            f"VMCTL_SESSION={inst.session_kind()}", f"VMCTL_DESKTOP={inst.desktop()}",
+            "sh", "-c", USER_WRAPPER, "vmctl-user"] + list(cmd)
+
+
+def user_shell(inst, script, timeout=60):
+    """Run a /bin/sh script as user test inside the desktop session (what
+    `vmctl user` gives a command); returns the CompletedProcess."""
+    return run(ssh_cmd(inst.port, 5) + [shlex.join(user_argv(inst, ["sh", "-c", script]))],
+               check=False, timeout=timeout)
+
+
 def cmd_user(a):
     inst = Instance(a.name).require_running()
     # argparse.REMAINDER swallows everything after <name>, including -t and --
@@ -1187,14 +1325,8 @@ def cmd_user(a):
     # session exports to the systemd user manager -- the wrapper imports those
     # plain-valued variables from there, then from the compositor's environ,
     # then falls back to the sockets present (see USER_WRAPPER).
-    wrapper = USER_WRAPPER
-    remote = ["sudo", "-u", "test", "-H", "env",
-              "XDG_RUNTIME_DIR=/run/user/1000",
-              "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
-              "USER=test", "LOGNAME=test",
-              f"VMCTL_SESSION={inst.session_kind()}", f"VMCTL_DESKTOP={inst.desktop()}",
-              "sh", "-c", wrapper, "vmctl-user"] + list(a.cmd)
-    os.execvp("ssh", ssh_cmd(inst.port, 5, tty=a.tty) + [shlex.join(remote)])
+    os.execvp("ssh", ssh_cmd(inst.port, 5, tty=a.tty)
+              + [shlex.join(user_argv(inst, a.cmd))])
 
 
 # ---------------------------------------------------------------- main

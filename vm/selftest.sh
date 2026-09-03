@@ -120,19 +120,45 @@ check_shot() {   # a flat single-colour screendump = the compositor never finish
     local f=$1 sd
     if ! command -v identify >/dev/null; then echo "   $f: (imagemagick missing, content not checked)"; return 0; fi
     sd=$(identify -format '%[fx:standard_deviation]' "$f")
-    if ! awk -v sd="$sd" 'BEGIN { exit !(sd > 0.01) }'; then
-        echo "FAIL: $f is a flat image (stddev $sd): the desktop did not render"; exit 1
-    fi
+    awk -v sd="$sd" 'BEGIN { exit !(sd > 0.01) }' || return 1
     echo "   $f: $(identify -format '%wx%h' "$f"), stddev $sd"
 }
+shots() {   # screendump every head; retry while one of them is still flat.
+    # `vmctl session` already waits for a picture on every head, so one round is
+    # the rule; a head that paints late (Xfce draws xfdesktop's wallpaper per
+    # monitor after the panel) gets a few more seconds rather than a failure.
+    local out=$1 tries=$2 i f bad
+    for i in $(seq 1 "$tries"); do
+        "$VM" shot "$name" --all "$out/shot" > /dev/null
+        bad=
+        for f in "$out"/shot-*.png; do check_shot "$f" || bad="$bad $f"; done
+        [ -z "$bad" ] && return 0
+        [ "$i" = "$tries" ] && break
+        echo "   waiting for$bad to paint (attempt $i/$tries)"; sleep 4
+    done
+    for f in $bad; do
+        echo "FAIL: $f is a flat image (stddev $(identify -format '%[fx:standard_deviation]' "$f")):" \
+             "the desktop did not render on that head within $(( tries * 4 ))s"
+    done
+    exit 1
+}
 expect_monitors() {   # the compositor needs a moment after a hotplug event
-    local want=$1 got n
-    for _ in $(seq 1 10); do
+    local want=$1 tries=${2:-10} got n
+    for _ in $(seq 1 "$tries"); do
         got=$(monitors | tr '\n' ' '); n=$(echo $got | wc -w)
         [ "$n" = "$want" ] && { echo "   $tool: $n monitors: $got"; return 0; }
         sleep 2
     done
-    echo "FAIL: expected $want monitors, $tool shows $n: $got"; exit 1
+    echo "FAIL: expected $want monitors, $tool shows $n: $got  (waited $(( tries * 2 ))s)"
+    diagnose_heads
+    exit 1
+}
+diagnose_heads() {   # what the guest thinks the connectors are, and (on X11) what X kept
+    "$VM" heads "$name" | sed 's/^/   drm: /' || true
+    [ "$desktop" = xfce ] || return 0
+    "$VM" user "$name" -- xrandr --query 2>/dev/null | grep -E '^Virtual-' | sed 's/^/   xrandr: /' || true
+    echo "   (an output listed by xrandr as \"disconnected\" but with a mode/position is one the"
+    echo "    X server has not let go of: the connector is gone, the CRTC is still scanning it out)"
 }
 
 step "vmctl start $name --flavor $flavor --heads 3 --fresh   (desktop $desktop, native tool: $tool)"
@@ -163,8 +189,7 @@ echo "   ok: $session_type session, display sockets present, X (xdpyinfo) reacha
 step "vmctl heads $name"
 "$VM" heads "$name"
 step "vmctl shot $name --all $out/shot (each must show a desktop, not a flat colour)"
-"$VM" shot "$name" --all "$out/shot"
-for f in "$out"/shot-*.png; do check_shot "$f"; done
+shots "$out" 6
 if [ -f "$out/shot-0.png" ] && [ -f "$out/shot-1.png" ] && command -v md5sum >/dev/null; then
     # Identical images mean the screendumps were taken before the desktop painted
     # (the kernel console is mirrored on every head by fbdev) -- provided the desktop
@@ -184,5 +209,5 @@ expect_monitors 4
 "$VM" heads "$name" | grep Virtual-4
 step "vmctl head $name 3 off: expect 3 monitors again"
 "$VM" head "$name" 3 off
-expect_monitors 3
+expect_monitors 3 30
 step "PASS: $name ($flavor, $desktop) running, ssh port $port, screenshots in $out"
