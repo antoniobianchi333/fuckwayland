@@ -149,7 +149,10 @@ class TestLogPath(unittest.TestCase):
 
 
 class TestKeyFailureExitCode(unittest.TestCase):
-    """xdotool sums the per-sequence failures into its exit status."""
+    """xdotool sums the per-sequence failures into its exit status, and a
+    sequence is converted once per press/release pass: `key` fails twice per
+    bad sequence, `keydown`/`keyup` once (B12, xdo.c
+    xdo_send_keysequence_window)."""
 
     class _BadSeqDaemon:
         def key(self, spec, direction, delay_ms, clearmods):
@@ -161,23 +164,33 @@ class TestKeyFailureExitCode(unittest.TestCase):
         ctx._daemon = self._BadSeqDaemon()
         return ctx
 
-    def test_two_bad_sequences_exit_2(self):
+    def test_two_bad_sequences_exit_4(self):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(cli.ChainAbort) as cm:
                 input_cmds.cmd_key(self._ctx(), ["bad.a", "bad.b"])
-        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(cm.exception.code, 4)  # 2 sequences x 2 passes
 
-    def test_one_bad_sequence_exit_1(self):
+    def test_one_bad_sequence_exit_2(self):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(cli.ChainAbort) as cm:
                 input_cmds.cmd_key(self._ctx(), ["only.bad"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_keydown_counts_one_pass(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(cli.ChainAbort) as cm:
+                input_cmds.cmd_keydown(self._ctx(), ["only.bad"])
+        self.assertEqual(cm.exception.code, 1)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(cli.ChainAbort) as cm:
+                input_cmds.cmd_keyup(self._ctx(), ["only.bad"])
         self.assertEqual(cm.exception.code, 1)
 
     def test_repeat_multiplies_failures(self):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(cli.ChainAbort) as cm:
                 input_cmds.cmd_key(self._ctx(), ["--repeat", "3", "bad.a"])
-        self.assertEqual(cm.exception.code, 3)
+        self.assertEqual(cm.exception.code, 6)  # 3 repeats x 2 passes
 
 
 class TestDaemonStartupLock(unittest.TestCase):

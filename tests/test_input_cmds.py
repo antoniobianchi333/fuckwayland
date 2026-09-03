@@ -202,10 +202,35 @@ class TestKey(unittest.TestCase):
         with contextlib.redirect_stderr(stderr):
             with self.assertRaises(cli.ChainAbort) as cm:
                 input_cmds.cmd_key(ctx, ["ctrl-x"])
+        # Byte-parity with xdotool 4.x: the sequence is converted once per
+        # press pass and once per release pass, each failing pass printing
+        # BOTH diagnostics and adding 1 to the exit status (B12).
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(
+            stderr.getvalue(),
+            "Error: Invalid key sequence 'ctrl-x'\n"
+            "Failure converting key sequence 'ctrl-x' to keycodes\n"
+            "Error: Invalid key sequence 'ctrl-x'\n"
+            "Failure converting key sequence 'ctrl-x' to keycodes\n"
+            "xdo_send_keysequence_window reported an error for string 'ctrl-x'\n",
+        )
+
+    def test_invalid_sequence_keydown_single_pass(self):
+        ctx = make_ctx()
+
+        def bad_key(spec, direction, delay_ms, clearmods):
+            raise CmdError(f"Error: Invalid key sequence '{spec}'")
+
+        ctx._daemon.key = bad_key
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(cli.ChainAbort) as cm:
+                input_cmds.cmd_keydown(ctx, ["ctrl-x"])
         self.assertEqual(cm.exception.code, 1)
         self.assertEqual(
             stderr.getvalue(),
             "Error: Invalid key sequence 'ctrl-x'\n"
+            "Failure converting key sequence 'ctrl-x' to keycodes\n"
             "xdo_send_keysequence_window reported an error for string 'ctrl-x'\n",
         )
 
@@ -561,6 +586,27 @@ class TestRealPointer(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             input_cmds.cmd_getmouselocation(ctx, [])
         self.assertEqual(out.getvalue(), "x:11 y:22 screen:0 window:0\n")
+
+class TestStrtonum(unittest.TestCase):
+    """B14: C strtoul(s, NULL, 0), not Python's int(s, 0)."""
+
+    def test_c_bases(self):
+        cases = {
+            "0755": 0o755,      # C octal; int(s, 0) rejects it outright
+            "0b101": 0,         # strtoul stops at the 'b'; int(s, 0) says 5
+            "0x1f": 31, "0X1F": 31, "0": 0, "08": 0, "  12": 12,
+            "12ms": 12, "-5": -5, "+7": 7, "": 0, "abc": 0, "0xzz": 0,
+        }
+        for text, want in cases.items():
+            self.assertEqual(input_cmds._strtonum(text), want, text)
+
+    def test_delay_option_uses_it(self):
+        ctx = make_ctx()
+        input_cmds.cmd_key(ctx, ["--delay", "0755", "a"])
+        self.assertEqual(ctx._daemon.calls[-1][3], 0o755)
+        ctx = make_ctx()
+        input_cmds.cmd_key(ctx, ["--delay", "0b101", "a"])
+        self.assertEqual(ctx._daemon.calls[-1][3], 0)
 
 if __name__ == "__main__":
     unittest.main()

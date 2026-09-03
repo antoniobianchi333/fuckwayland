@@ -112,9 +112,18 @@ class TestInjectionLogic(unittest.TestCase):
         self.assertEqual(d.kb.events[8:], [("KEY", 30, 1), ("KEY", 30, 0)])
 
     def test_key_warnings(self):
+        # `key` converts the sequence once per press pass and once per
+        # release pass, so xdotool prints the diagnostic twice (B12).
         d = make_daemon()
         warns = d.op_key("ctrl+bogus+t", "press", 0, False)
-        self.assertEqual(warns, ["(symbol) No such key name 'bogus'. Ignoring it."])
+        self.assertEqual(warns, ["(symbol) No such key name 'bogus'. Ignoring it."] * 2)
+
+    def test_key_warnings_single_pass_for_keydown(self):
+        d = make_daemon()
+        for direction in ("down", "up"):
+            warns = d.op_key("bogus", direction, 0, False)
+            self.assertEqual(warns,
+                             ["(symbol) No such key name 'bogus'. Ignoring it."])
 
     def test_key_invalid_sequence_raises(self):
         d = make_daemon()
@@ -593,7 +602,7 @@ class TestProtocol(unittest.TestCase):
         with contextlib.redirect_stderr(stderr):
             self.client.key("ctrl+bogus", "press", 0, False)
         self.assertEqual(stderr.getvalue(),
-                         "(symbol) No such key name 'bogus'. Ignoring it.\n")
+                         "(symbol) No such key name 'bogus'. Ignoring it.\n" * 2)
 
     def test_invalid_key_sequence_is_cmderror(self):
         with self.assertRaises(CmdError) as cm:

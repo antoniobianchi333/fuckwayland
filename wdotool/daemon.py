@@ -498,6 +498,10 @@ class _Daemon:
         keys, warnings = keymap.parse_keyseq(spec)  # ValueError on bad sequence
         d = delay_ms / 1000
         if direction == "press":
+            # xdo_send_keysequence_window converts the sequence once per pass
+            # (press, then release), so every "(symbol) No such key name"
+            # diagnostic is printed twice by the real xdotool (B12).
+            warnings = warnings * 2
             self._press(keys, d / 2)
             self._release(keys, d / 2)
         elif direction == "down":

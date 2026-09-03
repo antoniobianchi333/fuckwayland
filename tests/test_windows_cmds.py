@@ -588,5 +588,22 @@ class SetNumDesktopsTest(unittest.TestCase):
         self.assertIn("not supported by the fake backend", err)
         self.assertTrue(err.endswith("; ignoring\n"))
 
+class SearchUsageTest(unittest.TestCase):
+    """B14: cmd_search.c is the one command that prints "Invalid usage"
+    between getopt's message and the usage block."""
+
+    def test_limit_without_an_argument(self):
+        rc, _o, err, _c = run(["search", "--limit"])
+        self.assertEqual(rc, 1)
+        lines = err.splitlines()
+        self.assertEqual(lines[0], "search: option '--limit' requires an argument")
+        self.assertEqual(lines[1], "Invalid usage")
+        self.assertEqual(lines[2], "Usage: xdotool search [options] regexp_pattern")
+
+    def test_other_commands_do_not_print_it(self):
+        rc, _o, err, _c = run(["windowsize", "--nope"])
+        self.assertEqual(rc, 1)
+        self.assertNotIn("Invalid usage", err)
+
 if __name__ == "__main__":
     unittest.main()

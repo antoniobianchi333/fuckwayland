@@ -37,11 +37,15 @@ def _out(line: str):
     sys.stdout.flush()
 
 
-def _opts(ctx, args, shortopts, longopts, usage, shortmap=None):
+def _opts(ctx, args, shortopts, longopts, usage, shortmap=None,
+          invalid_usage=False):
     """Leading-option parse via cli.getopt_long_only. Returns (opts, nopts)
     with short chars canonicalized through shortmap, or None after printing
     usage for --help (caller returns len(args)). Bad options raise CmdError
-    carrying getopt's message + usage, like the C default: branches."""
+    carrying getopt's message + usage, like the C default: branches.
+
+    `invalid_usage` adds the extra "Invalid usage" line that cmd_search.c --
+    alone among the commands -- prints between the two (B14)."""
     cmd = getattr(ctx, "cmd_name", "?")
     shortmap = dict(shortmap or ())
     shortmap.setdefault("h", "help")
@@ -52,7 +56,8 @@ def _opts(ctx, args, shortopts, longopts, usage, shortmap=None):
             sys.stdout.write(usage)
             sys.stdout.flush()
             return None
-        raise CmdError("%s\n%s" % (e, usage.rstrip("\n"))) from None
+        head = "%s\nInvalid usage" % e if invalid_usage else str(e)
+        raise CmdError("%s\n%s" % (head, usage.rstrip("\n"))) from None
     opts = [(shortmap.get(n, n), v) for n, v in raw]
     if any(n == "help" for n, _ in opts):
         sys.stdout.write(usage)
@@ -129,7 +134,7 @@ def cmd_search(ctx, args):
         "If none of --name, --classname, --class, or --role are specified, the \n"
         "defaults are: --name --classname --class --role\n" % cmd
     )
-    parsed = _opts(ctx, args, "h", _SEARCH_LONGOPTS, usage)
+    parsed = _opts(ctx, args, "h", _SEARCH_LONGOPTS, usage, invalid_usage=True)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
