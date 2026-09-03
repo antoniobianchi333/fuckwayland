@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build dist/<tool>: single-file, stdlib-only executable zipapps.
+# Build dist/<tool>: single-file executable zipapps (stdlib-only; warandr
+# imports the system PyGObject/GTK 3 at run time).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -21,3 +22,6 @@ build wdotool wdotool.cli wdotool
 build wwmctl  wwmctl.cli  wdotool wwmctl
 build wxprop  wxprop.cli  wdotool wwmctl wxprop
 build wxrandr wxrandr.cli wdotool wxrandr
+# warandr bundles wxrandr: on Wayland it runs the same interpreter with
+# -m wxrandr, PYTHONPATH pointing at the pyz itself (zipimport)
+build warandr warandr.cli wdotool wxrandr warandr
