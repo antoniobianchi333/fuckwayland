@@ -444,6 +444,45 @@ class ActionTests(GnomeCliBase):
         self.assertEqual(self.calls("Resize")[-1], (XTERM, 300, 200))
         self.assertEqual(self.calls("Move")[-1], (XTERM, 10, 20))
 
+    def test_e_drops_the_request_when_the_window_will_not_hold_still(self):
+        """wwmctl-1: the frame rect (compositor) and the client rect (X
+        server) are read a round trip apart. On a window that is moving the
+        difference is meaningless -- it used to be silently zeroed, which
+        collapsed every gravity to NorthWest and resized the frame to the
+        client size. Now nothing is sent and stderr says why."""
+        class MovingX11(FakeX11):
+            n = 0
+
+            def get_geometry(self, win):
+                x, y, w, h = FakeX11.get_geometry(self, win)
+                self.n += 1
+                return (x, y + 40 * self.n, w, h)
+
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,-1,300,250"],
+                              x11=MovingX11())
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            err, "wwmctl: window moved while measuring the frame; ignoring\n")
+        self.assertEqual(self.calls("Resize"), [])
+        self.assertEqual(self.calls("Move"), [])
+
+    def test_e_measures_again_until_the_window_settles(self):
+        """The same sampling accepts a window that moved once and then
+        stopped: two consecutive agreeing pairs are enough."""
+        class SettlingX11(FakeX11):
+            n = 0
+
+            def get_geometry(self, win):
+                x, y, w, h = FakeX11.get_geometry(self, win)
+                self.n += 1
+                return (x, y + (40 if self.n == 1 else 0), w, h)
+
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "0,10,20,300,200"],
+                              x11=SettlingX11())
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 237)])
+        self.assertEqual(self.calls("Move"), [(XTERM, 10, 20)])
+
     def test_b_states_through_set_state(self):
         rc, _o, err = self.wm(["-r", "Calculator", "-b", "add,fullscreen"],
                                x11=None)

@@ -430,7 +430,11 @@ class Core:
         # fullscreen one) are warned about and ignored, matching "the WM
         # may ignore the request".
         backend = self.backend()
-        left, top, right, bottom = self._frame_extents(w)
+        ext = self._measure_extents(w)
+        if ext is None:
+            _warn("window moved while measuring the frame; ignoring")
+            return 0
+        left, top, right, bottom = ext
         cw = ww if ww != -1 else w.fw - left - right
         ch = hh if hh != -1 else w.fh - top - bottom
         fw, fh = cw + left + right, ch + top + bottom
@@ -454,17 +458,62 @@ class Core:
     def _frame_extents(self, w: UWindow):
         """(left, top, right, bottom) between the compositor's frame rect
         and the X plane's client rect of an XWayland window listed by
-        views(): Mutter's server-side titlebar and border. Zero when the two
-        are the same rectangle (native windows, the sway tree's content
-        rect, an X plane that was not reached) or do not fit each other (an
-        X coordinate space scaled differently from the compositor's)."""
+        views(): Mutter's server-side titlebar and border. Zero when the
+        two are the same rectangle (native windows, the sway tree's content
+        rect, an X plane that was not reached); None when the client
+        rectangle does not sit inside the frame at all -- either the window
+        moved between the two reads, or the X coordinate space is scaled
+        differently from the compositor's. _measure_extents tells those two
+        apart; do not use this on its own to decide a geometry request."""
         if not (self._views_seen and w.is_x):
             return 0, 0, 0, 0
-        left, top = w.x - w.fx, w.y - w.fy
-        right, bottom = w.fw - w.w - left, w.fh - w.h - top
-        if min(left, top, right, bottom) < 0:
+        return _extents_of((w.fx, w.fy, w.fw, w.fh), (w.x, w.y, w.w, w.h))
+
+    def _sample_rects(self, w: UWindow, x):
+        """One (frame rect, client rect) pair, read back to back from the
+        compositor and from the X server. None when either read fails."""
+        try:
+            d = self.backend().find(w.node_id)
+        except Exception:
+            return None
+        try:
+            client = tuple(x.get_geometry(w.id))
+        except Exception:
+            return None
+        return (d.x, d.y, d.w, d.h), client
+
+    def _measure_extents(self, w: UWindow):
+        """The frame extents a -e request may rely on, or None.
+
+        The frame rectangle and the client rectangle come from two servers
+        a round trip apart, so a window that is moving (a drag, an
+        animation, another script) makes their difference meaningless --
+        and it used to come out silently zero, which collapsed every
+        gravity to NorthWest and resized the frame to the client size.
+        Sample until two consecutive pairs agree: that means the window
+        held still, and a client rectangle that still does not fit inside
+        the frame is then a coordinate space we cannot subtract in (a
+        scaled X plane), where zero extents are the honest answer. A window
+        that never holds still yields None and the caller drops the
+        request. w's rectangles are updated to the pair that agreed, so the
+        arithmetic that follows describes one single instant."""
+        if not (self._views_seen and w.is_x):
             return 0, 0, 0, 0
-        return left, top, right, bottom
+        x = self.x11()
+        if x is None:
+            return 0, 0, 0, 0
+        prev = ((w.fx, w.fy, w.fw, w.fh), (w.x, w.y, w.w, w.h))
+        for _ in range(_EXTENT_SAMPLES):
+            cur = self._sample_rects(w, x)
+            if cur is None:  # the window or a plane went away: no extents
+                return 0, 0, 0, 0
+            if cur == prev:
+                frame, client = cur
+                w.fx, w.fy, w.fw, w.fh = frame
+                w.x, w.y, w.w, w.h = client
+                return _extents_of(frame, client) or (0, 0, 0, 0)
+            prev = cur
+        return None
 
     def window_state(self, w: UWindow, arg: str) -> int:  # -b
         argerr = ('The -b option expects a list of comma separated parameters'
@@ -810,6 +859,23 @@ def _dot_class(instance: str | None, class_: str | None) -> str | None:
 _GRAVITY_CORNER = {1: (0, 0), 2: (1, 0), 3: (2, 0), 4: (0, 1), 5: (1, 1),
                    6: (2, 1), 7: (0, 2), 8: (1, 2), 9: (2, 2)}
 _GRAVITY_STATIC = 10
+
+
+# how many (frame rect, client rect) pairs -e samples while waiting for two
+# consecutive ones to agree, i.e. for the window to hold still
+_EXTENT_SAMPLES = 4
+
+
+def _extents_of(frame, client):
+    """(left, top, right, bottom) of `frame` around `client`, or None when
+    the client rectangle does not sit inside the frame."""
+    fx, fy, fw, fh = frame
+    cx, cy, cw, ch = client
+    left, top = cx - fx, cy - fy
+    right, bottom = fw - cw - left, fh - ch - top
+    if min(left, top, right, bottom) < 0:
+        return None
+    return left, top, right, bottom
 
 
 def _anchor(pos: int, size: int) -> int:
