@@ -236,15 +236,162 @@ class ArgErrorsTest(CliTestBase):
         self.assertEqual(cli._parse_window_id("0x40000czz"), 0x40000C)
         self.assertEqual(cli._parse_window_id(" 7"), 7)
 
+    def test_synthesized_atom_ids_cannot_be_mistaken_for_real_ones(self):
+        """wxprop-3: the native plane's atom table numbers EWMH names
+        itself. Numbered from 0x100 those ids sat inside the range a real X
+        server hands out, so an id copied out of a native window's dump and
+        fed to a real X tool named a plausible WRONG atom instead of
+        failing."""
+        atoms = core.NativeAtoms()
+        for name, a in atoms.by_name.items():
+            if a <= 68:                    # the predefined X atoms, 1..68
+                self.assertEqual(atoms.by_id[a], name)
+                continue
+            self.assertGreaterEqual(a, 0x10000000, name)
+        # ... and a name interned at runtime lands above them too
+        self.assertGreaterEqual(atoms.intern("ZZ_BRAND_NEW", True), 0x10000000)
+
+    def test_partial_property_survives_a_rendering_fatal(self):
+        """wxprop-4: xprop writes each property as it renders it, so a
+        fatal halfway through a value leaves the name line on stdout. We
+        buffered the whole segment and dropped it on the way out."""
+        code, out, err = self.run_cli("-id", "6", "32s", "_NET_WM_PID",
+                                      backend="fake")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, b"_NET_WM_PID(CARDINAL)")
+        self.assertEqual(err, "xprop: error: can't use format character "
+                              "'s' with any size except 8.\n")
+
+    def test_id_parsing_matches_sscanf_exactly(self):
+        """wxprop-8: the "0x" of sscanf("0x%lx") is a literal -- it skips
+        no whitespace and matches no uppercase X -- while the %lu fallback
+        skips whitespace and takes a sign (strtoul)."""
+        self.assertEqual(cli._parse_window_id("-5"), 0xFFFFFFFB)
+        self.assertEqual(cli._parse_window_id("+7"), 7)
+        self.assertEqual(cli._parse_window_id("  12"), 12)
+        for bad in (" 0x20", "0X20", "\t0x20"):
+            with self.assertRaises(cli.FatalError) as cm:
+                cli._parse_window_id(bad)
+            self.assertEqual(str(cm.exception),
+                             "Invalid window id format: %s." % bad)
+
+    def test_len_is_a_c_int(self):
+        """wxprop-5/6: -len goes through atoi(), which returns an int, and
+        the byte budget is compared as an unsigned long. So 4294967296
+        truncates to 0 (nothing printed) while 2147483648 truncates to
+        INT_MIN, whose negative word count reaches the server as a huge
+        unsigned one and fetches everything."""
+        empty = b"_NET_SUPPORTED(ATOM) = \n"
+        for n in ("4294967296", "-1", "-5", "0"):
+            code, out, _e = self.run_cli("-root", "-len", n, "_NET_SUPPORTED",
+                                         backend="fake")
+            self.assertEqual((code, out), (0, empty), n)
+        code, full, _e = self.run_cli("-root", "_NET_SUPPORTED",
+                                      backend="fake")
+        self.assertEqual(code, 0)
+        self.assertNotEqual(full, empty)
+        for n in ("2147483648", "-2147483648"):
+            code, out, _e = self.run_cli("-root", "-len", n, "_NET_SUPPORTED",
+                                         backend="fake")
+            self.assertEqual((code, out), (0, full), n)
+
     def test_bad_format_flag(self):
         code, _out, err = self.run_cli("-id", "0x1", "-f", "A", "s8")
         self.assertEqual(code, 1)
         self.assertEqual(err, "xprop: error: Bad format: s8.\n")
 
-    def test_font_is_a_clean_error(self):
+    def test_font_without_an_x_server_is_a_clean_error(self):
         code, _out, err = self.run_cli("-font", "fixed")
         self.assertEqual(code, 1)
         self.assertEqual(err, "xprop: error: Unable to open font fixed!\n")
+
+
+class FontTest(CliTestBase):
+    """wxprop-9: -font used to be an unconditional "cannot open it".
+    XWayland serves the core fonts (xfonts-base), so it is implementable:
+    OpenFont + QueryFont, xprop's FONT format table, and values with no
+    type -- so no "(TYPE)" and an unmapped property printed as bare hex.
+    Byte-identical to `xprop -font fixed` live on GNOME 46."""
+
+    FIXED = [("FONTNAME_REGISTRY", 0x59), ("FOUNDRY", 0),
+             ("PIXEL_SIZE", 13), ("POINT_SIZE", 120), ("FONT", 0)]
+
+    class _Conn:
+        def __init__(self, props):
+            self.props = props
+            self.names = {1000 + i: n for i, (n, _v) in enumerate(props)}
+            self.names[2000] = "Misc"
+            self.names[2001] = "-Misc-Fixed-Medium-R--13-120"
+            self.opened = []
+
+        def atom(self, name, only_if_exists=False):
+            for a, n in self.names.items():
+                if n == name:
+                    return a
+            return 0 if only_if_exists else 3000
+
+        def get_atom_name(self, a):
+            return self.names.get(a)
+
+        def font_properties(self, name):
+            self.opened.append(name)
+            if name != "fixed":
+                raise RuntimeError("BadName")
+            vals = {"FOUNDRY": 2000, "FONT": 2001}
+            return [(self.atom(n), vals.get(n, v)) for n, v in self.props]
+
+    def run_font(self, *args):
+        conn = self._Conn(self.FIXED)
+        with mock.patch.object(core, "_x11_connect", lambda *a, **k: conn):
+            with mock.patch.dict(os.environ, {"WXPROP_NO_X": ""}):
+                os.environ.pop("WXPROP_NO_X")
+                out = _CapStdout()
+                err = io.StringIO()
+                with mock.patch.object(core, "_detect_backend",
+                                       lambda: None), \
+                        mock.patch.object(sys, "stdout", out), \
+                        mock.patch.object(sys, "stderr", err):
+                    code = cli.main(list(args))
+        return code, out.buffer.getvalue(), err.getvalue(), conn
+
+    def test_full_dump(self):
+        code, out, err, conn = self.run_font("-font", "fixed")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(conn.opened, ["fixed"])
+        self.assertEqual(out, (
+            b"FONTNAME_REGISTRY = 0x59\n"        # unmapped: xprop's "0x"
+            b"FOUNDRY = Misc\n"                  # 32a: the atom's name
+            b"PIXEL_SIZE = 13\n"                 # 32c
+            b"POINT_SIZE = 120\n"
+            b"FONT = -Misc-Fixed-Medium-R--13-120\n"))
+
+    def test_named_properties_and_a_missing_one(self):
+        code, out, err, _c = self.run_font("-font", "fixed", "FOUNDRY",
+                                           "ZZ_NOPE", "POINT_SIZE")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, (b"FOUNDRY = Misc\n"
+                               b"ZZ_NOPE:  no such atom on any window.\n"
+                               b"POINT_SIZE = 120\n"))
+
+    def test_font_that_will_not_open(self):
+        code, _out, err, _c = self.run_font("-font", "zzznosuch")
+        self.assertEqual(code, 1)
+        self.assertEqual(err,
+                         "xprop: error: Unable to open font zzznosuch!\n")
+
+    def test_set_and_remove_are_refused(self):
+        for opt, args in (("-remove", ("-remove", "FOUNDRY")),
+                          ("-set", ("-set", "FOUNDRY", "x"))):
+            code, _out, err, _c = self.run_font("-font", "fixed", *args)
+            self.assertEqual(code, 1)
+            self.assertEqual(err, "xprop: error: %s works only on windows, "
+                                  "not fonts\n" % opt)
+
+    def test_spy_on_a_font_just_dumps(self):
+        code, out, err, _c = self.run_font("-font", "fixed", "-spy",
+                                           "FOUNDRY")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, b"FOUNDRY = Misc\n")
 
     def test_explicit_display_that_cannot_open(self):
         code, _out, err = self.run_cli("-display", ":9313", "-root")

@@ -186,7 +186,7 @@ class GnomeXpropBase(_Base):
     def calls(self, member):
         return [a for m, a in self.bridge.calls if m == member]
 
-    def _patches(self, x="auto", xwayland=None, detect=None):
+    def _patches(self, x="auto", xwayland=None, detect=None, lc="C"):
         if x == "auto":
             x = self.xconn
         self.x = x
@@ -197,7 +197,7 @@ class GnomeXpropBase(_Base):
 
         ps = [
             mock.patch.dict(os.environ, {"WXPROP_ARGV0": "xprop",
-                                         "LC_ALL": "C"}),
+                                         "LC_ALL": lc}),
             mock.patch.object(core, "_detect_backend",
                               detect or (lambda: self.backend)),
             mock.patch.object(core, "_x11_connect", connect),
@@ -209,9 +209,9 @@ class GnomeXpropBase(_Base):
                                         lambda: xwayland))
         return ps
 
-    def run_cli(self, *args, x="auto", xwayland=None, detect=None):
+    def run_cli(self, *args, x="auto", xwayland=None, detect=None, lc="C"):
         out, err = _CapStdout(), io.StringIO()
-        ps = self._patches(x, xwayland, detect) + [
+        ps = self._patches(x, xwayland, detect, lc) + [
             mock.patch.object(sys, "stdout", out),
             mock.patch.object(sys, "stderr", err)]
         for p in ps:
@@ -232,7 +232,8 @@ NATIVE_EDITOR_DUMP = (
     b'WM_CLIENT_MACHINE(STRING) = "testhost"\n'
     b'WM_CLASS(STRING) = "org.gnome.TextEditor", "org.gnome.TextEditor"\n'
     b'_NET_WM_NAME(UTF8_STRING) = "Untitled Document 1 - Text Editor"\n'
-    b'WM_NAME(STRING) = "Untitled Document 1 - Text Editor"\n')
+    b'WM_NAME(STRING) = "Untitled Document 1 - Text Editor"\n'
+    b"WM_STATE(WM_STATE):\n\t\twindow state: Iconic\n\t\ticon window: 0x0\n")
 
 
 class NativePlaneTests(GnomeXpropBase):
@@ -241,6 +242,50 @@ class NativePlaneTests(GnomeXpropBase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, NATIVE_EDITOR_DUMP)
         self.assertEqual(self.x_calls, [])  # never touched the X plane
+
+    def test_native_title_outside_latin1_is_typed_utf8(self):
+        """wxprop-1: type STRING *means* ISO 8859-1, and xprop decodes a
+        STRING as latin-1 before re-encoding it for the locale. UTF-8 bytes
+        typed STRING therefore printed as mojibake for every character
+        above U+00FF. A title that does not fit latin-1 is UTF8_STRING."""
+        self.bridge.find(CALC)["title"] = "\u00e9 \u2713 \u65e5\u672c"
+        code, out, err = self.run_cli("-id", "%d" % CALC, "WM_NAME",
+                                      "_NET_WM_NAME", lc="C.UTF-8")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, (
+            'WM_NAME(UTF8_STRING) = "\u00e9 \u2713 \u65e5\u672c"\n'
+            '_NET_WM_NAME(UTF8_STRING) = "\u00e9 \u2713 \u65e5\u672c"\n'
+        ).encode("utf-8"))
+
+    def test_native_latin1_title_stays_a_string(self):
+        """... and one that does fit stays STRING, like the WM_NAME an
+        XWayland twin really carries; xprop's STRING-to-locale rule then
+        prints it as UTF-8 under a UTF-8 locale."""
+        self.bridge.find(CALC)["title"] = "caf\u00e9"
+        code, out, err = self.run_cli("-id", "%d" % CALC, "WM_NAME",
+                                      lc="C.UTF-8")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out,
+                         'WM_NAME(STRING) = "caf\u00e9"\n'.encode("utf-8"))
+
+    def test_focused_transient_and_wm_state(self):
+        """wxprop-11: the bridge reports transient_for, focus and
+        visibility; the native synthesis dropped all three. Mutter puts
+        _NET_WM_STATE_FOCUSED last in its own set_net_wm_state order, and
+        writes WM_STATE on every X11 window it manages."""
+        self.bridge.find(CALC).update(transient_for=EDITOR, focused=True)
+        code, out, err = self.run_cli("-id", "%d" % CALC, "_NET_WM_STATE",
+                                      "WM_TRANSIENT_FOR", "WM_STATE")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, (
+            b"_NET_WM_STATE(ATOM) = _NET_WM_STATE_FOCUSED\n"
+            b"WM_TRANSIENT_FOR(WINDOW): window id # 0x400002\n"
+            b"WM_STATE(WM_STATE):\n\t\twindow state: Normal\n"
+            b"\t\ticon window: 0x0\n"))
+        # an unfocused window with no parent carries neither
+        code, out, _e = self.run_cli("-id", "%d" % DESKTOP,
+                                     "WM_TRANSIENT_FOR")
+        self.assertEqual(out, b"WM_TRANSIENT_FOR:  not found.\n")
 
     def test_desktop_window_type_and_skip_taskbar(self):
         code, out, _e = self.run_cli("-id", "%d" % DESKTOP, "_NET_WM_STATE",
@@ -396,6 +441,71 @@ class RootTests(GnomeXpropBase):
         self.assertEqual((code, err), (0, ""))
         self.assertIn(("change", XROOT, "WM_NAME", "STRING", 8, b"rooty"),
                       self.xconn.calls)
+
+
+    def test_removing_an_override_from_the_merged_root_is_visible(self):
+        """wxprop-2: -set/-remove address the real X root while a read of
+        one of the six window-list names is answered from the bridge, so
+        the tool could not see its own write. Deleting _NET_CLIENT_LIST
+        breaks every EWMH client on the X plane (`wmctrl -l`: "Cannot get
+        client list properties") and -root reported silence."""
+        code, out, err = self.run_cli("-root", "-remove", "_NET_CLIENT_LIST")
+        self.assertEqual((code, out), (0, b""))
+        self.assertEqual(err, "xprop:  -remove _NET_CLIENT_LIST writes the "
+                              "X root only; XWayland clients read it, the "
+                              "compositor does not\n")
+        self.assertIn(("delete", XROOT, "_NET_CLIENT_LIST"), self.xconn.calls)
+
+    def test_merged_root_reads_back_what_it_wrote(self):
+        """... and once a name has been written this run, reads of it go to
+        the X root, so a caller that writes and then reads sees its own
+        write rather than the synthesis."""
+        ps = self._patches()
+        for pp in ps:
+            pp.start()
+        try:
+            target = core.resolve_root(core.Session())
+            self.assertIsInstance(target, core.MergedRootTarget)
+            synth = target.fetch(b"_NET_CLIENT_LIST")
+            self.assertEqual(synth[0], "WINDOW")
+            self.assertEqual(len(synth[2]), 16)     # all four windows
+            self.assertTrue(target.remove_prop(b"_NET_CLIENT_LIST"))
+            self.assertIsNone(target.fetch(b"_NET_CLIENT_LIST"))
+            self.assertNotIn(b"_NET_CLIENT_LIST", target.list_names())
+            # the five untouched names still come from the compositor
+            self.assertEqual(len(target.fetch(b"_NET_CLIENT_LIST_STACKING")[2]),
+                             16)
+        finally:
+            for pp in reversed(ps):
+                pp.stop()
+
+    def test_merged_root_synthesizes_a_name_the_x_root_never_had(self):
+        """The absence of an override is not damage: Mutter writes
+        _NET_CURRENT_DESKTOP only once the workspace changes, so a fresh
+        session has none while the compositor knows the answer (live on
+        GNOME 46). -root must still print it."""
+        props = mutter_x_props()
+        props[XROOT] = [e for e in props[XROOT]
+                        if e[0] != "_NET_CURRENT_DESKTOP"]
+        self.xconn = FakeXConn(props)
+        code, out, err = self.run_cli("-root", "_NET_CURRENT_DESKTOP")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, b"_NET_CURRENT_DESKTOP(CARDINAL) = 0\n")
+
+    def test_setting_an_override_on_the_merged_root_says_where_it_went(self):
+        code, _o, err = self.run_cli("-root", "-f", "_NET_CURRENT_DESKTOP",
+                                     "32c", "-set", "_NET_CURRENT_DESKTOP",
+                                     "7")
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "xprop:  -set _NET_CURRENT_DESKTOP writes the "
+                              "X root only; XWayland clients read it, the "
+                              "compositor does not\n")
+        # the X root really took it; -root still answers from the
+        # compositor, which is the authority on the workspace
+        self.assertIn(("change", XROOT, "_NET_CURRENT_DESKTOP", "CARDINAL",
+                       32, struct.pack("<I", 7)), self.xconn.calls)
+        code, out, _e = self.run_cli("-root", "_NET_CURRENT_DESKTOP")
+        self.assertEqual(out, b"_NET_CURRENT_DESKTOP(CARDINAL) = 0\n")
 
 
 class SelectionTests(GnomeXpropBase):

@@ -90,7 +90,8 @@ class MockBridge:
 
     def __init__(self, address, own_shell=True, own_bridge=True,
                  eval_unsafe=False, select_delay=0.2, select_id=EDITOR,
-                 shell_mode="user", ext_info=None, screensaver_active=False):
+                 shell_mode="user", ext_info=None, screensaver_active=False,
+                 shell_version="46.0"):
         self.bus = Bus(address)
         self.bus.serve_calls = True
         self.windows = fixture_windows()
@@ -105,6 +106,8 @@ class MockBridge:
         self.select_id = select_id
         self.xinfo = (":0", "/run/user/1000/.mutter-Xwaylandauth.AB12CD")
         self.pointer = (640, 400, 0)
+        self._show_desktop_wins = []   # ShowDesktop(true)'s restore set
+        self.shell_version = shell_version
         if own_shell:
             assert self.bus.request_name(SHELL_NAME) == 1
             assert self.bus.request_name("org.gnome.ScreenSaver") == 1
@@ -165,6 +168,11 @@ class MockBridge:
                 return "v", (Variant("u", 1),)
             if a == (SHELL_NAME, "Mode"):
                 return "v", (Variant("s", self.shell_mode),)
+            if a == (SHELL_NAME, "ShellVersion"):
+                if self.shell_version is None:
+                    raise DBusError(dbus_mini.ERR + "InvalidArgs",
+                                    "no such property")
+                return "v", (Variant("s", self.shell_version),)
             raise DBusError(dbus_mini.ERR + "InvalidArgs", "no such property")
         if m.interface == "org.gnome.ScreenSaver" and m.member == "GetActive":
             self.calls.append(("GetActive", a))
@@ -321,6 +329,31 @@ class MockBridge:
         return "s", (json.dumps(out),)
 
     def m_ShowDesktop(self, m, show):
+        """Faithful port of the extension's _showDesktop (extension.js):
+        minimize every normal window on the active workspace and remember
+        them, restore that set on `off`. `on` is a LATCH -- a second one
+        must not rescan, or the restore set would come back empty (the
+        scan skips already-minimized windows) and `off` would restore
+        nothing, forever."""
+        if not show:
+            for wid in self._show_desktop_wins:
+                d = next((x for x in self.windows if x["id"] == wid), None)
+                if d is not None and d["minimized"]:
+                    d["minimized"] = d["hidden"] = False
+            self._show_desktop_wins = []
+            return "", ()
+        if self._show_desktop_wins:
+            return "", ()
+        done = []
+        for d in self.windows:
+            if d["minimized"] or d["window_type"] in ("DESKTOP", "DOCK"):
+                continue
+            if not (d["on_active_workspace"] or d["on_all_workspaces"]):
+                continue
+            d["minimized"] = d["hidden"] = True
+            d["focused"] = False
+            done.append(d["id"])
+        self._show_desktop_wins = done
         return "", ()
 
     def m_DisplaySize(self, m):

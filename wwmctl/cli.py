@@ -10,7 +10,19 @@ identity). Deliberate deviations, all documented in the tests:
 - "Cannot open display." becomes the backend detector's actual error text,
 - acting on a window id that does not exist exits 1 silently (real wmctrl
   fires the ClientMessage into the void and exits 0),
-- a broken stdout pipe exits 1 quietly (real wmctrl dies of SIGPIPE).
+- a broken stdout pipe exits 1 quietly (real wmctrl dies of SIGPIPE),
+- the option set is the UNION of the two oracle generations (see below), so
+  `-j -S -Y -y -z -E` and `-k toggle` work on every flavor while wmctrl
+  1.07 rejects them.
+
+Two generations of oracle are in the field and both print "1.07" for -V:
+wmctrl 1.07 (Ubuntu 24.04) and 1.07+git20240228 (Ubuntu 25.04+, Debian 13+),
+which adds `-j` (list the current desktop), `-S` (list in stacking order),
+`-Y` (iconify), `-y` (move/resize then activate), the undocumented `-z`
+(lower) and `-E` (print the title), and `-k toggle`. We implement all of
+them everywhere; only the --help text, which is that generation's
+documentation rather than its behavior, follows the oracle installed on
+this box (one cached `wmctrl --help`, or $WWMCTL_WMCTRL_GENERATION).
 """
 
 import getopt
@@ -25,8 +37,11 @@ from wwmctl import core
 # what -V/--version print: byte parity with the oracle binary
 WMCTRL_VERSION = "1.07"
 
-# vanilla wmctrl 1.07 optstring
-OPTSTRING = "FGVvhlupidmxa:r:s:c:t:w:k:o:n:g:e:b:N:I:T:R:"
+# vanilla wmctrl 1.07 optstring, kept for the record; what we parse is the
+# union below (1.07+git20240228's main.c adds S j Y: y: z: E:, and the
+# Debian/Ubuntu packaging adds M: and L on top)
+OPTSTRING_107 = "FGVvhlupidmxa:r:s:c:t:w:k:o:n:g:e:b:N:I:T:R:"
+OPTSTRING = ("FGVvhSlupidjmxa:r:s:c:t:w:k:o:n:g:e:y:b:z:E:N:I:T:LR:Y:M:")
 
 HELP = '''wmctrl 1.07
 Usage: wmctrl [OPTION]...
@@ -166,12 +181,200 @@ Copyright (C) 2003
 '''
 
 
+# The wmctrl of Ubuntu 25.04+/Debian 13+: upstream 1.07+git20240228 (six
+# more options and `-k toggle`) plus the two options the distro patches add,
+# -M and -L. This is the text the installed oracle prints, which is the one
+# worth matching -- the unpatched tarball is what nobody has.
+HELP_GIT = '''wmctrl 1.07
+Usage: wmctrl [OPTION]...
+Actions:
+  -m                   Show information about the window manager and
+                       about the environment.
+  -l                   List windows managed by the window manager.
+  -d                   List desktops. The current desktop is marked
+                       with an asterisk.
+  -j                   List current desktop.
+  -s <DESK>            Switch to the specified desktop.
+  -a <WIN>             Activate the window by switching to its desktop and
+                       raising it.
+  -c <WIN>             Close the window gracefully.
+  -R <WIN>             Move the window to the current desktop and
+                       activate it.
+  -Y <WIN>             Iconify (minimize) the window.
+  -r <WIN> -t <DESK>   Move the window to the specified desktop.
+  -r <WIN> -e <MVARG>  Resize and move the window around the desktop.
+                       The format of the <MVARG> argument is described below.
+  -r <WIN> -y <MVARG>  Resize and move like above, then reactivate.
+  -r <WIN> -b <STARG>  Change the state of the window. Using this option it's
+                       possible for example to make the window maximized,
+                       shaded or fullscreen. The format of the <STARG>
+                       argument and list of possible states is given below.
+  -r <WIN> -N <STR>    Set the name (long title) of the window.
+  -r <WIN> -I <STR>    Set the icon name (short title) of the window.
+  -r <WIN> -M <PATH>   Set the mini-icon of the window to the xpm bitmap in <PATH>.
+  -r <WIN> -T <STR>    Set both the name and the icon name of the window.
+  -r <WIN> -L          List information about the window.
+  -k (on|off|toggle)   Activate or deactivate window manager's
+                       "showing the desktop" mode. Many window managers
+                       do not implement this mode.
+  -o <X>,<Y>           Change the viewport for the current desktop.
+                       The X and Y values are separated with a comma.
+                       They define the top left corner of the viewport.
+                       The window manager may ignore the request.
+  -n <NUM>             Change number of desktops.
+                       The window manager may ignore the request.
+  -g <W>,<H>           Change geometry (common size) of all desktops.
+                       The window manager may ignore the request.
+  -h                   Print help.
+
+Options:
+  -S                   List windows in stacking order (bottom to top).
+  -i                   Interpret <WIN> as a numerical window ID.
+  -p                   Include PIDs in the window list. Very few
+                       X applications support this feature.
+  -G                   Include geometry in the window list.
+  -x                   Include WM_CLASS in the window list or
+                       interpret <WIN> as the WM_CLASS name.
+  -u                   Override auto-detection and force UTF-8 mode.
+  -F                   Modifies the behavior of the window title matching
+                       algorithm. It will match only the full window title
+                       instead of a substring, when this option is used.
+                       Furthermore it makes the matching case sensitive.
+  -v                   Be verbose. Useful for debugging.
+  -w <WA>              Use a workaround. The option may appear multiple
+                       times. List of available workarounds is given below.
+
+Arguments:
+  <WIN>                This argument specifies the window. By default it's
+                       interpreted as a string. The string is matched
+                       against the window titles and the first matching
+                       window is used. The matching isn't case sensitive
+                       and the string may appear in any position
+                       of the title.
+
+                       The -i option may be used to interpret the argument
+                       as a numerical window ID represented as a decimal
+                       number. If it starts with "0x", then
+                       it will be interpreted as a hexadecimal number.
+
+                       The -x option may be used to interpret the argument
+                       as a string, which is matched against the window's
+                       class name (WM_CLASS property). The first matching
+                       window is used. The matching isn't case sensitive
+                       and the string may appear in any position
+                       of the class name. So it's recommended to  always use
+                       the -F option in conjunction with the -x option.
+
+                       The special string ":SELECT:" (without the quotes)
+                       may be used to instruct wmctrl to let you select the
+                       window by clicking on it.
+
+                       The special string ":ACTIVE:" (without the quotes)
+                       may be used to instruct wmctrl to use the currently
+                       active window for the action.
+
+  <DESK>               A desktop number. Desktops are counted from zero.
+
+  <MVARG>              Specifies a change to the position and size
+                       of the window. The format of the argument is:
+
+                       <G>,<X>,<Y>,<W>,<H>
+
+                       <G>: Gravity specified as a number. The numbers are
+                          defined in the EWMH specification. The value of
+                          zero is particularly useful, it means "use the
+                          default gravity of the window".
+                       <X>,<Y>: Coordinates of new position of the window.
+                       <W>,<H>: New width and height of the window.
+
+                       The value of -1 may appear in place of
+                       any of the <X>, <Y>, <W> and <H> properties
+                       to left the property unchanged.
+
+  <STARG>              Specifies a change to the state of the window
+                       by the means of _NET_WM_STATE request.
+                       This option allows two properties to be changed
+                       simultaneously, specifically to allow both
+                       horizontal and vertical maximization to be
+                       altered together.
+
+                       The format of the argument is:
+
+                       (remove|add|toggle),<PROP1>[,<PROP2>]
+
+                       The EWMH specification defines the
+                       following properties:
+
+                           modal, sticky, maximized_vert, maximized_horz,
+                           shaded, skip_taskbar, skip_pager, hidden,
+                           fullscreen, above, below
+
+Workarounds:
+
+  DESKTOP_TITLES_INVALID_UTF8      Print non-ASCII desktop titles correctly
+                                   when using Window Maker.
+
+The format of the window list:
+
+  <window ID> <desktop ID> <client machine> <window title>
+
+The format of the desktop list:
+
+  <desktop ID> [-*] <geometry> <viewport> <workarea> <title>
+
+
+Author, current maintainer: Tomas Styblo <tripie@cpan.org>
+Released under the GNU General Public License.
+Copyright (C) 2003
+'''
+
+
 def _prog() -> str:
     if sys.argv and sys.argv[0]:
         name = os.path.basename(sys.argv[0])
         if name != "__main__.py":  # `python -m wwmctl`
             return name
     return "wwmctl"
+
+
+_GENERATION = None
+
+
+def _oracle_generation() -> str:
+    """"1.07" or "git": which wmctrl this box's scripts were written
+    against.
+
+    Both generations answer "1.07" to -V, so the only observable
+    difference is the help text -- which is what we are choosing here, so
+    reading it off the installed oracle is exactly right. One subprocess,
+    memoised, and only on the paths that print help. Without an oracle on
+    PATH (we may BE /usr/bin/wmctrl) nothing can be compared, and the
+    documented target of this clone is 1.07.
+
+    $WWMCTL_WMCTRL_GENERATION forces the answer, for tests and for a box
+    whose oracle is not the one its scripts expect."""
+    global _GENERATION
+    forced = (os.environ.get("WWMCTL_WMCTRL_GENERATION") or "").strip()
+    if forced in ("1.07", "git"):
+        return forced
+    if _GENERATION is not None:
+        return _GENERATION
+    _GENERATION = "1.07"
+    try:
+        real = passthrough.real_tool("wmctrl")
+        if real:
+            import subprocess
+            out = subprocess.run([real, "--help"], capture_output=True,
+                                 timeout=10).stdout
+            if b"\n  -j " in out:
+                _GENERATION = "git"
+    except Exception:
+        pass
+    return _GENERATION
+
+
+def help_text() -> str:
+    return HELP_GIT if _oracle_generation() == "git" else HELP
 
 
 def _envir_utf8(force: bool) -> bool:
@@ -221,7 +424,7 @@ def _run(argv=None) -> int:
     # wmctrl special-cases exactly `wmctrl --help` / `wmctrl --version`
     if len(argv) == 1:
         if argv[0] == "--help":
-            sys.stdout.write(HELP)
+            sys.stdout.write(help_text())
             return 0
         if argv[0] == "--version":
             print(WMCTRL_VERSION)
@@ -243,7 +446,7 @@ def _run(argv=None) -> int:
         return 1
 
     if not opts:  # wmctrl: "missing_option" -> full help on stderr
-        sys.stderr.write(HELP)
+        sys.stderr.write(help_text())
         return 1
 
     show_pid = show_geometry = show_class = False
@@ -270,39 +473,49 @@ def _run(argv=None) -> int:
             show_class = True
         elif c == "p":
             show_pid = True
-        elif c in ("a", "c", "R"):
+        elif c == "S":
+            # 1.07+git: list in stacking order. Ours always is (WWMCTL.md),
+            # so this only silences the option.
+            pass
+        elif c in ("a", "c", "R", "Y", "z", "E"):
             param_window = val
             action = c
         elif c == "r":
             param_window = val
-        elif c in ("t", "e", "b", "N", "I", "T", "s", "k", "o", "n", "g"):
+        elif c in ("t", "e", "y", "b", "N", "I", "T", "M", "s", "k", "o",
+                   "n", "g"):
             param = val
             action = c
         elif c == "w":
             if val != "DESKTOP_TITLES_INVALID_UTF8":
                 sys.stderr.write("Unknown workaround: %s\n" % val)
                 return 1
-        else:  # V h l d m
+        elif c == "L":  # 1.07+git, distro patch: no argument
+            action = c
+        else:  # V h l d j m
             action = c
 
+    envir_utf8 = _envir_utf8(force_utf8)
     if verbose:
-        sys.stderr.write("envir_utf8: %d\n" % int(_envir_utf8(force_utf8)))
+        sys.stderr.write("envir_utf8: %d\n" % int(envir_utf8))
 
     if action == "V":
         print(WMCTRL_VERSION)
         return 0
     if action == "h":
-        sys.stdout.write(HELP)
+        sys.stdout.write(help_text())
         return 0
     if action is None:  # e.g. plain `wwmctl -p`: options but nothing to do
         return 0
 
-    ctl = core.Core(verbose=verbose)
+    ctl = core.Core(verbose=verbose, utf8=envir_utf8)
     try:
         if action == "l":
             return ctl.list_windows(show_pid, show_geometry, show_class)
         if action == "d":
             return ctl.list_desktops()
+        if action == "j":
+            return ctl.list_current_desktop()
         if action == "m":
             return ctl.wm_info()
         if action == "s":
@@ -320,7 +533,8 @@ def _run(argv=None) -> int:
             sys.stderr.write("No window was specified.\n")
             return 1
         return ctl.action_window(action, param_window, param,
-                                 match_by_id, match_by_cls, full_match)
+                                 match_by_id, match_by_cls, full_match,
+                                 show_pid, show_geometry, show_class)
     except CmdError as e:
         sys.stderr.write("%s\n" % e)
         return 1

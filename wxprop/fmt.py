@@ -194,6 +194,37 @@ WINDOW_PROP_TABLE = (
 )
 
 
+# xprop's fontPropTable: the formats -font uses instead of the window ones.
+# A font property not named here falls back to the default "0x", which is
+# why an unknown one prints as a bare hex number.
+FONT_PROP_TABLE = tuple(
+    (name, fmt, None) for name, fmt in (
+        (b"FOUNDRY", b"32a"), (b"FAMILY_NAME", b"32a"),
+        (b"WEIGHT_NAME", b"32a"), (b"SLANT", b"32a"),
+        (b"SETWIDTH_NAME", b"32a"), (b"ADD_STYLE_NAME", b"32a"),
+        (b"PIXEL_SIZE", b"32c"), (b"POINT_SIZE", b"32c"),
+        (b"RESOLUTION_X", b"32c"), (b"RESOLUTION_Y", b"32c"),
+        (b"SPACING", b"32a"), (b"AVERAGE_WIDTH", b"32c"),
+        (b"CHARSET_REGISTRY", b"32a"), (b"CHARSET_ENCODING", b"32a"),
+        (b"QUAD_WIDTH", b"32i"), (b"RESOLUTION", b"32c"),
+        (b"MIN_SPACE", b"32c"), (b"NORM_SPACE", b"32c"),
+        (b"MAX_SPACE", b"32c"), (b"END_SPACE", b"32c"),
+        (b"SUPERSCRIPT_X", b"32i"), (b"SUPERSCRIPT_Y", b"32i"),
+        (b"SUBSCRIPT_X", b"32i"), (b"SUBSCRIPT_Y", b"32i"),
+        (b"UNDERLINE_POSITION", b"32i"), (b"UNDERLINE_THICKNESS", b"32i"),
+        (b"STRIKEOUT_ASCENT", b"32i"), (b"STRIKEOUT_DESCENT", b"32i"),
+        (b"ITALIC_ANGLE", b"32i"), (b"X_HEIGHT", b"32i"),
+        (b"WEIGHT", b"32i"), (b"FACE_NAME", b"32a"),
+        (b"COPYRIGHT", b"32a"), (b"AVG_CAPITAL_WIDTH", b"32i"),
+        (b"AVG_LOWERCASE_WIDTH", b"32i"), (b"RELATIVE_SETWIDTH", b"32c"),
+        (b"RELATIVE_WEIGHT", b"32c"), (b"CAP_HEIGHT", b"32c"),
+        (b"SUPERSCRIPT_SIZE", b"32c"), (b"FIGURE_WIDTH", b"32i"),
+        (b"SUBSCRIPT_SIZE", b"32c"), (b"SMALL_CAP_SIZE", b"32i"),
+        (b"NOTICE", b"32a"), (b"DESTINATION", b"32c"),
+        (b"FONT", b"32a"), (b"FONT_NAME", b"32a"),
+    ))
+
+
 # -- scanners (Scan_Long / Scan_Octal / Skip_Digits) ------------------------
 
 def _msg(b: bytes) -> str:
@@ -366,6 +397,13 @@ class Formatter:
         for name, f, d in WINDOW_PROP_TABLE:
             self.add_mapping(name, f, d)
 
+    def setup_font_table(self):
+        """xprop's Setup_Mapping in font mode: the FONT table replaces the
+        window one entirely (`FONT` means "32a", the font's XLFD name, not
+        a font id)."""
+        for name, f, d in FONT_PROP_TABLE:
+            self.add_mapping(name, f, d)
+
     def add_mapping(self, name: bytes, fmt, dfmt):
         self.mappings.append((name, fmt, dfmt))
 
@@ -403,6 +441,10 @@ class Formatter:
             n = len(wire)
             buffer = wire
             nbytes = 1
+        # C compares the byte count against max_len as an unsigned long,
+        # so a negative max_len is a budget of ~2**64 bytes: unbounded.
+        if self.max_len < 0:
+            return buffer, n * nbytes
         return buffer, min(n * nbytes, self.max_len)
 
     def break_down(self, buffer: bytes, length: int, type_name,
@@ -590,7 +632,17 @@ class Formatter:
     # -- _NET_WM_ICON ascii art ----------------------------------------------
 
     def format_icons(self, data: bytes) -> bytes:
+        """xprop's Format_Icons. `data` is the byte budget's worth of the
+        long array, so under `-len` it can be too short to hold even one
+        (width, height) pair: C's loop then never runs, the function
+        returns NULL, and glibc's printf renders that as "(null)". Past
+        that point parity is unattainable in principle -- C keeps reading
+        the Xlib buffer beyond the budget (an unsigned comparison turns its
+        own truncation check into a no-op) and prints uninitialised heap;
+        we stop at the budget instead."""
         n = len(data) // 8
+        if n == 0:
+            return b"(null)"
         vals = struct.unpack("<%dQ" % n, data[:n * 8])
         out = bytearray()
         i = 0

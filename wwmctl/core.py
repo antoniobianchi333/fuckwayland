@@ -27,6 +27,7 @@ import dataclasses
 import os
 import re
 import socket
+import struct
 import sys
 import time
 
@@ -96,11 +97,13 @@ class UWindow:
 
 
 class Core:
-    def __init__(self, backend=None, verbose=False):
+    def __init__(self, backend=None, verbose=False, utf8=False):
         self._backend = backend
         self._x11 = "unset"
         self._views_seen = None  # last views() outcome: True/False/None
         self.verbose = verbose
+        self.utf8 = utf8         # wmctrl's envir_utf8: a UTF-8 locale or -u
+        self._id_clash_warned = False
 
     def vprint(self, msg: str):
         if self.verbose:
@@ -191,6 +194,7 @@ class Core:
                 out = self._from_views(views, host)
                 self._views_seen = True
                 self._enrich(out)
+                self._check_id_clash(out)
                 return out
         self._views_seen = False
         nodes_fn = getattr(backend, "_nodes", None)
@@ -236,7 +240,30 @@ class Core:
                     fx=win.x, fy=win.y, fw=win.w, fh=win.h,
                 ))
         self._enrich(out)
+        self._check_id_clash(out)
         return out
+
+    def _check_id_clash(self, wins: list[UWindow]):
+        """Bridge ids and X11 ids share one integer space.
+
+        Mutter seeds meta_display_generate_window_id() from g_random_int(),
+        so a bridge id CAN land on an XWayland window's X id. `-i` then has
+        two candidates and resolves the X one (find_target); the other
+        window becomes unreachable by id. Rare enough never to have been
+        seen live, cheap enough to say out loud once."""
+        if self._id_clash_warned:
+            return
+        seen = {}
+        for w in wins:
+            other = seen.get(w.id)
+            if other is not None and other is not w:
+                self._id_clash_warned = True
+                _warn("two windows share the id 0x%08x; -i uses the X11 "
+                      "one" % w.id)
+                return
+            seen[w.id] = w
+            if w.node_id != w.id:
+                seen.setdefault(w.node_id, w)
 
     def _enrich(self, wins: list[UWindow]):
         """Fill X-only fields for XWayland windows from the X server.
@@ -430,14 +457,28 @@ class Core:
         # fullscreen one) are warned about and ignored, matching "the WM
         # may ignore the request".
         backend = self.backend()
-        left, top, right, bottom = self._frame_extents(w)
+        ext = self._measure_extents(w)
+        if ext is None:
+            _warn("window moved while measuring the frame; ignoring")
+            return 0
+        left, top, right, bottom = ext
         cw = ww if ww != -1 else w.fw - left - right
         ch = hh if hh != -1 else w.fh - top - bottom
         fw, fh = cw + left + right, ch + top + bottom
         col, row = _GRAVITY_CORNER.get(grav, (0, 0))
         static = grav == _GRAVITY_STATIC
-        fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw)
-        fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh)
+        # A -1 keeps an axis, but what "keep" means depends on the request
+        # as a whole AND on the compositor. With one coordinate given, the
+        # -1 on the other axis holds that axis' unchanged frame edge --
+        # anchoring it on the gravity point instead put us up to 80 px from
+        # where real wmctrl leaves the window (GNOME 46,
+        # `9,-1,200,400,300`). With BOTH coordinates omitted, GNOME 46
+        # holds the gravity's reference point, so a SouthEast resize grows
+        # up and to the left, while GNOME 50 applies no gravity at all and
+        # keeps the top-left corner. Both measured against real wmctrl.
+        keep_anchor = x == -1 and y == -1 and self._bare_resize_gravity()
+        fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw, keep_anchor)
+        fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh, keep_anchor)
         if ww != -1 or hh != -1:
             try:
                 backend.resize(w.node_id, fw, fh)
@@ -451,20 +492,84 @@ class Core:
                 _warn("%s; ignoring" % e)
         return 0
 
+    def _bare_resize_gravity(self) -> bool:
+        """Does the compositor anchor `-e G,-1,-1,W,H` -- a resize with no
+        coordinates -- on the gravity point?
+
+        Mutter did on GNOME 46 and does not on GNOME 50, where such a
+        request keeps the window's top-left corner whatever the gravity
+        says (both measured against real wmctrl on the same window). The
+        cut sits right after the release measured to anchor: 47-49 were not
+        measured, and a rule that keeps applying to 51+ is worth more than
+        a guess in their favour. A compositor that does not report a
+        version keeps the older behaviour, which is what sway and every
+        non-GNOME backend have always done."""
+        fn = self._backend_hook("compositor_version")
+        try:
+            v = fn() if callable(fn) else ()
+        except Exception:
+            v = ()
+        return not (v and v[0] >= 47)
+
     def _frame_extents(self, w: UWindow):
         """(left, top, right, bottom) between the compositor's frame rect
         and the X plane's client rect of an XWayland window listed by
-        views(): Mutter's server-side titlebar and border. Zero when the two
-        are the same rectangle (native windows, the sway tree's content
-        rect, an X plane that was not reached) or do not fit each other (an
-        X coordinate space scaled differently from the compositor's)."""
+        views(): Mutter's server-side titlebar and border. Zero when the
+        two are the same rectangle (native windows, the sway tree's content
+        rect, an X plane that was not reached); None when the client
+        rectangle does not sit inside the frame at all -- either the window
+        moved between the two reads, or the X coordinate space is scaled
+        differently from the compositor's. _measure_extents tells those two
+        apart; do not use this on its own to decide a geometry request."""
         if not (self._views_seen and w.is_x):
             return 0, 0, 0, 0
-        left, top = w.x - w.fx, w.y - w.fy
-        right, bottom = w.fw - w.w - left, w.fh - w.h - top
-        if min(left, top, right, bottom) < 0:
+        return _extents_of((w.fx, w.fy, w.fw, w.fh), (w.x, w.y, w.w, w.h))
+
+    def _sample_rects(self, w: UWindow, x):
+        """One (frame rect, client rect) pair, read back to back from the
+        compositor and from the X server. None when either read fails."""
+        try:
+            d = self.backend().find(w.node_id)
+        except Exception:
+            return None
+        try:
+            client = tuple(x.get_geometry(w.id))
+        except Exception:
+            return None
+        return (d.x, d.y, d.w, d.h), client
+
+    def _measure_extents(self, w: UWindow):
+        """The frame extents a -e request may rely on, or None.
+
+        The frame rectangle and the client rectangle come from two servers
+        a round trip apart, so a window that is moving (a drag, an
+        animation, another script) makes their difference meaningless --
+        and it used to come out silently zero, which collapsed every
+        gravity to NorthWest and resized the frame to the client size.
+        Sample until two consecutive pairs agree: that means the window
+        held still, and a client rectangle that still does not fit inside
+        the frame is then a coordinate space we cannot subtract in (a
+        scaled X plane), where zero extents are the honest answer. A window
+        that never holds still yields None and the caller drops the
+        request. w's rectangles are updated to the pair that agreed, so the
+        arithmetic that follows describes one single instant."""
+        if not (self._views_seen and w.is_x):
             return 0, 0, 0, 0
-        return left, top, right, bottom
+        x = self.x11()
+        if x is None:
+            return 0, 0, 0, 0
+        prev = ((w.fx, w.fy, w.fw, w.fh), (w.x, w.y, w.w, w.h))
+        for _ in range(_EXTENT_SAMPLES):
+            cur = self._sample_rects(w, x)
+            if cur is None:  # the window or a plane went away: no extents
+                return 0, 0, 0, 0
+            if cur == prev:
+                frame, client = cur
+                w.fx, w.fy, w.fw, w.fh = frame
+                w.x, w.y, w.w, w.h = client
+                return _extents_of(frame, client) or (0, 0, 0, 0)
+            prev = cur
+        return None
 
     def window_state(self, w: UWindow, arg: str) -> int:  # -b
         argerr = ('The -b option expects a list of comma separated parameters'
@@ -495,14 +600,54 @@ class Core:
             sys.stderr.write("Invalid zero length property.\n")
             return 1
         self.vprint("State 1: _NET_WM_STATE_%s\n" % p1.upper())
+        # An XWayland window has a second route: Mutter is a full EWMH
+        # window manager for the X plane and honours the _NET_WM_STATE
+        # ClientMessage real wmctrl sends -- including for the states its
+        # Wayland API cannot express (below, skip_taskbar, skip_pager).
+        # The compositor stays the first choice: `hidden` really minimizes
+        # through the bridge, where the X route is a no-op.
+        skip = self._compositor_cannot_set() if w.is_x else frozenset()
         for prop in (p1, p2):
             if prop is None:
                 continue
+            name = prop.upper()
+            if name in skip and self._x_set_state(w, name, action):
+                continue
             try:
-                self.backend().set_state(w.node_id, prop.upper(), action)
+                self.backend().set_state(w.node_id, name, action)
             except CmdError as e:
+                if self._x_set_state(w, name, action):
+                    continue
                 _warn("%s; ignoring" % e)
         return 0
+
+    def _compositor_cannot_set(self):
+        """_NET_WM_STATE names the compositor backend answers "not
+        applied" to. The backend reports them (GNOME: the bridge's own
+        gaps); one that does not say lets the CmdError path decide."""
+        fn = self._backend_hook("unsupported_states")
+        try:
+            return frozenset(fn() or ()) if callable(fn) else frozenset()
+        except Exception:
+            return frozenset()
+
+    def _x_set_state(self, w: UWindow, name: str, action: int) -> bool:
+        """The EWMH _NET_WM_STATE ClientMessage, sent to the X root about
+        an XWayland window -- byte for byte what real wmctrl does. False
+        when there is no X window or no X plane to send it on."""
+        if not w.is_x:
+            return False
+        x = self.x11() if self._x_is_up() else None
+        if x is None:
+            return False
+        try:
+            atom = x.atom("_NET_WM_STATE_%s" % name)
+            x.send_root_message(w.id, "_NET_WM_STATE",
+                                [action, atom, 0, 0, 0])
+        except Exception as e:
+            self.vprint("_NET_WM_STATE ClientMessage failed: %s\n" % e)
+            return False
+        return True
 
     def set_title(self, w: UWindow, title: str, mode: str) -> int:  # -N/-I/-T
         if not w.is_x:
@@ -516,38 +661,85 @@ class Core:
             return 0
         try:
             x.set_name(w.id, title,
-                       icon=mode in ("T", "I"), long_=mode in ("T", "N"))
+                       icon=mode in ("T", "I"), long_=mode in ("T", "N"),
+                       utf8=self.utf8)
         except Exception as e:
             _warn("cannot set the window title: %s; ignoring" % e)
         return 0
 
     # -- listings -----------------------------------------------------------
 
+    def _list_row(self, w: UWindow, show_pid: bool, show_geometry: bool,
+                  show_class: bool, machine_len: int) -> str:
+        """One `-l` row. Column widths count BYTES like printf's %*s."""
+        line = "0x%08x %2d" % (w.id, w.desktop)
+        if show_pid:
+            line += " %-6d" % (w.pid if w.pid > 0 else 0)
+        if show_geometry:
+            line += " %-4d %-4d %-4d %-4d" % (w.x, w.y, w.w, w.h)
+        if show_class:
+            cls = w.class_ if w.class_ is not None else "N/A"
+            line += " %s%s " % (cls, " " * max(0, 20 - _blen(cls)))
+        machine = w.machine or "N/A"
+        return line + " %s%s %s" % (" " * max(0, machine_len - _blen(machine)),
+                                    machine,
+                                    w.title if w.title is not None else "N/A")
+
+    def list_one_window(self, w: UWindow, show_pid: bool,
+                        show_geometry: bool, show_class: bool) -> int:  # -L
+        """1.07+git's `-r <WIN> -L`: the window's own `-l` row. Its machine
+        column is sized from that one window (display_window's
+        `max_client_machine_len == 0` branch), so nothing is padded."""
+        sys.stdout.write(self._list_row(w, show_pid, show_geometry,
+                                        show_class,
+                                        _blen(w.machine or "N/A")) + "\n")
+        return 0
+
+    def set_mini_icon(self, w: UWindow, path: str) -> int:  # -M
+        """1.07+git's `-r <WIN> -M <PATH>`: an XPM file becomes the
+        window's `_NET_WM_ICON`. An X-only property, so a native Wayland
+        window warns like -N/-I/-T does."""
+        if not w.is_x:
+            _warn("window icons cannot be set from outside on Wayland "
+                  "(native window); ignoring")
+            return 0
+        x = self.x11() if self._x_is_up() else None
+        if x is None:
+            _warn("cannot reach the XWayland server to set the window "
+                  "icon; ignoring")
+            return 0
+        try:
+            width, height, pixels = _read_xpm(path, x)
+        except Exception:
+            sys.stderr.write("Invalid icon path.\n")
+            return 0   # the oracle's own return value: it drops the result
+        data = struct.pack("<%dI" % (len(pixels) + 2), width, height, *pixels)
+        try:
+            x.change_property(w.id, "_NET_WM_ICON", "CARDINAL", 32, data)
+        except Exception as e:
+            _warn("cannot set the window icon: %s; ignoring" % e)
+        return 0
+
     def list_windows(self, show_pid: bool, show_geometry: bool,
                      show_class: bool) -> int:
         wins = self.windows()
-        # wmctrl 1.07 quirk kept for byte parity: the machine column width is
-        # the length of the LAST window's WM_CLIENT_MACHINE, not the longest
-        # (all-local XWayland/Wayland clients share one hostname anyway).
+        # The machine column is right-aligned to the LONGEST
+        # WM_CLIENT_MACHINE. wmctrl 1.07 uses the LAST row's instead (a bug
+        # in main.c), which is stable there only because its list is
+        # _NET_CLIENT_LIST, i.e. creation order; ours is Mutter's stacking
+        # order, so copying the quirk would re-flow the whole column every
+        # time a window is raised. On any real session every row carries the
+        # same hostname and the two rules print the same bytes.
         # Widths count BYTES like printf's %*s, not characters.
-        machine_len = 0
+        machine_len = max([_blen(w.machine) for w in wins if w.machine] or [0])
         for w in wins:
-            if w.machine:
-                machine_len = _blen(w.machine)
-        for w in wins:
-            line = "0x%08x %2d" % (w.id, w.desktop)
-            if show_pid:
-                line += " %-6d" % (w.pid if w.pid > 0 else 0)
-            if show_geometry:
-                line += " %-4d %-4d %-4d %-4d" % (w.x, w.y, w.w, w.h)
-            if show_class:
-                cls = w.class_ if w.class_ is not None else "N/A"
-                line += " %s%s " % (cls, " " * max(0, 20 - _blen(cls)))
-            machine = w.machine or "N/A"
-            line += " %s%s %s" % (" " * max(0, machine_len - _blen(machine)),
-                                  machine,
-                                  w.title if w.title is not None else "N/A")
-            sys.stdout.write(line + "\n")
+            sys.stdout.write(self._list_row(w, show_pid, show_geometry,
+                                            show_class, machine_len) + "\n")
+        return 0
+
+    def list_current_desktop(self) -> int:  # -j (1.07+git)
+        """wmctrl prints _NET_CURRENT_DESKTOP with "%-2d\n"."""
+        sys.stdout.write("%-2d\n" % self.backend().get_desktop())
         return 0
 
     def _desktop_rows(self):
@@ -689,10 +881,21 @@ class Core:
         return 0
 
     def showing_desktop(self, param: str) -> int:  # -k
-        if param not in ("on", "off"):
+        if param not in ("on", "off", "toggle"):
             sys.stderr.write('The argument to the -k option must be either '
-                             '"on" or "off"\n')
+                             '"on" or "off" or "toggle"\n')
             return 1
+        if param == "toggle":
+            param = "off" if self._showing_desktop() == 1 else "on"
+        # Mutter's own show-desktop mode is reachable from the X plane:
+        # _NET_SHOWING_DESKTOP on the X root is what real wmctrl sends, and
+        # on GNOME it really works -- every window is hidden, `-k off`
+        # brings them all back untouched, and `-m`, which reads the same
+        # property, agrees. That is the mode; the bridge's
+        # minimize-everything stand-in exists because the shell exports no
+        # API for it, and is the fallback for a session with no X plane.
+        if self._x_showing_desktop(param == "on"):
+            return 0
         show_fn = self._backend_hook("show_desktop")
         if show_fn is None:
             _warn("Wayland compositors have no 'showing the desktop' mode; "
@@ -703,6 +906,46 @@ class Core:
         except CmdError as e:
             _warn("%s; ignoring" % e)
         return 0
+
+    def _x_showing_desktop(self, show: bool) -> bool:
+        """_NET_SHOWING_DESKTOP to the X root, real wmctrl's own request.
+
+        False when the X plane is not there to take it, and false when the
+        window manager does not answer -- Mutter reports the mode by
+        updating the root property, so a missing update means an Xwayland
+        whose WM half is not up, and the caller falls back to the
+        compositor's own stand-in rather than doing nothing at all."""
+        x = self.x11() if self._x_is_up() else None
+        if x is None:
+            return False
+        want = 1 if show else 0
+        if self._showing_desktop() == want:
+            return True          # already in that mode: nothing to ask for
+        try:
+            x.send_root_message(x.root(), "_NET_SHOWING_DESKTOP",
+                                [want, 0, 0, 0, 0])
+        except Exception as e:
+            self.vprint("_NET_SHOWING_DESKTOP ClientMessage failed: %s\n" % e)
+            return False
+        deadline = time.monotonic() + 1.0
+        while True:
+            if self._showing_desktop() == want:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    def _showing_desktop(self):
+        """The X root's _NET_SHOWING_DESKTOP (Mutter keeps it for the
+        XWayland plane, and -k drives it there too), or None when there is
+        no X plane to ask -- `-k toggle` then reads as "currently off",
+        which is what real wmctrl does with an absent property, minus the
+        NULL dereference."""
+        x = self.x11() if self._x_is_up() else None
+        if x is None:
+            return None
+        vals = _xtry(lambda: x.get_prop_ints(x.root(), "_NET_SHOWING_DESKTOP"))
+        return vals[0] if vals else None
 
     def _backend_hook(self, name: str):
         """An optional backend method (GNOME: show_desktop,
@@ -749,7 +992,9 @@ class Core:
 
     def action_window(self, mode: str, param_window: str, param: str | None,
                       match_by_id: bool, match_by_cls: bool,
-                      full_match: bool) -> int:
+                      full_match: bool, show_pid: bool = False,
+                      show_geometry: bool = False,
+                      show_class: bool = False) -> int:
         w = self.find_target(param_window, match_by_id, match_by_cls,
                              full_match)
         if w is None:
@@ -767,6 +1012,25 @@ class Core:
             return self.to_desktop(w, _atoi(param or ""))
         if mode == "e":
             return self.move_resize(w, param or "")
+        if mode == "y":  # 1.07+git: -e, then activate
+            rv = self.move_resize(w, param or "")
+            self.activate(w)
+            return rv
+        if mode == "Y":  # 1.07+git: iconify (XIconifyWindow)
+            self.backend().minimize(w.node_id)
+            return 0
+        if mode == "z":  # 1.07+git, undocumented: XLowerWindow
+            self.backend().lower(w.node_id)
+            return 0
+        if mode == "L":  # 1.07+git (distro patch): this window's -l row
+            return self.list_one_window(w, show_pid, show_geometry,
+                                        show_class)
+        if mode == "M":  # 1.07+git (distro patch): _NET_WM_ICON from an XPM
+            return self.set_mini_icon(w, param or "")
+        if mode == "E":  # 1.07+git, undocumented: print the title
+            sys.stdout.write("%s\n" % (w.title if w.title is not None
+                                        else ""))
+            return 0
         if mode == "b":
             return self.window_state(w, param or "")
         if mode in ("N", "I", "T"):
@@ -812,6 +1076,23 @@ _GRAVITY_CORNER = {1: (0, 0), 2: (1, 0), 3: (2, 0), 4: (0, 1), 5: (1, 1),
 _GRAVITY_STATIC = 10
 
 
+# how many (frame rect, client rect) pairs -e samples while waiting for two
+# consecutive ones to agree, i.e. for the window to hold still
+_EXTENT_SAMPLES = 4
+
+
+def _extents_of(frame, client):
+    """(left, top, right, bottom) of `frame` around `client`, or None when
+    the client rectangle does not sit inside the frame."""
+    fx, fy, fw, fh = frame
+    cx, cy, cw, ch = client
+    left, top = cx - fx, cy - fy
+    right, bottom = fw - cw - left, fh - ch - top
+    if min(left, top, right, bottom) < 0:
+        return None
+    return left, top, right, bottom
+
+
 def _anchor(pos: int, size: int) -> int:
     """Where the gravity's reference point sits inside a rectangle of
     `size`: its leading edge, its middle, or its trailing edge (Mutter's
@@ -824,7 +1105,8 @@ def _anchor(pos: int, size: int) -> int:
 
 
 def _place_axis(pos: int, static: bool, req: int, lead: int,
-                f_old: int, fs_old: int, cs_new: int, fs_new: int) -> int:
+                f_old: int, fs_old: int, cs_new: int, fs_new: int,
+                keep_anchor: bool = True) -> int:
     """The frame's new leading edge on one axis.
 
     `pos` is the gravity's reference point (see _GRAVITY_CORNER), `static`
@@ -832,14 +1114,120 @@ def _place_axis(pos: int, static: bool, req: int, lead: int,
     the leading frame extent (left or top), `f_old`/`fs_old` the frame's
     current edge and size, `cs_new`/`fs_new` the client and frame sizes the
     request asks for. A request positions the frame's reference point on
-    the same point of the requested client rectangle; a -1 keeps the frame's
-    reference point where it is, which is what makes a bare resize move the
-    window under any gravity but NorthWest."""
+    the same point of the requested client rectangle.
+
+    `keep_anchor` says what a -1 means, and it is a property of the whole
+    request rather than of this axis: for `G,-1,-1,W,H` -- a bare resize --
+    Mutter keeps the gravity's reference point, so SouthEast grows up and
+    to the left; where the other axis carries a coordinate, it keeps this
+    axis's frame edge instead. Both were measured against Mutter on GNOME
+    46; the second case is why `9,-1,200,400,300` used to land 80 px from
+    where real wmctrl leaves the window."""
     if static:                       # the client itself is addressed
         return f_old if req == -1 else req - lead
     if req == -1:
+        if not keep_anchor:
+            return f_old
         return f_old + _anchor(pos, fs_old) - _anchor(pos, fs_new)
     return req + _anchor(pos, cs_new) - _anchor(pos, fs_new)
+
+
+# XPM color keys, most specific first: wmctrl's own order is c then g
+_XPM_KEYS = ("c", "g", "g4", "m", "s")
+
+
+def _read_xpm(path: str, x):
+    """(width, height, [ARGB pixels]) from an XPM file, the way wmctrl's
+    -M reads one: XpmReadFileToXpmImage plus XParseColor per colour.
+
+    Colour names are resolved by the X server itself (LookupColor, which is
+    what XParseColor asks), so the server's own rgb.txt decides -- and a
+    name it does not know becomes 0, exactly as wmctrl's "color parsing
+    failed" branch does. "None" is 0 too: transparent."""
+    with open(path, "rb") as fh:
+        text = fh.read().decode("latin-1")
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    items = re.findall(r'"((?:[^"\\]|\\.)*)"', text)
+    if not items:
+        raise ValueError("no XPM strings")
+    head = items[0].split()
+    width, height, ncolors, cpp = (int(v) for v in head[:4])
+    if min(width, height, ncolors, cpp) < 0 or len(items) < 1 + ncolors + height:
+        raise ValueError("truncated XPM")
+    table = {}
+    for spec in items[1:1 + ncolors]:
+        chars, rest = spec[:cpp], spec[cpp:]
+        toks = rest.split()
+        colors, key = {}, None
+        for t in toks:
+            if t in _XPM_KEYS and key is None:
+                key = t
+                colors[key] = []
+            elif key is None:
+                continue
+            elif t in _XPM_KEYS:
+                key = t
+                colors[key] = []
+            else:
+                colors[key].append(t)
+        name = None
+        for k in ("c", "g"):
+            if colors.get(k):
+                name = " ".join(colors[k])
+                break
+        table[chars] = _xpm_pixel(name, x)
+    pixels = []
+    for row in items[1 + ncolors:1 + ncolors + height]:
+        for i in range(width):
+            pixels.append(table.get(row[i * cpp:(i + 1) * cpp], 0))
+    return width, height, pixels
+
+
+def _xpm_pixel(name, x) -> int:
+    """One XPM colour as the ARGB CARD32 wmctrl packs into _NET_WM_ICON."""
+    if not name or name.lower() == "none":
+        return 0
+    rgb = _parse_color(name)
+    if rgb is None:
+        # a name, not a numeric spec: the server's own rgb.txt decides,
+        # and a name it does not know is 0 (wmctrl's "parsing failed")
+        rgb = _xtry(lambda: x.lookup_color(name))
+    if rgb is None:
+        return 0
+    r, g, b = (v >> 8 for v in rgb)
+    return 0xFF000000 | (r << 16) | (g << 8) | b
+
+
+def _parse_color(spec: str):
+    """XParseColor's client-side numeric forms as 16-bit (r, g, b), or None
+    for a colour NAME (which only the server can resolve). `#rgb`, `#rrggbb`,
+    `#rrrgggbbb`, `#rrrrggggbbbb` are left-aligned in 16 bits, exactly as
+    Xlib scales them; `rgb:r/g/b` takes 1-4 digits per component."""
+    if spec.startswith("#"):
+        digits = spec[1:]
+        if len(digits) % 3 or not 3 <= len(digits) <= 12:
+            return None
+        n = len(digits) // 3
+        try:
+            vals = [int(digits[i * n:(i + 1) * n], 16) for i in range(3)]
+        except ValueError:
+            return None
+        return tuple(v << (16 - 4 * n) for v in vals)
+    if spec.lower().startswith("rgb:"):
+        parts = spec[4:].split("/")
+        if len(parts) != 3:
+            return None
+        out = []
+        for part in parts:
+            if not 1 <= len(part) <= 4:
+                return None
+            try:
+                v = int(part, 16)
+            except ValueError:
+                return None
+            out.append(v << (16 - 4 * len(part)))
+        return tuple(out)
+    return None
 
 
 def _parse_win_id(s: str) -> int | None:

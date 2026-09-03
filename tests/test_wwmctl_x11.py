@@ -84,6 +84,9 @@ class FakeXServer(threading.Thread):
         self.translate = {}         # win -> (root_x, root_y)
         self.error_windows = set()  # BadWindow on any request naming these
         self.max_chunk_units = None  # cap GetProperty chunks (force the loop)
+        self.fonts = {}             # name -> [(prop name, CARD32)]
+        self.colors = {}            # LookupColor name -> (r16, g16, b16)
+        self._open_fonts = {}       # fid -> name
         self.setup_attempts = []    # (auth_name, auth_data) per connection
         self.log = []               # parsed requests
         self._atoms = {}
@@ -217,6 +220,44 @@ class FakeXServer(threading.Thread):
             tname = self._names.get(typ, "?")
             self.log.append(("ChangeProperty", win, pname, tname, fmt, data))
             self.props[(win, pname)] = (tname, fmt, data)
+        elif opcode == 92:  # LookupColor
+            cmap, n = struct.unpack_from("<IH", payload, 0)
+            name = payload[8:8 + n].decode("latin-1")
+            self.log.append(("LookupColor", cmap, name))
+            rgb = self.colors.get(name)
+            if rgb is None:
+                return self._error(conn, seq, 15, 92, bad=0)  # BadName
+            r, g, b = rgb
+            conn.sendall(struct.pack("<BxHIHHHHHH12x", 1, seq, 0,
+                                     r, g, b, r, g, b))
+        elif opcode == 45:  # OpenFont
+            fid, n = struct.unpack_from("<IH", payload, 0)
+            name = payload[8:8 + n].decode("latin-1")
+            self.log.append(("OpenFont", fid, name))
+            if name not in self.fonts:
+                return self._error(conn, seq, 15, 45, bad=0)  # BadName
+            self._open_fonts[fid] = name
+        elif opcode == 47:  # QueryFont
+            (fid,) = struct.unpack("<I", payload)
+            props = self.fonts.get(self._open_fonts.get(fid), [])
+            self.log.append(("QueryFont", fid))
+            # the reply's fixed part is 60 bytes: 32 of header plus 28 of
+            # body, with the FONTPROP count at overall offset 46
+            body = bytearray(28)
+            struct.pack_into("<H", body, 14, len(props))
+            for n, v in props:
+                body += struct.pack("<II", self.intern(n), v)
+            head = struct.pack("<BxHI", 1, seq, len(body) // 4) + b"\0" * 24
+            conn.sendall(head + bytes(body))
+        elif opcode == 46:  # CloseFont
+            (fid,) = struct.unpack("<I", payload)
+            self.log.append(("CloseFont", fid))
+            self._open_fonts.pop(fid, None)
+        elif opcode == 19:  # DeleteProperty
+            win, prop = struct.unpack("<II", payload)
+            pname = self._names.get(prop, "?")
+            self.log.append(("DeleteProperty", win, pname))
+            self.props.pop((win, pname), None)
         elif opcode == 25:  # SendEvent
             dest, mask = struct.unpack_from("<II", payload, 0)
             self.log.append(("SendEvent", dest, mask, payload[8:40]))
@@ -543,6 +584,52 @@ class FakeXServerTest(unittest.TestCase):
         self.assertEqual(set(changes()),
                          {"WM_NAME", "_NET_WM_NAME",
                           "WM_ICON_NAME", "_NET_WM_ICON_NAME"})
+
+    def test_set_name_in_a_utf8_environment_deletes_the_legacy_property(self):
+        """wwmctl-7: wmctrl's window_set_title has no locale copy of the
+        title under envir_utf8 (a UTF-8 locale, or -u), so it deletes
+        WM_NAME rather than leaving a lossy STRING behind."""
+        srv = self.serve()
+        win = 0x400001
+        conn = self.connect()
+        conn.set_name(win, "caf\u00e9 \u2713", icon=True, long_=True,
+                      utf8=True)
+        changed = {e[2]: (e[3], e[4], e[5]) for e in srv.log
+                   if e[0] == "ChangeProperty"}
+        deleted = [e[2] for e in srv.log if e[0] == "DeleteProperty"]
+        self.assertEqual(set(changed), {"_NET_WM_NAME", "_NET_WM_ICON_NAME"})
+        self.assertEqual(changed["_NET_WM_NAME"],
+                         ("UTF8_STRING", 8, "caf\u00e9 \u2713".encode("utf-8")))
+        self.assertEqual(sorted(deleted), ["WM_ICON_NAME", "WM_NAME"])
+
+    def test_lookup_color(self):
+        """wmctrl -M resolves XPM colour names with XParseColor, i.e. the
+        server's own rgb.txt: LookupColor."""
+        srv = self.serve()
+        srv.colors["navy blue"] = (0x0000, 0x0000, 0x8080)
+        conn = self.connect()
+        self.assertEqual(conn.lookup_color("navy blue"),
+                         (0x0000, 0x0000, 0x8080))
+        self.assertIn(("LookupColor", 0, "navy blue"), srv.log)
+        with self.assertRaises(X11Error):
+            conn.lookup_color("nosuchcolour")
+
+    def test_font_properties(self):
+        """wxprop-9: XWayland really does serve the core fonts, so -font is
+        implementable; OpenFont + QueryFont is all it needs."""
+        srv = self.serve()
+        srv.fonts["fixed"] = [("FOUNDRY", 0x59), ("PIXEL_SIZE", 13)]
+        conn = self.connect()
+        props = conn.font_properties("fixed")
+        self.assertEqual(props, [(srv.intern("FOUNDRY"), 0x59),
+                                 (srv.intern("PIXEL_SIZE"), 13)])
+        opened = [e for e in srv.log if e[0] == "OpenFont"]
+        self.assertEqual([e[2] for e in opened], ["fixed"])
+        fid = opened[0][1]
+        self.assertEqual(fid & ~0x3FFFFF, 0x400000)   # our id range
+        self.assertIn(("CloseFont", fid), srv.log)    # released again
+        with self.assertRaises(X11Error):             # BadName
+            conn.font_properties("zzznosuch")
 
     def test_send_root_message_framing(self):
         srv = self.serve()

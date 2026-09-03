@@ -133,6 +133,17 @@ def _detect_backend():
     return backend_detect.detect()
 
 
+def _progname() -> str:
+    """argv[0] the way xprop prints it in its diagnostics."""
+    override = os.environ.get("WXPROP_ARGV0")
+    if override:
+        return override
+    base = os.path.basename(sys.argv[0] or "")
+    if not base or base in ("__main__.py", "-c", "-m"):
+        return "wxprop"
+    return base
+
+
 def _hostname() -> str:
     try:
         return socket.gethostname() or ""
@@ -172,6 +183,7 @@ def _node_from_view(v) -> dict:
         "maximized_v": bool(v.maximized_v),
         "above": bool(v.above), "skip_taskbar": bool(v.skip_taskbar),
         "window_type": v.window_type or "NORMAL",
+        "transient_for": int(v.transient_for or 0),
         "client_type": v.client_type, "instance": v.instance, "class": v.cls,
         _VIEW_KEY: True,
     }
@@ -359,6 +371,14 @@ _WINDOW_TYPES = {
 }
 
 
+# Where the synthesized atom ids start. They must not look like ids the X
+# server could have handed out: numbered from 0x100 they sat squarely
+# inside the server's own allocated range, so a numeric id copied out of a
+# native window's dump and fed back to a real X tool named a plausible
+# WRONG atom instead of failing. No X server allocates this high.
+_SYNTH_ATOM_BASE = 0x40000000
+
+
 class NativeAtoms:
     """Fake atom table for the native plane: predefined X atoms keep their
     real ids (1..68) and EWMH names get stable synthesized ids; -f/-set
@@ -370,10 +390,10 @@ class NativeAtoms:
         for i, name in enumerate(_PREDEFINED_ATOMS, start=1):
             self.by_name[name] = i
             self.by_id[i] = name
-        for i, name in enumerate(_EXTENDED_ATOMS, start=0x100):
+        for i, name in enumerate(_EXTENDED_ATOMS, start=_SYNTH_ATOM_BASE):
             self.by_name[name] = i
             self.by_id[i] = name
-        self._next = 0x100 + len(_EXTENDED_ATOMS)
+        self._next = _SYNTH_ATOM_BASE + len(_EXTENDED_ATOMS)
 
     def intern(self, name: str, create: bool) -> int:
         a = self.by_name.get(name)
@@ -395,11 +415,25 @@ class NativeAtoms:
 
 
 def _p_string(s: str):
+    """A latin-1 property (type STRING is ISO 8859-1, by definition), or
+    UTF8_STRING when the text does not fit in it.
+
+    Typing UTF-8 bytes as STRING is not a legibility trade-off, it is
+    wrong: xprop's STRING-to-locale rule decodes them as latin-1 and
+    re-encodes them for the locale, so every character above U+00FF prints
+    as mojibake. Titles that DO fit latin-1 stay STRING, which is what the
+    XWayland twin's real WM_NAME carries."""
     try:
-        data = s.encode("latin-1")
+        return ("STRING", 8, s.encode("latin-1"))
     except UnicodeEncodeError:
-        data = s.encode("utf-8")  # legible under C-locale octal escapes
-    return ("STRING", 8, data)
+        return ("UTF8_STRING", 8, s.encode("utf-8"))
+
+
+def _latin1(s: str) -> bytes:
+    """ISO 8859-1 bytes for a property whose type is STRING by definition
+    (WM_CLASS), with anything that does not fit replaced -- the property
+    has no way to say "this is UTF-8"."""
+    return s.encode("latin-1", "replace")
 
 
 def _p_utf8(s: str):
@@ -534,12 +568,18 @@ class NativeViewTarget(NativeTarget):
             states.append("_NET_WM_STATE_DEMANDS_ATTENTION")
         if node.get("sticky"):
             states.append("_NET_WM_STATE_STICKY")
+        if rich and node.get("focused"):
+            # last, where Mutter's own set_net_wm_state puts it
+            states.append("_NET_WM_STATE_FOCUSED")
         props[b"_NET_WM_STATE"] = _p_atoms(self.atoms, states)
         wtype = "_NET_WM_WINDOW_TYPE_NORMAL"
         if rich:
             wtype = _WINDOW_TYPES.get(node.get("window_type") or "NORMAL",
                                       wtype)
         props[b"_NET_WM_WINDOW_TYPE"] = _p_atoms(self.atoms, [wtype])
+        transient = node.get("transient_for") or 0
+        if transient:
+            props[b"WM_TRANSIENT_FOR"] = _p_window([transient])
         desktop = getattr(win, "desktop", -1)
         props[b"_NET_WM_DESKTOP"] = _p_cardinal(
             [desktop if desktop >= 0 else 0xFFFFFFFF])
@@ -553,16 +593,26 @@ class NativeViewTarget(NativeTarget):
         instance = node.get("app_id") or wp.get("instance")
         cls = node.get("app_id") or wp.get("class")
         if instance or cls:
-            tname, size, _ = _p_string("")
-            data = (_p_string(instance or "")[2] + b"\0" +
-                    _p_string(cls or "")[2] + b"\0")
-            props[b"WM_CLASS"] = (tname, size, data)
+            # WM_CLASS is STRING by ICCCM whatever the app id looks like,
+            # so this pair is not routed through _p_string's UTF8_STRING
+            # escape hatch -- an X twin's WM_CLASS is STRING too.
+            data = (_latin1(instance or "") + b"\0" +
+                    _latin1(cls or "") + b"\0")
+            props[b"WM_CLASS"] = ("STRING", 8, data)
         title = node.get("name")
         if title is None:
             title = getattr(win, "title", None)
         if title is not None:
             props[b"_NET_WM_NAME"] = _p_utf8(title)
             props[b"WM_NAME"] = _p_string(title)
+        if rich:
+            # ICCCM WM_STATE: 1 NormalState, 3 IconicState, and no icon
+            # window. Mutter writes it on every X11 window it manages, so a
+            # native one that answers "is this window minimized?" the same
+            # way keeps a script working across the two planes.
+            state = 1 if node.get("visible", True) else 3
+            props[b"WM_STATE"] = ("WM_STATE", 32, struct.pack("<II",
+                                                              state, 0))
         return props
 
 
@@ -661,6 +711,7 @@ class MergedRootTarget:
         self.native = native
         self.conn = xt.conn
         self.win = xt.win
+        self._written = set()   # override names this run -set / -remove'd
 
     def refresh(self):
         return True
@@ -669,7 +720,17 @@ class MergedRootTarget:
         return self.xt.intern(name, create) or name in _ROOT_OVERRIDES
 
     def fetch(self, name: bytes):
-        if name in _ROOT_OVERRIDES:
+        """The X root's property, with the six window-list ones answered
+        from the compositor -- except for a name THIS RUN has written or
+        removed, which is read straight from the X root so the tool can
+        see what it just did.
+
+        The absence of an override is not evidence of damage: Mutter
+        writes _NET_CURRENT_DESKTOP only when the workspace first changes,
+        so a fresh session legitimately lacks it while the compositor
+        knows the answer. Damage is reported at the moment it is done
+        instead -- see _note()."""
+        if name in _ROOT_OVERRIDES and name not in self._written:
             p = self.native._props().get(name)
             if p is not None:
                 return p
@@ -678,7 +739,7 @@ class MergedRootTarget:
     def list_names(self):
         names = self.xt.list_names()
         for n in _ROOT_OVERRIDES:
-            if n not in names:
+            if n not in names and n not in self._written:
                 names.append(n)
         return names
 
@@ -686,10 +747,86 @@ class MergedRootTarget:
         return self.xt.atom_name(a)
 
     def remove_prop(self, name: bytes) -> bool:
+        self._note("-remove", name)
         return self.xt.remove_prop(name)
 
     def set_prop(self, name: bytes, type_name: str, size: int, data: bytes):
+        self._note("-set", name)
         self.xt.set_prop(name, type_name, size, data)
+
+    def _note(self, what: str, name: bytes):
+        """-set/-remove address the real X root, never the synthesis, so
+        the tool could not see what it had just done -- and an operator who
+        has broken every EWMH client on the X plane (`-root -remove
+        _NET_CLIENT_LIST`; `wmctrl -l` then says "Cannot get client list
+        properties") got silence. Say it once, and read that name straight
+        from the X root for the rest of the run."""
+        if name not in _ROOT_OVERRIDES or name in self._written:
+            return
+        self._written.add(name)
+        sys.stderr.write(
+            "%s:  %s %s writes the X root only; XWayland clients read it, "
+            "the compositor does not\n"
+            % (_progname(), what, name.decode("latin-1", "replace")))
+
+
+class FontTarget:
+    """`xprop -font <name>`: a core X font's FONTPROPs.
+
+    xprop's Get_Font_Property_Data_And_Type hands every value back as a
+    typeless 32-bit CARD32, so the lines carry no `(TYPE)` and the format
+    comes from the font table alone (an unmapped property falls back to
+    xprop's default `0x` and prints as a bare hex number). XWayland does
+    serve the core fonts xfonts-base installs, `fixed` among them."""
+
+    plane = "font"
+    node_id = None
+    win = None
+
+    def __init__(self, conn, name: str, props):
+        self.conn = conn
+        self.name = name
+        self.props = props        # [(atom id, CARD32)] in the font's order
+
+    def refresh(self):
+        return True
+
+    def intern(self, name: bytes, create: bool) -> bool:
+        return bool(self.conn.atom(name.decode("latin-1"),
+                                   only_if_exists=not create))
+
+    def fetch(self, name: bytes):
+        atom = self.conn.atom(name.decode("latin-1"), only_if_exists=True)
+        if not atom:
+            return None
+        for a, v in self.props:
+            if a == atom:
+                return None, 32, struct.pack("<I", v & 0xFFFFFFFF)
+        return None
+
+    def list_names(self):
+        out = []
+        for a, _v in self.props:
+            n = self.conn.get_atom_name(a)
+            if n is None:
+                n = "undefined atom # 0x%x" % a
+            out.append(n.encode("latin-1"))
+        return out
+
+    def atom_name(self, a: int):
+        return self.conn.get_atom_name(a)
+
+
+def resolve_font(sess: Session, name: str):
+    """The -font target, or xprop's own "cannot load it" fatal."""
+    x = sess.x11()
+    if x is None:
+        raise FatalError("Unable to open font %s!" % name)
+    try:
+        props = x.font_properties(name)
+    except Exception:
+        raise FatalError("Unable to open font %s!" % name) from None
+    return FontTarget(x, name, props)
 
 
 # -- window selection --------------------------------------------------------

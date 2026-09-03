@@ -34,6 +34,10 @@ toolchain, byte-parity oracles, agents never commit.
 - `wxprop/cli.py` — option parsing exactly per xprop (it has its own hand-rolled
   parser; order matters, `-f name format [dformat]` triples, trailing
   `[format [dformat]] atom` groups), usage/-help/-grammar text byte-parity.
+  `-version` is the one exception and is deliberate: it prints `xprop 1.2.8`
+  on every flavor so a version-sniffing script sees a clone that implements
+  everything it may ask for, while the oracle installed there is 1.2.6
+  (24.04) or 1.2.7 (26.04).
 - `wxprop/core.py` — plane resolution, property assembly, -spy loops.
 - `wxprop/fmt.py` — THE parity heart: xprop's formatting machinery from xprop.c:
   per-type default formats (0s/8s/32x/32c/32a...), dformats, the built-in fallback
@@ -65,9 +69,16 @@ Prep drops these in SCRATCH/reference/: xprop manpage, cloned xprop source
   the window state first).
 - Exit codes and stderr strings per xprop source (e.g. "No such property" wording,
   usage exit 1).
-- `-display`, `-fs`/`-font`, `-grammar` edge flags: -display honored for the X
-  plane; font properties (-fs/-font) print xprop's error/unsupported path (no core
-  fonts here) with a clean line; -grammar prints the real grammar text.
+- `-display`, `-fs`, `-grammar` edge flags: -display honored for the X plane;
+  -grammar prints the real grammar text.
+- `-font <name>` is real: XWayland serves the core fonts (xfonts-base), so the
+  font plane is `OpenFont` + `QueryFont` on the X connection and the FONTPROPs
+  print through xprop's *font* format table — which replaces the window one for
+  the whole run, chosen by pre-scanning argv the way xprop.c does. Values carry
+  no type, so no `(TYPE)` is printed and a property the table does not name
+  falls back to xprop's default `0x` (bare hex). `-remove`/`-set` on a font are
+  the oracle's own `… works only on windows, not fonts`, and `-spy` dumps and
+  exits. Byte-identical to `xprop -font fixed` on GNOME 46.
 
 ## GNOME
 
@@ -84,6 +95,11 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   the X server like xprop would — but only when Xwayland is actually
   running (a typo must not spawn a server; see below), else `window id #
   0x… does not exists!`.
+* **Atom ids.** The native plane has no X server to allocate atoms, so it
+  numbers the EWMH names itself, from `0x40000000` — deliberately outside
+  the range any X server hands out, so a numeric id copied out of a native
+  window's dump and fed to a real X tool fails loudly instead of naming a
+  plausible wrong atom.
 * **Native windows** synthesize, in this order and in xprop's grammar:
   `_NET_WM_STATE` (Mutter's own atom order: `SKIP_TASKBAR`,
   `MAXIMIZED_HORZ`, `MAXIMIZED_VERT`, `FULLSCREEN`, `HIDDEN` (minimized or
@@ -95,7 +111,15 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   `COMBO`, `DND`, else `NORMAL`), `_NET_WM_DESKTOP` (`0xFFFFFFFF` when
   sticky), `_NET_WM_PID`, `WM_CLIENT_MACHINE` (hostname), `WM_CLASS`
   (`app_id`, `app_id` — the same pair `wwmctl -lx` prints; a window with a
-  `WM_CLASS` pair but no app id uses that pair), `_NET_WM_NAME`, `WM_NAME`.
+  `WM_CLASS` pair but no app id uses that pair), `_NET_WM_NAME`, `WM_NAME`,
+  `WM_STATE` (`Normal`/`Iconic` from the window's visibility, icon window
+  `0x0` — Mutter writes it on every X11 window it manages, so a script
+  that asks "is this minimized?" gets the same answer on both planes).
+  `WM_TRANSIENT_FOR` appears when the bridge reports a parent, and
+  `_NET_WM_STATE_FOCUSED` last in `_NET_WM_STATE`, where Mutter's own
+  `set_net_wm_state` puts it. A `WM_NAME` that does not fit latin-1 is
+  typed `UTF8_STRING`: type `STRING` *means* ISO 8859-1 and xprop re-encodes
+  it for the locale, so UTF-8 bytes typed `STRING` print as mojibake.
   Nothing else is invented (no `_NET_FRAME_EXTENTS`, no `WM_HINTS`).
   `-set`/`-remove` on them fail with the usual one line.
 * **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge
@@ -126,6 +150,17 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   `_NET_DESKTOP_NAMES`, with `_NET_SUPPORTING_WM_CHECK` = `0x0`. Real
   xprop on the same session would print the X-only list; the merged view
   is the point of the tool.
+  `-set`/`-remove` always address the real X root, never the synthesis.
+  That gap is where damage used to disappear: `wxprop -root -remove
+  _NET_CLIENT_LIST` breaks every EWMH client on the X plane (`wmctrl -l`:
+  *Cannot get client list properties*) while `-root` went on printing the
+  compositor's healthy-looking list. Writing or removing one of the six
+  now prints a line on stderr saying where the write went, and reads of
+  that name for the rest of the run come from the X root. It is *not*
+  enough to treat a missing override as damage: Mutter writes
+  `_NET_CURRENT_DESKTOP` on the X root only once the workspace first
+  changes, so a fresh GNOME 46 session legitimately has none while the
+  compositor knows the answer.
 * **`-spy`** on an XWayland window is the X `PropertyNotify` loop. On a
   native window it follows the bridge's `WindowEvent` signals
   (`backend.events()`): `title` reprints `WM_NAME`/`_NET_WM_NAME`,
@@ -138,6 +173,17 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   root's own `PropertyNotify`s for everything Mutter owns, the bridge for
   the six synthesized names (an X-side update of one of those is *not*
   reprinted: it would show the X-only view).
+* **Limitations, not defects.** xdg-shell has no window-type hint, so the
+  bridge reports `NORMAL` for a GTK dialog: wxprop prints
+  `_NET_WM_WINDOW_TYPE_NORMAL` where the window's XWayland twin would print
+  `DIALOG`. Under `-len` truncation, out-of-range `?$n=` thunks read
+  *uninitialised heap* in real xprop — the same binary prints `window
+  gravity: Forget` for a full dump and an empty value for the same
+  truncation with explicit atoms, and `-len 8` on a `_NET_WM_ICON` renders
+  an icon out of whatever followed the buffer. Byte parity there is
+  unattainable in principle; `fmt._oob_thunk` prints a stable value and
+  `format_icons` stops at the budget. Real `xprop -id 99999999999999999999`
+  segfaults; we report the id.
 * **Click-to-select** (no `-root`/`-id`/`-name`) is the bridge's
   `SelectWindow` with the stderr hint: focus the target window (a
   different one) and wxprop continues with it on whichever plane it lives.

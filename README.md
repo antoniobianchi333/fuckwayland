@@ -232,7 +232,10 @@ Real wmctrl on Wayland can't see the foot window at all, prints doubled coordina
 an urgency hint. wwmctl routes every action through the compositor, so `-a`
 focuses, `-c` closes, `-e` moves — for X and Wayland windows alike. Symlink it as
 `wmctrl` (nix does this for you) and byte-parity covers the rest: help text, list
-formats, error strings, even wmctrl 1.07's machine-column width bug.
+formats, error strings, exit codes. (One deliberate exception: the machine
+column is sized from the longest hostname, not — as wmctrl 1.07's `main.c`
+does — from the last row's, which our stacking-ordered list would re-flow on
+every raise. See [WWMCTL.md](WWMCTL.md).)
 
 On GNOME (with the bridge extension, see [GNOME](#gnome)) the same list mixes
 XWayland windows under their real X ids with native windows under Mutter's ids,
@@ -266,11 +269,22 @@ WM_CLASS(STRING) = "foot", "foot"
 `-name`, click-to-select all match the real tool (including which double-dash forms it
 rejects). Verified byte-identical against the real xprop on a live XWayland server.
 
+`-font` is real too: XWayland serves the core fonts, so `wxprop -font fixed` is
+byte-identical to `xprop -font fixed`.
+
 On GNOME (see [GNOME](#gnome)) native windows get their synthesized set from the
 bridge — states, window types, `WM_CLASS` from the app id — and `-spy` follows the
 shell's window events; `-root` is Mutter's real X root with `_NET_CLIENT_LIST`,
 `_NET_ACTIVE_WINDOW` and the desktop properties re-synthesized so they cover native
 windows too. Details in `WXPROP.md` § GNOME.
+
+Two honest limits, both inherent: a native window has no window-type hint to report
+(xdg-shell has none), so a GTK dialog prints `_NET_WM_WINDOW_TYPE_NORMAL` where its
+XWayland twin prints `DIALOG`; and under `-len` truncation real xprop renders
+*uninitialised heap* past the end of the fetched data, which nothing can reproduce —
+we stop at the budget instead. `wwmctl`'s equivalents (`:SELECT:` waits for a focus
+change rather than a click; `shaded`/`modal` are no-ops on both sides) are in
+`WWMCTL.md`.
 
 ## wxrandr
 

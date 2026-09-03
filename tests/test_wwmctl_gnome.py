@@ -48,6 +48,7 @@ class FakeX11:
 
     def __init__(self, showing=0):
         self.calls = []
+        self.atoms = {}
         self.showing = showing
         self.bridge = None  # the harness' bridge: frames to derive from
 
@@ -84,8 +85,18 @@ class FakeX11:
             return "GNOME Shell"
         return ""
 
-    def set_name(self, win, name, icon, long_):
-        self.calls.append(("set_name", win, name, icon, long_))
+    def set_name(self, win, name, icon, long_, utf8=False):
+        self.calls.append(("set_name", win, name, icon, long_, utf8))
+
+    def atom(self, name, only_if_exists=False):
+        return self.atoms.setdefault(name, 0x180 + len(self.atoms))
+
+    def send_root_message(self, win, type_name, data):
+        """Mutter's side of an EWMH request: _NET_SHOWING_DESKTOP really
+        changes the mode and the root property that reports it."""
+        self.calls.append(("client_message", win, type_name, tuple(data)))
+        if type_name == "_NET_SHOWING_DESKTOP":
+            self.showing = int(data[0])
 
     def close(self):
         pass
@@ -184,11 +195,45 @@ class ListingTests(GnomeCliBase):
         self.assertEqual(self.x_calls, [(":0", XAUTH)])
         lines = out.splitlines()
         # machine column: WM_CLIENT_MACHINE from X for the xterm, hostname
-        # for native windows; width = the LAST row's machine (wmctrl quirk)
+        # for native windows; right-aligned to the LONGEST of the two
         self.assertEqual(lines[-1], "0x00400005  0 100  117  640  443  "
-                                    "xterm.XTerm           vmhost test@vm: ~")
+                                    "xterm.XTerm             vmhost test@vm: ~")
         self.assertEqual(lines[0], "0x003ffffd  0 0    0    1920 1080 "
                                    "Gjs.Gjs               testhost Desktop")
+
+    def test_l_machine_column_does_not_reflow_when_a_window_is_raised(self):
+        """wwmctl-3: wmctrl 1.07 sizes the machine column from the LAST
+        row, which is stable only because its list is in creation order.
+        Ours is stacking order, so the last row changes whenever a window
+        is raised; the column is sized from the longest instead and the
+        listing is identical in either order."""
+        first = self.wm(["-l"])[1]
+        # raise a native (long machine) above the xterm (short machine):
+        # the last row's machine changes, the column must not
+        self.bridge.m_Raise(None, CALC)
+        second = self.wm(["-l"])[1]
+        self.assertEqual(sorted(first.splitlines()),
+                         sorted(second.splitlines()))
+        for line in first.splitlines():
+            self.assertIn(line, second.splitlines())
+        # ... and the short machine really is padded out to the long one
+        self.assertIn("   vmhost test@vm: ~", first)
+
+    def test_an_id_shared_by_two_windows_is_reported_once(self):
+        """wwmctl-8: bridge ids and X11 ids share one integer space --
+        Mutter seeds meta_display_generate_window_id() from g_random_int(),
+        so a native window CAN carry the id of an XWayland window. `-i`
+        resolves the X one and the other becomes unreachable by id; say so
+        rather than acting on a window the caller did not mean."""
+        self.bridge.find(CALC)["id"] = XTERM_XID
+        rc, _o, err = self.wm(["-l"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "wwmctl: two windows share the id 0x%08x; "
+                              "-i uses the X11 one\n" % XTERM_XID)
+        # ... and the X window is the one -i acts on
+        rc, _o, _e = self.wm(["-i", "-a", "0x%x" % XTERM_XID])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.calls("Activate"), [(XTERM,)])
 
     def test_no_x_windows_means_no_x_connection(self):
         self.bridge.windows = [d for d in self.bridge.windows if not d["xid"]]
@@ -256,6 +301,91 @@ class DesktopTests(GnomeCliBase):
         rc, _o, err = self.wm(["-k", "maybe"], x11=None)
         self.assertEqual(rc, 1)
         self.assertEqual(self.calls("ShowDesktop"), [(True,), (False,)])
+
+    def test_k_on_twice_still_restores_the_desktop(self):
+        """wwmctl-2: `-k on` is a latch, not a stack. The bridge's scan
+        skips already-minimized windows, so a second `on` must not rescan:
+        it would replace the restore set with an empty one and leave every
+        later `-k off` a no-op."""
+        def minimized():
+            return {d["id"] for d in self.bridge.windows if d["minimized"]}
+
+        before = minimized()
+        self.assertEqual(before, {EDITOR})       # the fixture's editor
+        self.assertEqual(self.wm(["-k", "on"], x11=None)[0], 0)
+        on1 = minimized()
+        self.assertIn(XTERM, on1)                # something really went away
+        self.assertEqual(self.wm(["-k", "on"], x11=None)[0], 0)
+        self.assertEqual(minimized(), on1)       # no-op, restore set intact
+        self.assertEqual(self.wm(["-k", "off"], x11=None)[0], 0)
+        self.assertEqual(minimized(), before)    # everything came back
+        self.assertEqual(self.calls("ShowDesktop"),
+                         [(True,), (True,), (False,)])
+
+    def test_k_prefers_the_x_plane(self):
+        """wwmctl-6: Mutter's real show-desktop mode is reachable with the
+        _NET_SHOWING_DESKTOP ClientMessage real wmctrl sends, and on GNOME
+        it works: every window is hidden, `-k off` brings them all back
+        untouched, and `-m` (the same property) finally agrees. The
+        bridge's minimize-everything stand-in is the fallback, for a
+        session with no X plane."""
+        x = FakeX11(showing=0)
+        rc, _o, err = self.wm(["-k", "on"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"],
+                         [("client_message", x.root(),
+                           "_NET_SHOWING_DESKTOP", (1, 0, 0, 0, 0))])
+        self.assertEqual(self.calls("ShowDesktop"), [])   # not the stand-in
+        self.assertEqual(x.showing, 1)
+        rc, _o, err = self.wm(["-k", "off"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(x.showing, 0)
+        self.assertEqual(self.calls("ShowDesktop"), [])
+
+    def test_k_falls_back_to_the_bridge_when_the_wm_does_not_answer(self):
+        class DeafX11(FakeX11):
+            def send_root_message(self, win, type_name, data):
+                self.calls.append(("client_message", win, type_name,
+                                   tuple(data)))   # ... and nothing happens
+
+        with mock.patch.object(core.time, "sleep"):
+            rc, _o, err = self.wm(["-k", "on"], x11=DeafX11(showing=0))
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("ShowDesktop"), [(True,)])
+
+    def test_k_toggle_reads_the_x_root_state(self):
+        """wwmctl-5: 1.07+git's `-k toggle` flips whatever
+        _NET_SHOWING_DESKTOP says; with no X plane to ask, an absent
+        property reads as off, like the oracle's (NULL-dereferencing)
+        default."""
+        x = FakeX11(showing=0)
+        rc, _o, err = self.wm(["-k", "toggle"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(x.showing, 1)
+        rc, _o, err = self.wm(["-k", "toggle"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(x.showing, 0)
+        # no X plane: "off" is the reading, so toggle asks the bridge for on
+        rc, _o, err = self.wm(["-k", "toggle"], x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("ShowDesktop"), [(True,)])
+
+    def test_j_prints_the_active_workspace(self):
+        rc, out, err = self.wm(["-j"], x11=None)
+        self.assertEqual((rc, out, err), (0, "0 \n", ""))
+        self.bridge.m_SetActiveWorkspace(None, 2)
+        rc, out, _e = self.wm(["-j"], x11=None)
+        self.assertEqual(out, "2 \n")
+
+    def test_Y_z_E_reach_the_bridge(self):
+        rc, _o, err = self.wm(["-Y", "Calculator"], x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Minimize"), [(CALC,)])
+        rc, _o, err = self.wm(["-z", "Calculator"], x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Lower"), [(CALC,)])
+        rc, out, err = self.wm(["-E", "Calculator"], x11=None)
+        self.assertEqual((rc, out, err), (0, "Calculator\n", ""))
 
     def test_n_dynamic_workspaces_warns_and_succeeds(self):
         rc, _o, err = self.wm(["-n", "5"], x11=None)
@@ -407,6 +537,46 @@ class ActionTests(GnomeCliBase):
         self.assertEqual(self.calls("Resize")[-1], (XTERM, 150, 237))
         self.assertEqual(self.calls("Move")[-1], (XTERM, 640, 323))
 
+    def test_e_x_minus_one_with_a_y_keeps_the_left_edge(self):
+        """wwmctl-4: only a bare `G,-1,-1,W,H` is anchored on the gravity
+        point. Give one coordinate and Mutter keeps the other axis'
+        unchanged frame edge -- measured on GNOME 46, where anchoring it
+        left `9,-1,200,...` 80 px away from where real wmctrl leaves the
+        window. Frame 100,80 640x480 over client 100,117 640x443."""
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,200,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 287)])
+        # x: the frame's left edge stays at 100 (was 440 with the anchor)
+        # y: SouthEast puts the frame's bottom on the requested client's,
+        #    200 + 250 - 287
+        self.assertEqual(self.calls("Move"), [(XTERM, 100, 163)])
+
+    def test_e_y_minus_one_with_an_x_keeps_the_top_edge(self):
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "5,300,-1,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 287)])
+        # Center on x: 300 + 150 - 150; y keeps the frame's top (was 177)
+        self.assertEqual(self.calls("Move"), [(XTERM, 300, 80)])
+
+    def test_e_bare_resize_on_gnome_50_keeps_the_corner(self):
+        """wwmctl-4, the other half: GNOME 46 anchors a bare
+        `-e G,-1,-1,W,H` on the gravity point, GNOME 50 applies no gravity
+        to it at all and keeps the top-left corner. Measured against real
+        wmctrl on both; the compositor says which it is."""
+        self.bridge.shell_version = "50.1"
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,-1,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 287)])
+        self.assertEqual(self.calls("Move"), [])   # the corner does not move
+
+    def test_e_bare_resize_falls_back_when_no_version_is_reported(self):
+        """A backend that will not say (sway, a shell that hides the
+        property) keeps the older, documented behaviour."""
+        self.bridge.shell_version = None
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,-1,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Move"), [(XTERM, 440, 273)])
+
     def test_e_without_frame_extents_is_the_frame_rectangle(self):
         # a native window: the frame is the client, so every gravity puts
         # X,Y,W,H on the rectangle -lG prints
@@ -423,6 +593,85 @@ class ActionTests(GnomeCliBase):
         self.assertEqual((rc, err), (0, ""))
         self.assertEqual(self.calls("Resize")[-1], (XTERM, 300, 200))
         self.assertEqual(self.calls("Move")[-1], (XTERM, 10, 20))
+
+    def test_e_drops_the_request_when_the_window_will_not_hold_still(self):
+        """wwmctl-1: the frame rect (compositor) and the client rect (X
+        server) are read a round trip apart. On a window that is moving the
+        difference is meaningless -- it used to be silently zeroed, which
+        collapsed every gravity to NorthWest and resized the frame to the
+        client size. Now nothing is sent and stderr says why."""
+        class MovingX11(FakeX11):
+            n = 0
+
+            def get_geometry(self, win):
+                x, y, w, h = FakeX11.get_geometry(self, win)
+                self.n += 1
+                return (x, y + 40 * self.n, w, h)
+
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,-1,300,250"],
+                              x11=MovingX11())
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            err, "wwmctl: window moved while measuring the frame; ignoring\n")
+        self.assertEqual(self.calls("Resize"), [])
+        self.assertEqual(self.calls("Move"), [])
+
+    def test_e_measures_again_until_the_window_settles(self):
+        """The same sampling accepts a window that moved once and then
+        stopped: two consecutive agreeing pairs are enough."""
+        class SettlingX11(FakeX11):
+            n = 0
+
+            def get_geometry(self, win):
+                x, y, w, h = FakeX11.get_geometry(self, win)
+                self.n += 1
+                return (x, y + (40 if self.n == 1 else 0), w, h)
+
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "0,10,20,300,200"],
+                              x11=SettlingX11())
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 237)])
+        self.assertEqual(self.calls("Move"), [(XTERM, 10, 20)])
+
+    def test_b_states_mutter_cannot_set_go_through_the_x_server(self):
+        """wwmctl-6: the bridge answers "not applied" for below,
+        skip_taskbar, skip_pager, shaded and modal -- Mutter exports no
+        Wayland setter. For an XWayland window Mutter is still the EWMH
+        window manager, and the root ClientMessage real wmctrl sends does
+        work (oracle-proven live). The compositor stays the first choice
+        for everything else: `hidden` really minimizes through the bridge,
+        where the X route is a no-op."""
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "test@vm", "-b", "add,below"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("SetState"), [])
+        self.assertEqual(
+            [c for c in x.calls if c[0] == "client_message"],
+            [("client_message", XTERM_XID, "_NET_WM_STATE",
+              (1, x.atom("_NET_WM_STATE_BELOW"), 0, 0, 0))])
+        # two properties at once, and remove/toggle carry their action
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "test@vm", "-b",
+                               "toggle,skip_taskbar,skip_pager"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual([(c[3][0], c[2]) for c in x.calls
+                          if c[0] == "client_message"],
+                         [(2, "_NET_WM_STATE"), (2, "_NET_WM_STATE")])
+        # a state the compositor CAN set still goes through the bridge
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "test@vm", "-b", "add,hidden"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("SetState"), [(XTERM, "HIDDEN", "add")])
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"], [])
+
+    def test_b_on_a_native_window_still_warns(self):
+        """A native window has no X twin to ask, so the gap stays a
+        warning rather than a ClientMessage into the void."""
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "Calculator", "-b", "add,below"], x11=x)
+        self.assertEqual(rc, 0)
+        self.assertIn("ignoring", err)
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"], [])
 
     def test_b_states_through_set_state(self):
         rc, _o, err = self.wm(["-r", "Calculator", "-b", "add,fullscreen"],
@@ -457,12 +706,37 @@ class ActionTests(GnomeCliBase):
         for mode, icon, long_ in (("N", False, True), ("I", True, False),
                                   ("T", True, True)):
             x11 = FakeX11()
-            rc, _o, err = self.wm(["-r", "test@vm", "-%s" % mode, "New"],
-                                   x11=x11)
+            with mock.patch.dict(os.environ, {"LC_ALL": "C", "LC_CTYPE": "C",
+                                              "LANG": "C"}):
+                rc, _o, err = self.wm(["-r", "test@vm", "-%s" % mode, "New"],
+                                      x11=x11)
             self.assertEqual((rc, err), (0, ""), mode)
             self.assertEqual(x11.calls,
-                             [("set_name", XTERM_XID, "New", icon, long_)])
+                             [("set_name", XTERM_XID, "New", icon, long_,
+                               False)])
         self.assertEqual(self.x_calls, [(":0", XAUTH)] * 3)
+
+    def test_N_carries_the_utf8_environment(self):
+        """wwmctl-7: -u (and any UTF-8 locale) is wmctrl's envir_utf8, and
+        window_set_title has no locale copy to write there: it DELETES the
+        legacy WM_NAME instead of leaving a lossy STRING behind. The flag
+        never left cli, so both properties were always written."""
+        with mock.patch.dict(os.environ, {"LC_ALL": "C", "LC_CTYPE": "C",
+                                          "LANG": "C"}):
+            x11 = FakeX11()
+            rc, _o, err = self.wm(["-r", "test@vm", "-N", "New"], x11=x11)
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(x11.calls[0][5], False)
+            x11 = FakeX11()
+            rc, _o, err = self.wm(["-u", "-r", "test@vm", "-N", "New"],
+                                  x11=x11)
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(x11.calls[0][5], True)
+        with mock.patch.dict(os.environ, {"LC_ALL": "en_US.UTF-8"}):
+            x11 = FakeX11()
+            rc, _o, err = self.wm(["-r", "test@vm", "-T", "New"], x11=x11)
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(x11.calls[0][5], True)
 
     def test_N_on_a_native_window_warns_and_succeeds(self):
         rc, _o, err = self.wm(["-r", "Calculator", "-N", "New"], x11=FakeX11())

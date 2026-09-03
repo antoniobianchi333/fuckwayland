@@ -77,13 +77,46 @@ byte order 'l'. Keep it ~400 tight lines.
 
 `-l` (with `-p` pid, `-G` geometry, `-x` class), `-d`, `-s N`, `-a/-c/-R <STR>`,
 `-t N -r <STR>`, `-e G,X,Y,W,H -r <STR>`, `-b add/remove/toggle,P1[,P2] -r <STR>`,
-`-N/-I/-T <STR> -r <STR>`, `-i`, `-F`, `-v`, `-m`, `-k on|off`, `-o X,Y`, `-n N`,
-`-h`. Selection default: case-insensitive substring on title. Exact printf formats,
+`-N/-I/-T <STR> -r <STR>` (in a UTF-8 environment — any UTF-8 locale, or `-u` —
+the legacy `WM_NAME`/`WM_ICON_NAME` is *deleted* rather than written as a lossy
+`STRING`, exactly as wmctrl's `window_set_title` does),
+`-i`, `-F`, `-v`, `-m`, `-k on|off|toggle`, `-o X,Y`,
+`-n N`, `-h`. Selection default: case-insensitive substring on title. Exact printf formats,
 column widths, error strings, and exit codes come from the real wmctrl source + the
 reference dumps (workflow stage 1 produces both; sandbox devshell has the real
 `wmctrl` binary). Desktop semantics map exactly like wdotool's desktop commands
 (sway workspaces, 0-based). `-k`/`-o`/`-n`: warn+succeed style where Wayland can't
 (match wdotool's philosophy; document).
+
+**Two oracle generations.** Ubuntu 24.04 ships wmctrl 1.07; Ubuntu 25.04+ and
+Debian 13+ ship 1.07+git20240228, which adds `-j` (print the current desktop,
+`printf("%-2d\n")`), `-S` (list in stacking order), `-Y <WIN>` (iconify), `-r
+<WIN> -y <MVARG>` (move/resize, then activate), the undocumented `-z <WIN>`
+(lower) and `-E <WIN>` (print the title), and `-k toggle`. Both generations
+answer `1.07` to `-V`. wwmctl implements the **union** on every flavor — being a
+drop-in that rejects `wmctrl -j` on one distro is worse than accepting it on
+both — so `-S` is accepted and does nothing (our `-l` is already stacking order,
+see below) and `-k`'s argument error always names `toggle`. Only `--help`, which
+documents a specific upstream release rather than any behavior, follows the
+oracle installed on the box: `wmctrl --help` is consulted once and cached, and
+`$WWMCTL_WMCTRL_GENERATION=1.07|git` forces the answer. With no oracle installed
+(we may *be* `/usr/bin/wmctrl`) the 1.07 text is printed, the documented parity
+target of this clone.
+
+**Limitations of the compositor plane, not defects.**
+
+* `shaded` and `modal` in `-b` are no-ops on both sides: Mutter does not
+  implement window shading, and `_NET_WM_STATE_MODAL` on an existing window
+  changes nothing an oracle run can observe either.
+* `hidden` is a deliberate improvement, not parity: EWMH says a client may
+  not set `_NET_WM_STATE_HIDDEN` and real wmctrl's request is dropped on the
+  floor; we minimize the window, which is what the person typing
+  `-b add,hidden` meant.
+* The oracle's own defects, kept as they are because we are not bug-compatible
+  where the bug is visibly wrong: real `wmctrl -lG` double-counts the reparent
+  offset on Mutter (its geometry column is off by the frame extents); real
+  `wmctrl -l` prints `N/A` for a window whose `WM_NAME` is Latin-1 rather than
+  the title.
 
 **Known desktop-id mapping hole**: sway workspace *number* N prints as desktop
 N-1, but a workspace literally numbered 0 and *named* (numberless) workspaces
@@ -135,8 +168,14 @@ untouched) and the generic `list()` fallback.
   root coordinates) for XWayland windows — one titlebar below the frame,
   Mutter being a reparenting WM — and the bridge's `get_frame_rect()` for
   native ones (logical pixels, no CSD shadows). Machine column: the
-  `WM_CLIENT_MACHINE` of X windows, the local hostname otherwise (the
-  machine-column rule above). The desktop column is the workspace index,
+  `WM_CLIENT_MACHINE` of X windows, the local hostname otherwise,
+  right-aligned to the *longest* one in the list. Real wmctrl 1.07 sizes
+  that column from the *last* row (a bug in its `main.c`), which looks
+  stable only because its rows come from `_NET_CLIENT_LIST`, i.e. creation
+  order; our rows are in stacking order, so copying the quirk would re-flow
+  the column by the difference in hostname lengths every time a window is
+  raised. On a session where every client is local — every session with
+  XWayland or Wayland clients — the two rules print the same bytes. The desktop column is the workspace index,
   `-1` for a sticky window — Mutter's dense 0-based indices are exactly
   wmctrl's, so GNOME has none of the sway id-mapping hole.
 * **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge
@@ -165,10 +204,20 @@ untouched) and the generic `list()` fallback.
   Xwayland is up — byte-identical to real wmctrl there —, waiting up to 2 s
   for a freshly started Xwayland to get its root properties. Without
   Xwayland the name comes from the backend (`GnomeBackend.wm_name`, the
-  same string) and the showing-desktop mode is `N/A` (Mutter's real
-  show-desktop state has no public API off the X root).
-* **Actions** all go through the bridge, for XWayland and native windows
-  alike: `-a` `Activate` (switches workspace, unminimizes, raises,
+  same string) and the showing-desktop mode is `N/A` — Mutter's real
+  show-desktop state has no public API off the X root, which is also why
+  `-k` prefers that root (below).
+* **`-k`** sends `_NET_SHOWING_DESKTOP` to the X root, exactly as real
+  wmctrl does, and Mutter's own show-desktop mode answers: every window is
+  hidden, `-k off` brings them all back untouched, and `-m` — which reads
+  the same property — agrees. The bridge exports a stand-in that minimizes
+  every window on the active workspace (the shell has no API for the real
+  mode) and it is the fallback, for a session with no X plane or an
+  Xwayland whose window-manager half has not come up; the root property is
+  polled for a second to tell the two apart. `-k toggle` (1.07+git) reads
+  the same property, and reads an absent one as off.
+* **Actions** otherwise go through the bridge, for XWayland and native
+  windows alike: `-a` `Activate` (switches workspace, unminimizes, raises,
   focuses), `-c` `Close` (polite delete), `-R` `MoveToWorkspace(current)` +
   `Activate`, `-t N` `MoveToWorkspace(N)` (`-t -1` = current; an index past
   the last workspace is a one-line error, exit 1, where wmctrl would fire
@@ -176,19 +225,42 @@ untouched) and the generic `list()` fallback.
   index), `-b (add|remove|toggle),P1[,P2]` `SetState` per property —
   `fullscreen`, `maximized_vert`/`maximized_horz` (real per-axis
   maximization on every GNOME release), `hidden` (minimize), `above`,
-  `sticky`, `demands_attention` are applied by Mutter; `skip_taskbar`,
-  `skip_pager`, `modal` warn and succeed (no Mutter setter, nothing
-  observable); `shaded` and `below` warn `…; ignoring` and exit 0 like any
-  request "the WM may ignore". `-e G,X,Y,W,H` carries
+  `sticky`, `demands_attention` are applied by Mutter. Five have no
+  Wayland setter at all — `below`, `skip_taskbar`, `skip_pager`, `shaded`,
+  `modal` — and for an **XWayland** window those go to the X plane
+  instead, as the `_NET_WM_STATE` ClientMessage real wmctrl sends: Mutter
+  is the EWMH window manager there and applies `below`, `skip_taskbar` and
+  `skip_pager` for real (verified against the oracle on GNOME 46), while
+  `shaded` and `modal` are no-ops for the oracle too. On a **native**
+  window there is no X twin to ask and they warn `…; ignoring` and exit 0,
+  like any request "the WM may ignore". The compositor stays the first
+  choice everywhere else — `hidden` really minimizes through the bridge,
+  where the X route is a no-op. `-e G,X,Y,W,H` carries
   `_NET_MOVERESIZE_WINDOW`'s meaning: `W,H` are the **client** size and
   the gravity names the point of the window the request positions —
   `1` NorthWest puts the frame's top-left at `X,Y`, `5` Center puts its
   centre on the requested rectangle's, `9` SouthEast its bottom-right at
   `X+W,Y+H`, `10` Static the client itself at `X,Y`; `0` means "the
   window's own `WM_SIZE_HINTS` gravity" and is taken as NorthWest, the
-  ICCCM default. A `-1` keeps that point where it is, so `-e 9,-1,-1,W,H`
-  pins the bottom-right corner and grows the window up and to the left,
-  while `-e 0,-1,-1,W,H` is a resize alone. The frame extents — Mutter's
+  ICCCM default. What a `-1` keeps depends on the request as a whole *and*
+  on the GNOME release, both measured against real wmctrl on the same
+  window. Where the request carries a coordinate, a `-1` on the other axis
+  keeps that axis' unchanged frame edge (`9,-1,200,W,H` leaves the left
+  edge alone) — anchoring it on the gravity point instead put us 80 px
+  out. In a **bare resize** (`-e G,-1,-1,W,H`, both coordinates omitted)
+  GNOME 46 keeps the gravity's reference point, so `9,-1,-1,W,H` pins the
+  bottom-right corner and grows the window up and to the left, while
+  **GNOME 50 applies no gravity at all** and keeps the top-left corner
+  whatever `G` says. wwmctl follows the compositor: `GnomeBackend
+  .compositor_version()` (org.gnome.Shell's `ShellVersion`) decides, the
+  cut sits right after 46, and a backend that reports no version keeps the
+  46 behaviour — which is what sway and the rest have always done. Some rows of the grid stay 1–16 px apart from the oracle: real
+  wmctrl hands Mutter `_NET_MOVERESIZE_WINDOW` with the omitted fields
+  still filled in as `(unsigned long)-1`, and Mutter's own arithmetic for
+  them is neither the frame rectangle nor the client one. Where an axis is
+  omitted the oracle can also *resize* it (`-e 0,300,200,-1,300` grows a
+  496-wide xterm to 520): `-1` means unchanged here, per `wmctrl -h`. The
+  frame extents — Mutter's
   server-side titlebar, i.e. the difference between its frame rect and
   the X client rectangle `-lG` prints — turn that client rectangle into
   the `Resize` (frame size) and `Move` (frame top-left) the bridge takes:
@@ -224,6 +296,12 @@ untouched) and the generic `list()` fallback.
   target window to select it` and returns with the next window that gains
   focus (focus a *different* window, as on sway). `:ACTIVE:` is Mutter's
   focus window.
+  **Limitation, not a bug:** `:SELECT:` returns when focus moves to a
+  *different* window. Real wmctrl grabs the pointer and waits for a click,
+  which can land on the window that already has focus; the bridge waits on
+  a focus *change*, so re-selecting the focused window never returns. No
+  Wayland compositor lets a client grab the pointer for another client's
+  windows, and the shell exports no click-to-pick API.
 * **Errors.** Every failure is one line on stderr, exit 1: the bridge not
   installed (`gnome backend: the fuckwayland bridge extension is not
   running in GNOME Shell; run gnome/install-bridge.sh and restart the
@@ -244,11 +322,10 @@ like `0x14a3062e`), `-d` (`WA: 66,32 3774x1048  Workspace 1` on two
 get current desktop properties`: Mutter's X root carries no
 `_NET_CURRENT_DESKTOP`), `-m` byte-identical to real `wmctrl -m`, `-a`,
 `-c :ACTIVE:`, `-i` with either id, `-e` against real `wmctrl` on the
-same window (GNOME 46; `xeyes`, `_NET_FRAME_EXTENTS 0,0,37,0`): identical
-rectangles for gravity `0`/`1`/`10` and for every bare resize
-(`9,-1,-1,300,250` on a `200,150 500x400` frame → `400,263 300x287`,
-the `700,550` corner kept; `2,-1,-1,300,250` → `300,150`), 1–2 px apart
-only where Mutter's own gravity arithmetic is (above); xterm snaps
+same window (`xterm`, `_NET_FRAME_EXTENTS 0,0,37,0`): identical
+rectangles for gravity `0`/`1`/`10` with both coordinates given or both
+omitted, on GNOME 46 and 50 alike, and within 1–27 px elsewhere (the `-1`
+arithmetic above); xterm snaps
 `500x400` to `496x392` on its size increments, `-b add,fullscreen` /
 `maximized_vert` seen by real `xprop`, `shaded,below`/`skip_taskbar`
 warn+exit 0, `-N/-I/-T` read back by real `xprop`, `-t 1`, `-R`, `-s`,

@@ -997,6 +997,12 @@ export default class FuckwaylandBridge extends Extension {
     // wmctrl -k: Mutter's real show-desktop mode is not reachable from JS
     // (meta_workspace_manager_show_desktop is private), so minimize every
     // normal window on the active workspace and remember them for -k off.
+    //
+    // ShowDesktop(true) is IDEMPOTENT: a second one must not rescan, because
+    // the scan skips already-minimized windows and would then store an empty
+    // restore set, making every later ShowDesktop(false) a no-op (the mode
+    // is a latch, not a stack -- `wmctrl -k on` twice then `-k off` restores
+    // the desktop on every real WM).
     _showDesktop(show) {
         if (!show) {
             for (const w of this._showDesktopWins) {
@@ -1006,6 +1012,8 @@ export default class FuckwaylandBridge extends Extension {
             this._showDesktopWins = [];
             return;
         }
+        if (this._showDesktopWins.length)
+            return;                    // already on: keep the restore set
         const ws = global.workspace_manager.get_active_workspace();
         const done = [];
         for (const w of safe(() => ws.list_windows(), [])) {
