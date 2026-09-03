@@ -218,3 +218,29 @@ workspace switches (a switch can arrive more than once, as an X
 `xprop`; click-to-select returns with the window `wdotool windowactivate`
 focused; all of it also from `ssh root@` with `env -i`, under `sudo` and
 from a custom shortcut.
+
+## KDE Plasma
+
+On Plasma the compositor plane is `wdotool.backend_kwin.KwinBackend` (KWin
+scripting, nothing installed) and wxprop uses the same typed hooks as on
+GNOME — `views()`, `workspaces()`, `x_info()`, `events()`,
+`select_window()`.
+
+* **Planes.** `-id` takes an X id or a backend id: an XWayland window's
+  backend id redirects to its real X properties (byte-identical to real
+  `xprop` on both releases), a native window gets the synthesized set. The
+  backend ids KWin's uuids are minted into are 32-bit and biased to
+  `0x40000000`, out of the range Xwayland gives its clients, so the two id
+  spaces cannot be confused — that bias is why `wxprop -id`, which parses
+  into an XID like `dsimple.c` does, can carry them at all.
+* **`_NET_WM_STATE` for native windows.** Read from KWin's own properties.
+  On 5.27 `maximizeMode` is not scriptable, so MAXIMIZED_HORZ/VERT are
+  derived from the frame being exactly the maximize area; a window sized to
+  fill the work area by hand therefore reads as maximized there.
+* **`-root`.** `_NET_CLIENT_LIST`, `_NET_CLIENT_LIST_STACKING`,
+  `_NET_ACTIVE_WINDOW` and `_NET_DESKTOP_NAMES` are ours (they list native
+  toplevels and the true active window); KWin's own X root copies are stale
+  on the desktop count. Everything else is the X server's.
+* **`-spy`** works on both releases, on the root and on a window, native or
+  X11: the backend's `events()` is a KWin script that stays loaded for the
+  iteration and pushes `workspace`'s and every window's Qt signals out.

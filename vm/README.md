@@ -284,7 +284,7 @@ originals do.
 | flavor | `wxrandr` | `wwmctl -m` | `wwmctl -l` | `wdotool` | `wxprop -root` |
 |---|---|---|---|---|---|
 | `noble-gnome`, `resolute-gnome` | works | works | needs the bridge extension | `getdisplaygeometry` works; window/input commands need the bridge extension | works |
-| `noble-kde`, `resolute-kde` | **no backend** | works | works | works | works |
+| `noble-kde`, `resolute-kde` | works | works | works | works | works |
 | `noble-xfce`, `resolute-xfce` | works (hands over to `xrandr`) | works (`wmctrl`) | works (`wmctrl`) | works (`xdotool`) | works (`xprop`) |
 | `resolute-sway` | works | works | works | works | works |
 
@@ -303,24 +303,20 @@ The goldens are stock desktops and deliberately do not carry the extension: inst
 guest (`gnome/install-bridge.sh`) and log the session out and in to exercise those paths.
 Same results as root over `vmctl ssh` — the GNOME backends need no session environment.
 
-**KDE Plasma** — in the session everything but `wxrandr` works. `wwmctl -m` prints `Name: KWin`
-(`Class: N/A`, `PID: N/A`); `wwmctl -l` lists KWin's windows by compositor node id — on Plasma 6
-`0xfc4c866655c0 -1 <hostname> plasmashell`, on 5.27 also the per-screen containers
-`0xd7f43d3f8d88 -1 <hostname> Desktop @ QRect(0,0 1920x1080) — Plasma` — and a GTK test window
-appears as `0x58085a951f16  0 <hostname> vmctl-probe-window`. `wdotool getactivewindow` returns a
-node id (`96792902704918`), `getdisplaygeometry` returns `5760 1080`, and `wxprop -root
-_NET_SUPPORTING_WM_CHECK` returns `_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x200002`.
-`wxrandr` has no backend on KWin (no DisplayConfig, no `wlr-output-management`) and exits 1 with
+**KDE Plasma** — all four work, in the session and as root. `wxrandr` prints the real listing
+through KWin's `kde_output_management_v2` (`Screen 0: minimum 16 x 16, current 5760 x 1080,
+maximum 32767 x 32767`, `Virtual-1 connected primary 1920x1080+0+0 (normal left inverted right
+x axis y axis) 480mm x 270mm`), and the window side is KWin scripting over the session bus with
+**nothing installed** in the guest (`loadScript` is unprivileged on 5.27 and 6 alike).
+`wwmctl -m` prints `Name: KWin` (`Class: N/A`, `PID: N/A`); `wwmctl -l` lists KWin's windows —
+XWayland rows with their real X ids and native rows with the backend id KWin's uuid is minted
+into (`0x4…`) — and `-lpxG` agrees with real `wmctrl` on id, class, pid and size for the X rows.
+`wdotool getactivewindow` returns such an id, `getdisplaygeometry` returns `5760 1080`, and
+`wxprop -id` on an XWayland window is a byte-identical dump of real `xprop`'s.
 
-> `Can't open display wayland-0`
-
-**As root over plain ssh the KWin backend is unreachable** — `wwmctl -l` and `wdotool
-getactivewindow` exit 1 with
-
-> `kwin backend: org.kde.kwin.Scripting.loadScript failed: Error connecting: The connection is closed`
-
-so drive Plasma through `vmctl user`, not `vmctl ssh`. (`wwmctl -m`, `wxprop` and
-`getdisplaygeometry` still answer there.)
+**As root over plain `vmctl ssh` the KWin backend works too** (the session bus is found by
+scanning `/run/user/*`), so `vmctl ssh` and `vmctl user` both drive Plasma. That was not true
+while the backend used `dbus-monitor`; it is the `dbus_mini` client that made it work.
 
 **Xfce** — the X11 flavors, and every tool hands over there, so the answers are the real
 tools' own. `wxrandr` prints the X server's listing

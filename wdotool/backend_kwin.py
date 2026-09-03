@@ -1,302 +1,921 @@
-"""KWin window backend: org.kde.KWin scripting over the session D-Bus, shelling
-out to gdbus. Best-effort — KWin cannot run in this sandbox, so this is
-untested against a live KWin; it targets both KWin 5 (workspace.clientList)
-and KWin 6 (workspace.windowList).
+"""KWin window backend: one generated KWin script per command, over dbus_mini.
 
-Data flows back from KWin scripts via callDBus() to a marker interface that we
-capture with dbus-monitor (KWin scripts have no other stdout)."""
+Nothing has to be installed for the user here (unlike the GNOME bridge):
+`org.kde.kwin.Scripting.loadScript()` is plain Q_SCRIPTABLE on /Scripting with
+no polkit action and no bus policy on Plasma 5.27 and 6 alike, so any client on
+the session bus may push JavaScript into KWin. The script (wdotool.kwin_js)
+cannot register a D-Bus object or return a value, so it answers with the JS
+global callDBus() to a name *we* own:
+
+    name  org.fuckwayland.KWin   path /org/fuckwayland/KWin
+    iface org.fuckwayland.KWin1  members Result(s token, s json),
+                                         Event(s token, s uuid, s change)
+
+Wire sequence per command (four round trips, one temp file):
+
+    id = loadScript(file, "wdotool-<pid>-<seq>-<rand>")   /Scripting
+    run()                                   /Scripting/Script<id> (6)
+                                            /<id>                 (5.27)
+    unloadScript("wdotool-<pid>-<seq>-<rand>")            /Scripting, finally
+
+`Script::run()` is a *delayed* D-Bus reply: KWin sends it only after the file
+has been read and QJSEngine::evaluate() has returned, and the script's own
+callDBus() rides the same connection during evaluate(). D-Bus preserves
+per-connection order, so the payload is already in our receive queue when run()
+returns -- no dbus-monitor, no sleep. We still wait with a deadline rather than
+assuming it (a script that throws before _ret, a syntax error, KWin refusing
+the file: all of them look like silence).
+
+Each call gets its own pluginName (KWin returns -1 for a name that is already
+loaded, and reuses script *ids* as soon as a script is destroyed, so a shared
+name would eventually drive somebody else's script) and its own token (a stale
+payload from an earlier, timed-out call must not be read as this call's
+answer). The name carries random bytes as well as the pid and a counter: KWin
+keeps a name reserved for as long as the script object lives and loaded
+scripts cannot be enumerated, so a wdotool killed between loadScript and
+unloadScript leaks its name for the rest of the session -- with the pid alone
+the next process to be given that pid would fail on its very first command,
+for ever.
+
+Window identity: KWin's only stable handle is `internalId`, a UUID string, and
+the scripting API takes nothing else. wdotool prints numeric ids, so one is
+minted from the uuid (see _wid: 30 bits of it, in a range Xwayland never hands
+a client) and `self._uuids` maps it back; a miss re-reads the window list. Two
+uuids colliding in those 30 bits is a one-in-a-million session, and _id_map
+re-mints the second window rather than dropping it out of the listing.
+`visible` = not minimized, not hidden and on the current desktop (X11's
+IsViewable), like the GNOME backend.
+
+No script at all for: the current desktop and the desktop count
+(org.kde.KWin.currentDesktop / VirtualDesktopManager.count), the workspace list
+(VirtualDesktopManager.desktops), show-desktop, and select_window() --
+org.kde.KWin.queryWindowInfo() *is* xdotool's selectwindow, KWin's own
+interactive window picker, answering with a map that carries the uuid.
+
+Titles are `captionNormal` on 6 and `caption` with KWin's " <2>" duplicate-
+title suffix stripped on 5.27 (which has no captionNormal property), so the
+same window is named the same on both, and the same as X names it.
+
+Capability gaps, all documented in DESIGN.md: Plasma 6 removed window shading
+(SHADED is a gap there, works on 5.27), neither release has a per-window
+lower -- lowering a window that is not active falls back to keep-below -- and
+KWin caps the number of virtual desktops (20 on 5.27, 25 on 6), which
+set_num_desktops reports rather than looping against.
+"""
 
 import json
 import os
-import re
-import select
-import subprocess
+import sys
 import tempfile
 import time
 
-from wdotool.backend import Window, WindowBackend
-from wdotool.ctx import CmdError
+from wdotool import kwin_js, session
+from wdotool.backend import View, Window, WindowBackend, Workspace
+from wdotool.ctx import CmdError, NoSessionError
+from wdotool.dbus_mini import (ERR, METHOD_CALL, NAME_FLAG_DO_NOT_QUEUE,
+                               NO_REPLY_EXPECTED, Bus, DBusError)
 
-_IFACE = "org.wdotool.kwin"
+KWIN_NAME = "org.kde.KWin"
+KWIN_PATH = "/KWin"
+KWIN_IFACE = "org.kde.KWin"
+SCRIPTING_PATH = "/Scripting"
+SCRIPTING_IFACE = "org.kde.kwin.Scripting"
+SCRIPT_IFACE = "org.kde.kwin.Script"
+VD_PATH = "/VirtualDesktopManager"
+VD_IFACE = "org.kde.KWin.VirtualDesktopManager"
 
-# Shared JS prolog: _l = all windows, _wid(w) = our numeric window id
-# (first 48 bits of KWin's internalId uuid), _ret(x) = send result back.
-_PROLOG = """\
-function _wid(w) {
-  return parseInt(String(w.internalId).replace(/[^0-9a-fA-F]/g, "").slice(0, 12), 16);
-}
-function _ret(x) {
-  callDBus("org.wdotool", "/", "%s", "result", JSON.stringify(x));
-}
-var _l = (typeof workspace.windowList === "function")
-         ? workspace.windowList() : workspace.clientList();
-""" % _IFACE
+BUS_NAME = "org.fuckwayland.KWin"
+EVENTS_NAME = "org.fuckwayland.KWin.Events"
+OBJECT_PATH = "/org/fuckwayland/KWin"
+IFACE = "org.fuckwayland.KWin1"
 
-_LIST_JS = """\
-var out = [];
-for (var i = 0; i < _l.length; i++) {
-  var w = _l[i];
-  var g = w.frameGeometry || w.geometry || {x: 0, y: 0, width: 0, height: 0};
-  var d = -1;
-  if (typeof w.desktop === "number") { d = w.desktop > 0 ? w.desktop - 1 : -1; }
-  else if (w.desktops && w.desktops.length === 1
-           && typeof w.desktops[0].x11DesktopNumber === "number") {
-    d = w.desktops[0].x11DesktopNumber - 1;
-  }
-  out.push({id: _wid(w), title: String(w.caption || ""),
-            cls: String(w.resourceClass || ""), pid: w.pid || 0,
-            x: g.x | 0, y: g.y | 0, w: g.width | 0, h: g.height | 0,
-            focused: !!w.active, visible: !w.minimized, desktop: d});
+CALL_TIMEOUT = 10.0      # plain KWin D-Bus calls answer in milliseconds
+SCRIPT_TIMEOUT = 10.0    # load + run + the script's own reply
+SETTLE_MS = 1000         # how long the script waits for a state to land
+HEADER = "/* wdotool-kwin 1 "   # first line of every generated script
+
+# KWin's NET::WindowType (netwm_def.h) -> the Mutter window-type names the
+# View contract speaks (wxprop maps them back to _NET_WM_WINDOW_TYPE atoms).
+_WINDOW_TYPES = {
+    0: "NORMAL", 1: "DESKTOP", 2: "DOCK", 3: "TOOLBAR", 4: "MENU",
+    5: "DIALOG", 7: "MENU", 8: "UTILITY", 9: "SPLASHSCREEN",
+    10: "DROPDOWN_MENU", 11: "POPUP_MENU", 12: "TOOLTIP", 13: "NOTIFICATION",
+    14: "COMBO", 15: "DND", 16: "NOTIFICATION", 17: "NOTIFICATION",
+    18: "POPUP_MENU",
 }
-_ret(out);
-"""
+# window types the pointer hit-test looks through (desktop icons, panels)
+_LAYER_TYPES = {"DESKTOP", "DOCK"}
+# _NET_WM_STATE atoms KWin has no setter for at all
+_GAP_REASONS = {"SHADED": "Plasma 6 removed window shading"}
 
 
 class KwinBackend(WindowBackend):
     name = "kwin"
+    # wmctrl -m: what KWin writes into _NET_SUPPORTING_WM_CHECK's _NET_WM_NAME
+    # on the X root, so the answer is the same with or without Xwayland up.
+    wm_name = "KWin"
 
-    def __init__(self):
-        from wdotool.backend_detect import dbus_env, dbus_name_has_owner
-        self.env = dbus_env()
-        if self.env is None:
-            raise CmdError("kwin backend: no session D-Bus found")
-        if not dbus_name_has_owner("org.kde.KWin"):
-            raise CmdError("kwin backend: org.kde.KWin is not on the session bus")
+    def __init__(self, bus: Bus | None = None, names: list[str] | None = None):
+        """`bus`/`names`: reuse backend_detect's connection and its ListNames
+        result (one round trip per process)."""
+        if bus is None:
+            try:
+                bus = Bus()
+            except DBusError as e:
+                raise NoSessionError("kwin backend: %s" % _no_bus_text(e)) from None
+        self.bus = bus
+        if names is None:
+            try:
+                names = self.bus.list_names()
+            except DBusError as e:
+                raise CmdError("kwin backend: ListNames failed: %s" % e) from None
+        if KWIN_NAME not in names:
+            raise NoSessionError("kwin backend: %s is not on the session bus "
+                                 "(no KWin/Plasma session?)" % KWIN_NAME)
+        # Serve the script's callDBus ourselves: with serve_calls left False,
+        # dbus_mini would answer the payload with UnknownMethod and drop it.
+        self.bus.serve_calls = True
+        self.dest = _own(self.bus, BUS_NAME)
+        self.script_timeout = SCRIPT_TIMEOUT
+        self._seq = 0
+        self._uuids: dict[int, str] = {}   # printed id -> KWin internalId
+        self._screen = None                # cached screen size + work areas
+        self._x = "unset"                  # lazy X11Conn for XWayland ids
 
-    # -- plumbing -----------------------------------------------------------
+    # -- transport ----------------------------------------------------------
 
-    def _gdbus(self, dest, path, method, *args) -> str:
-        argv = ["gdbus", "call", "--session", "--dest", dest,
-                "--object-path", path, "--method", method, *args]
+    def _source(self, dest: str, token: str, op: str, **kw) -> str:
+        """The script text: one JSON line naming the call, then the constant.
+
+        The same JSON is repeated as a comment on the first line so that a
+        file left behind by a crash explains itself (and so the tests can
+        drive a fake KWin without a JS engine)."""
+        args = dict(kw, op=op, token=token, dest=dest, path=OBJECT_PATH,
+                    iface=IFACE)
+        # ensure_ascii: a JSON string may carry U+2028/9 raw, a JS string
+        # literal may not (before ES2019, and KWin 5.27 is Qt 5).
+        blob = json.dumps(args, ensure_ascii=True, sort_keys=True)
+        return "%s%s */\nvar A = %s;\n%s" % (HEADER, blob, blob, kwin_js.SCRIPT)
+
+    def _call(self, path: str, iface: str, member: str, sig: str = "",
+              args=(), timeout: float | None = CALL_TIMEOUT, flags: int = 0):
         try:
-            r = subprocess.run(argv, env=self.env, capture_output=True,
-                               text=True, timeout=10)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise CmdError("kwin backend: gdbus failed: %s" % e) from None
-        if r.returncode != 0:
-            raise CmdError(
-                "kwin backend: %s failed: %s" % (method, r.stderr.strip())
-            )
-        return r.stdout.strip()
+            return self.bus.call(KWIN_NAME, path, iface, member, sig, args,
+                                 timeout=timeout, flags=flags)
+        except DBusError as e:
+            raise _map_error(member, e) from None
 
-    def _run_script(self, body: str, collect: bool):
-        """Load+run a KWin script; if collect, capture its _ret() payload."""
-        fd, path = tempfile.mkstemp(prefix="wdotool-kwin-", suffix=".js")
-        os.write(fd, (_PROLOG + body).encode())
-        os.close(fd)
-        mon = None
-        script_name = "wdotool%d" % os.getpid()
+    def _script(self, op: str, timeout: float | None = None, **kw):
+        """Run one operation inside KWin and return its `v` payload."""
+        timeout = self.script_timeout if timeout is None else timeout
+        seq = self._seq
+        self._seq += 1
+        token = "%d-%d-%s" % (os.getpid(), seq, os.urandom(4).hex())
+        plugin = _plugin_name(seq)
+        source = self._source(self.dest, token, op, **kw)
+        deadline = time.monotonic() + timeout
+        self._load_run(plugin, source, deadline)
+        if op == "events":
+            # the script stays loaded; the caller unloads it when it is done
+            return plugin
         try:
-            if collect:
-                try:
-                    # NOTE: no text=True — _read_monitor reads the raw fd
-                    # (a buffered TextIO would hide complete lines from
-                    # select(), stalling replies until the timeout).
-                    mon = subprocess.Popen(
-                        ["dbus-monitor", "--session",
-                         "type='method_call',interface='%s'" % _IFACE],
-                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                        env=self.env,
-                    )
-                except OSError:
-                    raise CmdError(
-                        "kwin backend: dbus-monitor is required to read "
-                        "results back from KWin scripts"
-                    ) from None
-                time.sleep(0.3)  # let the monitor attach before we run
-            out = self._gdbus("org.kde.KWin", "/Scripting",
-                             "org.kde.kwin.Scripting.loadScript",
-                             path, script_name)
-            digits = "".join(c for c in out if c.isdigit())
-            if not digits:
-                raise CmdError("kwin backend: loadScript returned %r" % out)
-            sid = int(digits)
+            raw = self._collect(self.bus, token, deadline)
+        finally:
+            self.unload(plugin)
+        return _payload(raw)
+
+    def _load_run(self, plugin: str, source: str, deadline: float):
+        """loadScript + run(), trying both Plasma object-path shapes."""
+        fd, path = tempfile.mkstemp(prefix="wdotool-kwin-", suffix=".js",
+                                    dir="/tmp")
+        try:
+            os.write(fd, source.encode("utf-8"))
+        finally:
+            os.close(fd)
+        # KWin reads the file as the session user; wdotool may be root (the
+        # sudo path), and mkstemp's 0600 would then be unreadable for it.
+        try:
+            os.chmod(path, 0o644)
+        except OSError:
+            pass
+        try:
+            (sid,) = self._call(SCRIPTING_PATH, SCRIPTING_IFACE, "loadScript",
+                                "ss", (path, plugin))
+            sid = int(sid)
+            if sid < 0:
+                # -1: a script with that pluginName is already loaded. Never
+                # run a script id we did not get -- that would drive somebody
+                # else's script (the bug this backend used to have).
+                raise CmdError("kwin backend: KWin already has a script named "
+                               "%s loaded (loadScript returned %d)"
+                               % (plugin, sid))
             last = None
-            for objpath in ("/Scripting/Script%d" % sid, "/%d" % sid):
+            for objpath in ("%s/Script%d" % (SCRIPTING_PATH, sid), "/%d" % sid):
                 try:
-                    self._gdbus("org.kde.KWin", objpath,
-                                "org.kde.kwin.Script.run")
-                    break
+                    self._call(objpath, SCRIPT_IFACE, "run",
+                               timeout=max(0.1, deadline - time.monotonic()))
+                    return
                 except CmdError as e:
                     last = e
-            else:
-                raise last
-            result = self._read_monitor(mon) if collect else None
-            for objpath in ("/Scripting/Script%d" % sid, "/%d" % sid):
-                try:
-                    self._gdbus("org.kde.KWin", objpath,
-                                "org.kde.kwin.Script.stop")
-                    break
-                except CmdError:
-                    pass
-            try:
-                self._gdbus("org.kde.KWin", "/Scripting",
-                            "org.kde.kwin.Scripting.unloadScript", script_name)
-            except CmdError:
-                pass
-            return result
+            self.unload(plugin)
+            raise last
         finally:
-            if mon is not None:
-                mon.kill()
-                mon.wait()
-            os.unlink(path)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def unload(self, plugin: str):
+        try:
+            self._call(SCRIPTING_PATH, SCRIPTING_IFACE, "unloadScript", "s",
+                       (plugin,))
+        except CmdError:
+            pass   # best effort: the script is gone, or KWin is
+
+    def _collect(self, bus: Bus, token: str, deadline: float) -> str:
+        """The script's Result payload, already queued behind run()'s reply.
+
+        Anything else that reached our name is answered and dropped: a
+        payload carrying another token belongs to a call that timed out
+        earlier (or to another wdotool), never to this one."""
+        while True:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                break
+            for m in bus.messages(remain):
+                if m.type != METHOD_CALL:
+                    continue
+                hit = None
+                if m.interface == IFACE and m.member == "Result":
+                    try:
+                        a = m.args()
+                    except (ValueError, IndexError):
+                        a = ()
+                    if len(a) >= 2 and a[0] == token:
+                        hit = a[1]
+                if not m.flags & NO_REPLY_EXPECTED:
+                    try:
+                        if hit is None and m.member not in ("Result", "Event"):
+                            bus.error_reply(m, ERR + "UnknownMethod",
+                                            "no such method")
+                        else:
+                            bus.reply(m)
+                    except DBusError:
+                        pass
+                if hit is not None:
+                    return hit
+                if time.monotonic() >= deadline:
+                    break
+        raise CmdError("kwin backend: KWin ran the script but sent no result "
+                       "(a script error is only logged: journalctl --user "
+                       "-t kwin_wayland)")
+
+    # -- window facts -------------------------------------------------------
+
+    def _raw(self) -> "list[dict]":
+        """The window list, bottom-to-top, refreshing the id -> uuid cache."""
+        data = self._script("list")
+        if not isinstance(data, list) or not all(isinstance(d, dict) and d.get("u")
+                                                 for d in data):
+            raise CmdError("kwin backend: the window list came back malformed")
+        self._uuids = _id_map(data)
+        return data
+
+    def _uuid_for(self, wid: int) -> str:
+        u = self._uuids.get(wid)
+        if u is None:
+            self._raw()
+            u = self._uuids.get(wid)
+        if u is None:
+            raise CmdError("window %d not found" % wid)
+        return u
+
+    def _info(self, wid: int) -> dict:
+        d = self._act(wid, "info")
+        if not isinstance(d, dict):
+            raise CmdError("window %d not found" % wid)
+        return d
+
+    def _act(self, wid: int, op: str, **kw):
+        try:
+            return self._script(op, uuid=self._uuid_for(wid), **kw)
+        except CmdError as e:
+            if getattr(e, "kwin_error", "") == "nowindow":
+                # the id was stale: re-read once, then give up
+                self._uuids.pop(wid, None)
+                try:
+                    return self._script(op, uuid=self._uuid_for(wid), **kw)
+                except CmdError as again:
+                    if getattr(again, "kwin_error", "") == "nowindow":
+                        raise CmdError("window %d not found" % wid) from None
+                    raise
+            raise
 
     @staticmethod
-    def _read_monitor(mon, timeout=5.0):
-        """Scan dbus-monitor output for our method call's string argument.
+    def _win(d: dict) -> Window:
+        return Window(
+            id=d.get("_id") or _wid(d["u"]),
+            title=d.get("t") or "",
+            class_=d.get("c") or "",
+            instance=d.get("n") or "",
+            pid=int(d.get("p") or 0),
+            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
+            w=int(d.get("w", 0)), h=int(d.get("h", 0)),
+            focused=bool(d.get("f")),
+            visible=not (d.get("m") or d.get("hi")) and bool(d.get("oc")),
+            desktop=int(d.get("d", -1)),
+        )
 
-        Reads the raw pipe fd (os.read + own line splitting): select() on a
-        buffered file object misses lines already sitting in its buffer."""
-        deadline = time.monotonic() + timeout
-        fd = mon.stdout.fileno()
-        buf = b""
-        saw_call = False
-        while True:
-            while b"\n" not in buf:
-                remain = deadline - time.monotonic()
-                if remain <= 0:
-                    raise CmdError("kwin backend: no reply from KWin script")
-                r, _w, _x = select.select([fd], [], [], remain)
-                if not r:
-                    continue
-                chunk = os.read(fd, 65536)
-                if not chunk:
-                    raise CmdError("kwin backend: dbus-monitor exited early")
-                buf += chunk
-            raw, _nl, buf = buf.partition(b"\n")
-            line = raw.decode("utf-8", "replace")
-            if "interface=%s" % _IFACE in line and "member=result" in line:
-                saw_call = True
-            elif saw_call:
-                s = line.strip()
-                if s.startswith('string "'):
-                    payload = s[len('string "'):]
-                    if payload.endswith('"'):
-                        payload = payload[:-1]
-                    # single left-to-right unescape pass: ordered str.replace
-                    # chains corrupt payloads with literal backslashes
-                    return re.sub(r"\\(.)", r"\1", payload)
-
-    def _act(self, wid: int, js_action: str):
-        """Run js_action with `w` bound to the window whose _wid == wid."""
-        self._run_script(
-            "for (var i = 0; i < _l.length; i++) {\n"
-            "  var w = _l[i];\n"
-            "  if (_wid(w) === %d) { %s }\n"
-            "}\n" % (wid, js_action),
-            collect=False,
+    @classmethod
+    def _view(cls, d: dict, xid: int, ws_name: str) -> View:
+        win = cls._win(d)
+        mm = int(d.get("mm") or 0)
+        cls_name = d.get("c") or ""
+        return View(
+            window=win,
+            xid=xid,
+            instance=d.get("n") or cls_name,
+            cls=cls_name,
+            app_id="" if xid else cls_name,
+            fullscreen=bool(d.get("fs")),
+            maximized_h=bool(mm & 2),
+            maximized_v=bool(mm & 1),
+            above=bool(d.get("ka")),
+            sticky=bool(d.get("st")),
+            urgent=bool(d.get("at")),
+            minimized=bool(d.get("m")),
+            hidden=bool(d.get("m") or d.get("hi")),
+            skip_taskbar=bool(d.get("sk")),
+            floating=True,
+            ws_name=ws_name,
+            window_type=_WINDOW_TYPES.get(int(d.get("ty", 0)), "NORMAL"),
+            client_type="x11" if xid else "wayland",
+            role=d.get("ro") or "",
+            desktop_id=_desktop_id(d.get("df") or ""),
+            monitor=-1,
+            transient_for=_wid(d["tf"]) if d.get("tf") else 0,
+            decorated=not d.get("nb"),
         )
 
     # -- WindowBackend ------------------------------------------------------
 
     def list(self) -> list[Window]:
-        raw = self._run_script(_LIST_JS, collect=True)
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            raise CmdError("kwin backend: bad script reply: %r" % raw) from None
-        return [
-            Window(id=d["id"], title=d["title"], class_=d["cls"],
-                   pid=d["pid"], x=d["x"], y=d["y"], w=d["w"], h=d["h"],
-                   focused=d["focused"], visible=d["visible"],
-                   desktop=d["desktop"])
-            for d in data
-        ]
+        return [self._win(d) for d in self._raw()]
 
     def activate(self, wid: int):
-        self._act(wid, 'if ("activeWindow" in workspace) '
-                       "workspace.activeWindow = w; "
-                       "else workspace.activeClient = w;")
+        self._act(wid, "activate")
+
+    def focus(self, wid: int):
+        self._act(wid, "focus")
 
     def close(self, wid: int):
-        self._act(wid, "w.closeWindow();")
+        self._act(wid, "close")
 
     def minimize(self, wid: int):
-        self._act(wid, "w.minimized = true;")
+        self._act(wid, "minimize")
 
     def map(self, wid: int):
-        self._act(wid, "w.minimized = false;")
+        self._act(wid, "unminimize")
 
     def unmap(self, wid: int):
-        self.minimize(wid)
+        self._act(wid, "minimize")
+
+    def is_mapped(self, wid: int) -> bool:
+        return not self._info(wid).get("m")
+
+    def raise_(self, wid: int):
+        how = (self._act(wid, "raise") or {}).get("how")
+        if how == "activate":
+            _warn("windowraise: KWin 5.27 has no per-window raise; activating "
+                  "the window instead (this also focuses it)")
+
+    def lower(self, wid: int):
+        how = (self._act(wid, "lower") or {}).get("how")
+        if how == "keepBelow":
+            _warn("windowlower: KWin has no per-window lower; marking the "
+                  "window keep-below instead")
 
     def move_window(self, wid: int, x: int, y: int):
-        self._act(wid, "var g = w.frameGeometry; "
-                       "w.frameGeometry = {x: %d, y: %d, "
-                       "width: g.width, height: g.height};" % (x, y))
+        self._act(wid, "geometry", x=int(x), y=int(y), w=None, h=None)
 
     def resize(self, wid: int, w: int, h: int):
-        self._act(wid, "var g = w.frameGeometry; "
-                       "w.frameGeometry = {x: g.x, y: g.y, "
-                       "width: %d, height: %d};" % (w, h))
+        self._act(wid, "geometry", x=None, y=None, w=int(w), h=int(h))
+
+    def move_resize(self, wid: int, x: int, y: int, w: int, h: int):
+        self._act(wid, "geometry", x=int(x), y=int(y), w=int(w), h=int(h))
 
     def set_state(self, wid: int, state: str, action: int):
-        expr = {0: "false", 1: "true"}.get(action)
-        if state == "FULLSCREEN":
-            self._act(wid, "w.fullScreen = %s;"
-                      % (expr or "!w.fullScreen"))
-        elif state == "HIDDEN":
-            self._act(wid, "w.minimized = %s;"
-                      % (expr or "!w.minimized"))
-        elif state == "ABOVE":
-            self._act(wid, "w.keepAbove = %s;"
-                      % (expr or "!w.keepAbove"))
-        elif state == "BELOW":
-            self._act(wid, "w.keepBelow = %s;"
-                      % (expr or "!w.keepBelow"))
-        else:
-            self._unsupported("windowstate %s" % state)
+        if action not in (0, 1, 2):
+            raise CmdError("windowstate: bad action %r" % (action,))
+        try:
+            out = self._act(wid, "state", state=state, action=int(action),
+                            settle=SETTLE_MS) or {}
+            applied = out.get("applied")
+            if (action in (0, 1) and applied is not None
+                    and out.get("settled", True)
+                    and bool(applied) != bool(action)):
+                # Accepted and ignored: KWin refuses a state that a window
+                # rule or the client's own size hints forbid (5.27 will not
+                # fullscreen a window whose hints cannot fill the screen).
+                # The X tools succeed silently here; warn and succeed. The
+                # read-back is the script's *settled* one -- it waited for
+                # the window's change signal, so a Wayland client that had
+                # simply not acked the configure yet is not reported here
+                # (`settled: false` means it could not be checked at all).
+                _warn("windowstate %s: KWin did not apply it to window %d "
+                      "(a window rule, or the window's size hints)"
+                      % (state, wid))
+        except CmdError as e:
+            kind = getattr(e, "kwin_error", "")
+            if kind in ("nostate", "noshade"):
+                err = CmdError("windowstate %s is not supported by the kwin "
+                               "backend (%s)"
+                               % (state, _GAP_REASONS.get(state,
+                                                          "KWin has no API for it")))
+                err.unsupported = True
+                raise err from None
+            raise
+
+    def window_desktop(self, wid: int) -> int:
+        return int(self._info(wid).get("d", -1))
 
     def set_window_desktop(self, wid: int, n: int):
-        self._act(wid,
-                  'if (typeof w.desktop === "number") { w.desktop = %d; } '
-                  "else { w.desktops = [workspace.desktops[%d]]; }"
-                  % (n + 1, n))
+        try:
+            self._act(wid, "desktop", n=int(n))
+        except CmdError as e:
+            if getattr(e, "kwin_error", "") == "nodesktop":
+                raise CmdError("desktop %d does not exist" % n) from None
+            raise
 
     def get_desktop(self) -> int:
-        raw = self._run_script(
-            "var cd = workspace.currentDesktop;\n"
-            'var n = (typeof cd === "number") ? cd\n'
-            "        : (cd && cd.x11DesktopNumber ? cd.x11DesktopNumber : 1);\n"
-            "_ret({d: n});\n",
-            collect=True,
-        )
-        try:
-            return int(json.loads(raw)["d"]) - 1
-        except (ValueError, KeyError, TypeError):
-            raise CmdError("kwin backend: bad script reply: %r" % raw) from None
+        return int(self._call(KWIN_PATH, KWIN_IFACE, "currentDesktop")[0]) - 1
 
     def set_desktop(self, n: int):
-        self._run_script(
-            'if (typeof workspace.currentDesktop === "number") '
-            "{ workspace.currentDesktop = %d; }\n"
-            "else if (%d < workspace.desktops.length) "
-            "{ workspace.currentDesktop = workspace.desktops[%d]; }\n"
-            % (n + 1, n, n),
-            collect=False,
-        )
+        # KWin answers false both for "no such desktop" and for "you are
+        # already there" (VirtualDesktopManager::setCurrent returns false when
+        # the desktop does not change): only the first one is an error.
+        (ok,) = self._call(KWIN_PATH, KWIN_IFACE, "setCurrentDesktop", "i",
+                           (int(n) + 1,))
+        if not ok and self.get_desktop() != n:
+            raise CmdError("desktop %d does not exist" % n)
 
     def num_desktops(self) -> int:
-        raw = self._run_script(
-            'var nd = (typeof workspace.desktops === "number")\n'
-            "         ? workspace.desktops : workspace.desktops.length;\n"
-            "_ret({n: nd});\n",
-            collect=True,
-        )
         try:
-            return int(json.loads(raw)["n"])
-        except (ValueError, KeyError, TypeError):
-            raise CmdError("kwin backend: bad script reply: %r" % raw) from None
+            return int(self.bus.get_property(KWIN_NAME, VD_PATH, VD_IFACE,
+                                             "count", timeout=CALL_TIMEOUT))
+        except DBusError as e:
+            raise _map_error("count", e) from None
+
+    def set_num_desktops(self, n: int):
+        n = int(n)
+        if n < 1:
+            raise CmdError("set_num_desktops: %d is not a workspace count" % n)
+        rows = self._desktops()
+        # Both D-Bus slots are void and KWin silently refuses past its own
+        # limits -- VirtualDesktopManager::createVirtualDesktop() returns
+        # nullptr at maximum() desktops (20 on 5.27, 25 on 6) and nothing is
+        # removed below one. The count itself is the only progress report,
+        # so stop the moment a call changes nothing: without that this is an
+        # endless loop hammering the compositor with D-Bus calls.
+        while len(rows) != n:
+            before = len(rows)
+            if before < n:
+                self._call(VD_PATH, VD_IFACE, "createDesktop", "us",
+                           (before, "Desktop %d" % (before + 1)))
+            else:
+                self._call(VD_PATH, VD_IFACE, "removeDesktop", "s",
+                           (rows[-1][1],))
+            rows = self._desktops()
+            if len(rows) == before:
+                err = CmdError(
+                    "KWin would not go %s %d virtual desktop%s (that is its "
+                    "own limit)"
+                    % ("above" if before < n else "below", before,
+                       "" if before == 1 else "s"))
+                err.unsupported = True
+                raise err
+
+    def select_window(self) -> int:
+        """xdotool selectwindow: KWin's own interactive picker. The reply is
+        delayed until the user clicks a window (or cancels), so no timeout."""
+        try:
+            (info,) = self.bus.call(KWIN_NAME, KWIN_PATH, KWIN_IFACE,
+                                    "queryWindowInfo", timeout=None)
+        except DBusError as e:
+            if e.name == "org.kde.KWin.Error.UserCancel":
+                raise CmdError("selectwindow: cancelled") from None
+            if e.name == "org.kde.KWin.Error.InvalidWindow":
+                raise CmdError("selectwindow: that window is not managed by "
+                               "KWin") from None
+            raise _map_error("queryWindowInfo", e) from None
+        u = _norm_uuid(str(info.get("uuid") or ""))
+        if not u:
+            raise CmdError("selectwindow: KWin named no window")
+        wid = _wid(u)
+        self._uuids[wid] = u
+        return wid
 
     def display_size(self) -> tuple[int, int]:
-        raw = self._run_script(
-            "var s = workspace.virtualScreenSize || "
-            "{width: 1920, height: 1080};\n"
-            "_ret({w: s.width, h: s.height});\n",
-            collect=True,
-        )
+        s = self._screen_info()
+        w, h = int(s.get("w") or 0), int(s.get("h") or 0)
+        if w <= 0 or h <= 0:
+            raise CmdError("kwin backend: display size unknown")
+        return w, h
+
+    def show_desktop(self, show: bool):
+        """wmctrl -k. org.kde.KWin.showDesktop is annotated NoReply."""
+        self._call(KWIN_PATH, KWIN_IFACE, "showDesktop", "b", (bool(show),),
+                   flags=NO_REPLY_EXPECTED)
+
+    # -- optional hooks -----------------------------------------------------
+
+    def views(self) -> "list[View]":
+        raw = self._raw()
+        xids = self._xids(raw)
+        names = {}
         try:
-            d = json.loads(raw)
-            return int(d["w"]), int(d["h"])
-        except (ValueError, KeyError, TypeError):
-            raise CmdError("kwin backend: bad script reply: %r" % raw) from None
+            names = {pos: name for pos, _id, name in self._desktops()}
+        except CmdError:
+            pass
+        return [self._view(d, xids.get(d["u"], 0),
+                           names.get(int(d.get("d", -1)), ""))
+                for d in raw]
+
+    def workspaces(self) -> "list[Workspace]":
+        rows = self._desktops()
+        try:
+            cur = str(self.bus.get_property(KWIN_NAME, VD_PATH, VD_IFACE,
+                                            "current", timeout=CALL_TIMEOUT))
+        except DBusError:
+            cur = ""
+        areas = self._screen_info(soft=True).get("areas") or []
+        out = []
+        for i, (pos, ident, name) in enumerate(rows):
+            wa = areas[i] if i < len(areas) else [0, 0, 0, 0]
+            out.append(Workspace(index=int(pos), name=name or "",
+                                 active=(ident == cur),
+                                 work_area=(int(wa[0]), int(wa[1]),
+                                            int(wa[2]), int(wa[3]))))
+        return out
+
+    def x_info(self) -> tuple[str, str] | None:
+        """(DISPLAY, XAUTHORITY) of the session's Xwayland. KWin publishes
+        neither over D-Bus, so this is the session scan -- qualified by the
+        uid that owns the bus socket, which is what makes it right under
+        sudo."""
+        uid = None
+        try:
+            uid = self.bus._owner_uid()
+        except Exception:  # noqa: BLE001 -- diagnostics only
+            uid = None
+        display = session.find_x_display(uid) or ""
+        xauth = session.find_xauthority(uid) or ""
+        if not display and not xauth:
+            return None
+        return display, xauth
+
+    def window_at(self, x: int, y: int) -> int:
+        """Topmost window under (x, y) on the current desktop; DESKTOP and
+        DOCK layers are looked through, the focused window wins among the
+        hits. Client-side over the same list() the generic hit-test uses (as
+        on GNOME) so this and input_cmds cannot drift apart -- KWin 6's
+        workspace.windowAt() would answer for one Plasma release only."""
+        hits = []
+        for d in self._raw():
+            if _WINDOW_TYPES.get(int(d.get("ty", 0)), "NORMAL") in _LAYER_TYPES:
+                continue
+            if d.get("m") or d.get("hi") or not d.get("oc"):
+                continue
+            wx, wy = int(d.get("x", 0)), int(d.get("y", 0))
+            ww, wh = int(d.get("w", 0)), int(d.get("h", 0))
+            if ww > 0 and wh > 0 and wx <= x < wx + ww and wy <= y < wy + wh:
+                hits.append(d)
+        if not hits:
+            return 0
+        for d in hits:
+            if d.get("f"):
+                return self._win(d).id
+        return self._win(hits[-1]).id
+
+    def events(self, timeout: float | None = None, workspaces: bool = False):
+        """(id, change) in sway's vocabulary, from a script that stays loaded
+        for as long as the iteration runs: KWin exports no window signals on
+        D-Bus, but a script may connect to workspace's and every window's
+        Qt signals and callDBus each one out. Its own connection, so queued
+        events never pile up behind the command connection."""
+        bus = Bus(self.bus.address)
+        bus.serve_calls = True
+        plugin = None
+        try:
+            dest = _own(bus, EVENTS_NAME)
+            token = "%d-ev-%s" % (os.getpid(), os.urandom(4).hex())
+            plugin = _plugin_name(self._seq, "ev")
+            self._seq += 1
+            self._load_run(plugin, self._source(dest, token, "events"),
+                           time.monotonic() + SCRIPT_TIMEOUT)
+            while True:
+                got = False
+                for m in bus.messages(timeout):
+                    if m.type != METHOD_CALL:
+                        continue
+                    if not m.flags & NO_REPLY_EXPECTED:
+                        try:
+                            bus.reply(m)
+                        except DBusError:
+                            return
+                    if m.interface != IFACE or m.member != "Event":
+                        continue
+                    try:
+                        tok, u, change = m.args()[:3]
+                    except (ValueError, IndexError):
+                        continue
+                    if tok != token:
+                        continue
+                    got = True
+                    if not u:
+                        if workspaces:
+                            yield 0, str(change)
+                        continue
+                    yield _wid(_norm_uuid(str(u))), str(change)
+                if not got:
+                    return
+        finally:
+            if plugin is not None:
+                self.unload(plugin)
+            bus.close()
+
+    # -- helpers ------------------------------------------------------------
+
+    def _desktops(self) -> "list[tuple[int, str, str]]":
+        try:
+            rows = self.bus.get_property(KWIN_NAME, VD_PATH, VD_IFACE,
+                                         "desktops", timeout=CALL_TIMEOUT)
+        except DBusError as e:
+            raise _map_error("desktops", e) from None
+        out = [(int(p), str(i), str(n)) for p, i, n in (rows or [])]
+        out.sort()
+        return out
+
+    def _screen_info(self, soft: bool = False) -> dict:
+        """Virtual screen size and per-desktop work areas -- one script,
+        cached for the process. `soft`: an unreachable KWin degrades to
+        zeroes instead of failing the command."""
+        if self._screen is None:
+            try:
+                s = self._script("screen")
+            except CmdError:
+                if not soft:
+                    raise
+                s = {}
+            self._screen = s if isinstance(s, dict) else {}
+        return self._screen
+
+    # -- XWayland window ids ------------------------------------------------
+
+    def _xids(self, raw: "list[dict]") -> "dict[str, int]":
+        """{uuid: X11 window id} for the XWayland windows in `raw`.
+
+        Plasma 5.27 hands the id straight to the script (X11Window's
+        `windowId` property); KWin 6 dropped every Q_PROPERTY from
+        x11window.h, so there the ids come from Xwayland itself -- KWin keeps
+        _NET_CLIENT_LIST current for its X11 clients (Workspace::
+        propagateWindows) -- matched back to KWin's windows on pid, WM_CLASS,
+        title and geometry. Nothing is opened unless Xwayland is already
+        running: connecting would start it."""
+        direct = {d["u"]: int(d["xid"]) for d in raw if d.get("xid")}
+        if direct:
+            return direct
+        if not raw:
+            return {}
+        x = self._x11()
+        if x is None:
+            return {}
+        try:
+            clients = self._x_clients(x)
+        except Exception:  # noqa: BLE001 -- any X failure: no ids, no crash
+            self._x = None
+            return {}
+        return _match_xids(raw, clients)
+
+    def _x11(self):
+        if self._x != "unset":
+            return self._x
+        self._x = None
+        uid = None
+        try:
+            uid = self.bus._owner_uid()
+        except Exception:  # noqa: BLE001
+            uid = None
+        if not session.xwayland_running(uid):
+            return None
+        info = self.x_info() or ("", "")
+        try:
+            from wwmctl import x11_mini
+            self._x = x11_mini.X11Conn(info[0] or None,
+                                       xauthority=info[1] or None)
+        except Exception:  # noqa: BLE001 -- no X plane: xid stays 0
+            self._x = None
+        return self._x
+
+    @staticmethod
+    def _x_clients(x) -> "list[dict]":
+        out = []
+        for xid in x.client_list():
+            try:
+                inst, cls = x.get_wm_class(xid)
+                name = (x.get_prop_string(xid, "_NET_WM_NAME")
+                        or x.get_prop_string(xid, "WM_NAME"))
+                geo = x.get_geometry(xid)
+                pid = x.get_pid(xid)
+            except Exception:  # noqa: BLE001 -- a window that just died
+                continue
+            out.append({"xid": int(xid), "pid": int(pid), "inst": inst,
+                        "cls": cls, "name": name, "geo": geo})
+        return out
+
+
+# ---------------------------------------------------------------- module bits
+
+def _plugin_name(seq: int, tag: str = "") -> str:
+    """The pluginName one script is loaded under.
+
+    Random, not just pid+counter: KWin holds a pluginName for as long as the
+    script object lives, `unloadScript` is the only way to give it back and
+    there is no way to enumerate what is loaded, so a wdotool killed between
+    loadScript and unloadScript leaks its names until the session ends. With
+    the pid alone the next process to be handed that pid would then fail on
+    its first command and keep failing (pids are recycled within minutes);
+    with the random part a leaked name harms nobody, which is what lets
+    "loadScript returned -1" stay a hard error."""
+    return "wdotool-%d-%d%s-%s" % (os.getpid(), seq, "-" + tag if tag else "",
+                                   os.urandom(4).hex())
+
+
+def _own(bus: Bus, name: str) -> str:
+    """Own a bus name for the script's callDBus to answer to, and return the
+    destination to put in the script. A second wdotool on the same session
+    (or a wedged one still holding the name) gets a name of its own rather
+    than the other process's payloads."""
+    for candidate in (name, "%s.p%d" % (name, os.getpid())):
+        try:
+            if bus.request_name(candidate, NAME_FLAG_DO_NOT_QUEUE) in (1, 4):
+                return candidate
+        except DBusError:
+            break
+    return bus.unique_name or name
+
+
+def _payload(raw: str):
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise CmdError("kwin backend: the script replied with malformed JSON") \
+            from None
+    if not isinstance(data, dict):
+        raise CmdError("kwin backend: the script replied with malformed JSON")
+    if data.get("ok"):
+        return data.get("v")
+    kind = str(data.get("err") or "unknown")
+    err = CmdError(_SCRIPT_ERRORS.get(kind,
+                                      "kwin backend: the script failed: %s" % kind))
+    err.kwin_error = kind
+    raise err
+
+
+_SCRIPT_ERRORS = {
+    "nowindow": "window not found",
+    "nodesktop": "no such desktop",
+    "noshade": "windowstate SHADED: Plasma 6 removed window shading",
+    "nostate": "windowstate: KWin has no API for that state",
+}
+
+
+def _map_error(member: str, e: DBusError) -> CmdError:
+    n = e.name
+    if n in (ERR + "ServiceUnknown", ERR + "NameHasNoOwner"):
+        return CmdError("kwin backend: KWin left the session bus "
+                        "(compositor restarting?)")
+    if n == ERR + "NoReply":
+        return CmdError("kwin backend: %s: no reply from KWin within the "
+                        "timeout (is the compositor hung?)" % member)
+    if n == ERR + "Disconnected":
+        return CmdError("kwin backend: session bus connection lost (%s)"
+                        % e.message)
+    if n == "org.kde.kwin.Scripting.FileError":
+        return CmdError("kwin backend: KWin could not read the script file "
+                        "(%s); is /tmp readable for the session user?"
+                        % (e.message or "FileError"))
+    if n in (ERR + "UnknownObject", ERR + "UnknownMethod",
+             ERR + "UnknownInterface"):
+        return CmdError("kwin backend: %s: %s" % (member, e.message or n))
+    return CmdError("kwin backend: %s failed: %s" % (member, e))
+
+
+def _desktop_id(name: str) -> str:
+    """KWin's desktopFileName ("org.kde.konsole") as the .desktop file id the
+    View contract carries (GNOME reports "org.gnome.TextEditor.desktop")."""
+    if not name:
+        return ""
+    return name if name.endswith(".desktop") else name + ".desktop"
+
+
+def _norm_uuid(u: str) -> str:
+    return u.strip().strip("{}").lower()
+
+
+# Native window ids are 0x40000000 | 30 bits of the uuid. 32-bit clean
+# because everything downstream of us is X-shaped and truncates there --
+# `wxprop -id` (dsimple.c parses into a 32-bit XID), the synthesized
+# _NET_CLIENT_LIST, wmctrl's 0x%08lx -- and biased into a range no Xwayland
+# client ever gets (X ids are (client << 21) | serial), so a native id can
+# never be mistaken for the X id of an XWayland window in the same listing.
+_ID_BASE = 0x40000000
+_ID_MASK = 0x3FFFFFFF
+
+
+def _wid(u: str, salt: int = 0) -> int:
+    """KWin's uuid -> the id wdotool prints, and KwinBackend._uuids maps
+    back. KWin's own handle is the uuid and nothing else; ids have to be
+    minted here (there is no numeric window id anywhere in the scripting
+    API), so this is 30 bits of the uuid in a range of our own. `salt`
+    re-mints the same uuid into a different id, for the rare collision."""
+    hexd = "".join(c for c in _norm_uuid(u) if c in "0123456789abcdef")
+    if not hexd:
+        return 0
+    n = int(hexd[:8], 16) + salt * 0x9E3779B1
+    return _ID_BASE | (n & _ID_MASK)
+
+
+def _id_map(rows: "list[dict]") -> "dict[int, str]":
+    """{printed id: uuid} for one window list, stamping each row's `_id`.
+
+    30 bits is 1e-6-ish odds of two live windows colliding in a session; a
+    plain dict comprehension would then drop one of them and leave it with
+    no id at all (unlistable and unaddressable). Whoever comes second in
+    stacking order is re-minted instead, so every window in the list has an
+    id of its own; the id is stable while the pair is."""
+    out: "dict[int, str]" = {}
+    for d in rows:
+        salt = 0
+        wid = _wid(d["u"])
+        while wid in out and out[wid] != d["u"]:
+            salt += 1
+            wid = _wid(d["u"], salt)
+        d["_id"] = wid
+        out[wid] = d["u"]
+    return out
+
+
+def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
+    """Greedy best-first matching of KWin windows to Xwayland's clients.
+
+    pid and WM_CLASS are filters (an X client never changes them behind
+    KWin's back), the title and the geometry distance are the score -- two
+    untitled terminals of the same class differ only in where they are, and
+    the KWin rectangle is the frame while X reports the client area, so the
+    distance is small but not zero.
+
+    A pair also has to *agree* on something: an X client with neither
+    _NET_WM_PID nor WM_CLASS contradicts nothing, and matching it on
+    geometry alone hands its id to a native Wayland window, which then
+    claims to be an X11 client. Such a client keeps xid 0 instead -- an
+    unknown id beats a wrong one."""
+    pairs = []
+    for c in clients:
+        for d in raw:
+            if c["pid"] and d.get("p") and c["pid"] != d["p"]:
+                continue
+            kcls, kinst = (d.get("c") or ""), (d.get("n") or "")
+            if kcls and c["cls"] and kcls.lower() != c["cls"].lower():
+                continue
+            if kinst and c["inst"] and kinst.lower() != c["inst"].lower():
+                continue
+            if not (c["pid"] and c["pid"] == d.get("p")
+                    or kcls and kcls.lower() == (c["cls"] or "").lower()
+                    or kinst and kinst.lower() == (c["inst"] or "").lower()):
+                continue
+            x, y, w, h = c["geo"]
+            dist = (abs(x - int(d.get("x", 0))) + abs(y - int(d.get("y", 0)))
+                    + abs(w - int(d.get("w", 0))) + abs(h - int(d.get("h", 0))))
+            same_title = (c["name"] or "") == (d.get("t") or "")
+            pairs.append((0 if same_title else 1, dist, c["xid"], d["u"]))
+    pairs.sort()
+    out: dict[str, int] = {}
+    used = set()
+    for _t, _dist, xid, u in pairs:
+        if u in out or xid in used:
+            continue
+        out[u] = xid
+        used.add(xid)
+    return out
+
+
+def _warn(msg: str):
+    sys.stderr.write("wdotool: %s\n" % msg)
+
+
+def _no_bus_text(e: DBusError) -> str:
+    if e.name == ERR + "NoServer":
+        return ("no session D-Bus found (set DBUS_SESSION_BUS_ADDRESS or run "
+                "inside the graphical session / under sudo)")
+    return "cannot connect to the session D-Bus: %s" % e

@@ -6,10 +6,13 @@ foreign-toplevel probe -> clear error. The two D-Bus checks are ONE ListNames
 call over dbus_mini (no gdbus/busctl spawns); the connection is kept for the
 process so the GNOME backend reuses it.
 
-A GNOME session without the bridge extension is reported as such (the
-install hint) instead of falling through to wlr: Mutter offers no
-foreign-toplevel protocol, so the generic probe could never succeed there.
-KWin does offer it, so a KWin backend failure still falls through."""
+Neither D-Bus branch is ever swallowed: a GNOME session without the bridge
+extension is reported as such (the install hint), and so is a KWin failure.
+Mutter offers no foreign-toplevel protocol, and KWin implements neither
+zwlr_foreign_toplevel_manager_v1 nor ext_foreign_toplevel_list_v1 (checked
+against KWin 5.27 through 6.6 and master), so the generic probe below could
+never succeed on either -- falling through would only replace a precise
+message with "the compositor does not offer wlr-foreign-toplevel"."""
 
 import os
 
@@ -36,7 +39,7 @@ def _wlr():
 
 def _kwin():
     from wdotool.backend_kwin import KwinBackend
-    return KwinBackend()
+    return KwinBackend(bus=session_bus(), names=session_names())
 
 
 def _gnome():
@@ -85,8 +88,9 @@ def session_names() -> list[str] | None:
 
 
 def dbus_env() -> dict | None:
-    """Process env pointing at the graphical session's D-Bus, or None (for
-    backends that still shell out to gdbus/busctl, e.g. kwin)."""
+    """Process env pointing at the graphical session's D-Bus, or None. No
+    backend needs it any more (they all speak dbus_mini); kept for
+    diagnostics and for anything that still shells out."""
     hit = session.find_user_bus()
     if not hit:
         return None
@@ -120,10 +124,9 @@ def detect():
             pass
     names = session_names() or []
     if KWIN_NAME in names:
-        try:
-            return _kwin()
-        except CmdError:
-            pass
+        # Not swallowed either (see the module docstring): KWin offers no
+        # foreign-toplevel protocol, so nothing below this could work here.
+        return _kwin()
     if GNOME_NAME in names:
         # Not swallowed: the GNOME error carries the bridge install hint and
         # nothing below it can work under Mutter.

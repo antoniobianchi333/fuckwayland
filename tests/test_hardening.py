@@ -11,7 +11,6 @@ import socket
 import struct
 import tempfile
 import threading
-import types
 import unittest
 from unittest import mock
 
@@ -402,35 +401,6 @@ class TestSwayDisplaySize(unittest.TestCase):
         outs = [self.rect(0, 0, 1280, 720),
                 self.rect(-9999, 0, 1920, 1080, active=False)]
         self.assertEqual(self.size_for(outs), (1280, 720))
-
-
-# ---------------------------------------------------------------------------
-# kwin monitor reader: raw-fd reads see buffered lines; single-pass unescape
-
-
-class TestKwinReadMonitor(unittest.TestCase):
-    def test_reads_payload_from_raw_fd(self):
-        from wdotool.backend_kwin import KwinBackend
-
-        r, w = os.pipe()
-        os.write(w, b"method call interface=org.wdotool.kwin; member=result\n"
-                    b'   string "[{\\"title\\": \\"a\\\\b\\"}]"\n')
-        os.close(w)
-        mon = types.SimpleNamespace(stdout=os.fdopen(r, "rb"))
-        self.addCleanup(mon.stdout.close)
-        out = KwinBackend._read_monitor(mon, timeout=3.0)
-        self.assertEqual(out, '[{"title": "a\\b"}]')
-
-    def test_times_out_cleanly(self):
-        from wdotool.backend_kwin import KwinBackend
-        from wdotool.ctx import CmdError
-
-        r, w = os.pipe()
-        self.addCleanup(os.close, w)
-        mon = types.SimpleNamespace(stdout=os.fdopen(r, "rb"))
-        self.addCleanup(mon.stdout.close)
-        with self.assertRaises(CmdError):
-            KwinBackend._read_monitor(mon, timeout=0.2)
 
 
 if __name__ == "__main__":

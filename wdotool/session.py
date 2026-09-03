@@ -24,11 +24,27 @@ Additive fixes (gnome-bridge), each broken on a stock GNOME box:
   GDM's xauth_*, ~/.Xauthority). The GNOME backend asks the bridge first
   (XInfo = gnome-shell's DISPLAY/XAUTHORITY) and uses these as fallbacks.
   `xwayland_running()` tells whether Xwayland is actually up without
-  connecting to its socket (Mutter spawns it on demand)."""
+  connecting to its socket (Mutter spawns it on demand).
+* `find_x_display()` prefers a socket owned by the session user over a
+  root-owned one instead of taking the lowest number of either: SDDM leaves
+  its greeter's root-owned Xorg on `:0` while the KDE session's Xwayland is
+  `:1`, so under `sudo`/`ssh root@` the old order answered with a display the
+  session's cookie cannot open and every X-side answer (real `WM_CLASS`,
+  client geometry, `wxprop -id`) silently degraded to the synthesized one."""
 
 import glob
 import os
 import pwd
+
+X11_SOCKET_DIR = "/tmp/.X11-unix"
+
+
+def _owner(path: str) -> int | None:
+    """uid owning `path`, or None when it cannot be stat()ed."""
+    try:
+        return os.stat(path).st_uid
+    except OSError:
+        return None
 
 
 def _sudo_uid():
@@ -231,28 +247,40 @@ def xwayland_running(uid: int | None = None) -> bool:
 def find_x_display(uid: int | None = None) -> str | None:
     """DISPLAY of the session's X server (Xwayland), or None. $DISPLAY when
     its socket exists; else gnome-shell's own DISPLAY (procfs); else the
-    lowest-numbered /tmp/.X11-unix/X* socket owned by the session user."""
+    lowest-numbered X11_SOCKET_DIR/X* socket owned by the session user
+    (a root-owned one only when the user owns none: see below)."""
     d = os.environ.get("DISPLAY", "")
     if d.startswith(":"):
         num = d[1:].split(".")[0]
-        if num.isdigit() and os.path.exists(f"/tmp/.X11-unix/X{num}"):
+        if num.isdigit() and os.path.exists(f"{X11_SOCKET_DIR}/X{num}"):
             return d
     if uid is None:
         uid = session_uid()
     env_d = _shell_environ(uid).get("DISPLAY", "")
     if env_d.startswith(":"):
         return env_d
-    found = []
-    for path in glob.glob("/tmp/.X11-unix/X*"):
+    mine, root = [], []
+    for path in glob.glob(X11_SOCKET_DIR + "/X*"):
         num = os.path.basename(path)[1:]
         if not num.isdigit():
             continue
-        try:
-            owner = os.stat(path).st_uid
-        except OSError:
+        owner = _owner(path)
+        if owner is None:
             continue
-        if uid is None or owner == uid or owner == 0:
-            found.append(int(num))
+        if uid is None or owner == uid:
+            mine.append(int(num))
+        elif owner == 0:
+            root.append(int(num))
+    # The session user's own socket first, and only then a root-owned one.
+    # A Wayland compositor creates the listening socket for its Xwayland
+    # itself, as the session user; a display manager's greeter leaves a
+    # root-owned Xorg socket behind on the *lower* number, and taking that
+    # one (as "owner == uid or owner == 0, lowest wins" did) hands out a
+    # DISPLAY that the session's cookie cannot open -- the whole X plane
+    # then silently disappears from a `sudo` or `ssh root@` run, on KDE
+    # with SDDM in particular. A plain X11 session's Xorg *is* root-owned,
+    # so that stays the fallback.
+    found = mine or root
     if found:
         return ":%d" % min(found)
     return None

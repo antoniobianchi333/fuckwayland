@@ -46,10 +46,11 @@ class FakeX11:
 
     TITLEBAR = 37  # Mutter's SSD bar: the client sits one bar below the frame
 
-    def __init__(self, showing=0):
+    def __init__(self, showing=0, viewport=()):
         self.calls = []
         self.atoms = {}
         self.showing = showing
+        self.viewport = list(viewport)   # _NET_DESKTOP_VIEWPORT, as published
         self.bridge = None  # the harness' bridge: frames to derive from
 
     def root(self):
@@ -78,6 +79,8 @@ class FakeX11:
             return [WM_CHECK]
         if (win, name) == (0x1C5, "_NET_SHOWING_DESKTOP"):
             return [self.showing]
+        if (win, name) == (0x1C5, "_NET_DESKTOP_VIEWPORT"):
+            return list(self.viewport)
         return []
 
     def get_prop_string(self, win, name):
@@ -268,6 +271,28 @@ class DesktopTests(GnomeCliBase):
         ])
         self.assertIn("DisplaySize", [m for m, _ in self.bridge.calls])
         self.assertIn("ListWorkspaces", [m for m, _ in self.bridge.calls])
+
+    def test_d_viewports_are_the_x_servers(self):
+        # wmctrl prints _NET_DESKTOP_VIEWPORT[2i],[2i+1] per desktop and N/A
+        # when the array is too short: a WM that publishes one pair per
+        # desktop (KWin does) gets `VP: 0,0` on every row -- ours said N/A.
+        x = FakeX11(viewport=[0, 0, 0, 0, 0, 0])
+        rc, out, err = self.wm(["-d"], x11=x, xwayland=True)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual([ln.split("VP: ")[1].split()[0]
+                          for ln in out.splitlines()], ["0,0"] * 3)
+        # a single pair is the current desktop's, as wmctrl reads it
+        x = FakeX11(viewport=[7, 9])
+        rc, out, _e = self.wm(["-d"], x11=x, xwayland=True)
+        self.assertEqual([ln.split("VP: ")[1].split()[0]
+                          for ln in out.splitlines()], ["7,9", "N/A", "N/A"])
+        # no X plane at all: the current desktop's origin, nothing invented
+        self.assertEqual(len(self.x_calls), 2)   # one per run above
+        self.x_calls = []
+        rc, out, _e = self.wm(["-d"], x11=None, xwayland=False)
+        self.assertEqual([ln.split("VP: ")[1].split()[0]
+                          for ln in out.splitlines()], ["0,0", "N/A", "N/A"])
+        self.assertEqual(self.x_calls, [])
 
     def test_d_nameless_workspace_prints_its_index(self):
         orig = self.bridge.m_ListWorkspaces

@@ -242,7 +242,8 @@ normally. `Context` (frozen, `ctx.py`) provides `stack`, `resolve_window(arg|Non
 - **Agent A (cli core)**: `cli.py`, `commands.py`, `misc_cmds.py`
 - **Agent B (input)**: `daemon.py`, `uinput.py`, `keymap.py`, `keysyms.py`, `input_cmds.py`
 - **Agent C (windows)**: `backend_detect.py`, `backend_sway.py`, `backend_wlr.py`,
-  `backend_kwin.py`, `backend_gnome.py`, `window_cmds.py`, `desktop_cmds.py`
+  `backend_kwin.py`, `kwin_js.py`, `backend_gnome.py`, `window_cmds.py`,
+  `desktop_cmds.py`
 - **Frozen (implemented; edit only if broken)**: `__init__.py`, `__main__.py`, `ctx.py`,
   `backend.py`, `session.py`, `passthrough.py`, `wayland_mini.py`, `flake.nix`,
   `pyproject.toml`
@@ -408,9 +409,95 @@ difference between "not logged in yet" and "no such window" for a script.
   subscribe to window focus events, return the next focused window.
   `getmouselocation`'s window field: hit-test the daemon-tracked pointer against
   `list()` geometries (topmost/focused first).
-- **kwin**: `org.kde.KWin` scripting over the session bus; shelling out to
-  `busctl --user` / `gdbus call --session` (with the env from `session.find_user_bus`)
-  is ACCEPTABLE here.
+- **kwin**: `org.kde.kwin.Scripting.loadScript()` over `dbus_mini` — unprivileged
+  on Plasma 5.27 and 6 alike (plain `Q_SCRIPTABLE` on `/Scripting`, no polkit, no
+  bus policy), so **nothing has to be installed**, unlike the GNOME bridge. One
+  generated script per command (`wdotool/kwin_js.py`, the whole 5.27↔6 divergence
+  lives there); it answers with the JS global `callDBus()` to a name we own
+  (`org.fuckwayland.KWin` / `/org/fuckwayland/KWin` / `org.fuckwayland.KWin1`,
+  members `Result(token, json)` and `Event(token, uuid, change)`), which
+  `dbus_mini` serves with `serve_calls`. `Script::run()` is a delayed reply sent
+  only after `evaluate()` returns and `callDBus` rides the same connection, so the
+  payload is already queued when `run()` returns — no `dbus-monitor`, no sleep;
+  the wait still has a deadline (a JS error only reaches the journal, `run()` still
+  replies OK, so the script answers on every path and silence is an error). Unique
+  `wdotool-<pid>-<seq>-<random>` pluginName per call with `unloadScript` in a
+  `finally` (script *ids* are `scripts.size()` and get reused), the **signed**
+  `loadScript` result rejected when negative (`-1` = that name is already
+  loaded), both object paths tried (`/Scripting/Script<id>` on 6, `/<id>` on
+  5.27), and a per-call token so a late payload from a timed-out call is never
+  read as this one's answer. The random part of the name is load-bearing: KWin
+  holds a pluginName for as long as the script object lives and nothing can
+  enumerate what is loaded, so a wdotool killed between `loadScript` and
+  `unloadScript` leaks its name for the rest of the session — with pid+counter
+  alone the next process handed that pid would fail on its first command, for
+  ever.
+  Ids are minted here (the scripting API has no numeric window id at all):
+  `0x40000000 | 30 bits of internalId`, with an `{id: uuid}` cache (the uuid is
+  the only handle the scripting API and `getWindowInfo` take); two uuids
+  colliding in those 30 bits (a one-in-a-million session) re-mint the second
+  window rather than dropping it out of the listing. 32-bit clean
+  because every X-shaped consumer truncates there (`wxprop -id` parses into an
+  XID, the synthesized `_NET_CLIENT_LIST`, wmctrl's `0x%08lx`), and out of the
+  range Xwayland hands its clients, so a native id is never mistaken for the X
+  id of an XWayland window in the same listing. `class_` =
+  `resourceClass`, `instance` = `resourceName`; geometry = `frameGeometry`, rounded
+  (`QRectF` on 6); `visible` = not minimized, not hidden and on the current desktop;
+  `list()` is stacking order bottom→top. Every `frameGeometry` write resets
+  maximize (unconditionally — 5.27 has no `maximizeMode` property to test),
+  tile and fullscreen first, or KWin clamps or ignores it. `activate`
+  unminimizes, brings the window's desktop up and sets `activeWindow`/`activeClient`
+  (a real focus+raise, so `focus` is the same call without those two); `kill` is
+  `SIGKILL` on `w.pid` (`org.kde.KWin.killWindow()` is the interactive xkill
+  picker, not kill-by-id). `windowstate`: FULLSCREEN, HIDDEN, ABOVE, BELOW,
+  MAXIMIZED_HORZ/VERT (`setMaximize`), STICKY, SKIP_TASKBAR, SKIP_PAGER,
+  DEMANDS_ATTENTION; SHADED works on 5.27 and is a capability gap on 6 (shading
+  removed). Writing a state the window has no property for is refused before
+  the write (assigning one QJSEngine does not know just adds a JS property to
+  the wrapper and reads back as success), and a state KWin accepts and then
+  ignores -- 5.27 refuses to fullscreen a window whose size hints cannot fill
+  the screen exactly -- is read back and warned about, warn+succeed like the
+  X tools. That read-back is a *settled* one: a Wayland client applies a
+  size-changing state only when it acks the configure, so when the immediate
+  read disagrees the script arms the window's own change signal plus a QTimer
+  backstop (`SETTLE_MS`) and answers from whichever fires first — otherwise
+  every FULLSCREEN on a native window warned although KWin had applied it.
+  `settled: false` (nothing could be armed) never warns. Waiting also means
+  the *next* command sees a settled window, which is what makes
+  `wmctrl -b add,maximized_vert,maximized_horz` end with both axes on.
+  `maximizeMode` is a Q_PROPERTY on 6 only — 5.27's `window.h` declares none —
+  so there the mode is read off the geometry (`frameGeometry` ==
+  `clientArea(MaximizeArea, w)` on that axis); without it 5.27 reported every
+  window as restored, cleared the other axis on every `setMaximize()` and left
+  a maximized window maximized while `windowsize` wrote under it.
+  `set_num_desktops` stops as soon as a `createDesktop`/`removeDesktop`
+  changes nothing: both slots are void and KWin silently refuses past its own
+  limits (`maximum()` = 20 on 5.27, 25 on 6, and never below one), so without
+  a progress check the loop never ends and floods the compositor. `raise` = `workspace.raiseWindow` on 6; 5.27 has no per-window raise,
+  so it activates and says so on stderr. Neither release has a per-window
+  **lower**: an active window is lowered with `slotWindowLower()`, otherwise it is
+  marked keep-below and warned about. No script at all for `get_desktop`/
+  `set_desktop` (`org.kde.KWin.currentDesktop`, 1-based), `num_desktops` /
+  `workspaces()` / `set_num_desktops` (`/VirtualDesktopManager` `count`, `current`,
+  `desktops a(iss)`, `createDesktop`/`removeDesktop`), `show_desktop` (NoReply) and
+  `selectwindow` — `queryWindowInfo()` *is* xdotool's selectwindow, KWin's own
+  interactive picker, a delayed reply carrying the uuid (`UserCancel` →
+  "cancelled"). Extras for wwmctl/wxprop: `views()`, `workspaces()` (work areas
+  from `workspace.clientArea(WorkArea, …)`, cached with the screen size),
+  `x_info()` (the session scan — KWin publishes its Xwayland's DISPLAY nowhere),
+  `window_at()` (client-side over the same list, like GNOME, so it cannot drift
+  from the generic rule) and `events()` — a script that stays loaded for the
+  iteration, connects `workspace`'s and every window's Qt signals and `callDBus`es
+  each one out on a second connection. `View.xid` for XWayland windows: `w.windowId`
+  on 5.27; on 6 (`x11window.h` has no `Q_PROPERTY` left) by matching Xwayland's
+  `_NET_CLIENT_LIST` — pid and `WM_CLASS` filter, title and geometry distance
+  score, greedy best-first — and only when an Xwayland process already exists,
+  since connecting would start one. A pair must also *agree* on pid or class:
+  an X client that publishes neither contradicts nothing, and matching it on
+  geometry alone hands its id to a native window, which then claims to be an
+  X11 client. `w.output` is read on 6 only — on 5.27 it is a `KWin::Output*`,
+  a datatype QJSEngine has no converter for, and merely reading it logs a
+  `QMetaProperty::read` warning to the journal once per window per command.
 - **gnome**: the fuckwayland bridge extension (`gnome/fuckwayland-bridge@fuckwayland`,
   installer `gnome/install-bridge.sh`) exports Mutter over the session bus — name
   `org.fuckwayland.Bridge`, path `/org/fuckwayland/Bridge`, interface

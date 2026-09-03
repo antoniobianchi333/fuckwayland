@@ -4,6 +4,7 @@ compositor backend, with X11 enrichment for XWayland windows when available.
 Dual-plane design per WWMCTL.md:
 - the window LIST and all ACTIONS come from the compositor backend
   (wdotool.backend_detect.detect(); backend-native ids address windows),
+  with -e sent as one move_resize() where the backend offers it,
 - XWayland windows are printed with their REAL X11 window id (the backend's
   views() carry it -- GNOME bridge `xid`; sway's raw tree exposes it as the
   node's "window" field) so xprop/real-wmctrl interoperate, and X-only
@@ -479,13 +480,28 @@ class Core:
         keep_anchor = x == -1 and y == -1 and self._bare_resize_gravity()
         fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw, keep_anchor)
         fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh, keep_anchor)
-        if ww != -1 or hh != -1:
+        resizing = ww != -1 or hh != -1
+        # a move was asked for, or the gravity's anchor requires one
+        moving = x != -1 or y != -1 or (fx, fy) != (w.fx, w.fy)
+        both = getattr(backend, "move_resize", None)
+        if resizing and moving and callable(both):
+            # One request when the backend can take one (KWin). Sending a
+            # resize and a move a few milliseconds apart is a race against a
+            # Wayland client: the compositor's rectangle only changes when
+            # the client acks the configure, so the move, reading the
+            # not-yet-changed size back, re-requests the old one and cancels
+            # the resize. Observed live on KWin 6.6 with konsole.
+            try:
+                both(w.node_id, fx, fy, fw, fh)
+            except CmdError as e:
+                _warn("%s; ignoring" % e)
+            return 0
+        if resizing:
             try:
                 backend.resize(w.node_id, fw, fh)
             except CmdError as e:
                 _warn("%s; ignoring" % e)
-        # a move was asked for, or the gravity's anchor requires one
-        if x != -1 or y != -1 or (fx, fy) != (w.fx, w.fy):
+        if moving:
             try:
                 backend.move_window(w.node_id, fx, fy)
             except CmdError as e:
@@ -758,13 +774,12 @@ class Core:
         ws_fn = getattr(backend, "workspaces", None)
         typed = ws_fn() if callable(ws_fn) else None
         if typed is not None:
-            # VP: like wmctrl under EWMH — a single _NET_DESKTOP_VIEWPORT
-            # pair applies to the current desktop only, the others print
-            # N/A. A nameless workspace prints its index.
-            for ws in typed:
+            # A nameless workspace prints its index.
+            cur = next((i for i, ws in enumerate(typed) if ws.active), -1)
+            vps = self._viewports(len(typed), cur)
+            for i, ws in enumerate(typed):
                 wx, wy, ww, wh = ws.work_area
-                rows.append((ws.index, ws.active, dg,
-                             "0,0" if ws.active else "N/A",
+                rows.append((ws.index, ws.active, dg, vps[i],
                              "%d,%d %dx%d" % (wx, wy, ww, wh),
                              ws.name or "%d" % ws.index))
             return rows
@@ -776,25 +791,57 @@ class Core:
                 workspaces = msg(GET_WORKSPACES)
             except Exception:
                 workspaces = None
-        # VP: like wmctrl under EWMH — a single _NET_DESKTOP_VIEWPORT pair
-        # applies to the current desktop only, the others print N/A.
         if workspaces is not None:
-            for ws in workspaces:
+            here = next((i for i, ws in enumerate(workspaces)
+                         if ws.get("focused")), -1)
+            vps = self._viewports(len(workspaces), here)
+            for i, ws in enumerate(workspaces):
                 num = ws.get("num", -1)
-                cur = bool(ws.get("focused"))
                 rect = ws.get("rect") or {}
                 wa = "%d,%d %dx%d" % (rect.get("x", 0), rect.get("y", 0),
                                       rect.get("width", 0),
                                       rect.get("height", 0))
                 rows.append((num - 1 if num > 0 else -1,
-                             cur, dg, "0,0" if cur else "N/A", wa,
+                             bool(ws.get("focused")), dg, vps[i], wa,
                              ws.get("name") or "N/A"))
         else:
             cur = backend.get_desktop()
-            for i in range(backend.num_desktops()):
-                rows.append((i, i == cur, dg, "0,0" if i == cur else "N/A",
-                             "N/A", "N/A"))
+            n = backend.num_desktops()
+            vps = self._viewports(n, cur)
+            for i in range(n):
+                rows.append((i, i == cur, dg, vps[i], "N/A", "N/A"))
         return rows
+
+    def _viewports(self, n: int, cur: int) -> list[str]:
+        """The VP column for `n` desktops, wmctrl's rule exactly.
+
+        wmctrl prints `_NET_DESKTOP_VIEWPORT[2i]` and `[2i+1]` for desktop i
+        when the array is long enough, and N/A when it is not — so a WM that
+        publishes one pair per desktop (KWin does) prints `VP: 0,0` on every
+        row, and one that publishes a single pair prints it against the
+        current desktop only. Read it from the X server when one is already
+        there, so the column is the same as `wmctrl -d`'s whatever the
+        compositor publishes; with no X plane fall back to the single-pair
+        reading (no Wayland compositor implements viewports — `wwmctl -o`
+        says so — so the current desktop's origin is all we can honestly
+        claim to know)."""
+        vals = []
+        if self._x11 not in ("unset", None) or session.xwayland_running():
+            x = self.x11()
+            if x is not None:
+                try:
+                    vals = x.get_prop_ints(x.root(), "_NET_DESKTOP_VIEWPORT")
+                except Exception:                              # noqa: BLE001
+                    vals = []
+        out = []
+        for i in range(n):
+            if len(vals) >= 2 * (i + 1):
+                out.append("%d,%d" % (vals[2 * i], vals[2 * i + 1]))
+            elif len(vals) >= 2 and i == cur:
+                out.append("%d,%d" % (vals[0], vals[1]))
+            else:
+                out.append("0,0" if i == cur else "N/A")
+        return out
 
     def list_desktops(self) -> int:
         rows = self._desktop_rows()
