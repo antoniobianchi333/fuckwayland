@@ -2,13 +2,13 @@
 
 Two rigs live here:
 
-* **`vmctl`** (this document): full Ubuntu **GNOME on Wayland** desktops
-  (`ubuntu-desktop`, GDM autologin of user `test`) in QEMU/KVM with a
-  **multi-head virtio-vga** whose monitors are plugged, unplugged and resized
-  from the host at runtime, plus host-side screenshots of every head. This is
-  the rig for testing `wxrandr`/`wwmctl`/`wdotool`/`wxprop` against a real,
-  default-configured GNOME session, and for the X-parity oracles (the golden
-  image also carries the real `xdotool`, `wmctrl`, `x11-utils`, `x11-xserver-utils`).
+* **`vmctl`** (this document): full, default-configured Ubuntu desktops in QEMU/KVM —
+  **seven flavors** over four desktops (GNOME, KDE Plasma, Xfce, sway) and two releases,
+  each with autologin of user `test` — on a **multi-head virtio-vga** whose monitors are
+  plugged, unplugged and resized from the host at runtime, plus host-side screenshots of
+  every head. This is the rig for testing `wxrandr`/`wwmctl`/`wdotool`/`wxprop` against
+  real Wayland *and* X11 sessions, and for the X-parity oracles (every golden image also
+  carries the real `xdotool`, `wmctrl`, `x11-utils`, `x11-xserver-utils`).
 * **`mkvm.sh` / `run.sh` / `compositor.sh` / `ssh.sh` / `scp.sh` / `stop.sh`**:
   the original headless-sway rig (single VM in this directory, root runs sway).
   Unchanged; the two rigs do not share state or ports (sway rig: 2222,
@@ -18,7 +18,7 @@ Two rigs live here:
 
 ```console
 $ vm/vmctl build noble-gnome            # ~7 min, once; golden image -> ~/vm-data/golden/
-$ vm/vmctl build resolute-gnome         # can run concurrently with the above
+$ vm/vmctl build resolute-kde           # any of the seven flavors (see Flavors below)
 $ vm/vmctl start gnome1 --flavor noble-gnome --heads 3
 vmctl: gnome1: QEMU pid 1234, flavor noble-gnome, 3 vCPU/4G, ssh port 2400, bus ...
 vmctl: gnome1: heads: 0=1920x1080, 1=1920x1080, 2=1920x1080  (guest connectors Virtual-1, Virtual-2, Virtual-3; set before the guest boots)
@@ -41,6 +41,7 @@ $ vm/vmctl scp gnome1 dist/wxrandr.pyz gnome1:/home/test/
 $ vm/vmctl user gnome1 -- python3 /home/test/wxrandr.pyz --query
 $ vm/vmctl stop gnome1                       # or: destroy (also deletes the overlay)
 $ vm/selftest.sh noble-gnome                 # the whole thing end to end, ~40 s (see below)
+$ vm/selftest.sh resolute-kde                # same check, Plasma's own tools (see below)
 ```
 
 Host requirements: `qemu-system-x86_64` (8.2+, with the **dbus** display
@@ -80,9 +81,9 @@ time comfortably; 8 vCPU / 32 GB runs four.
 |---|---|
 | `vm/vmctl` | the CLI (host side) |
 | `vm/build-image.sh` | guest-side build script; embedded into the flavor's cloud-init user-data by `vmctl build`, runs once as root inside the build VM |
-| `vm/flavors/<flavor>.yaml` | cloud-init user-data template per flavor (`@@ROOT_PUBKEY@@`, `@@BUILD_SCRIPT@@` placeholders; `# vmctl-base:` names the base cloud image) |
+| `vm/flavors/<flavor>.yaml` | cloud-init user-data template per flavor (`@@ROOT_PUBKEY@@`, `@@BUILD_SCRIPT@@` placeholders; `# vmctl-base:` names the base cloud image, `# vmctl-desktop:` the desktop — `gnome`, `kde`, `xfce` or `sway`) |
 | `vm/reference/<flavor>-packages.txt` | `dpkg-query -W -f='${binary:Package}\n'` of the finished golden image: **what a default install of that flavor contains**. Multi-arch names carry their `:amd64` suffix (`libei1:amd64`), so grep for exact names with `^name(:amd64)?$`. |
-| `vm/selftest.sh <flavor> [name]` | end-to-end check of a golden image: boot 3 heads, autologin, monitors/primary/no stray dialog, real screenshots, hotplug (details below) |
+| `vm/selftest.sh <flavor> [name]` | end-to-end check of any flavor's golden image: boot 3 heads, autologin, monitors/primary in that desktop's own display tool, no stray first-run window, real screenshots, hotplug (details below) |
 
 State (never in the repo) lives under `$VMDATA` (default `~/vm-data`):
 
@@ -113,58 +114,154 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 | `vmctl head <name> <idx> <WxH>\|off` | `SetUIInfo` on head `idx` (0-based; `0` = Virtual-1, which can only be resized). A running GNOME picks the change up in well under a second. |
 | `vmctl heads <name>` | guest DRM connectors (status, enabled, preferred mode) after `echo detect > .../status` — the kernel's cached mode list is stale until something re-probes. |
 | `vmctl shot <name> <idx> <out.png>` / `vmctl shot <name> --all <out>` | QMP `screendump` of one head (or every plugged head → `<out>-<idx>.png`). Written by QEMU straight to the host path. **The mouse cursor is not in it** (see Gotchas). |
-| `vmctl session <name> [--timeout 180]` | wait until `loginctl` shows a session for user `test` with `Type=wayland`, `State=active` and `/run/user/1000/wayland-0` exists, **then until the desktop has painted its first frame** (GNOME: the `GNOME Shell started` journal line; other desktops: head 0's screendump changing; `--no-paint` skips this); print `SESSION_ID`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`. |
-| `vmctl user <name> [-t] -- cmd...` | run `cmd` as `test` via `sudo -u test -H env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus ...`, plus `DISPLAY`, `XAUTHORITY` (mutter's Xwayland auth file), `XDG_CURRENT_DESKTOP` etc. imported from the session's `systemctl --user show-environment` (fallback `DISPLAY=:0` when `/tmp/.X11-unix/X0` exists), plus `XDG_SESSION_ID` = logind's display session of `test` and `XDG_SESSION_TYPE` = that session's real `Type` (not a hardcoded `wayland`) — so `xrandr`/`wmctrl`/`xdotool`/`xprop` and `loginctl show-session $XDG_SESSION_ID` work in it. |
+| `vmctl session <name> [--timeout 180] [--no-paint]` | wait until `loginctl` shows an **active session of user `test` on a seat** whose `Type` is the one the flavor's desktop registers (`wayland`; `x11` for Xfce; sway's greetd session starts as `tty` and libseat turns it into `wayland`) and whose sockets are there (`/run/user/1000/wayland-N`, `/tmp/.X11-unix/X0`, sway's `sway-ipc.*.sock`), **then until the desktop has painted its first frame**: GNOME the `GNOME Shell started` journal line, the others the compositor (`kwin_wayland`, `Xorg`, `sway`) owning head 0's scanout framebuffer in `/sys/kernel/debug/dri/0/state` *plus* the shell processes (`plasmashell`; `xfce4-panel`+`xfdesktop`; `swaybar`) up and any splash (`ksplashqml`) gone — and, when the guest offers none of that, head 0's screendump changing. `--no-paint` skips the paint wait. Prints `SESSION_ID`, `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`/`DISPLAY`/`SWAYSOCK`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_SESSION_TYPE`. |
+| `vmctl user <name> [-t] -- cmd...` | run `cmd` as `test` via `sudo -u test -H env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus ...` with the session's own environment reconstructed, first match wins: what the session published to the systemd user manager (`gnome-session`, `startplasma`, the X session's, sway's `dbus-update-activation-environment`), else the compositor's `/proc/<pid>/environ` (`gnome-shell`, `kwin_wayland`, `xfce4-session`, `sway`), else the sockets that are actually there. Result: `WAYLAND_DISPLAY` and `SWAYSOCK` on the Wayland flavors, `DISPLAY`+`XAUTHORITY` everywhere (Xwayland's on Wayland, Xorg's on Xfce), `XDG_CURRENT_DESKTOP`, `XDG_SESSION_ID` = logind's display/seat session of `test`, and `XDG_SESSION_TYPE` = `wayland` or `x11` as the session itself reports it (sway publishes `wayland` although greetd registered a `tty` session) — so `xrandr`/`wmctrl`/`xdotool`/`xprop`, `kscreen-doctor`, `swaymsg` and `loginctl show-session $XDG_SESSION_ID` all work in it. `-t` may follow `<name>`. |
 
 ## Flavors
 
-`noble-gnome` (Ubuntu 24.04 LTS, GNOME Shell 46 / mutter 46) and `resolute-gnome` (Ubuntu 26.04 LTS,
-GNOME Shell 50 / mutter 50). Both:
+Seven golden images: four desktops over two Ubuntu releases. A flavor is one
+`vm/flavors/<flavor>.yaml` (cloud-init user-data). Its `# vmctl-base:` header names the base
+cloud image and its `# vmctl-desktop:` header (`gnome`, `kde`, `xfce`, `sway`) is what `vmctl`
+and `selftest.sh` key off: which display manager owns the session, what `loginctl` calls its
+`Type`, which sockets `vmctl user` must export, which process paints the first frame, and which
+native tool reports monitors.
+
+| flavor | release | desktop (as built) | display manager | session | native display tool |
+|---|---|---|---|---|---|
+| `noble-gnome` | 24.04 LTS | GNOME Shell 46 / mutter 46 (`ubuntu-desktop`) | GDM | Wayland | mutter's `org.gnome.Mutter.DisplayConfig.GetCurrentState` |
+| `resolute-gnome` | 26.04 LTS | GNOME Shell 50 / mutter 50 (`ubuntu-desktop`) | GDM | Wayland | the same |
+| `noble-kde` | 24.04 LTS | Plasma 5.27 / KWin 5.27 (`kubuntu-desktop`, `plasma-workspace-wayland`) | SDDM | Wayland | `kscreen-doctor -o` |
+| `resolute-kde` | 26.04 LTS | Plasma 6.6 / KWin 6.6 (`kubuntu-desktop`) | SDDM | Wayland | `kscreen-doctor -o` |
+| `noble-xfce` | 24.04 LTS | Xfce 4.18 (`xubuntu-desktop`) | LightDM | **X11** | `xrandr` |
+| `resolute-xfce` | 26.04 LTS | Xfce 4.20 (`xubuntu-desktop`) | LightDM | **X11** | `xrandr` |
+| `resolute-sway` | 26.04 LTS | sway 1.11 / wlroots, Xwayland, `foot`, `grim` | greetd | Wayland | `swaymsg -t get_outputs` |
+
+Every flavor:
 
 * user `test` (uid 1000, password `test`, groups `adm,sudo`, bash, `NOPASSWD` sudo); root ssh by key
   (`~/vm-data/keys/id_ed25519`); hostname = flavor name (instances re-set it to the instance name).
-* `ubuntu-desktop` installed non-interactively (`DEBIAN_FRONTEND=noninteractive`, `--force-confold`),
-  so the image is as close to a default Ubuntu desktop install as a cloud image allows.
-  Only four extra packages: `xdotool wmctrl x11-utils x11-xserver-utils` (parity oracles).
-  Not in the image (not part of a default desktop, not needed by the tools): `python3-tk`;
-  `python3-gi` + `gir1.2-gtk-3.0`/`gir1.2-gtk-4.0` *are* there for test windows.
+* the desktop metapackage installed non-interactively (`DEBIAN_FRONTEND=noninteractive`,
+  `--force-confold`), so the image is as close to a default install of that Ubuntu flavor as a
+  cloud image allows. Only four extra packages: `xdotool wmctrl x11-utils x11-xserver-utils`
+  (the X-parity oracles; on the Wayland flavors they talk to Xwayland). Not in the image
+  (not part of a default desktop, not needed by the tools): `python3-tk`; `python3-gi` +
+  `gir1.2-gtk-3.0`/`gir1.2-gtk-4.0` *are* there for test windows.
+* autologin of `test` into that desktop's own session, `graphical.target` as the default target,
+  and no screen lock, blanking, DPMS or idle sleep.
+* no first-run/welcome window in the session — the thing `selftest.sh` asserts is absent.
+* automatic apt (`apt-daily*` timers, `unattended-upgrades`, `20auto-upgrades`) and snap
+  auto-refresh off; `/dev/uinput` available for the injection tools.
+* `systemd-networkd-wait-online` disabled where the desktop brings NetworkManager (GNOME, Plasma,
+  Xfce): NM manages the NIC via netplan and networkd's wait-online would otherwise hold
+  `network-online.target` — and with it cloud-init and ssh — for its full 2-minute timeout on
+  every boot. `resolute-sway` has no NetworkManager; there networkd stays in charge.
+* the finished image's package list is dumped over the serial console and stored in
+  `golden/<flavor>-packages.txt` and `vm/reference/<flavor>-packages.txt`.
+
+**GNOME** (`noble-gnome`, `resolute-gnome`)
+
 * GDM: `/etc/gdm3/custom.conf` with `AutomaticLoginEnable=true`, `AutomaticLogin=test`,
-  `WaylandEnable=true`; AccountsService pins the `ubuntu` (Wayland) session; `graphical.target` default.
-* No screen lock / blank / idle sleep, no welcome tour: a gschema override
-  (`/usr/share/glib-2.0/schemas/90_vmctl.gschema.override`, compiled in) sets
+  `WaylandEnable=true`; AccountsService pins the `ubuntu` (Wayland) session.
+* a gschema override (`/usr/share/glib-2.0/schemas/90_vmctl.gschema.override`, compiled in) sets
   `org.gnome.desktop.screensaver lock-enabled=false`, `org.gnome.desktop.session idle-delay=0`,
   `org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type='nothing'`,
   `org.gnome.shell welcome-dialog-last-shown-version='999'`.
-* No `gnome-initial-setup` dialogs for `test`: `~/.config/gnome-initial-setup-done` (first login)
+* no `gnome-initial-setup` dialogs for `test`: `~/.config/gnome-initial-setup-done` (first login)
   **and** `~/.config/gnome-initial-setup/upgrade-<release>-done` (the "Welcome to Ubuntu 26.04 LTS!"
   dialog of `gnome-initial-setup-upgrade-login.service`, whose unit is gated on the first marker
   existing and the second one *not* existing — so the first marker alone switches that dialog on).
   The `update-notifier` / `ubuntu-report` autostarts are hidden for `test`.
-* Automatic apt (`apt-daily*` timers, `unattended-upgrades`, `20auto-upgrades`) and snap
-  auto-refresh are off.
-* `systemd-networkd-wait-online` is disabled: NetworkManager (from the desktop) manages the NIC
-  via netplan, and networkd's wait-online would otherwise hold `network-online.target` (and with it
-  cloud-init and ssh) for its full 2-minute timeout on every boot. NM's wait-online covers the target.
-* `/dev/uinput` is available for the injection tools (`uinput` is built into Ubuntu's kernel;
-  `/etc/modules-load.d/uinput.conf` is there for kernels that have it as a module).
-* The finished image's package list is dumped over the serial console and stored in
-  `golden/<flavor>-packages.txt` (and, in the guest, `/var/lib/vmctl/packages.txt`).
 
-Adding a flavor: copy a yaml, change `hostname`, `# vmctl-base:` and `/etc/vmctl-build.env`.
-The build boots the overlay with `-display none`; cloud-init's `power_state` powers it off at
-the end and `vmctl build` succeeds only if the guest printed `VMCTL-BUILD-OK`.
+**KDE Plasma** (`noble-kde`, `resolute-kde`)
+
+* SDDM: `/etc/sddm.conf.d/` autologin of `test` into the **Plasma Wayland** session —
+  `plasmawayland.desktop` on 5.27, `plasma.desktop` on 6 (the build picks whichever
+  `/usr/share/wayland-sessions/` file exists and fails if neither does).
+* `kwriteconfig5`/`kwriteconfig6` (whichever the release ships) turn off the screen locker
+  (`kscreenlockerrc`) and display power management (`powerdevilrc`) for `test`.
+* the welcome centre and the Discover update notifier are hidden as autostart entries — enough on
+  Plasma 5.27. On **Plasma 6** the welcome centre is no autostart entry at all any more but a kded
+  module (`kded_plasma_welcome.so`) that opens it whenever `plasma-welcomerc`'s `LastSeenVersion`
+  is missing or older than the installed `plasma-welcome`, so the build also writes that key.
+* Plasma reaches its first frame in several steps, so `vmctl session` waits for all of them:
+  `kwin_wayland` owning head 0's scanout, `plasmashell` up, and `ksplashqml` gone.
+
+**Xfce** (`noble-xfce`, `resolute-xfce`) — the X11 flavors
+
+* LightDM autologin of `test` into the `xubuntu` (Xorg) session; `test` is added to the
+  `autologin`/`nopasswdlogin` groups if the packages created them.
+* **Display-manager collision.** On 26.04 `xubuntu-desktop` drags GDM in (through `gnome-shell`),
+  and the first display manager to configure itself becomes *the* display manager — a golden built
+  without care boots the GNOME greeter instead of Xfce. The build therefore answers debconf's
+  question up front (`lightdm shared/default-x-display-manager select lightdm`), writes
+  `/etc/X11/default-display-manager`, disables `gdm`/`gdm3`/`sddm`, enables `lightdm` and **fails
+  the build** unless `display-manager.service` resolves to `lightdm.service`.
+* xfconf channels written for `test` before the first login: no screensaver/blanking/DPMS
+  (`xfce4-screensaver`, `xfce4-power-manager`, `xfce4-session`), and `displays.xml`
+  `Notify=3` so `xfsettingsd` **extends** a hot-plugged output instead of popping the
+  "new display detected" dialog (`Notify=1`, the default) — without it `vmctl head` would put a
+  modal window on the screen and leave the new output disabled.
+* `xfce4-screensaver`, `light-locker` and `update-notifier` autostarts hidden.
+
+**sway** (`resolute-sway`)
+
+* greetd `[initial_session]` starts `test`'s sway directly on vt 1 on the first boot (no greeter:
+  the VM has no keyboard to type into one); `[default_session]` starts sway again, so a logout
+  brings the desktop back. `getty@tty1` is disabled and the unit is ordered after it.
+* the logind session greetd registers is `Type=tty` (greetd exports `XDG_SESSION_TYPE=tty`);
+  sway's libseat then switches it to `wayland`. Both `vmctl session` and `vmctl user` accept
+  either and always export `XDG_SESSION_TYPE=wayland`, which is what the session itself publishes.
+  sway takes the DRM device through libseat's logind backend — no `seatd`.
+* the config is the packaged default plus: `xwayland enable` (lazy Xwayland for the X-parity
+  oracles), `workspace N output Virtual-N`, a `dbus-update-activation-environment` line that
+  publishes `WAYLAND_DISPLAY`/`SWAYSOCK`/`DISPLAY`/`XDG_CURRENT_DESKTOP`/`XDG_SESSION_TYPE` to the
+  systemd user manager (greetd starts sway with a bare environment, so without it nothing outside
+  the session could find it), and `exec /usr/local/bin/vmctl-sway-layout`.
+* **`vmctl-sway-layout`** runs once at session start and puts the active outputs side by side at
+  `y=0` in connector order (`Virtual-1` at (0,0), `Virtual-2` to its right, ...). Stock
+  sway/wlroots adds the initial outputs to the layout in reverse enumeration order, which on a
+  3-head virtio-vga would put `Virtual-3` at (0,0) and `Virtual-1` at x=3840 — the rig's contract
+  is head 0 = `Virtual-1` = (0,0). Nothing is watched afterwards: a test that moves outputs, or a
+  head hot-plugged later (wlroots appends it on the right), is left alone.
+
+Adding a flavor: copy a yaml, change `hostname`, `# vmctl-base:`, `# vmctl-desktop:` and
+`/etc/vmctl-build.env` (`DESKTOP`, `DESKTOP_PKG`, `EXTRA_PKGS`). A new *desktop* additionally
+needs a branch in `build-image.sh`, an entry in `vmctl`'s `DESKTOPS` table (session kind, logind
+types, display-manager unit, compositor/shell/splash process names) and a case in `selftest.sh`'s
+`monitors`/`layout`. The build boots the overlay with `-display none`; cloud-init's `power_state`
+powers it off at the end and `vmctl build` succeeds only if the guest printed `VMCTL-BUILD-OK`.
 
 ## Self-test
 
-`vm/selftest.sh <flavor> [name]` (default name `<flavor>-t`, screenshots in
-`$OUT`, default `/tmp/vmctl-selftest-<name>`) boots a fresh 3-head instance and asserts, in order:
-`vmctl session` reports an active Wayland session; `GetCurrentState` lists exactly Virtual-1..3
-with **Virtual-1 primary at (0,0)**; no `gnome-initial-setup` process in the session; `vmctl user`
-exports an `XDG_SESSION_ID` whose logind `Type` is `wayland`; `vmctl heads` sees the connectors;
-`vmctl shot --all` yields one PNG per head whose pixel standard deviation is > 0.01 (a session
-that never finished starting paints every head a flat `#222222`); `vmctl head 3 1280x1024` makes
-mutter report a 4th monitor and `head 3 off` removes it again. About 40 s per flavor; the VM is
-left running.
+`vm/selftest.sh <flavor> [name]` (default name `<flavor>-t`, screenshots in `$OUT`, default
+`/tmp/vmctl-selftest-<name>`) boots a fresh 3-head instance of **any** flavor and asserts, in
+order, using that desktop's own tools:
+
+1. `vmctl session` reaches an active session of the expected kind and the desktop has painted.
+2. the native display tool lists exactly `Virtual-1`, `-2`, `-3`, with **`Virtual-1` at (0,0)** —
+   and *primary* where the desktop has the notion: GNOME's logical-monitor `primary` flag and
+   Plasma's `priority 1` are required; sway has no primary, so its focused output stands in, and
+   Xorg only marks one if something asked it to.
+3. no first-run window in the session: `gnome-initial-setup`, `plasma-welcome`, or a window whose
+   title looks like Xfce's "new display" dialog.
+4. `vmctl user` gives a working session environment: `XDG_SESSION_ID` whose logind `Type` is the
+   flavor's (`wayland`, `x11`, or `wayland`/`tty` for sway), `XDG_SESSION_TYPE` exactly `wayland`
+   or `x11`, the display sockets (`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`, `$SWAYSOCK`) and an X
+   display `xdpyinfo` can reach — Xwayland on the Wayland flavors, Xorg on Xfce.
+5. `vmctl heads` sees the DRM connectors, and `vmctl shot --all` yields one PNG per head whose
+   pixel standard deviation is > 0.01 (a session that never finished starting paints every head a
+   flat `#222222`).
+6. **head 0 differs from head 1** — the proof that the screendumps caught the desktop and not the
+   kernel console, which fbdev mirrors onto every head. This one is flavor-aware: GNOME (top bar
+   and dock), Plasma (panel on the primary output) and Xfce (`xfce4-panel` on the first monitor)
+   must differ, so identical heads fail the test; sway draws the same `swaybar` on every output
+   and legitimately may not differ, so there it only warns — and the per-output workspace pinning
+   (`Virtual-N` shows workspace `N`) is asserted through `swaymsg` instead.
+7. `vmctl head 3 1280x1024` makes the native tool report a 4th monitor and `Virtual-4` appear in
+   `vmctl heads`; `vmctl head 3 off` takes it away again.
+
+Roughly 40 s for GNOME; a desktop that starts more slowly takes correspondingly longer. The VM
+is left running so a failure can be inspected — `vmctl stop <flavor>-t` when done.
 
 ## The QEMU / D-Bus facts this rig relies on
 
@@ -266,11 +363,12 @@ A cron-started tool must therefore wait for the session and set them itself:
 
 ## Gotchas
 
-* **The session is "active" before anything is drawn.** logind reports the Wayland
-  session active a few seconds before gnome-shell paints; a screendump taken then still
-  shows the kernel console (mirrored on every head by fbdev), and on a slow host the
-  window is several seconds wide. `vmctl session` therefore also waits for the first
-  frame, and `selftest.sh` asserts that head 0 (top bar, dock) differs from head 1.
+* **The session is "active" before anything is drawn.** logind reports the session active
+  a few seconds before the desktop paints; a screendump taken then still shows the kernel
+  console (mirrored on every head by fbdev), and on a slow host the window is several
+  seconds wide. `vmctl session` therefore also waits for the first frame (per desktop: see
+  the command table), and `selftest.sh` asserts that head 0 differs from head 1 — except on
+  sway, whose bar is identical on every output.
 
 * `vmctl start --heads N` sizes heads `0..N-1` to 1920x1080 (`--head-size` changes it) before
   the guest boots, so Virtual-1 is the primary monitor (top bar, dock) at logical (0,0) and
@@ -299,3 +397,13 @@ A cron-started tool must therefore wait for the session and set them itself:
   the root key/user and regenerates ssh host keys; that is why `vmctl ssh` ignores known hosts.
 * Rebuilding a golden (`build --force`) replaces the backing file of every instance overlay on
   it; restart those instances with `--fresh`.
+* **Xfce is the X11 flavor**: `vmctl user` exports no `WAYLAND_DISPLAY` there and the compositor
+  is `Xorg`, so Wayland-only tools have nothing to talk to — that is the point of the flavor
+  (it is the X-side oracle). On 26.04 `xubuntu-desktop` also installs `gnome-shell` and GDM;
+  the build forces LightDM and fails if it did not win (see Flavors).
+* **Plasma 6 opens its welcome centre from a kded module**, not from an autostart entry, so
+  hiding the `.desktop` file is not enough: `plasma-welcomerc`'s `LastSeenVersion` must name the
+  installed version.
+* **sway enumerates its initial outputs in reverse**: without the `vmctl-sway-layout` line in the
+  session config, `Virtual-3` would be at (0,0) and `Virtual-1` off to the right, and workspace 1
+  would land on the last output. A golden built without it breaks every coordinate test.
