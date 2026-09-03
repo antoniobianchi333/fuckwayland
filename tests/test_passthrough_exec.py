@@ -364,5 +364,71 @@ class Recursion(Tree):
             self.assertEqual(len(f.read()), 2)           # exactly two
 
 
+class BackendFlag(Tree):
+    """`wxrandr --backend NAME` decides the handover, which happens before
+    a single option is parsed.  So the hook looks ahead in argv -- and here
+    it is a real process doing it, with a real `execve` on the other side."""
+
+    def wayland_env(self, **extra):
+        open(os.path.join(self.runuser, "wayland-0"), "w").close()
+        return self.env(XDG_SESSION_TYPE="wayland",
+                        XDG_RUNTIME_DIR=self.runuser,
+                        WAYLAND_DISPLAY="wayland-0", **extra)
+
+    def test_a_wayland_backend_on_x11_keeps_our_own_code(self):
+        p, out, err = self.run_tool("xrandr", "--backend", "sway", "--query")
+        self.assertEqual(self.records(), [])            # nothing handed over
+        self.assertEqual((p.returncode, out), (1, ""))
+        self.assertEqual(err, "xrandr: --backend sway is not available in "
+                              "this session: no sway or i3 IPC socket "
+                              "($SWAYSOCK)\n")
+
+    def test_x11_on_a_wayland_session_hands_over(self):
+        p, out, err = self.run_tool("xrandr", "--backend", "x11", "--query",
+                                    env=self.wayland_env())
+        self.assertEqual(p.returncode, 0, err)
+        recs = self.records()
+        self.assertEqual(len(recs), 1, recs)
+        # our own flag is not passed on: the original has no such option
+        self.assertEqual(recs[0]["argv"], ["--query"])
+        self.assertEqual(recs[0]["pid"], p.pid)         # execve, not a child
+        # ...where without it the same session runs our code
+        os.remove(self.log)
+        p, out, err = self.run_tool("xrandr", "--query",
+                                    env=self.wayland_env())
+        self.assertEqual(self.records(), [])
+
+    def test_x11_on_an_x11_session_hands_over_without_the_flag(self):
+        p, out, err = self.run_tool("xrandr", "--backend=x11", "--verbose")
+        self.assertEqual(p.returncode, 0, err)
+        self.assertEqual([r["argv"] for r in self.records()], [["--verbose"]])
+
+    def test_an_output_named_like_the_flag_is_a_value(self):
+        """The look-ahead walks argv with xrandr's own arities: this is an
+        output called `--backend`, and the whole argv goes to the original
+        untouched."""
+        argv = ["--output", "--backend", "--off"]
+        p, out, err = self.run_tool("xrandr", *argv)
+        self.assertEqual(p.returncode, 0, err)
+        self.assertEqual([r["argv"] for r in self.records()], [argv])
+
+    def test_the_informational_options_answer_on_an_x11_session(self):
+        """`--print-backend` and `--backends` are about *us*; handing them
+        to the original would only earn an `unrecognized option`."""
+        p, out, err = self.run_tool("xrandr", "--print-backend")
+        self.assertEqual((p.returncode, out, err), (0, "x11\n", ""))
+        self.assertEqual(self.records(), [])
+        p, out, err = self.run_tool("xrandr", "--backends")
+        self.assertEqual(p.returncode, 0, err)
+        rows = {ln[2:8].strip(): ln for ln in out.splitlines()}
+        self.assertEqual(sorted(rows), ["kwin", "mutter", "sway", "wlr",
+                                        "x11"])
+        self.assertTrue(rows["x11"].startswith("* x11"), out)
+        self.assertIn("available", rows["x11"])
+        self.assertIn(os.path.join(self.bin, "xrandr"), rows["x11"])
+        self.assertIn("unavailable", rows["sway"])
+        self.assertEqual(self.records(), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

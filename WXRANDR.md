@@ -34,13 +34,86 @@ the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
   kscreen-doctor and the System Settings KCM take. Plasma 5.27 (Ubuntu 24.04)
   through 6.7+, no extension, no root.
 
-Backend selection: `WXRANDR_BACKEND=sway|wlr|kwin|mutter` (aliases `kde` and
-`gnome`); otherwise a sway/i3 IPC socket wins, then a compositor advertising
+## Backend selection
+
+Precedence, one rule: **`--backend NAME` beats `WXRANDR_BACKEND=NAME` beats
+auto-detection.** `NAME` is `auto` (the default), `x11`, or one of
+`sway|wlr|kwin|mutter` (aliases `kde` and `gnome`). Detection is unchanged: a
+sway/i3 IPC socket wins, then a compositor advertising
 `kde_output_management_v2`, then a session bus owning
-`org.gnome.Mutter.DisplayConfig`, then wlr. The KWin probe *is* the Wayland
-connection the backend keeps, so a KDE session still opens exactly one.
-`--listproviders` names it (`name:sway`, `name:wlroots`, `name:kwin`,
-`name:mutter`).
+`org.gnome.Mutter.DisplayConfig`, then wlr — which is the fallback and is
+therefore never probed for the decision. The KWin probe *is* the Wayland
+connection the backend then keeps, so a KDE session still opens exactly one,
+and a backend forced with the flag is probed the same way.
+`--listproviders` names the chosen one (`name:sway`, `name:wlroots`,
+`name:kwin`, `name:mutter`).
+
+`x11` means *hand over to the real xrandr* — what happens by itself on an X11
+session. That handover is an `execve` at the top of `main()`, **before any
+option is parsed**, so the hook looks ahead in argv for `--backend NAME` and
+`--backend=NAME` (and for the two informational options below) and honours
+it: `--backend sway` on an X11 session runs our own code, `--backend x11` on
+a Wayland session hands over, and the flag is stripped from the argv the
+original is exec'd with (real xrandr has no such option). The look-ahead
+walks argv with xrandr's own option arities, so an output literally named
+`--backend` (`--output --backend --off`) is a value there too and is handed
+over untouched.
+
+Three options real xrandr does not have, and — like `--persistent` — not in
+its usage text, so `--help` and every other byte stay xrandr's:
+
+* **`--backend NAME`**. An unknown name lists the valid ones
+  (`xrandr: --backend: invalid argument 'banana'; valid: auto, x11, sway,
+  wlr, mutter, kwin` + xrandr's `Try 'xrandr --help' for more information.`,
+  exit 1). A backend that is not available *in this session* is one clear
+  line naming what was missing and exit 1, never a silent fallback:
+  `xrandr: --backend sway is not available in this session: no sway or i3 IPC
+  socket ($SWAYSOCK)`. `$WXRANDR_BACKEND` deliberately keeps its older
+  behaviour — no pre-check, so it still fails the way the backend itself
+  fails (`Can't open display`, `org.gnome.Mutter.DisplayConfig is not on the
+  session bus`) and no existing byte moves.
+* **`--print-backend`** prints the chosen backend and exits 0 without
+  touching the layout (and without handing over, so it answers on X11 too).
+  First line: the bare token, for scripts. `--verbose` adds the rest.
+
+  ```console
+  $ wxrandr --print-backend
+  mutter
+  $ wxrandr --print-backend --verbose
+  mutter
+  session: wayland
+  chosen by: detection
+  compositor: Mutter
+  protocol: org.gnome.Mutter.DisplayConfig (D-Bus)
+  available: yes
+  ```
+
+  `chosen by:` is `detection`, `flag (--backend mutter)` or
+  `environment (WXRANDR_BACKEND=mutter)`; `protocol:` carries the version
+  where the protocol has one (`kde_output_management_v2 version 12`,
+  `zwlr_output_manager_v1 version 4`), `compositor:` sway's own
+  `GET_VERSION` string where it has one; and for `x11` there is a
+  `real xrandr: /usr/bin/xrandr` line naming what would be exec'd.
+* **`--backends`** — one line per backend, its availability in this session,
+  a short true reason when it has none, and `*` on the one *auto* would
+  choose (not on a forced one — `--print-backend` answers that):
+
+  ```console
+  $ wxrandr --backends
+    sway    unavailable  no sway or i3 IPC socket ($SWAYSOCK)
+    kwin    unavailable  the compositor does not advertise kde_output_management_v2
+  * mutter  available    org.gnome.Mutter.DisplayConfig on the session bus
+    wlr     unavailable  the compositor does not advertise zwlr_output_manager_v1
+    x11     available    /usr/bin/xrandr
+  ```
+
+  This is what warandr greys its Backend menu with.
+
+Tests: `tests/test_wxrandr_backend.py` (hermetic — the probes are a table, no
+socket or bus is touched: precedence, the detection order, the look-ahead in
+both directions, the two outputs byte for byte, every error path) and, for
+the handover itself, `BackendFlag` in `tests/test_passthrough_exec.py`
+against the fake install tree.
 
 ## Mutter backend (`wxrandr/mutter.py`)
 

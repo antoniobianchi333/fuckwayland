@@ -592,6 +592,158 @@ class BackendChoice(unittest.TestCase):
             bad.snapshot()
 
 
+class ForcedBackend(unittest.TestCase):
+    """`warandr --backend NAME` / the GUI's Layout ▸ Backend.  It beats
+    everything (and, inside wxrandr, $WXRANDR_BACKEND and detection), and it
+    never falls back silently to something else."""
+
+    def fake_env(self, **extra):
+        env = {"PATH": os.environ.get("PATH", ""),
+               "WARANDR_XRANDR": "%s %s" % (sys.executable,
+                                            os.path.join(FIXTURES,
+                                                         "fake_xrandr.py")),
+               "FAKE_XRANDR_STATE": os.path.join(tempfile.mkdtemp(),
+                                                 "s.json")}
+        env.update(extra)
+        return env
+
+    def test_x11_runs_the_real_xrandr(self):
+        b = randr.choose({"WAYLAND_DISPLAY": "wayland-1"}, forced="x11")
+        self.assertEqual(b.argv, ["xrandr"])
+        self.assertFalse(b.wayland)
+        self.assertEqual((b.name, b.forced, b.word, b.run_word),
+                         ("x11", "x11", "xrandr", "xrandr"))
+        self.assertEqual(b.indicator(), "backend: xrandr (X11)")
+        self.assertEqual(b.script_note(),
+                         "warandr: backend x11 forced (xrandr)")
+
+    def test_a_wayland_backend_runs_wxrandr_with_the_flag(self):
+        for spelling, name in (("mutter", "mutter"), ("gnome", "mutter"),
+                               ("kde", "kwin"), ("sway", "sway"),
+                               ("wlr", "wlr")):
+            b = randr.choose({"PATH": "/nonexist"}, forced=spelling)
+            self.assertEqual(b.argv, [sys.executable, "-m", "wxrandr",
+                                      "--backend", name], spelling)
+            self.assertTrue(b.wayland, spelling)
+            self.assertEqual((b.name, b.forced, b.word), (name, name,
+                                                          "wxrandr"))
+            self.assertEqual(b.run_word, "wxrandr --backend " + name)
+            self.assertEqual(b.indicator(),
+                             "backend: %s (Wayland)" % name)
+            self.assertEqual(b.env["PYTHONPATH"].split(os.pathsep)[0], ROOT)
+
+    def test_auto_is_the_default_and_changes_nothing(self):
+        env = {"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11", "PATH": "/nonexist"}
+        plain, auto = randr.choose(env), randr.choose(env, forced="auto")
+        self.assertEqual((auto.argv, auto.wayland, auto.forced),
+                         (plain.argv, plain.wayland, None))
+        self.assertIsNone(auto.script_note())
+
+    def test_forcing_a_wayland_backend_without_wxrandr_is_an_error(self):
+        orig = randr._package_root
+        randr._package_root = lambda name: None
+        try:
+            with self.assertRaises(randr.RandrError) as cm:
+                randr.choose({"PATH": "/nonexist"}, forced="mutter")
+        finally:
+            randr._package_root = orig
+        self.assertIn("needs wxrandr", str(cm.exception))
+        self.assertNotIn("xrandr --", str(cm.exception))   # no silent fallback
+
+    def test_an_unknown_name_lists_the_valid_ones(self):
+        with self.assertRaises(randr.RandrError) as cm:
+            randr.choose({}, forced="banana")
+        self.assertEqual(str(cm.exception), "unknown backend 'banana' "
+                         "(valid: auto, x11, sway, wlr, mutter, kwin)")
+
+    def test_the_override_is_still_the_command_that_runs(self):
+        env = self.fake_env()
+        b = randr.choose(env, forced="mutter")
+        self.assertEqual(b.argv[-2:], ["--backend", "mutter"])
+        self.assertTrue(b.wayland)
+        self.assertEqual(b.snapshot().command_line(), ARANDR_LINE.replace(
+            "xrandr ", "wxrandr ", 1))
+        b = randr.choose(env, forced="x11")
+        self.assertFalse(b.wayland)
+        self.assertNotIn("--backend", b.argv)
+
+    def test_identify_asks_the_runner_which_backend_it_is(self):
+        b = randr.choose(self.fake_env(), forced="mutter").identify()
+        self.assertEqual(b.name, "mutter")
+        self.assertEqual(b.info[0], "mutter")
+        detail = b.detail()
+        self.assertTrue(detail.startswith("backend: mutter (Wayland)\n"),
+                        detail)
+        self.assertIn("chosen by: --backend mutter", detail)
+        self.assertIn("compositor: Mutter (fake)", detail)
+        self.assertNotIn("\nmutter\n", detail)   # the token is not repeated
+        # the X11 runner is the real xrandr and knows no such option: the
+        # answer is composed here, without running anything
+        b = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11",
+                          "PATH": "/nonexist"}).identify()
+        self.assertEqual(b.name, "x11")
+        self.assertIn("backend: xrandr (X11)", b.detail())
+        self.assertIn("runs: xrandr", b.detail())
+
+    def test_identify_survives_a_runner_that_knows_nothing(self):
+        b = randr.Backend(["/nonexistent/wxrandr"], True)
+        self.assertEqual(b.identify().name, "wayland")
+        self.assertEqual(b.indicator(), "backend: wxrandr (Wayland)")
+
+    def test_probe_backends_reads_wxrandrs_table(self):
+        info = randr.probe_backends(self.fake_env())
+        self.assertEqual({k: v["available"] for k, v in info.items()},
+                         {"sway": False, "kwin": False, "mutter": True,
+                          "wlr": False, "x11": True})
+        self.assertEqual(info["sway"]["reason"],
+                         "no sway or i3 IPC socket ($SWAYSOCK)")
+        self.assertTrue(info["x11"]["auto"])
+        self.assertFalse(info["mutter"]["auto"])
+
+    def test_probe_backends_without_wxrandr_says_so(self):
+        orig = randr._package_root
+        randr._package_root = lambda name: None
+        try:
+            info = randr.probe_backends({"PATH": "/nonexist"})
+        finally:
+            randr._package_root = orig
+        self.assertFalse(any(info[n]["available"]
+                             for n in randr.WAYLAND_BACKENDS))
+        self.assertEqual(info["mutter"]["reason"], "wxrandr is not installed")
+        self.assertIn("x11", info)
+
+    def test_warandr_never_hands_its_process_over(self):
+        """It *chooses* which tool to run and runs it as a child -- which is
+        what makes the choice switchable while the window is open."""
+        for name in sorted(os.listdir(os.path.join(ROOT, "warandr"))):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(ROOT, "warandr", name)) as f:
+                src = f.read()
+            self.assertNotIn("maybe_exec_real", src, name)
+            self.assertNotIn("os.exec", src, name)
+
+    def test_the_saved_script_records_a_forced_backend_as_a_comment(self):
+        """A layout script is arandr's and must stay runnable by `sh` on a
+        plain X11 box, so the note is a comment -- never an option."""
+        lay = fixture_layout(hidpi=True)
+        note = "warandr: backend mutter forced (wxrandr --backend mutter)"
+        text = lay.to_script("wxrandr", note)
+        lines = text.rstrip("\n").split("\n")
+        self.assertEqual(lines[0], "#!/bin/sh")
+        self.assertEqual(lines[1], "# " + note)
+        self.assertTrue(lines[2].startswith("wxrandr --output "))
+        self.assertNotIn("--backend", lines[2])
+        # nothing forced: arandr's own two lines, byte for byte
+        self.assertEqual(lay.to_script("wxrandr"),
+                         "#!/bin/sh\n" + lines[2] + "\n")
+        # it loads back (the comment is not a second command line) and the
+        # file's own template wins on the way out: no second note
+        again = fixture_layout(hidpi=True)
+        again.load_script(text)
+        self.assertEqual(again.to_script("wxrandr", note), text)
+
+
 class Cli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

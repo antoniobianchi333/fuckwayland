@@ -534,8 +534,8 @@ class KwinCase(unittest.TestCase):
     def run_cli(self, *argv, env=None):
         tc = self
 
-        def fake_init(sess):
-            sess.backend = "kwin"
+        def fake_init(sess, forced=None):
+            sess.backend = cli.canonical_backend(forced) or "kwin"
             sess.ipc = sess.wlr = sess.mutter = None
             sess.kwin = tc.outputs()
             sess.persistent = os.environ.get("WXRANDR_PERSIST", "") not in (
@@ -1400,8 +1400,8 @@ class Detection(unittest.TestCase):
         self.orig_init = orig_init
         sessions = self.sessions
 
-        def recording_init(sess):
-            orig_init(sess)
+        def recording_init(sess, forced=None):
+            orig_init(sess, forced)
             sessions.append(sess)
         cli.Session.__init__ = recording_init
 

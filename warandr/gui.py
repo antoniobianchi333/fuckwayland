@@ -40,6 +40,11 @@ from .model import (REFLECTIONS, ROTATIONS, SCALES, LayoutError,  # noqa: E402
                     fmt_rate)
 
 TITLE = "Screen Layout Editor"
+# Layout ▸ Backend, in wxrandr's own order (the label, then the token that
+# --backend takes)
+BACKEND_ITEMS = (("Automatic", "auto"), ("X11 (xrandr)", "x11"),
+                 ("sway", "sway"), ("wlroots (wlr)", "wlr"),
+                 ("GNOME (mutter)", "mutter"), ("KDE (kwin)", "kwin"))
 ZOOMS = (4, 8, 16)     # arandr's View menu; Zoom In/Out walk this list
 MARGIN = 12
 SNAP_PX = 5            # arandr: tolerance = factor * 5 layout pixels
@@ -263,8 +268,11 @@ class OutputBox(Gtk.EventBox):
 
 
 class Application:
-    def __init__(self, backend, filename=None):
+    def __init__(self, backend, filename=None, display=None):
         self.backend = backend
+        self.display = display   # --randr-display, re-applied on a switch
+        self.backends = {}       # wxrandr --backends, once it has answered
+        self._syncing = False    # the Backend radios are being set, not used
         self.factor = 8
         self.selected = None
         self.layout = None
@@ -303,6 +311,10 @@ class Application:
         self.scroller.add(self.canvas_bg)
         vbox.pack_start(self.scroller, True, True, 0)
 
+        # the always-visible backend indicator, right of the one status line
+        # (a Gtk.Statusbar is a Gtk.Box): `backend: mutter (Wayland)`, with
+        # the whole of `--print-backend --verbose` in its tooltip
+        self.backend_label = Gtk.Label()
         self.status = Gtk.Statusbar()
         # one line, three sources by priority: a transient message (rejected
         # drop, saved file; gone after a few seconds or at the next redraw),
@@ -313,9 +325,11 @@ class Application:
         self._message_serial = 0
         # RUN_LAST signal: connect_after, so the label is already updated
         self.status.connect_after("text-pushed", self._status_changed)
+        self.status.pack_end(self.backend_label, False, False, 6)
         vbox.pack_start(self.status, False, False, 0)
 
         self.boxes = {}
+        self._refresh_backend()
         self.window.show_all()
         self.window.connect("configure-event",
                             lambda *_: self._schedule_dump())
@@ -324,6 +338,7 @@ class Application:
             self.load_file(filename)
         else:
             self.do_new()
+        self._identify_async()
 
     # -- chrome ---------------------------------------------------------------
 
@@ -339,6 +354,7 @@ class Application:
     def _build_menubar(self):
         bar = Gtk.MenuBar()
         layout = Gtk.Menu()
+        self._track_menu(layout, "layout")
         layout.append(self._item("_New", self.do_new, "<Control>n"))
         layout.append(self._item("_Open...", self.do_open, "<Control>o"))
         layout.append(self._item("Save _As...", self.do_save_as,
@@ -349,6 +365,7 @@ class Application:
         layout.append(self.apply_item)
         layout.append(self._item("Script _Properties", self.do_properties,
                                  "<Alt>Return"))
+        layout.append(self._build_backend_menu())
         layout.append(Gtk.SeparatorMenuItem())
         layout.append(self._item("_Quit", Gtk.main_quit, "<Control>q"))
         m = Gtk.MenuItem.new_with_mnemonic("_Layout")
@@ -385,6 +402,29 @@ class Application:
         self.menubar = bar
         return bar
 
+    def _build_backend_menu(self):
+        """Layout ▸ Backend: which tool talks to the screen.  It sits with
+        Apply and Script Properties because it governs both — arandr has no
+        such menu, and View is about how the canvas is drawn, not about who
+        answers.  Radios: Automatic, X11 and each of wxrandr's Wayland
+        backends; the ones this session cannot reach are insensitive and
+        carry the reason in their tooltip (GTK 3 does not pop a tooltip over
+        an insensitive item, so the same table is in Script Properties)."""
+        menu = Gtk.Menu()
+        self._track_menu(menu, "backend")
+        group = None
+        self._backend_items = {}
+        for label, name in BACKEND_ITEMS:
+            r = Gtk.RadioMenuItem.new_with_label_from_widget(group, label)
+            group = group or r
+            self._backend_items[name] = r
+            r.connect("toggled", self._backend_radio, name)
+            menu.append(r)
+        item = Gtk.MenuItem.new_with_mnemonic("_Backend")
+        item.set_submenu(menu)
+        self.backend_menu_item = item
+        return item
+
     def _build_toolbar(self):
         tb = Gtk.Toolbar()
         tb.set_style(Gtk.ToolbarStyle.BOTH_HORIZ)
@@ -409,6 +449,89 @@ class Application:
         add("zoom_out", "zoom-out", "Zoom out", self.zoom_out)
         add("zoom_fit", "zoom-fit-best", "Fit", self.zoom_fit)
         return tb
+
+    # -- backend --------------------------------------------------------------
+
+    def _sync_backend_menu(self):
+        """The radios follow the live backend; availability follows the last
+        `wxrandr --backends` (nothing is greyed before it has answered, and
+        the current choice is never greyed out from under the user)."""
+        want = self.backend.forced or "auto"
+        self._syncing = True
+        try:
+            for name, item in self._backend_items.items():
+                info = self.backends.get(name)
+                if info is not None:
+                    ok = info["available"] or name == want
+                    item.set_sensitive(ok)
+                    item.set_tooltip_text(
+                        "" if info["available"] else
+                        "not available in this session: %s" % info["reason"])
+            self._backend_items[want].set_active(True)
+        finally:
+            self._syncing = False
+
+    def _backend_radio(self, item, name):
+        if self._syncing or not item.get_active():
+            return
+        self.set_backend(name)
+
+    def _refresh_backend(self):
+        self.backend_label.set_text(self.backend.indicator())
+        self.backend_label.set_tooltip_text(self.backend.detail())
+        self._sync_backend_menu()
+        _dump("backend", {"name": self.backend.name,
+                          "forced": self.backend.forced,
+                          "indicator": self.backend.indicator(),
+                          "word": self.backend.run_word,
+                          "available": {k: v["available"]
+                                        for k, v in self.backends.items()},
+                          "ok": True})
+
+    def _identify_async(self):
+        """`--print-backend --verbose` (which backend is this, really?) and
+        `--backends` (what else could it be?) run off the main loop: the
+        window is already up, and a wedged compositor must not hold it."""
+        backend = self.backend
+
+        def work():
+            backend.identify()
+            info = randr.probe_backends(backend.env)
+            GLib.idle_add(self._identified, backend, info)
+        threading.Thread(target=work, name="warandr-backend",
+                         daemon=True).start()
+
+    def _identified(self, backend, info):
+        if info:
+            self.backends = info
+        if self.backend is backend:
+            self._refresh_backend()
+        return False
+
+    def set_backend(self, name):
+        """Switch the tool that talks to the screen: re-read the layout
+        through it, redraw, and from then on Apply, the command in the
+        status bar and a saved script are that backend's.  One that cannot
+        be reached keeps the previous choice — the window is never left
+        empty — and says why in an Apply-shaped dialog."""
+        previous = self.backend
+        try:
+            backend = randr.choose(forced=name)
+            backend.set_display(self.display)
+            layout = backend.snapshot()
+        except (randr.RandrError, LayoutError, OSError) as e:
+            _dump("backend", {"name": previous.name, "wanted": name,
+                              "forced": previous.forced, "ok": False,
+                              "error": str(e)})
+            _msg(self.window, Gtk.MessageType.ERROR,
+                 "Cannot use the %s backend:\n%s" % (name, e))
+            self._sync_backend_menu()     # the radio goes back
+            return False
+        self.backend = backend
+        self._refresh_backend()
+        self.set_layout(layout)
+        self._identify_async()
+        return True
 
     # -- state ----------------------------------------------------------------
 
@@ -456,7 +579,7 @@ class Application:
         _dump("status", {"text": self.status_text()})
 
     def command_text(self):
-        return self.layout.command_line(self.backend.word)
+        return self.layout.command_line(self.backend.run_word)
 
     def set_layout(self, layout):
         self.layout = layout
@@ -571,7 +694,8 @@ class Application:
                          "coords": "window" if _is_wayland() else "root",
                          "window": [win.get_width(), win.get_height()]
                          if win is not None else None,
-                         "settled": settled,
+                         "settled": settled, "backend": self.backend.name,
+                         "backend_label": self.backend.label,
                          "factor": self.factor, "status": self.status_text(),
                          "busy": self._busy,
                          "command": self.layout.args() if self.layout
@@ -625,7 +749,7 @@ class Application:
         model — the X11 GUI test checks the two agree."""
         if not DUMP:
             return False
-        items, modelled = {}, {}
+        items, modelled, sensitive, tips, active = {}, {}, {}, {}, {}
         for it in menu.get_children():
             if not isinstance(it, Gtk.MenuItem) or \
                     isinstance(it, Gtk.SeparatorMenuItem):
@@ -637,7 +761,13 @@ class Application:
             r = m if _is_wayland() else _root_origin(it)
             if r:
                 items[label] = r
+            sensitive[label] = it.get_sensitive()
+            tips[label] = it.get_tooltip_text() or ""
+            if isinstance(it, Gtk.CheckMenuItem):
+                active[label] = it.get_active()
         _dump("menu", {"name": name, "items": items, "modelled": modelled,
+                       "sensitive": sensitive, "tooltips": tips,
+                       "active": active,
                        "coords": "window" if _is_wayland() else "root"})
         return False
 
@@ -868,7 +998,8 @@ class Application:
             if r != Gtk.ResponseType.ACCEPT or not fn:
                 return
         try:
-            path = cli.write_script(self.layout, fn, self.backend.word)
+            path = cli.write_script(self.layout, fn, self.backend.word,
+                                    self.backend.script_note())
         except OSError as e:
             _msg(self.window, Gtk.MessageType.ERROR, "Cannot save:\n%s" % e)
             return
@@ -940,13 +1071,24 @@ class Application:
         tv = Gtk.TextView()
         tv.set_editable(False)
         tv.set_monospace(True)
-        tv.get_buffer().set_text(self.layout.to_script(self.backend.word))
+        tv.get_buffer().set_text(self.layout.to_script(
+            self.backend.word, self.backend.script_note()))
         sw = Gtk.ScrolledWindow()
         sw.add(tv)
         nb = Gtk.Notebook()
         nb.append_page(sw, Gtk.Label(label="Script"))
-        info = Gtk.Label(label="backend: %s\nsource: %s" % (
-            self.backend.describe(), self.backend.source))
+        text = self.backend.detail()
+        if self.backends:
+            text += "\n\nbackends in this session:"
+            for name, _lbl in ((n, lb) for lb, n in BACKEND_ITEMS
+                               if n != "auto"):
+                what = self.backends.get(name)
+                if what is None:
+                    continue
+                text += "\n  %-6s %s" % (
+                    name, "available" if what["available"]
+                    else "unavailable: " + what["reason"])
+        info = Gtk.Label(label=text)
         info.set_selectable(True)
         nb.append_page(info, Gtk.Label(label="Backend"))
         d.get_content_area().pack_start(nb, True, True, 0)
@@ -960,7 +1102,8 @@ class Application:
         d.set_version(VERSION.split()[-1])
         d.set_comments("Another XRandR GUI - on Wayland through wxrandr, on "
                        "X11 through xrandr.\nA drop-in arandr clone; layout "
-                       "scripts are interchangeable.")
+                       "scripts are interchangeable.\n\n"
+                       + self.backend.detail())
         d.set_website("https://github.com/zardus/fuckwayland")
         d.set_logo_icon_name("video-display")
         d.run()
@@ -971,7 +1114,7 @@ class Application:
         return 0
 
 
-def run(backend, filename=None):
+def run(backend, filename=None, display=None):
     ok, _argv = Gtk.init_check([])
     if not ok:
         disp = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
@@ -979,7 +1122,7 @@ def run(backend, filename=None):
                          % (" " + disp if disp else " (DISPLAY is not set)"))
         return 1
     try:
-        app = Application(backend, filename)
+        app = Application(backend, filename, display)
     except randr.RandrError as e:
         sys.stderr.write("warandr: %s\n" % e)
         return 1

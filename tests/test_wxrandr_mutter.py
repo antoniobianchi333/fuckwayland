@@ -497,8 +497,8 @@ class MutterCase(unittest.TestCase):
     def run_cli(self, *argv, env=None):
         tc = self
 
-        def fake_init(sess):
-            sess.backend = "mutter"
+        def fake_init(sess, forced=None):
+            sess.backend = cli.canonical_backend(forced) or "mutter"
             sess.ipc = sess.wlr = None
             sess.mutter = tc.outputs()
             sess.persistent = os.environ.get("WXRANDR_PERSIST", "") not in ("", "0")
@@ -1352,8 +1352,8 @@ class Detection(MutterCase):
         self.orig_init = cli.Session.__init__
         opened = self.opened
 
-        def recording_init(sess):
-            self.orig_init(sess)
+        def recording_init(sess, forced=None):
+            self.orig_init(sess, forced)
             if sess.mutter is not None:
                 opened.append(sess.mutter)
         cli.Session.__init__ = recording_init
@@ -1419,7 +1419,7 @@ class Detection(MutterCase):
         self.mock.mutter = None
         orig = core.WlrOutputs
 
-        def no_wlr():
+        def no_wlr(conn=None):
             raise core.Fatal("no wlr\n")
         core.WlrOutputs = no_wlr
         try:

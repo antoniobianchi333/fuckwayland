@@ -808,7 +808,7 @@ def exec_real(tool, real, args, env=None) -> int:
 
 
 def maybe_exec_real(tool, args=None, *, fallback_native=False, entry=True,
-                    env=None):
+                    env=None, force=False):
     """The hook every CLI calls first. Returns None to keep running our own
     code, or an exit status to return from `main()` (it usually does not
     return at all: `os.execve` replaces the process).
@@ -819,12 +819,18 @@ def maybe_exec_real(tool, args=None, *, fallback_native=False, entry=True,
     `entry=False` says an explicit argv was handed to `main()` by a caller
     embedding us as a library (the whole test suite does this): replacing
     *their* process would be violent, so we never do it.
+
+    `force=True` hands over whatever the session says (API note, this file
+    being frozen: added for `wxrandr --backend x11`, which is a user asking
+    for the real tool in so many words -- a Wayland session included).  It
+    does not override `entry`: a library caller's process is still never
+    replaced.
     """
     tool = real_name(tool)
     e = os.environ if env is None else env
     if not entry:
         return None
-    if session_kind(tool, e) != "x11":
+    if not force and session_kind(tool, e) != "x11":
         return None
     args = list(sys.argv[1:] if args is None else args)
     try:

@@ -13,6 +13,15 @@ Any other argv is an *apply*: it is appended as one JSON line to
 sees the new layout exactly like the real tools would show it.
 ``FAKE_XRANDR_FAIL=<message>`` makes the next apply print that message to
 stderr and exit 1 without touching the state.
+
+It also simulates wxrandr's backend options, which is how the GUI test drives
+Layout ▸ Backend: a leading ``--backend NAME`` (or ``--backend=NAME``) is
+accepted and stripped from every invocation, ``--print-backend`` (with
+``--verbose``) and ``--backends`` answer like wxrandr's, and
+``FAKE_XRANDR_BACKEND_FAIL=NAME`` makes every invocation forced to NAME fail
+with one line, so a refused switch can be tested.  ``FAKE_XRANDR_AUTO_BACKEND``
+(default ``x11``) is the one auto would pick, ``FAKE_XRANDR_QUERY_LOG`` gets
+one JSON line per *query* — the apply log stays the applies only.
 """
 
 import json
@@ -47,6 +56,69 @@ DEFAULT = {
          "modes": [[1280, 720, 60000, True], [800, 600, 60317, False]]},
     ],
 }
+
+
+#: name -> (available, reason or what makes it available)
+BACKENDS = {
+    "sway": (False, "no sway or i3 IPC socket ($SWAYSOCK)"),
+    "kwin": (False, "the compositor does not advertise "
+                    "kde_output_management_v2"),
+    "mutter": (True, "org.gnome.Mutter.DisplayConfig on the session bus"),
+    "wlr": (False, "the compositor does not advertise zwlr_output_manager_v1"),
+    "x11": (True, "/usr/bin/xrandr"),
+}
+WAYLAND_BACKENDS = ("sway", "wlr", "mutter", "kwin")
+
+
+def auto_backend():
+    return os.environ.get("FAKE_XRANDR_AUTO_BACKEND") or "x11"
+
+
+def take_backend(argv):
+    """Strip a leading/other ``--backend NAME`` out of argv, like wxrandr's
+    own parse; returns (name or None, the rest)."""
+    name, rest, i = None, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--backend" and i + 1 < len(argv):
+            name = argv[i + 1]
+            i += 2
+        elif a.startswith("--backend="):
+            name = a.split("=", 1)[1]
+            i += 1
+        else:
+            rest.append(a)
+            i += 1
+    return name, rest
+
+
+def print_backend(forced, verbose):
+    name = forced or auto_backend()
+    lines = [name]
+    if verbose:
+        ok, why = BACKENDS.get(name, (False, "unknown backend"))
+        lines += ["session: %s" % ("wayland" if name in WAYLAND_BACKENDS
+                                   else "x11"),
+                  "chosen by: %s" % ("flag (--backend %s)" % forced if forced
+                                     else "detection")]
+        if name == "x11":
+            lines += ["compositor: X server (RandR)", "real xrandr: " + why]
+        else:
+            lines += ["compositor: %s (fake)" % name.capitalize(),
+                      "protocol: %s (fake)" % name]
+        lines.append("available: %s" % ("yes" if ok else "no (%s)" % why))
+    return "\n".join(lines) + "\n"
+
+
+def backends_table():
+    auto = auto_backend()
+    out = ""
+    for name in ("sway", "kwin", "mutter", "wlr", "x11"):
+        ok, why = BACKENDS[name]
+        out += "%s %-6s  %-11s  %s\n" % ("*" if name == auto else " ", name,
+                                         "available" if ok else "unavailable",
+                                         why)
+    return out
 
 
 def state_path():
@@ -211,8 +283,24 @@ def size_of(d):
 
 
 def main(argv):
+    given = list(argv)          # what the log records: the flag included
+    backend, argv = take_backend(argv)
+    if backend and backend == os.environ.get("FAKE_XRANDR_BACKEND_FAIL"):
+        sys.stderr.write("xrandr: --backend %s is not available in this "
+                         "session: the fake says so\n" % backend)
+        return 1
+    if "--print-backend" in argv:
+        sys.stdout.write(print_backend(backend, "--verbose" in argv))
+        return 0
+    if "--backends" in argv:
+        sys.stdout.write(backends_table())
+        return 0
     if argv in ([], ["-q"], ["--query"], ["--current"], ["--verbose"],
                 ["--current", "--verbose"], ["--verbose", "--current"]):
+        qlog = os.environ.get("FAKE_XRANDR_QUERY_LOG")
+        if qlog:
+            with open(qlog, "a") as f:
+                f.write(json.dumps({"backend": backend, "argv": argv}) + "\n")
         sys.stdout.write(render(load(), "--verbose" in argv))
         return 0
     if argv in (["--version"], ["-v"]):
@@ -222,7 +310,7 @@ def main(argv):
     log = os.environ.get("FAKE_XRANDR_LOG")
     if log:
         with open(log, "a") as f:
-            f.write(json.dumps(argv) + "\n")
+            f.write(json.dumps(given) + "\n")
     fail = os.environ.get("FAKE_XRANDR_FAIL")
     if fail:
         sys.stderr.write(fail if fail.endswith("\n") else fail + "\n")

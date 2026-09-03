@@ -9,6 +9,9 @@ Byte-parity notes (SCRATCH/reference/xrandr-notes.md + captures):
 - bare invocation / -q / --verbose query; --verbose with a 1.0-only set adds
   the RandR 1.0 table; mode-store operations with no other action exit
   silently like the real thing.
+- wxrandr's own options stay out of the usage text, so `--help` is still
+  xrandr's bytes: `--persistent`, `--backend NAME`, `--print-backend`,
+  `--backends`.
 """
 
 import os
@@ -101,6 +104,9 @@ class Opts:
         self.dpi = None            # float or output name
         self.noprimary = False
         self.persistent = False    # --persistent (Mutter: write monitors.xml)
+        self.backend = None        # --backend NAME (None: auto)
+        self.print_backend = False  # --print-backend
+        self.list_backends = False  # --backends
         self.global_auto = False
         self.stanzas = []
         self.mode_ops = []         # ("new", name, modeline)/("rm", name)/
@@ -384,6 +390,21 @@ def parse(argv: list) -> Opts:
             # wxrandr extension (not in xrandr's usage): on Mutter apply with
             # method 2 so the layout lands in ~/.config/monitors.xml
             o.persistent = True
+        elif a == "--backends":
+            # wxrandr extension: one line per backend with its availability
+            o.list_backends = True
+            o.action = True
+        elif a == "--print-backend":
+            # wxrandr extension: the chosen backend, then exit
+            o.print_backend = True
+            o.action = True
+        elif a == "--backend" or a.startswith("--backend="):
+            # wxrandr extension: force the backend for this invocation
+            v = a.split("=", 1)[1] if a.startswith("--backend=") else need()
+            if canonical_backend(v) is None:
+                raise ArgErr("--backend: invalid argument '%s'; valid: %s\n"
+                             % (v, ", ".join(BACKEND_NAMES)))
+            o.backend = canonical_backend(v)
         elif a == "--newmode":
             name = need()
             clock = _number(need())
@@ -435,6 +456,325 @@ def parse(argv: list) -> Opts:
 
 # -- backends -----------------------------------------------------------------
 
+#: what `--backend` accepts.  Real xrandr has no such option (nor
+#: `--print-backend`/`--backends`), so every byte of its own surface --
+#: `--help`, the query, the errors -- is untouched by them.
+WAYLAND_BACKENDS = ("sway", "wlr", "mutter", "kwin")
+BACKEND_NAMES = ("auto", "x11") + WAYLAND_BACKENDS
+BACKEND_ALIASES = {"gnome": "mutter", "kde": "kwin"}
+#: the auto-detection order, unchanged: a sway/i3 IPC socket, then a
+#: compositor advertising kde_output_management_v2, then a session bus owning
+#: org.gnome.Mutter.DisplayConfig -- and wlr as what is left, which is
+#: therefore never probed for the decision.
+AUTO_ORDER = ("sway", "kwin", "mutter")
+AUTO_FALLBACK = "wlr"
+_SWAY_GET_VERSION = 7          # i3-ipc GET_VERSION
+_WLR_IFACE = "zwlr_output_manager_v1"
+
+#: options that consume arguments, for the argv look-ahead below.  Kept in
+#: step with parse(): everything else consumes none, `--newmode` is special.
+_ARITY = {
+    "-d": 1, "--display": 1, "--screen": 1, "--fb": 1, "--fbmm": 1,
+    "--dpi": 1, "-o": 1, "--orientation": 1, "-s": 1, "--size": 1, "-r": 1,
+    "--rate": 1, "--refresh": 1, "--output": 1, "--mode": 1, "--pos": 1,
+    "--rotate": 1, "--reflect": 1, "--left-of": 1, "--right-of": 1,
+    "--above": 1, "--below": 1, "--same-as": 1, "--scale": 1,
+    "--scale-from": 1, "--transform": 1, "--filter": 1, "--crtc": 1,
+    "--panning": 1, "--gamma": 1, "--brightness": 1, "--rmmode": 1,
+    "--delmonitor": 1, "--backend": 1,
+    "--set": 2, "--addmode": 2, "--delmode": 2,
+    "--setprovideroutputsource": 2, "--setprovideroffloadsink": 2,
+    "--setmonitor": 3,
+}
+
+
+def canonical_backend(value):
+    """The canonical spelling of a backend name (aliases resolved), or None
+    when it is not one of ours."""
+    v = (value or "").strip().lower()
+    v = BACKEND_ALIASES.get(v, v)
+    return v if v in BACKEND_NAMES else None
+
+
+def scan_backend_argv(argv):
+    """`(value of --backend or None, an informational option is present,
+    argv without our flag)`, read out of a raw argv *before* anything is
+    parsed -- which is where main() has to decide whether this X11 session
+    hands over to the real xrandr.  The stripped argv is what the original
+    is then exec'd with: `--backend x11` asks for the real xrandr, which
+    has no such option to be handed.
+
+    argv is walked exactly the way parse() walks it, every option consuming
+    its own arguments, so a *value* that happens to spell one of our options
+    (`--output --backend`, `--mode --backends`) is a value here too and can
+    never be mistaken for the flag.  Never raises: an argv the parser will
+    reject is not this hook's business.
+    """
+    backend = None
+    info = False
+    rest = []
+    i, n = 0, len(argv)
+    while i < n:
+        a = argv[i]
+        if a == "--backend":
+            if i + 1 < n:
+                backend = argv[i + 1]           # last one wins, like parse()
+            i += 2
+            continue
+        if a.startswith("--backend="):
+            backend = a.split("=", 1)[1]
+            i += 1
+            continue
+        if a in ("--print-backend", "--backends"):
+            info = True
+        take = 1 + _ARITY.get(a, 0)
+        if a == "--newmode":                    # name, clock, 8 numbers, flags
+            take = 11
+            while i + take < n and argv[i + take].lower() in core.MODE_FLAGS:
+                take += 1
+        rest.extend(argv[i:i + take])
+        i += take
+    return backend, info, rest
+
+
+class Probe:
+    """What one backend's availability check found.  `handle` is the live
+    connection the probe opened, which Session reuses so a session still
+    opens exactly one; `close()` drops it when nothing wants it."""
+
+    def __init__(self, name, available, reason="", detail="",
+                 compositor=None, protocol=None, handle=None):
+        self.name = name
+        self.available = available
+        self.reason = reason            # short, true, only when unavailable
+        self.detail = detail            # what makes it available
+        self.compositor = compositor
+        self.protocol = protocol
+        self.handle = handle
+
+    def close(self):
+        h, self.handle = self.handle, None
+        try:
+            if hasattr(h, "close"):
+                h.close()
+        except Exception:               # a probe never raises, closing least
+            pass
+
+
+def _probe_x11(env):
+    try:
+        real = passthrough.real_tool("xrandr", env)
+    except passthrough.RealToolError as e:
+        return Probe("x11", False, str(e).split("\n")[0])
+    if real is None:
+        return Probe("x11", False,
+                     "no real xrandr on PATH (install x11-xserver-utils)")
+    return Probe("x11", True, detail=real, compositor="X server (RandR)")
+
+
+def _probe_sway(verbose=False):
+    from wdotool import session as wsession
+    sock = wsession.find_sway_socket()
+    if not sock:
+        return Probe("sway", False, "no sway or i3 IPC socket ($SWAYSOCK)")
+    p = Probe("sway", True, detail="IPC socket %s" % sock, compositor="sway",
+              protocol="sway IPC (i3-ipc)", handle=sock)
+    if verbose:
+        try:
+            ipc = core.SwayIPC(sock)
+            try:
+                v = ipc.msg(_SWAY_GET_VERSION)
+                if isinstance(v, dict) and v.get("human_readable"):
+                    p.compositor = "sway %s" % v["human_readable"]
+            finally:
+                ipc.sock.close()
+        except Exception:
+            pass
+    return p
+
+
+def _probe_kwin():
+    from wdotool import session as wsession
+    from wxrandr import kwin as kwin_mod
+    conn = kwin_mod.probe()
+    if conn is None:
+        if wsession.find_wayland_socket() is None:
+            return Probe("kwin", False, "no wayland socket")
+        return Probe("kwin", False, "the compositor does not advertise "
+                     + kwin_mod.MGMT)
+    ver = None
+    try:
+        for iface, v in conn.get_registry().values():
+            if iface == kwin_mod.MGMT:
+                ver = v
+    except Exception:
+        pass
+    what = kwin_mod.MGMT + ("" if ver is None else " version %d" % ver)
+    return Probe("kwin", True, detail=what, compositor="KWin", protocol=what,
+                 handle=conn)
+
+
+def _probe_mutter():
+    from wdotool import session as wsession
+    from wxrandr import mutter as mutter_mod
+    bus = mutter_mod.probe()
+    if bus is None:
+        if not wsession.find_session_bus():
+            return Probe("mutter", False, "no session bus")
+        return Probe("mutter", False, "%s is not on the session bus"
+                     % mutter_mod.DEST)
+    return Probe("mutter", True,
+                 detail="%s on the session bus" % mutter_mod.DEST,
+                 compositor="Mutter", protocol="%s (D-Bus)" % mutter_mod.DEST,
+                 handle=bus)
+
+
+def _probe_wlr():
+    from wdotool import session as wsession
+    try:
+        from wdotool.wayland_mini import WlConn
+        hit = wsession.find_wayland_socket()
+        if hit is None:
+            return Probe("wlr", False, "no wayland socket")
+        conn = WlConn(hit[2])
+        conn.sock.settimeout(10.0)
+    except Exception:
+        return Probe("wlr", False, "cannot connect to the compositor")
+    try:
+        g = conn.find_global(_WLR_IFACE)
+    except Exception:
+        g = None
+    if g is None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return Probe("wlr", False,
+                     "the compositor does not advertise " + _WLR_IFACE)
+    what = "%s version %d" % (_WLR_IFACE, g[1])
+    return Probe("wlr", True, detail=what, compositor="wlroots",
+                 protocol=what, handle=conn)
+
+
+def probe_backend(name, env=None, verbose=False):
+    """Whether `name` can be used in this session, and why not when it
+    cannot.  Never raises -- this runs during backend selection."""
+    env = os.environ if env is None else env
+    if name == "x11":
+        return _probe_x11(env)
+    if name == "sway":
+        return _probe_sway(verbose)
+    if name == "kwin":
+        return _probe_kwin()
+    if name == "mutter":
+        return _probe_mutter()
+    if name == "wlr":
+        return _probe_wlr()
+    return Probe(name, False, "unknown backend")
+
+
+def detect_wayland(probes=None, verbose=False):
+    """`(name, probes)` -- the detection order, unchanged.  wlr is the
+    fallback and is not probed for the decision: it is what is left."""
+    probes = {} if probes is None else probes
+    for name in AUTO_ORDER:
+        p = probes.get(name) or probe_backend(name, verbose=verbose)
+        probes[name] = p
+        if p.available:
+            return name, probes
+    return AUTO_FALLBACK, probes
+
+
+def resolve_backend(flag=None, env=None):
+    """`(name, source, note)` for the two explicit steps of the precedence
+    rule -- `--backend` beats `$WXRANDR_BACKEND` beats auto-detection.
+    `name` is None when neither spoke and the caller must detect."""
+    env = os.environ if env is None else env
+    name = canonical_backend(flag)
+    if name is not None and name != "auto":
+        return name, "flag", "--backend %s" % name
+    raw = env.get("WXRANDR_BACKEND", "")
+    name = canonical_backend(raw)
+    if name is not None and name != "auto":
+        return name, "environment", "WXRANDR_BACKEND=%s" % raw.strip()
+    return None, "detection", None
+
+
+def chosen_backend(flag=None, env=None, verbose=False, probes=None):
+    """`(name, source, note, probes)` -- the backend this invocation uses,
+    without touching the layout.  Detection asks the session kind first: on
+    X11 the answer is `x11`, because that is where main() hands over."""
+    env = os.environ if env is None else env
+    probes = {} if probes is None else probes
+    name, source, note = resolve_backend(flag, env)
+    if name is None:
+        if passthrough.session_kind("xrandr", env) == "x11":
+            name = "x11"
+        else:
+            name, probes = detect_wayland(probes, verbose=verbose)
+    return name, source, note, probes
+
+
+def print_backend_lines(flag=None, env=None, verbose=False):
+    """`--print-backend`: the token, machine-readable, on the first line;
+    with --verbose the session, the reason, and what is on the other end."""
+    env = os.environ if env is None else env
+    name, source, note, probes = chosen_backend(flag, env, verbose=verbose)
+    lines = [name]
+    if verbose:
+        p = probes.get(name) or probe_backend(name, env=env, verbose=True)
+        probes[name] = p
+        lines.append("session: %s"
+                     % (passthrough.session_kind("xrandr", env) or "unknown"))
+        lines.append("chosen by: %s"
+                     % (source if note is None else "%s (%s)" % (source, note)))
+        if p.compositor:
+            lines.append("compositor: %s" % p.compositor)
+        if p.protocol:
+            lines.append("protocol: %s" % p.protocol)
+        if name == "x11" and p.available:
+            lines.append("real xrandr: %s" % p.detail)
+        lines.append("available: %s"
+                     % ("yes" if p.available else "no (%s)" % p.reason))
+    for p in probes.values():
+        p.close()
+    return lines
+
+
+def backends_lines(env=None):
+    """`--backends`: every backend, its availability in this session, a
+    short true reason when it has none, and `*` on the one auto picks."""
+    env = os.environ if env is None else env
+    probes = {}
+    if passthrough.session_kind("xrandr", env) == "x11":
+        auto = "x11"
+    else:
+        auto, probes = detect_wayland(probes)
+    lines = []
+    for name in AUTO_ORDER + (AUTO_FALLBACK, "x11"):
+        p = probes.get(name) or probe_backend(name, env=env)
+        probes[name] = p
+        lines.append("%s %-6s  %-11s  %s"
+                     % ("*" if name == auto else " ", name,
+                        "available" if p.available else "unavailable",
+                        p.detail if p.available else p.reason))
+    for p in probes.values():
+        p.close()
+    return lines
+
+
+def _do_backend_info(opts) -> int:
+    """`--print-backend` / `--backends`: answer and exit 0, having touched
+    no layout (and, on an X11 session, having handed nothing over)."""
+    if opts.print_backend:
+        for line in print_backend_lines(opts.backend, verbose=opts.verbose):
+            print(line)
+    if opts.list_backends:
+        for line in backends_lines():
+            print(line)
+    return 0
+
+
 class Session:
     """Compositor connection bundle: chosen backend + state file + wlr
     enrichment. Built lazily — --help/parse errors never touch a socket.
@@ -443,35 +783,44 @@ class Session:
     advertises kde_output_management_v2 — no portal, no polkit), mutter
     (GNOME: the session bus owns org.gnome.Mutter.DisplayConfig — no
     extension, no root), wlr (anything with zwlr_output_management).
-    WXRANDR_BACKEND=sway|wlr|kwin (alias kde)|mutter (alias gnome) forces
-    one. KWin is probed after sway and before GNOME and wlroots, and its
-    probe *is* the Wayland connection the backend then keeps, so a KDE
-    session still opens exactly one."""
+    `--backend NAME` beats WXRANDR_BACKEND=sway|wlr|kwin (alias kde)|mutter
+    (alias gnome), which beats detection; the order there is unchanged --
+    sway, then KWin, then GNOME, then wlroots, which is the fallback and is
+    not probed for it. KWin's probe *is* the Wayland connection the backend
+    then keeps, so a KDE session still opens exactly one, and a backend
+    forced with the flag is probed the same way: an unavailable one is one
+    fatal line naming what was missing, never a silent fallback.  The
+    environment variable keeps its older behaviour (no pre-check: whatever
+    the backend itself says when it cannot connect)."""
 
-    BACKENDS = ("sway", "wlr", "mutter", "kwin")
+    BACKENDS = WAYLAND_BACKENDS
 
-    def __init__(self):
+    def __init__(self, forced=None):
         from wdotool import session as wsession
-        self.backend = os.environ.get("WXRANDR_BACKEND")
-        if self.backend == "gnome":
-            self.backend = "mutter"
-        elif self.backend == "kde":
-            self.backend = "kwin"
-        sway_sock = wsession.find_sway_socket()
-        probe = None
-        kprobe = None
-        if self.backend not in self.BACKENDS:
-            if sway_sock:
-                self.backend = "sway"
-            else:
-                from wxrandr import kwin as kwin_mod
-                kprobe = kwin_mod.probe()
-                if kprobe is not None:
-                    self.backend = "kwin"
-                else:
-                    from wxrandr import mutter as mutter_mod
-                    probe = mutter_mod.probe()
-                    self.backend = "mutter" if probe is not None else "wlr"
+        name, self.backend_source, self.backend_note = resolve_backend(forced)
+        probes = {}
+        if name == "x11":
+            # unreachable from a command line: main() hands an X11 choice
+            # over to the real xrandr before a single option is parsed.
+            raise Fatal("--backend x11 hands over to the real xrandr, which "
+                        "an embedded call cannot do\n")
+        if name is None:
+            name, probes = detect_wayland()
+        elif self.backend_source == "flag":
+            p = probes[name] = probe_backend(name)
+            if not p.available:
+                p.close()
+                raise Fatal("--backend %s is not available in this session: "
+                            "%s\n" % (name, p.reason))
+        self.backend = name
+
+        def reuse(bname):
+            p = probes.get(bname)
+            return p.handle if p is not None and p.available else None
+        sway_sock = reuse("sway")
+        kprobe = reuse("kwin")
+        probe = reuse("mutter")
+        wprobe = reuse("wlr")
         self.ipc = None
         self.wlr = None
         self.mutter = None
@@ -508,7 +857,7 @@ class Session:
                 self._cant_open()
         else:
             try:
-                self.wlr = core.WlrOutputs()
+                self.wlr = core.WlrOutputs(conn=wprobe)
             except (Fatal, OSError):
                 self._cant_open()
         # state is keyed by the compositor's wayland socket so all backends
@@ -907,6 +1256,10 @@ def _do_1_0(sess: Session, opts: Opts, outputs) -> int:
 
 def _run(argv) -> int:
     opts = parse(argv)
+    if opts.print_backend or opts.list_backends:
+        # informational and layout-free: they answer even where an action
+        # would have been handed over to the real xrandr
+        return _do_backend_info(opts)
     if not opts.action:
         opts.query = True
     if opts.verbose:
@@ -915,7 +1268,7 @@ def _run(argv) -> int:
             opts.query_1 = True
     if opts.version:
         print("xrandr program version       " + core.PROGRAM_VERSION)
-    sess = Session()
+    sess = Session(opts.backend)
     if opts.persistent:
         sess.persistent = True
     if opts.screen > 0:
@@ -969,11 +1322,22 @@ def _run(argv) -> int:
 
 
 def main(argv=None) -> int:
-    # X11 session: the X server's RandR is authoritative, hand over.
-    rc = passthrough.maybe_exec_real(
-        "xrandr", sys.argv[1:] if argv is None else argv, entry=argv is None)
-    if rc is not None:
-        return rc
+    # X11 session: the X server's RandR is authoritative, hand over -- but
+    # the handover happens before any parsing, so it has to look ahead for
+    # `--backend`: one of our own backends must run our own code whatever the
+    # session, `--backend x11` must hand over whatever the session, and
+    # `--print-backend`/`--backends` answer for themselves everywhere.
+    entry = argv is None
+    args = list(sys.argv[1:] if entry else argv)
+    flag, info_only, stripped = scan_backend_argv(args)
+    forced = canonical_backend(flag)
+    ours = info_only or (flag is not None and forced not in ("auto", "x11"))
+    if not ours:
+        rc = passthrough.maybe_exec_real(
+            "xrandr", args if flag is None else stripped, entry=entry,
+            force=forced == "x11")
+        if rc is not None:
+            return rc
     if argv is None:
         argv = sys.argv[1:]
     try:
