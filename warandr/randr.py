@@ -112,7 +112,12 @@ def choose(env=None):
             raise RandrError("WARANDR_XRANDR is empty")
         wayland = any("wxrandr" in os.path.basename(a) for a in argv)
         source = "WARANDR_XRANDR"
-    elif passthrough.session_kind(env=env) == "wayland":
+    # respect_override=False: $FUCKWAYLAND_PASSTHROUGH says what to do about
+    # *handing over to the original*, and warandr never hands over -- it only
+    # picks a command word. Honouring `never` here would answer "wayland" on
+    # an X11 box and select wxrandr, i.e. break warandr for exactly the
+    # developers the variable is documented for.
+    elif passthrough.session_kind(env=env, respect_override=False) == "wayland":
         root = _package_root("wxrandr")
         if root is not None:
             argv = [sys.executable, "-m", "wxrandr"]

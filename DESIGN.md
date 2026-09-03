@@ -55,7 +55,10 @@ reading nothing but the environment it is handed plus three seam directories
 tests hermetic):
 
 1. `FUCKWAYLAND_PASSTHROUGH` / `WDOTOOL_PASSTHROUGH` & co: `never` -> wayland
-   (run our own code whatever the session), `always` -> x11.
+   (run our own code whatever the session), `always` -> x11. Those variables
+   are about the *handover*, so a caller that never hands over passes
+   `respect_override=False` and skips this step — see `warandr` below;
+   `passthrough_mode()` is the way to ask about the variables themselves.
 2. `$WAYLAND_DISPLAY` **and** its socket exists -> wayland. Wayland is tested
    first because `$DISPLAY` is set on a Wayland session too (Xwayland) and is
    therefore never evidence of an X11 session — while a live compositor
@@ -75,9 +78,14 @@ tests hermetic):
 is not us. Four independent "not us" guards, because each alone has a hole:
 `samestat` against our own entry points; `basename(realpath(cand))` in
 `{wdotool, wwmctl, wxprop, wxrandr, warandr}` (the normal install, where
-`xdotool` is a *symlink* to our `wdotool`); a 4 KiB head sniff for the marker
-`scripts/build-pyz.sh` stamps into every zipapp (never an ELF: we are pure
-Python); and `_FUCKWAYLAND_PASSTHROUGH`, which carries the realpaths already
+`xdotool` is a *symlink* to our `wdotool`); a 4 KiB head sniff for the
+`fuckwayland-clone:` stamp `scripts/build-pyz.sh` writes into every zipapp
+(the build fails without it) or for an import of one of our packages, which
+is what a `pip`-generated console script looks like — never an ELF, and
+never a bare `fuckwayland`/`wmctrl` *substring*, or a third-party wrapper
+that merely mentions the project would be skipped and the user told to
+install what is already installed; and `_FUCKWAYLAND_PASSTHROUGH`, which
+carries the realpaths already
 handed over to — a process that finds *itself* in that list was exec'd as
 somebody's "real tool" and refuses to go round again (plus a depth backstop).
 `WDOTOOL_REAL_XDOTOOL` / `WWMCTL_REAL_WMCTRL` / `WXPROP_REAL_XPROP` /
@@ -97,14 +105,35 @@ stdio flush. argv[0] is the original's own name, so its usage text is
 internally consistent. No original installed: **127** (never confusable with
 a tool failure) and one line naming the package to install and the override
 variable — except for a `--help`/`--version`/bare invocation, which falls
-back to our own output, and except for `wxprop` (below).
+back to our own output, and except for `wxprop` (below). Help is recognised
+by each original's *exact* spellings (`-h -V --help --version` for wmctrl,
+`-help -version -grammar` for xprop, `-h -v --help --version help version`
+and `-hv`-style clusters for xdotool, `-help --help -v --version` for
+xrandr): `-v` is `--verbose` in wmctrl and unknown to xprop, and a looser
+rule would read `wmctrl -v -l` as a help request and answer it with a
+Wayland error where `wmctrl -l` correctly says which package to install.
 
 **Environment repair.** On the X11 path a missing or dead `$DISPLAY` /
 `$XAUTHORITY` is replaced with the session's own (logind's `DISPLAY=`, the
 socket scan, the display manager's cookie), so `sudo xdotool key a`,
 `ssh root@box xprop -root` and cron jobs work *through* us where the original
 alone fails — the Wayland trick of `session.py`, applied to X. Values that
-already work are never touched.
+already work are never touched, and a `$XAUTHORITY` that points at nothing is
+*removed* rather than forwarded (left in place it suppresses the original's
+own `~/.Xauthority` default).
+
+Whose session, though: as root with no `SUDO_UID` (`ssh root@box`, root cron)
+the uid is in neither the environment nor `getuid()`, and `session_uid()` then
+asks logind. Failing that, a system account's runtime directory is skipped —
+the lowest-numbered one on a box with a display manager is the *greeter's*,
+and its cookie authorises nothing on the user's X server, so forwarding it
+would break precisely the case this repair exists for. Same rule as
+`find_wayland_socket()`. uid 0 is never an answer either, from either source:
+`sudo -i` run *by* root leaves `SUDO_UID=0` behind, and believing it sends the
+search into `/root` — measured on a real Xfce box, that is the difference
+between `sudo -i xdotool getactivewindow` printing the window name through us
+and printing `Authorization required, but no authorization protocol
+specified`.
 
 **Per tool.** `wdotool`, `wwmctl` and `wxrandr` exec, always. `wdotool` has no
 native X11 option worth having (no XTEST, no `XKeysymToKeycode`, no `--sync`
@@ -130,7 +159,12 @@ identically: on X11 the output is the original's.
 `warandr` does **not** exec — it is not a clone of an X11 binary we are
 installed over, and it already drives the real `xrandr` on X11. It only swaps
 `randr.choose()`'s bare `$WAYLAND_DISPLAY` test for
-`passthrough.session_kind() == "wayland"`, which fixes a stale
+`passthrough.session_kind(respect_override=False) == "wayland"` (the
+`respect_override` is load-bearing: `FUCKWAYLAND_PASSTHROUGH=never` means
+"do not hand over", and warandr has nothing to hand over — read as a session
+type it would select `wxrandr` on an X11 box and every Apply would say
+`Can't open display`, for exactly the developers the variable is documented
+for), which fixes a stale
 `WAYLAND_DISPLAY` selecting `wxrandr` (the GUI came up and every Apply said
 `Can't open display`) and makes a thin `.desktop` environment work. It still
 writes the bare word `xrandr` into `~/.screenlayout/*.sh` for arandr

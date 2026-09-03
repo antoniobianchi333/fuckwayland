@@ -85,7 +85,9 @@ $ WDOTOOL_REAL_XDOTOOL=/opt/bin/xdotool ...     # where the original is
 ```
 
 `WDOTOOL_PASSTHROUGH`, `WWMCTL_PASSTHROUGH`, `WXPROP_PASSTHROUGH` and
-`WXRANDR_PASSTHROUGH` do the same per tool; the `*_REAL_*` variables are
+`WXRANDR_PASSTHROUGH` do the same per tool (`warandr` ignores all of them: it
+never hands over, it only picks between the `xrandr` and `wxrandr` command
+words, and it keeps doing that by session); the `*_REAL_*` variables are
 `WDOTOOL_REAL_XDOTOOL`, `WWMCTL_REAL_WMCTRL`, `WXPROP_REAL_XPROP`,
 `WXRANDR_REAL_XRANDR`. With no original installed you get exit **127** and a
 line saying which package to install — except for `--help`/`--version`, which

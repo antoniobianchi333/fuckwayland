@@ -19,9 +19,9 @@ and the originals are compiled binaries -- the tests use /bin/sh for both:
 * the inherited signal dispositions: CPython installs SIG_IGN for SIGPIPE
   itself during startup.
 
-NOTE: this file must not contain any of the clone's marker words (see
-``passthrough._SNIFF``) in its first 4 KiB, or the head-sniff guard would take
-it for one of ours and refuse to hand over to it.
+NOTE: this file must not carry the clone's build stamp (``passthrough.STAMP``)
+or import one of its packages in its first 4 KiB, or the head-sniff guard would
+take it for one of ours and refuse to hand over to it.
 """
 
 import json

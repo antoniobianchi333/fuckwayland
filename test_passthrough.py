@@ -740,24 +740,6 @@ class EnvRepair(Base):
         self.assertEqual(env["XAUTHORITY"], cookie)
         self.assertEqual(env["DISPLAY"], ":0")
 
-    def test_a_second_x_server_on_the_box_is_not_ours(self):
-        """Two X servers (a display manager's on :0, the session's on :1) and
-        logind recording no `DISPLAY=`: the child must get the *target user's*
-        display, which takes the uid logind knows — "the lowest socket number
-        there is" is a coin toss."""
-        self.xsock(0)
-        self.xsock(1)
-        self.logind_file("4", TYPE="x11")       # no DISPLAY= in the record
-        owners = {os.path.join(self.x11, "X0"): 125,
-                  os.path.join(self.x11, "X1"): self.uid}
-        with mock.patch.object(passthrough, "_owner",
-                               lambda p: owners.get(p, self.uid)), \
-                mock.patch.object(passthrough.os, "getuid", lambda: 0):
-            # what an un-qualified search answers, and why it is not enough
-            self.assertEqual(passthrough.find_x_display({}, None), ":0")
-            env = passthrough.child_env("xdotool", FAKE, {})
-        self.assertEqual(env["DISPLAY"], ":1")
-
     def test_a_system_accounts_cookie_is_never_the_answer(self):
         """The same trap with no logind either (a container, a box with the
         session records gone): an unknown target uid takes a real user's

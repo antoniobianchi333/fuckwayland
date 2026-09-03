@@ -563,6 +563,21 @@ class BackendChoice(unittest.TestCase):
                           "PATH": "/nonexist"})
         self.assertTrue(b.wayland)
 
+    def test_the_passthrough_escape_hatch_is_not_a_session_type(self):
+        """FUCKWAYLAND_PASSTHROUGH=never means "run our own code instead of
+        handing over to the original" — and warandr never hands over. Read as
+        a session type it would select wxrandr on an X11 box (rc 1, "Can't
+        open display" on every Apply) for anyone who exported it, which the
+        README suggests and the whole test suite does."""
+        for value in ("never", "always"):
+            b = randr.choose({"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0",
+                              "PATH": "/nonexist",
+                              "FUCKWAYLAND_PASSTHROUGH": value})
+            self.assertEqual(b.argv, ["xrandr"], value)
+            self.assertFalse(b.wayland, value)
+        w = randr.choose(self.wayland_env(FUCKWAYLAND_PASSTHROUGH="never"))
+        self.assertTrue(w.wayland)
+
     def test_snapshot_through_fake(self):
         env = dict(os.environ)
         env["WARANDR_XRANDR"] = "%s %s" % (
