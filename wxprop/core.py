@@ -395,11 +395,25 @@ class NativeAtoms:
 
 
 def _p_string(s: str):
+    """A latin-1 property (type STRING is ISO 8859-1, by definition), or
+    UTF8_STRING when the text does not fit in it.
+
+    Typing UTF-8 bytes as STRING is not a legibility trade-off, it is
+    wrong: xprop's STRING-to-locale rule decodes them as latin-1 and
+    re-encodes them for the locale, so every character above U+00FF prints
+    as mojibake. Titles that DO fit latin-1 stay STRING, which is what the
+    XWayland twin's real WM_NAME carries."""
     try:
-        data = s.encode("latin-1")
+        return ("STRING", 8, s.encode("latin-1"))
     except UnicodeEncodeError:
-        data = s.encode("utf-8")  # legible under C-locale octal escapes
-    return ("STRING", 8, data)
+        return ("UTF8_STRING", 8, s.encode("utf-8"))
+
+
+def _latin1(s: str) -> bytes:
+    """ISO 8859-1 bytes for a property whose type is STRING by definition
+    (WM_CLASS), with anything that does not fit replaced -- the property
+    has no way to say "this is UTF-8"."""
+    return s.encode("latin-1", "replace")
 
 
 def _p_utf8(s: str):
@@ -553,10 +567,12 @@ class NativeViewTarget(NativeTarget):
         instance = node.get("app_id") or wp.get("instance")
         cls = node.get("app_id") or wp.get("class")
         if instance or cls:
-            tname, size, _ = _p_string("")
-            data = (_p_string(instance or "")[2] + b"\0" +
-                    _p_string(cls or "")[2] + b"\0")
-            props[b"WM_CLASS"] = (tname, size, data)
+            # WM_CLASS is STRING by ICCCM whatever the app id looks like,
+            # so this pair is not routed through _p_string's UTF8_STRING
+            # escape hatch -- an X twin's WM_CLASS is STRING too.
+            data = (_latin1(instance or "") + b"\0" +
+                    _latin1(cls or "") + b"\0")
+            props[b"WM_CLASS"] = ("STRING", 8, data)
         title = node.get("name")
         if title is None:
             title = getattr(win, "title", None)

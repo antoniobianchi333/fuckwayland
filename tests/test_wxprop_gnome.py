@@ -186,7 +186,7 @@ class GnomeXpropBase(_Base):
     def calls(self, member):
         return [a for m, a in self.bridge.calls if m == member]
 
-    def _patches(self, x="auto", xwayland=None, detect=None):
+    def _patches(self, x="auto", xwayland=None, detect=None, lc="C"):
         if x == "auto":
             x = self.xconn
         self.x = x
@@ -197,7 +197,7 @@ class GnomeXpropBase(_Base):
 
         ps = [
             mock.patch.dict(os.environ, {"WXPROP_ARGV0": "xprop",
-                                         "LC_ALL": "C"}),
+                                         "LC_ALL": lc}),
             mock.patch.object(core, "_detect_backend",
                               detect or (lambda: self.backend)),
             mock.patch.object(core, "_x11_connect", connect),
@@ -209,9 +209,9 @@ class GnomeXpropBase(_Base):
                                         lambda: xwayland))
         return ps
 
-    def run_cli(self, *args, x="auto", xwayland=None, detect=None):
+    def run_cli(self, *args, x="auto", xwayland=None, detect=None, lc="C"):
         out, err = _CapStdout(), io.StringIO()
-        ps = self._patches(x, xwayland, detect) + [
+        ps = self._patches(x, xwayland, detect, lc) + [
             mock.patch.object(sys, "stdout", out),
             mock.patch.object(sys, "stderr", err)]
         for p in ps:
@@ -241,6 +241,31 @@ class NativePlaneTests(GnomeXpropBase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, NATIVE_EDITOR_DUMP)
         self.assertEqual(self.x_calls, [])  # never touched the X plane
+
+    def test_native_title_outside_latin1_is_typed_utf8(self):
+        """wxprop-1: type STRING *means* ISO 8859-1, and xprop decodes a
+        STRING as latin-1 before re-encoding it for the locale. UTF-8 bytes
+        typed STRING therefore printed as mojibake for every character
+        above U+00FF. A title that does not fit latin-1 is UTF8_STRING."""
+        self.bridge.find(CALC)["title"] = "\u00e9 \u2713 \u65e5\u672c"
+        code, out, err = self.run_cli("-id", "%d" % CALC, "WM_NAME",
+                                      "_NET_WM_NAME", lc="C.UTF-8")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, (
+            'WM_NAME(UTF8_STRING) = "\u00e9 \u2713 \u65e5\u672c"\n'
+            '_NET_WM_NAME(UTF8_STRING) = "\u00e9 \u2713 \u65e5\u672c"\n'
+        ).encode("utf-8"))
+
+    def test_native_latin1_title_stays_a_string(self):
+        """... and one that does fit stays STRING, like the WM_NAME an
+        XWayland twin really carries; xprop's STRING-to-locale rule then
+        prints it as UTF-8 under a UTF-8 locale."""
+        self.bridge.find(CALC)["title"] = "caf\u00e9"
+        code, out, err = self.run_cli("-id", "%d" % CALC, "WM_NAME",
+                                      lc="C.UTF-8")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out,
+                         'WM_NAME(STRING) = "caf\u00e9"\n'.encode("utf-8"))
 
     def test_desktop_window_type_and_skip_taskbar(self):
         code, out, _e = self.run_cli("-id", "%d" % DESKTOP, "_NET_WM_STATE",
