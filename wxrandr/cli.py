@@ -99,6 +99,7 @@ class Opts:
         self.fbmm = None
         self.dpi = None            # float or output name
         self.noprimary = False
+        self.persistent = False    # --persistent (Mutter: write monitors.xml)
         self.global_auto = False
         self.stanzas = []
         self.mode_ops = []         # ("new", name, modeline)/("rm", name)/
@@ -378,6 +379,10 @@ def parse(argv: list) -> Opts:
             o.noprimary = True
             o.setit_1_2 = True
             o.action = True
+        elif a == "--persistent":
+            # wxrandr extension (not in xrandr's usage): on Mutter apply with
+            # method 2 so the layout lands in ~/.config/monitors.xml
+            o.persistent = True
         elif a == "--newmode":
             name = need()
             clock = _number(need())
@@ -431,16 +436,33 @@ def parse(argv: list) -> Opts:
 
 class Session:
     """Compositor connection bundle: chosen backend + state file + wlr
-    enrichment. Built lazily — --help/parse errors never touch a socket."""
+    enrichment. Built lazily — --help/parse errors never touch a socket.
+
+    Backends: sway (IPC socket present), mutter (GNOME: the session bus owns
+    org.gnome.Mutter.DisplayConfig — no extension, no root), wlr (anything
+    with zwlr_output_management). WXRANDR_BACKEND=sway|wlr|mutter (alias
+    gnome) forces one."""
+
+    BACKENDS = ("sway", "wlr", "mutter")
 
     def __init__(self):
         from wdotool import session as wsession
         self.backend = os.environ.get("WXRANDR_BACKEND")
+        if self.backend == "gnome":
+            self.backend = "mutter"
         sway_sock = wsession.find_sway_socket()
-        if self.backend not in ("sway", "wlr"):
-            self.backend = "sway" if sway_sock else "wlr"
+        probe = None
+        if self.backend not in self.BACKENDS:
+            if sway_sock:
+                self.backend = "sway"
+            else:
+                from wxrandr import mutter as mutter_mod
+                probe = mutter_mod.probe()
+                self.backend = "mutter" if probe is not None else "wlr"
         self.ipc = None
         self.wlr = None
+        self.mutter = None
+        self.persistent = os.environ.get("WXRANDR_PERSIST", "") not in ("", "0")
         # OSError as well as Fatal: WlConn's connect() can raise
         # ConnectionRefusedError on a stale-but-present socket, and sway IPC
         # can drop mid-handshake — both must read as "Can't open display",
@@ -451,12 +473,20 @@ class Session:
             except (Fatal, OSError):
                 self._cant_open()
             self.wlr = core.wlr_snapshot_safe()
+        elif self.backend == "mutter":
+            from wxrandr import mutter as mutter_mod
+            try:
+                # no bus at all -> "Can't open display"; a bus without
+                # DisplayConfig raises Fatal with a one-line explanation
+                self.mutter = mutter_mod.MutterOutputs(bus=probe)
+            except (mutter_mod.DBusError, OSError, ValueError):
+                self._cant_open()
         else:
             try:
                 self.wlr = core.WlrOutputs()
             except (Fatal, OSError):
                 self._cant_open()
-        # state is keyed by the compositor's wayland socket so both backends
+        # state is keyed by the compositor's wayland socket so all backends
         # share one primary/custom-mode store per session
         hit = wsession.find_wayland_socket()
         key = hit[2] if hit else (self.ipc.sockpath if self.ipc else "?")
@@ -471,11 +501,39 @@ class Session:
     def snapshot(self):
         if self.backend == "sway":
             return core.snapshot_sway(self.ipc, self.state, self.wlr)
+        if self.backend == "mutter":
+            return self.mutter.snapshot(self.state)
         return core.snapshot_wlr(self.wlr, self.state)
+
+    def dims(self, t) -> tuple:
+        """Pending logical size of an enabled target in the backend's own
+        coordinate space (Mutter rounds and may not scale at all; wlroots
+        truncates)."""
+        if self.backend == "mutter":
+            return self.mutter.predicted_dims(t, self.state)
+        return core.predicted_dims(t, self.state)
+
+    def positions(self, targets, dims) -> dict:
+        """Pending positions the way the backend will lay them out: xrandr's
+        set_positions everywhere; on Mutter (no holes allowed) also the
+        follow-your-neighbour shift the apply performs, so the plan, --fb and
+        screen-size checks see the real layout (the warnings are printed
+        once, by the apply/verify)."""
+        pos = core.resolve_positions(targets, dims)
+        if self.backend == "mutter":
+            from wxrandr import mutter as mutter_mod
+            moved = {n for n, _p, _via in
+                     mutter_mod.keep_adjacent(targets, dims, pos)}
+            for t in targets:
+                if t.name in moved:
+                    t.changed = True   # its crtc line belongs in the plan
+        return pos
 
     def apply(self, targets):
         if self.backend == "sway":
             return core.apply_sway(self.ipc, self.state, targets)
+        if self.backend == "mutter":
+            return self.mutter.apply(self.state, targets, self.persistent)
         core.apply_wlr(self.wlr, self.state, targets)
         # refresh the head snapshot for the post-apply query
         self.wlr.conn.roundtrip()
@@ -483,6 +541,8 @@ class Session:
 
     @property
     def compositor_name(self):
+        if self.backend == "mutter":
+            return "mutter"
         return "sway" if self.backend == "sway" else "wlroots"
 
 
@@ -640,6 +700,12 @@ def _apply_gamma(sess: Session, opts: Opts, outputs):
             # xrandr keeps exit 0 for a typo'd --output; don't spawn a holder
             # against a name the compositor has never heard of.
             continue
+        if sess.backend == "mutter":
+            # Mutter has neither zwlr_gamma_control nor a DisplayConfig LUT
+            # call: a cosmetic impossibility, so warn and succeed
+            core.warn("--brightness/--gamma are not supported on Mutter "
+                      "(no gamma LUT API); ignoring for %s\n" % s.name)
+            continue
         rec = sess.state.gamma().get(s.name, {})
         brightness = (s.brightness if s.brightness is not None
                       else rec.get("brightness", 1.0))
@@ -673,20 +739,30 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
                           % prop)
     targets = core.build_targets(outputs, opts.stanzas, sess.state,
                                  opts.global_auto)
-    dims = {t.name: core.predicted_dims(t, sess.state)
-            for t in targets if t.enabled}
-    pos = core.resolve_positions(targets, dims)
+    dims = {t.name: sess.dims(t) for t in targets if t.enabled}
+    pos = sess.positions(targets, dims)
     _check_fb(opts, targets, dims, pos)
     _check_screen_size(opts, targets, dims, pos)
     if opts.verbose:
         _print_plan(opts, outputs, targets, dims, pos)
     if opts.noprimary:
+        if (sess.backend == "mutter" and sess.mutter.primary
+                and not any(s.primary for s in opts.stanzas)):
+            core.warn("GNOME requires a primary output; keeping %s\n"
+                      % sess.mutter.primary)
         sess.state.primary = None
     for s in opts.stanzas:
         if s.primary and any(t.name == s.name and t.stanza is s
                              for t in targets):
             sess.state.primary = s.name
     if opts.dryrun:
+        if sess.backend == "mutter":
+            # method 0: Mutter validates the exact call a real run would
+            # make (adjacency, overlap, primary, scales); a rejection is the
+            # same one-line `xrandr: <mutter message>` the apply would give.
+            # The verdict goes to stderr: stdout stays xrandr's dryrun bytes.
+            sess.mutter.verify(sess.state, targets)
+            sys.stderr.write("mutter verify: ok\n")
         sess.state.save()
         return outputs
     for cmd in filter_cmds:
@@ -788,6 +864,8 @@ def _run(argv) -> int:
     if opts.version:
         print("xrandr program version       " + core.PROGRAM_VERSION)
     sess = Session()
+    if opts.persistent:
+        sess.persistent = True
     if opts.screen > 0:
         sys.stderr.write("Invalid screen number %d (display has 1)\n"
                          % opts.screen)
@@ -806,7 +884,8 @@ def _run(argv) -> int:
         return 0
     if opts.monitor_op:
         if opts.monitor_op[0] in ("list", "listactive"):
-            for line in core.render_monitors(outputs, sess.state):
+            for line in core.render_monitors(outputs, sess.state,
+                                             sess.backend == "mutter"):
                 print(line)
             return 0
         if opts.monitor_op[0] == "del":

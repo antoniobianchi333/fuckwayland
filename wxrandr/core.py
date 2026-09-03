@@ -163,6 +163,7 @@ class Mode:
     clock_mhz: float = 0.0        # custom modes carry the full modeline
     timings: tuple = ()           # (hss, hse, htot, vss, vse, vtot)
     flags: tuple = ()
+    mode_id: str = ""             # compositor's opaque id (Mutter); "" = none
 
     @property
     def display_name(self) -> str:
@@ -201,6 +202,7 @@ class OutputState:
     wlr_head: int | None = None   # protocol object id (wlr backend apply)
     virtual_modes: bool = False   # no compositor mode list (headless): any
     #                               WxH is achievable via a custom mode
+    primary: bool = False         # the compositor's own primary flag (Mutter)
 
 
 def layout_box(outputs) -> tuple[int, int, int, int]:
@@ -1280,12 +1282,16 @@ def render_query(outputs, state: State, screen_num=0, verbose=False,
     return lines
 
 
-def render_monitors(outputs, state: State) -> list:
+def render_monitors(outputs, state: State, primary_first: bool = False) -> list:
     """RandR 1.5 monitor listing (xrandr.c:4030). Every enabled output is one
     automatic monitor; primary comes from the state file; mm are the physical
     size when known, else synthesized exactly like XWayland (96dpi,
-    round-half-even)."""
+    round-half-even). The X server lists the primary monitor first
+    (rrmonitor.c) — only observable where the compositor has a real primary
+    XWayland knows about (Mutter), hence opt-in."""
     act = [o for o in outputs if o.active]
+    if primary_first and state.primary:
+        act.sort(key=lambda o: o.name != state.primary)
     lines = ["Monitors: %d" % len(act)]
     for i, o in enumerate(act):
         star = "*" if state.primary == o.name else ""
