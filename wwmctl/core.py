@@ -467,14 +467,16 @@ class Core:
         fw, fh = cw + left + right, ch + top + bottom
         col, row = _GRAVITY_CORNER.get(grav, (0, 0))
         static = grav == _GRAVITY_STATIC
-        # A -1 keeps an axis, but what "keep" means to Mutter depends on
-        # the request as a whole: with BOTH coordinates -1 (a bare resize)
-        # it holds the gravity's reference point, so a SouthEast resize
-        # grows up and to the left; with one coordinate given and the other
-        # -1 it holds the unchanged frame edge instead. Anchoring both ways
-        # put us up to 80 px from where real wmctrl leaves the window
-        # (measured on GNOME 46, `9,-1,200,400,300`).
-        keep_anchor = x == -1 and y == -1
+        # A -1 keeps an axis, but what "keep" means depends on the request
+        # as a whole AND on the compositor. With one coordinate given, the
+        # -1 on the other axis holds that axis' unchanged frame edge --
+        # anchoring it on the gravity point instead put us up to 80 px from
+        # where real wmctrl leaves the window (GNOME 46,
+        # `9,-1,200,400,300`). With BOTH coordinates omitted, GNOME 46
+        # holds the gravity's reference point, so a SouthEast resize grows
+        # up and to the left, while GNOME 50 applies no gravity at all and
+        # keeps the top-left corner. Both measured against real wmctrl.
+        keep_anchor = x == -1 and y == -1 and self._bare_resize_gravity()
         fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw, keep_anchor)
         fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh, keep_anchor)
         if ww != -1 or hh != -1:
@@ -489,6 +491,25 @@ class Core:
             except CmdError as e:
                 _warn("%s; ignoring" % e)
         return 0
+
+    def _bare_resize_gravity(self) -> bool:
+        """Does the compositor anchor `-e G,-1,-1,W,H` -- a resize with no
+        coordinates -- on the gravity point?
+
+        Mutter did on GNOME 46 and does not on GNOME 50, where such a
+        request keeps the window's top-left corner whatever the gravity
+        says (both measured against real wmctrl on the same window). The
+        cut sits right after the release measured to anchor: 47-49 were not
+        measured, and a rule that keeps applying to 51+ is worth more than
+        a guess in their favour. A compositor that does not report a
+        version keeps the older behaviour, which is what sway and every
+        non-GNOME backend have always done."""
+        fn = self._backend_hook("compositor_version")
+        try:
+            v = fn() if callable(fn) else ()
+        except Exception:
+            v = ()
+        return not (v and v[0] >= 47)
 
     def _frame_extents(self, w: UWindow):
         """(left, top, right, bottom) between the compositor's frame rect

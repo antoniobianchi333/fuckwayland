@@ -43,6 +43,7 @@ never probes that privileged interface."""
 
 import json
 import os
+import re
 import struct
 import sys
 import time
@@ -587,6 +588,32 @@ class GnomeBackend(WindowBackend):
 
     def bridge_version(self) -> int:
         return int(self._call("GetVersion")[0])
+
+    def compositor_version(self) -> tuple:
+        """GNOME Shell's version as a tuple of ints -- (46, 0), (50, 1) --
+        or () when the shell will not say. Mutter's behaviour differs
+        between releases in ways a wmctrl clone has to follow (see wwmctl's
+        -e gravity), and this is the only version anyone can ask for: the
+        read-only `ShellVersion` property of org.gnome.Shell."""
+        cached = getattr(self, "_comp_version", None)
+        if cached is not None:
+            return cached
+        out = ()
+        try:
+            raw = self.bus.get_property(SHELL_NAME, "/org/gnome/Shell",
+                                        SHELL_NAME, "ShellVersion",
+                                        timeout=CALL_TIMEOUT)
+            parts = []
+            for chunk in str(raw or "").split("."):
+                m = re.match(r"\d+", chunk)
+                if not m:
+                    break
+                parts.append(int(m.group(0)))
+            out = tuple(parts)
+        except Exception:
+            out = ()
+        self._comp_version = out
+        return out
 
 
 def _autoload_wanted() -> bool:

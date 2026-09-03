@@ -558,6 +558,25 @@ class ActionTests(GnomeCliBase):
         # Center on x: 300 + 150 - 150; y keeps the frame's top (was 177)
         self.assertEqual(self.calls("Move"), [(XTERM, 300, 80)])
 
+    def test_e_bare_resize_on_gnome_50_keeps_the_corner(self):
+        """wwmctl-4, the other half: GNOME 46 anchors a bare
+        `-e G,-1,-1,W,H` on the gravity point, GNOME 50 applies no gravity
+        to it at all and keeps the top-left corner. Measured against real
+        wmctrl on both; the compositor says which it is."""
+        self.bridge.shell_version = "50.1"
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,-1,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Resize"), [(XTERM, 300, 287)])
+        self.assertEqual(self.calls("Move"), [])   # the corner does not move
+
+    def test_e_bare_resize_falls_back_when_no_version_is_reported(self):
+        """A backend that will not say (sway, a shell that hides the
+        property) keeps the older, documented behaviour."""
+        self.bridge.shell_version = None
+        rc, _o, err = self.wm(["-r", "test@vm", "-e", "9,-1,-1,300,250"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("Move"), [(XTERM, 440, 273)])
+
     def test_e_without_frame_extents_is_the_frame_rectangle(self):
         # a native window: the frame is the client, so every gravity puts
         # X,Y,W,H on the rectangle -lG prints

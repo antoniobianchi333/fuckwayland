@@ -242,15 +242,19 @@ untouched) and the generic `list()` fallback.
   centre on the requested rectangle's, `9` SouthEast its bottom-right at
   `X+W,Y+H`, `10` Static the client itself at `X,Y`; `0` means "the
   window's own `WM_SIZE_HINTS` gravity" and is taken as NorthWest, the
-  ICCCM default. What a `-1` keeps depends on the request as a whole, as
-  Mutter has it: in a **bare resize** (`-e G,-1,-1,W,H`, both coordinates
-  omitted) it keeps the gravity's reference point, so `9,-1,-1,W,H` pins
-  the bottom-right corner and grows the window up and to the left while
-  `0,-1,-1,W,H` is a resize alone; where the request **does** carry a
-  coordinate, a `-1` on the other axis keeps that axis' unchanged frame
-  edge (`9,-1,200,W,H` leaves the left edge alone). Anchoring both cases
-  the same way put us up to 80 px from where real wmctrl leaves the
-  window. Some rows of the grid stay 1–16 px apart from the oracle: real
+  ICCCM default. What a `-1` keeps depends on the request as a whole *and*
+  on the GNOME release, both measured against real wmctrl on the same
+  window. Where the request carries a coordinate, a `-1` on the other axis
+  keeps that axis' unchanged frame edge (`9,-1,200,W,H` leaves the left
+  edge alone) — anchoring it on the gravity point instead put us 80 px
+  out. In a **bare resize** (`-e G,-1,-1,W,H`, both coordinates omitted)
+  GNOME 46 keeps the gravity's reference point, so `9,-1,-1,W,H` pins the
+  bottom-right corner and grows the window up and to the left, while
+  **GNOME 50 applies no gravity at all** and keeps the top-left corner
+  whatever `G` says. wwmctl follows the compositor: `GnomeBackend
+  .compositor_version()` (org.gnome.Shell's `ShellVersion`) decides, the
+  cut sits right after 46, and a backend that reports no version keeps the
+  46 behaviour — which is what sway and the rest have always done. Some rows of the grid stay 1–16 px apart from the oracle: real
   wmctrl hands Mutter `_NET_MOVERESIZE_WINDOW` with the omitted fields
   still filled in as `(unsigned long)-1`, and Mutter's own arithmetic for
   them is neither the frame rectangle nor the client one. Where an axis is
@@ -318,9 +322,10 @@ like `0x14a3062e`), `-d` (`WA: 66,32 3774x1048  Workspace 1` on two
 get current desktop properties`: Mutter's X root carries no
 `_NET_CURRENT_DESKTOP`), `-m` byte-identical to real `wmctrl -m`, `-a`,
 `-c :ACTIVE:`, `-i` with either id, `-e` against real `wmctrl` on the
-same window (GNOME 46; `xterm`, `_NET_FRAME_EXTENTS 0,0,37,0`): identical
+same window (`xterm`, `_NET_FRAME_EXTENTS 0,0,37,0`): identical
 rectangles for gravity `0`/`1`/`10` with both coordinates given or both
-omitted, and within 1–16 px elsewhere (the `-1` arithmetic above); xterm snaps
+omitted, on GNOME 46 and 50 alike, and within 1–27 px elsewhere (the `-1`
+arithmetic above); xterm snaps
 `500x400` to `496x392` on its size increments, `-b add,fullscreen` /
 `maximized_vert` seen by real `xprop`, `shaded,below`/`skip_taskbar`
 warn+exit 0, `-N/-I/-T` read back by real `xprop`, `-t 1`, `-R`, `-s`,

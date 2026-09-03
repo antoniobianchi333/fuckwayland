@@ -90,7 +90,8 @@ class MockBridge:
 
     def __init__(self, address, own_shell=True, own_bridge=True,
                  eval_unsafe=False, select_delay=0.2, select_id=EDITOR,
-                 shell_mode="user", ext_info=None, screensaver_active=False):
+                 shell_mode="user", ext_info=None, screensaver_active=False,
+                 shell_version="46.0"):
         self.bus = Bus(address)
         self.bus.serve_calls = True
         self.windows = fixture_windows()
@@ -106,6 +107,7 @@ class MockBridge:
         self.xinfo = (":0", "/run/user/1000/.mutter-Xwaylandauth.AB12CD")
         self.pointer = (640, 400, 0)
         self._show_desktop_wins = []   # ShowDesktop(true)'s restore set
+        self.shell_version = shell_version
         if own_shell:
             assert self.bus.request_name(SHELL_NAME) == 1
             assert self.bus.request_name("org.gnome.ScreenSaver") == 1
@@ -166,6 +168,11 @@ class MockBridge:
                 return "v", (Variant("u", 1),)
             if a == (SHELL_NAME, "Mode"):
                 return "v", (Variant("s", self.shell_mode),)
+            if a == (SHELL_NAME, "ShellVersion"):
+                if self.shell_version is None:
+                    raise DBusError(dbus_mini.ERR + "InvalidArgs",
+                                    "no such property")
+                return "v", (Variant("s", self.shell_version),)
             raise DBusError(dbus_mini.ERR + "InvalidArgs", "no such property")
         if m.interface == "org.gnome.ScreenSaver" and m.member == "GetActive":
             self.calls.append(("GetActive", a))
