@@ -22,7 +22,9 @@ Additive fixes (gnome-bridge), each broken on a stock GNOME box:
   session user's /tmp/.X11-unix/X* socket) and `find_xauthority()`
   ($XAUTHORITY, Mutter's $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.* cookie,
   GDM's xauth_*, ~/.Xauthority). The GNOME backend asks the bridge first
-  (XInfo = gnome-shell's DISPLAY/XAUTHORITY) and uses these as fallbacks."""
+  (XInfo = gnome-shell's DISPLAY/XAUTHORITY) and uses these as fallbacks.
+  `xwayland_running()` tells whether Xwayland is actually up without
+  connecting to its socket (Mutter spawns it on demand)."""
 
 import glob
 import os
@@ -201,6 +203,29 @@ def _shell_environ(uid: int | None) -> dict[str, str]:
         if env:
             return env
     return {}
+
+
+def xwayland_running(uid: int | None = None) -> bool:
+    """Is an Xwayland server process alive (for `uid`'s session, or any)?
+    Mutter and KWin spawn Xwayland on demand and keep the listening socket
+    themselves, so the socket's existence says nothing -- and connecting to
+    it to find out would start the server. The process table answers
+    without side effects (comm is world-readable)."""
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return False
+    for p in pids:
+        try:
+            with open(f"/proc/{p}/comm") as f:
+                if f.read().strip() != "Xwayland":
+                    continue
+            if uid is not None and os.stat(f"/proc/{p}").st_uid != uid:
+                continue
+        except OSError:
+            continue
+        return True
+    return False
 
 
 def find_x_display(uid: int | None = None) -> str | None:

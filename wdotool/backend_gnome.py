@@ -495,21 +495,46 @@ class GnomeBackend(WindowBackend):
             return None
         return display, xauth
 
-    def events(self, timeout: float | None = None):
+    def events(self, timeout: float | None = None, workspaces: bool = False):
         """(id, change) for every bridge WindowEvent, on a connection of its
-        own so queued signals never pile up behind the command connection."""
+        own so queued signals never pile up behind the command connection.
+        With `workspaces` the bridge's WorkspaceEvent (switch/add/remove)
+        is folded in as (0, "workspace") -- no window has id 0 -- so a
+        root-level watcher (wxprop -root -spy) needs one stream only."""
         bus = Bus(self.bus.address)
         try:
             bus.add_match("type='signal',interface='%s',path='%s'"
                           % (IFACE, OBJECT_PATH))
             for m in bus.messages(timeout):
-                if m.interface == IFACE and m.member == "WindowEvent":
+                if m.interface != IFACE:
+                    continue
+                if m.member == "WindowEvent":
                     wid, change = m.args()
                     yield int(wid), str(change)
+                elif workspaces and m.member == "WorkspaceEvent":
+                    yield 0, "workspace"
         finally:
             bus.close()
 
     # -- extras for the other tools ---------------------------------------
+
+    # wmctrl -m: what Mutter writes into _NET_SUPPORTING_WM_CHECK's
+    # _NET_WM_NAME on the X root, so the answer is the same with or without
+    # Xwayland running (it is spawned on demand and must not be started
+    # just to be asked its name).
+    wm_name = "GNOME Shell"
+
+    def show_desktop(self, show: bool):
+        """wmctrl -k on|off. Mutter's own show-desktop mode has no public
+        API; the bridge minimizes every normal window on the active
+        workspace and remembers them for `off` (gnome/README.md)."""
+        self._call("ShowDesktop", "b", (bool(show),))
+
+    def set_num_desktops(self, n: int):
+        """wmctrl -n: only with static workspaces; with dynamic workspaces
+        (GNOME's default) the bridge answers Unsupported (a CmdError the
+        caller turns into wmctrl's "the WM may ignore the request")."""
+        self._call("SetNWorkspaces", "i", (int(n),))
 
     def monitors(self) -> "list[dict]":
         """[{index, x, y, width, height, scale, primary, connector}] --

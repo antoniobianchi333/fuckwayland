@@ -639,6 +639,8 @@ def _main(prog: str, args) -> int:
     # 7. -spy
     if spy:
         sys.stdout.buffer.flush()
+        if isinstance(target, core.MergedRootTarget):
+            return core.spy_merged_root(formatter, target, specs)
         if target.plane == "x":
             return core.spy_x(formatter, target, specs)
         if isinstance(target, core.NativeRootTarget):

@@ -3,14 +3,23 @@ compositor backend, with X11 enrichment for XWayland windows when available.
 
 Dual-plane design per WWMCTL.md:
 - the window LIST and all ACTIONS come from the compositor backend
-  (wdotool.backend_detect.detect(); sway node ids address windows),
-- XWayland windows are printed with their REAL X11 window id (sway exposes it
-  as the node's "window" field) so xprop/real-wmctrl interoperate, and X-only
+  (wdotool.backend_detect.detect(); backend-native ids address windows),
+- XWayland windows are printed with their REAL X11 window id (the backend's
+  views() carry it -- GNOME bridge `xid`; sway's raw tree exposes it as the
+  node's "window" field) so xprop/real-wmctrl interoperate, and X-only
   data (WM_CLASS, WM_CLIENT_MACHINE, geometry) is read from the XWayland
-  server via wwmctl.x11_mini when it is reachable,
+  server via wwmctl.x11_mini when it is reachable -- with the DISPLAY and
+  cookie file the backend reports (x_info(): gnome-shell's own on GNOME,
+  where Xwayland runs with -auth), else the session scan,
 - with no X server everything still works compositor-only (class from
-  window_properties, machine falls back to the local hostname — XWayland
-  clients are local by construction).
+  the compositor's WM_CLASS, machine falls back to the local hostname —
+  XWayland clients are local by construction).
+
+Listing sources, in order: backend.views() (typed View records: GNOME),
+the sway-private _nodes() tree, the generic backend.list(). Desktops come
+from backend.workspaces() (GNOME: names + work areas) or the sway workspace
+list; -k/-n reach the backend's show_desktop()/set_num_desktops() when it
+has them (GNOME) and warn otherwise.
 
 Output strings below are byte-parity copies of wmctrl 1.07 (main.c)."""
 
@@ -21,7 +30,7 @@ import socket
 import sys
 import time
 
-from wdotool import backend_detect
+from wdotool import backend_detect, session
 from wdotool.ctx import CmdError
 from wwmctl.x11_mini import XUnavailable
 
@@ -44,13 +53,18 @@ def _detect_backend():
     return backend_detect.detect()
 
 
-def _x11_connect():
-    """An x11_mini.X11Conn to the XWayland server, or None. Never raises."""
+def _x11_connect(display=None, xauthority=None):
+    """An x11_mini.X11Conn to the XWayland server, or None. Never raises.
+    `display`/`xauthority` are what the backend knows about its Xwayland
+    (GNOME: gnome-shell's own DISPLAY and Mutter's cookie file); without
+    them x11_mini falls back to the environment and the session scan."""
     if os.environ.get("WWMCTL_NO_X"):
         return None
     try:
         from wwmctl import x11_mini
-        return x11_mini.X11Conn()
+        if display is None and xauthority is None:
+            return x11_mini.X11Conn()
+        return x11_mini.X11Conn(display, xauthority=xauthority)
     except Exception:
         # covers XUnavailable, the not-yet-implemented stub (AttributeError),
         # and any wire-level failure: degrade to compositor-only silently.
@@ -72,12 +86,20 @@ class UWindow:
     h: int = 0
     desktop: int = 0     # 0-based workspace index, -1 = all/hidden
     focused: bool = False
+    # the compositor's own rectangle (frame rect on GNOME, content rect on
+    # sway) -- what move/resize address; x/y/w/h above may be overwritten
+    # by the X plane's client rectangle for -lG
+    fx: int = 0
+    fy: int = 0
+    fw: int = 0
+    fh: int = 0
 
 
 class Core:
     def __init__(self, backend=None, verbose=False):
         self._backend = backend
         self._x11 = "unset"
+        self._views_seen = None  # last views() outcome: True/False/None
         self.verbose = verbose
 
     def vprint(self, msg: str):
@@ -89,17 +111,88 @@ class Core:
             self._backend = _detect_backend()
         return self._backend
 
+    def _x_params(self):
+        """(display, xauthority) the backend knows for its X plane, or None
+        (sway, generic backends: x11_mini discovers on its own)."""
+        try:
+            info_fn = getattr(self.backend(), "x_info", None)
+            info = info_fn() if callable(info_fn) else None
+        except Exception:
+            return None
+        if not info:
+            return None
+        display, xauth = info
+        return (display or None), (xauth or None)
+
     def x11(self):
         if self._x11 == "unset":
-            self._x11 = _x11_connect()
+            params = self._x_params()
+            if params is None:
+                self._x11 = _x11_connect()
+            else:
+                self._x11 = _x11_connect(display=params[0],
+                                         xauthority=params[1])
         return self._x11
 
+    def _x_is_up(self) -> bool:
+        """May the X plane be opened without side effects? Mutter starts
+        Xwayland on demand: a connect just to ask spawns a server. With a
+        views() backend the answer is "an X window is listed, or an
+        Xwayland process exists"; sway and the rest keep the old behavior
+        (try to connect)."""
+        if self._x11 not in ("unset", None):
+            return True
+        try:
+            wins = self.windows()
+        except CmdError:
+            return True
+        if self._views_seen is not True:
+            return True
+        if any(w.is_x for w in wins):
+            return True
+        return session.xwayland_running()
+
     # -- unified window list ------------------------------------------------
+
+    def _from_views(self, views, host) -> list[UWindow]:
+        out = []
+        for v in views:
+            win = v.window
+            xid = int(v.xid or 0)
+            if xid:
+                cls = _dot_class(v.instance or None, v.cls or None)
+            elif v.app_id:
+                cls = "%s.%s" % (v.app_id, v.app_id)
+            else:
+                cls = _dot_class(v.instance or None, v.cls or None)
+            out.append(UWindow(
+                id=xid if xid else win.id,
+                node_id=win.id,
+                is_x=bool(xid),
+                title=win.title,
+                class_=cls,
+                machine=host,
+                pid=win.pid,
+                x=win.x, y=win.y, w=win.w, h=win.h,
+                desktop=win.desktop,
+                focused=win.focused,
+                fx=win.x, fy=win.y, fw=win.w, fh=win.h,
+            ))
+        return out
 
     def windows(self) -> list[UWindow]:
         backend = self.backend()
         host = _hostname()
         out = None
+        views_fn = getattr(backend, "views", None)
+        if callable(views_fn):  # typed View records (GNOME bridge)
+            views = views_fn()
+            if views is not None:
+                out = self._from_views(views, host)
+                self._views_seen = True
+                self._enrich(out)
+                return out
+        self._views_seen = False
         nodes_fn = getattr(backend, "_nodes", None)
         if nodes_fn is not None:  # sway/i3: raw tree carries the X plane
             # _nodes() is private to wdotool.backend_sway; its tuple shape
@@ -124,6 +217,7 @@ class Core:
                         x=win.x, y=win.y, w=win.w, h=win.h,
                         desktop=win.desktop,
                         focused=win.focused,
+                        fx=win.x, fy=win.y, fw=win.w, fh=win.h,
                     ))
             except (TypeError, ValueError, KeyError) as e:
                 self.vprint("_nodes() has an unexpected shape (%s: %s); "
@@ -139,6 +233,7 @@ class Core:
                     title=win.title or None, class_=cls, machine=host,
                     pid=win.pid, x=win.x, y=win.y, w=win.w, h=win.h,
                     desktop=win.desktop, focused=win.focused,
+                    fx=win.x, fy=win.y, fw=win.w, fh=win.h,
                 ))
         self._enrich(out)
         return out
@@ -316,27 +411,60 @@ class Core:
         if hh != -1:
             grflags |= 1 << 11
         self.vprint("grflags: %d\n" % grflags)
-        # The compositor is the WM: route the request through it. Gravity has
-        # no compositor equivalent — coordinates address the content top-left
-        # (gravity 0 behavior). Requests the compositor cannot honor (moving
-        # a tiled window, touching a fullscreen one) are warned about and
-        # ignored, matching "the WM may ignore the request".
+        # The compositor is the WM: route the request through it with
+        # _NET_MOVERESIZE_WINDOW's meaning. `W,H` are the CLIENT size and
+        # the gravity names the point of the frame the request positions:
+        # NorthWest its top-left, Center its centre, SouthEast its
+        # bottom-right, Static the client's own top-left (0 = "the window's
+        # own WM_SIZE_HINTS gravity", taken as NorthWest, the ICCCM default
+        # and what toolkits set). A -1 keeps that point where it is, so a
+        # bare resize under SouthEast pins the frame's bottom-right corner
+        # and grows up and to the left -- Mutter's own behavior, verified
+        # against real wmctrl. The frame extents (Mutter's server-side
+        # titlebar on an XWayland window) turn the client rectangle into
+        # the frame rectangle the bridge's Move/Resize address; where the
+        # compositor manages the client rectangle itself (native windows,
+        # sway's content rect, X plane not reached) they are zero and every
+        # gravity but Static collapses to NorthWest. Requests the
+        # compositor cannot honor (moving a tiled window, touching a
+        # fullscreen one) are warned about and ignored, matching "the WM
+        # may ignore the request".
         backend = self.backend()
+        left, top, right, bottom = self._frame_extents(w)
+        cw = ww if ww != -1 else w.fw - left - right
+        ch = hh if hh != -1 else w.fh - top - bottom
+        fw, fh = cw + left + right, ch + top + bottom
+        col, row = _GRAVITY_CORNER.get(grav, (0, 0))
+        static = grav == _GRAVITY_STATIC
+        fx = _place_axis(col, static, x, left, w.fx, w.fw, cw, fw)
+        fy = _place_axis(row, static, y, top, w.fy, w.fh, ch, fh)
         if ww != -1 or hh != -1:
             try:
-                backend.resize(w.node_id,
-                               ww if ww != -1 else w.w,
-                               hh if hh != -1 else w.h)
+                backend.resize(w.node_id, fw, fh)
             except CmdError as e:
                 _warn("%s; ignoring" % e)
-        if x != -1 or y != -1:
+        # a move was asked for, or the gravity's anchor requires one
+        if x != -1 or y != -1 or (fx, fy) != (w.fx, w.fy):
             try:
-                backend.move_window(w.node_id,
-                                    x if x != -1 else w.x,
-                                    y if y != -1 else w.y)
+                backend.move_window(w.node_id, fx, fy)
             except CmdError as e:
                 _warn("%s; ignoring" % e)
         return 0
+
+    def _frame_extents(self, w: UWindow):
+        """(left, top, right, bottom) between the compositor's frame rect
+        and the X plane's client rect of an XWayland window listed by
+        views(): Mutter's server-side titlebar and border. Zero when the two
+        are the same rectangle (native windows, the sway tree's content
+        rect, an X plane that was not reached) or do not fit each other (an
+        X coordinate space scaled differently from the compositor's)."""
+        if not (self._views_seen and w.is_x):
+            return 0, 0, 0, 0
+        left, top = w.x - w.fx, w.y - w.fy
+        right, bottom = w.fw - w.w - left, w.fh - w.h - top
+        if min(left, top, right, bottom) < 0:
+            return 0, 0, 0, 0
+        return left, top, right, bottom
 
     def window_state(self, w: UWindow, arg: str) -> int:  # -b
         argerr = ('The -b option expects a list of comma separated parameters'
@@ -423,7 +551,9 @@ class Core:
         return 0
 
     def _desktop_rows(self):
-        """[(id, current?, dg, vp, wa, name)]. sway: one row per workspace
+        """[(id, current?, dg, vp, wa, name)]. backend.workspaces() when the
+        backend has it (GNOME: index, name, work area -- what wmctrl reads
+        from _NET_DESKTOP_NAMES/_NET_WORKAREA); sway: one row per workspace
         (id = num-1, same mapping as wdotool's desktop commands); otherwise
         synthesized from the generic backend API."""
         backend = self.backend()
@@ -433,6 +563,19 @@ class Core:
         except Exception:
             dg = "N/A"
         rows = []
+        ws_fn = getattr(backend, "workspaces", None)
+        typed = ws_fn() if callable(ws_fn) else None
+        if typed is not None:
+            # VP: like wmctrl under EWMH — a single _NET_DESKTOP_VIEWPORT
+            # pair applies to the current desktop only, the others print
+            # N/A. A nameless workspace prints its index.
+            for ws in typed:
+                wx, wy, ww, wh = ws.work_area
+                rows.append((ws.index, ws.active, dg,
+                             "0,0" if ws.active else "N/A",
+                             "%d,%d %dx%d" % (wx, wy, ww, wh),
+                             ws.name or "%d" % ws.index))
+            return rows
         workspaces = None
         msg = getattr(backend, "_msg", None)
         if msg is not None:
@@ -477,10 +620,23 @@ class Core:
         pid = 0
         showing = None
         got_x = False
-        x = self.x11()
+        # On GNOME the X plane is only opened when Xwayland is already
+        # running (it is spawned on demand): the answer is the same either
+        # way, Mutter's check window says "GNOME Shell" and the bridge's
+        # wm_name says the same.
+        x = self.x11() if self._x_is_up() else None
         if x is not None:
             try:
                 sup = x.get_prop_ints(x.root(), "_NET_SUPPORTING_WM_CHECK")
+                if not sup and self._views_seen:
+                    # Xwayland just came up and the compositor has not
+                    # finished its WM setup on the root yet: give it a
+                    # moment rather than misreporting the compositor name
+                    deadline = time.monotonic() + 2.0
+                    while not sup and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                        sup = x.get_prop_ints(x.root(),
+                                              "_NET_SUPPORTING_WM_CHECK")
                 if sup:
                     got_x = True
                     name = _xtry(lambda: x.get_prop_string(
@@ -494,8 +650,12 @@ class Core:
             except Exception:
                 got_x = False
         if not got_x:
-            # pure Wayland: the compositor IS the window manager
-            name = getattr(self.backend(), "name", None)
+            # pure Wayland: the compositor IS the window manager; a backend
+            # that knows what its WM calls itself (GNOME: the same string
+            # Mutter puts on the X check window) says so
+            backend = self.backend()
+            name = getattr(backend, "wm_name", None) \
+                or getattr(backend, "name", None)
         if name is None:
             self.vprint("Cannot get name of the window manager "
                         "(_NET_WM_NAME).\n")
@@ -533,9 +693,25 @@ class Core:
             sys.stderr.write('The argument to the -k option must be either '
                              '"on" or "off"\n')
             return 1
-        _warn("Wayland compositors have no 'showing the desktop' mode; "
-              "ignoring")
+        show_fn = self._backend_hook("show_desktop")
+        if show_fn is None:
+            _warn("Wayland compositors have no 'showing the desktop' mode; "
+                  "ignoring")
+            return 0
+        try:
+            show_fn(param == "on")
+        except CmdError as e:
+            _warn("%s; ignoring" % e)
         return 0
+
+    def _backend_hook(self, name: str):
+        """An optional backend method (GNOME: show_desktop,
+        set_num_desktops), or None -- also when no backend can be found,
+        so the warn-and-succeed fallbacks stay session-less."""
+        try:
+            return getattr(self.backend(), name, None)
+        except CmdError:
+            return None
 
     def change_viewport(self, param: str) -> int:  # -o
         if not _parse_two_uints(param):
@@ -557,7 +733,16 @@ class Core:
         if re.match(r"\s*[+-]?\d+", param or "") is None:
             sys.stderr.write("The -n option expects an integer.\n")
             return 1
-        _warn("Wayland workspaces are managed by the compositor; ignoring")
+        set_fn = self._backend_hook("set_num_desktops")
+        if set_fn is None:
+            _warn("Wayland workspaces are managed by the compositor; ignoring")
+            return 0
+        try:
+            set_fn(_atoi(param))
+        except CmdError as e:
+            # "The window manager may ignore the request" (GNOME's dynamic
+            # workspaces do exactly that)
+            _warn("%s; ignoring" % e)
         return 0
 
     # -- driver for window actions ------------------------------------------
@@ -615,6 +800,46 @@ def _dot_class(instance: str | None, class_: str | None) -> str | None:
     if instance is not None:
         return instance
     return None
+
+
+# ICCCM win_gravity (wmctrl -e's first field) as (column, row), with
+# 0 = the left/top edge, 1 = the middle, 2 = the right/bottom edge: which
+# point of the window the request positions. StaticGravity (10) addresses
+# the client rather than the frame and is handled apart; 0 (use the
+# window's own WM_SIZE_HINTS gravity) and unknown values are NorthWest.
+_GRAVITY_CORNER = {1: (0, 0), 2: (1, 0), 3: (2, 0), 4: (0, 1), 5: (1, 1),
+                   6: (2, 1), 7: (0, 2), 8: (1, 2), 9: (2, 2)}
+_GRAVITY_STATIC = 10
+
+
+def _anchor(pos: int, size: int) -> int:
+    """Where the gravity's reference point sits inside a rectangle of
+    `size`: its leading edge, its middle, or its trailing edge (Mutter's
+    adjust_for_gravity arithmetic, halves truncated)."""
+    if pos == 1:
+        return size // 2
+    if pos == 2:
+        return size
+    return 0
+
+
+def _place_axis(pos: int, static: bool, req: int, lead: int,
+                f_old: int, fs_old: int, cs_new: int, fs_new: int) -> int:
+    """The frame's new leading edge on one axis.
+
+    `pos` is the gravity's reference point (see _GRAVITY_CORNER), `static`
+    marks StaticGravity, `req` the requested coordinate (-1 = keep), `lead`
+    the leading frame extent (left or top), `f_old`/`fs_old` the frame's
+    current edge and size, `cs_new`/`fs_new` the client and frame sizes the
+    request asks for. A request positions the frame's reference point on
+    the same point of the requested client rectangle; a -1 keeps the frame's
+    reference point where it is, which is what makes a bare resize move the
+    window under any gravity but NorthWest."""
+    if static:                       # the client itself is addressed
+        return f_old if req == -1 else req - lead
+    if req == -1:
+        return f_old + _anchor(pos, fs_old) - _anchor(pos, fs_new)
+    return req + _anchor(pos, cs_new) - _anchor(pos, fs_new)
 
 
 def _parse_win_id(s: str) -> int | None:
