@@ -28,11 +28,19 @@ the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
 - **GNOME / Mutter**: `org.gnome.Mutter.DisplayConfig` on the session bus over the
   pure-stdlib `wdotool.dbus_mini` — see "Mutter backend" below. Stock Ubuntu 24.04
   (GNOME 46) and 26.04 (GNOME 50), no extension, no root.
-- KWin: out of scope (CmdError with a one-line hint).
+- **KDE Plasma / KWin**: the plasma-wayland-protocols pair `kde_output_device_v2`
+  (read) + `kde_output_management_v2` (write) over `wayland_mini` — see "KWin
+  backend" below. Unauthenticated (no portal, no polkit): the same path
+  kscreen-doctor and the System Settings KCM take. Plasma 5.27 (Ubuntu 24.04)
+  through 6.7+, no extension, no root.
 
-Backend selection: `WXRANDR_BACKEND=sway|wlr|mutter` (alias `gnome`); otherwise a
-sway/i3 IPC socket wins, then a session bus owning `org.gnome.Mutter.DisplayConfig`,
-then wlr. `--listproviders` names it (`name:sway`, `name:wlroots`, `name:mutter`).
+Backend selection: `WXRANDR_BACKEND=sway|wlr|kwin|mutter` (aliases `kde` and
+`gnome`); otherwise a sway/i3 IPC socket wins, then a compositor advertising
+`kde_output_management_v2`, then a session bus owning
+`org.gnome.Mutter.DisplayConfig`, then wlr. The KWin probe *is* the Wayland
+connection the backend keeps, so a KDE session still opens exactly one.
+`--listproviders` names it (`name:sway`, `name:wlroots`, `name:kwin`,
+`name:mutter`).
 
 ## Mutter backend (`wxrandr/mutter.py`)
 
@@ -124,6 +132,92 @@ an X-plane artefact wxrandr does not imitate.
 Tests: `tests/test_wxrandr_mutter.py` runs the whole CLI against a wire-level mock
 DisplayConfig service on `dbus_mini`'s mock bus that validates like mutter
 (serial, ids, scales, adjacency, overlap, primary, offset) and emits `MonitorsChanged`.
+
+## KWin backend (`wxrandr/kwin.py`)
+
+KWin has no `zwlr_output_management` and no D-Bus display API (`org.kde.KWin` only
+exposes `activeOutputName()`). Everything goes through the Wayland protocols from
+plasma-wayland-protocols — NOT from the kwin repo — which are unauthenticated:
+`kde_output_device_v2` per output (read), `kde_output_management_v2`
+(`create_configuration` → per-output setters → one `apply`), and
+`kde_output_order_v1` (read: which output is primary).
+
+| xrandr | KWin |
+|---|---|
+| output name, make/model/serial, mm, subpixel, EDID | `name` (device v2; `uuid` is the fallback), `geometry` make/model + `serial_number`, `geometry` mm/subpixel, `edid` (base64, collected for callers, not printed) |
+| enabled, `WxH+X+Y` | `enabled` / request `enable`; `geometry` x/y — **logical** coordinates, and the position is not scaled |
+| mode list, current, preferred | one `mode` object per mode (server-allocated new_id; `size` in hardware pixels, `refresh` in mHz), `current_mode` (sent only while enabled), the mode's `preferred` marker. `mode` takes an object, never a WxH triple, so a mode is matched by size + nearest refresh |
+| `--rotate`/`--reflect` | `transform` (wl_output enum, as libkscreen reads it: 1 → xrandr `left`, 3 → `right`, 4..7 the same rotations reflected — the same 90↔270 permutation of the sway names the Mutter backend needs) |
+| `--scale S` | `scale` (wl_fixed), quantised server-side to 1/120 with `std::round` (so `--scale 1.4375` lands on 173/120 = 1.44167, exactly where `kscreen-doctor` puts it); logical size = transform-swapped mode size ÷ scale, and **how that becomes an integer changed with Plasma 6**: 6.x takes the enclosing integer (1920 ÷ 1.4 → 1372, 1080 ÷ 1.4 → 772, measured against `kscreen-doctor` at seven scales), 5.27 rounds (1371). One pixel short is not cosmetic — the neighbour then overlaps by a pixel and KWin keeps it — so the rule is gated on the advertised management version (≥ 7 is Plasma 6). Never `core.logical_size`'s wlroots truncation |
+| `--primary` | `set_priority(dev, 1..N)` (management v3) over the whole list, `--primary` first and the rest in the order KWin already has — libkscreen's own `setPrimaryOutput` semantics. `set_primary_output` (v2) is sent alongside but is **accepted and ignored** by KWin on 5.27 and on 6.6 alike (measured: the output order does not move, XWayland's `primary` does not move), so it can never be the mechanism. Read back from `kde_output_order_v1` — its first entry is the primary plasmashell and XWayland follow, and it is advertised on 5.27 too, where the device `priority` event (v18) is out of reach. Below management 3, `--primary` warns and is *not* written to the state file: `--query` never names a primary the compositor was not asked for |
+| `--same-as` | plainly the same position: KWin does not enforce the XML's no-gaps/no-overlaps sentence (`set_replication_source` is a different, management-v13 concept and is not used) |
+
+Versions move fast — 5.27 advertises device 2 / management 3, 6.0 6/7, 6.3 11/12,
+6.4–6.5 16/16, 6.6 20/19, master 25/22 — so we bind LOW (device 2 for `name`,
+management `min(advertised, 12)` for `set_priority` + `failure_reason`) and
+gate every optional feature on the *bound* version: on 5.27 a rejection carries no
+reason string at all and says so. Discovery has two shapes and both are
+implemented: per-output `kde_output_device_v2` globals (5.27..6.6) and, from Plasma
+6.7 where that global is gone, `kde_output_device_registry_v2` (bound at ≥ 21)
+handing device objects out as new_ids. `done` is the publish barrier: an output
+appears in the snapshot only after it arrives — and management advertised with not
+one device published (a registry too old to bind, say) is a refusal
+(`xrandr: kde_output_management_v2 is advertised but the compositor announced no
+outputs`), not an empty screen and an apply that silently succeeds.
+
+Apply is atomic and **one-shot** — a second `apply` on one configuration object is
+a fatal `already_applied` protocol error that kills the connection — so every
+attempt builds a fresh object, and only deltas are sent (an unchanged invocation
+creates no configuration at all: a no-op changeset still costs a modeset). An
+output coming back from disabled is described in full. A hotplug between
+`create_configuration` and `apply` silently invalidates the object. The retry is
+keyed on evidence, not on that message: `failure_reason` is management v12, so on
+5.27 (which advertises 3) the string can never arrive, and what is checked instead
+is whether the set of published device objects moved while the configuration was
+open. Then it is rebuilt once from a fresh snapshot, mode objects and all. A
+rejection with the outputs unmoved is reported, not retried. Every socket error on
+the send side is one `xrandr:` line too, never a bare `[Errno 32] Broken pipe`.
+
+What we refuse client-side, before KWin's own message: disabling every output
+(`xrandr: cannot disable all outputs (KWin requires at least one enabled output)`)
+and an apply against a compositor that published no output at all.
+What we normalise: the layout slides back to the origin, because KWin rejects any
+enabled output at a negative coordinate. What warns and succeeds:
+`--brightness`/`--gamma` (probed — no `zwlr_gamma_control_manager_v1` under KWin
+and no LUT call in the protocol), `--noprimary` (KWin's output order always has a
+first entry, so there is no inverse to set), `--set`/`--transform`/`--panning` as
+elsewhere. What fails like Mutter:
+`--newmode`/`--addmode` applied without a real mode of the same size and rate
+(`cannot find mode NAME`) — protocol custom modes need management v18 plus
+`capability_custom_modes`, which nothing we bind offers.
+
+**KWin always saves the layout.** Plasma 6 writes `~/.config/kwinoutputconfig.json`
+from `applyOutputConfiguration` itself; on 5.27 `kded5 kscreen` watches the same
+libkscreen monitor and writes `~/.local/share/kscreen/<hash>`. There is no
+temporary mode and no confirmation dialog — the 15-second countdown belongs to the
+System Settings KCM, not the compositor — so `--persistent` is the only mode there
+is. Every apply that KWin actually took says so once, and prints the `xrandr …`
+command that restores the pre-apply snapshot, which is the only undo there is; an
+apply KWin refused says neither (nothing was saved, and that command would *change*
+the live layout). Because it is the only undo, it spells every property out —
+`--mode/--rate/--pos/--rotate/--reflect/--scale`, plus `--primary`, defaults
+included — so replaying it verbatim really is the inverse (verified live: layout,
+scale, rotation and primary all come back). The one thing it cannot express is
+KDE's full output *order*: xrandr has no syntax for it, and libkscreen permutes the
+non-primary ranks the same way. `--dryrun` runs the plan client-side only (mode
+resolution, the last-output refusal) and touches nothing — not even the state
+file's primary: KWin has no verify request, so nothing is claimed about it.
+
+Tests: `tests/test_wxrandr_kwin.py` runs the whole CLI against a wire-level fake
+KWin — a real unix-socket wl_display speaking all three protocols over the actual
+Wayland wire format, and modelling KWin's own behaviour including a
+`set_primary_output` that does nothing — covering both discovery paths, both
+version pairs, the mode-object matching, the 1/120 scale round trip, the Plasma
+5.27/6 logical-size split, negative-coordinate normalisation, delta-only
+changesets, the one-shot rule, the invalidation retry with and without a reason
+string, failure with and without one, the restore command replayed as an inverse,
+the last-output refusal, the no-output refusal, a compositor that hangs up
+mid-apply and the query bytes.
 
 ## Command surface (byte-parity target: xrandr 1.5.x)
 
