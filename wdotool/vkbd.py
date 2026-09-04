@@ -263,7 +263,10 @@ class VirtualKeyboard:
         nothing that could be left stuck (see --clearmodifiers in daemon.py).
         """
         self._depressed = 0
-        self._locked = 0
+        # The LOCKED mask is deliberately left alone: `--clearmodifiers`
+        # releases held modifiers, and CapsLock/NumLock are not among them on
+        # the kernel path either (keymap.MODIFIER_KEYCODES has neither), so
+        # clearing them here would make the same flag mean two things.
         # force: "nothing is down" is a statement worth making even when we
         # believe we had nothing down -- that is the whole point of the flag.
         self._send_modifiers(force=True)
@@ -315,6 +318,10 @@ class VirtualKeyboard:
             self.conn.send(self.vk, opcode, args)
         except OSError as e:
             self.closed = True
+            # The compositor released every key this keyboard was holding
+            # when the connection went; `held` must not go on claiming
+            # otherwise, or the daemon inherits a key it can never release.
+            self.held.clear()
             raise VkbdError(
                 f"the compositor closed the connection ({e}); the keys "
                 "wdotool was holding were released with it") from None

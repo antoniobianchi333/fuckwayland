@@ -80,6 +80,8 @@ class FakeCompositor:
         # join timeout for each.
         self.srv.settimeout(0.05)
         self.connections = 0
+        self.mgr_name = None     # registry name the manager was advertised as
+        self._registries = []    # (conn, registry id) per live client
         self.binds = []          # (interface, version)
         self.created = []        # vk object ids
         self.keymaps = []        # (format, bytes)
@@ -111,6 +113,14 @@ class FakeCompositor:
             os.rmdir(self.dir)
         except OSError:
             pass
+
+    def withdraw_manager(self):
+        """wl_registry.global_remove for the manager, on every live
+        connection -- a compositor withdrawing the protocol mid-session."""
+        with self._lock:
+            regs = list(self._registries)
+        for conn, reg in regs:
+            self._send(conn, reg, 1, struct.pack("<I", self.mgr_name or 0))
 
     def drop_clients(self):
         """Hang up on everyone -- what a compositor restart looks like to a
@@ -194,8 +204,11 @@ class FakeCompositor:
             self._global(conn, reg, name, "wl_output", 4)
             name += 1
             if self.manager_version is not None:
+                self.mgr_name = name
                 self._global(conn, reg, name, vkbd.MANAGER,
                              self.manager_version)
+            with self._lock:
+                self._registries.append((conn, reg))
             return
         if oid == state["registry"] and opcode == 0:   # wl_registry.bind
             name, iface, ver, new_id = _unpack_bind(body)
@@ -296,6 +309,12 @@ class RecorderDev:
 
     def key(self, code, down):
         self.events.append(("KEY", code, 1 if down else 0))
+
+    def emit(self, *a):
+        self.events.append(("EMIT",) + a)
+
+    def syn(self):
+        self.events.append(("SYN",))
 
     def close(self):
         pass
@@ -805,27 +824,232 @@ class _Reader:
 
 
 class Reconnecting(VkbdTest):
-    def test_a_compositor_restart_is_an_error_then_a_fresh_keyboard(self):
+    def test_a_compositor_restart_costs_the_hold_and_not_the_command(self):
+        """A restart between two commands used to spend the next command
+        discovering it (one error, then a working one). The command can be
+        served: the connection is checked before it is used, and a dead one
+        is replaced. What cannot be served is the *hold* -- the compositor
+        released those keys when we vanished from it -- so that, and only
+        that, is what the user is told about."""
         d = self.daemon(uinput=False)
         d.op_key("ctrl", "down", 0, False)
         self.assertIn(keymap.KEY_LEFTCTRL, d.down)
         self.comp.drop_clients()
-        # The next command fails -- deterministically, because every
-        # injection ends with a round trip, so a socket that swallowed our
-        # writes is still caught before we answer. handle() raises; the
-        # connection loop turns that into {"ok": false, "error": ...} and the
-        # client prints one line.
-        with self.assertRaises(RuntimeError) as cm:
-            d.handle({"op": "type", "text": "a", "delay_ms": 0})
-        self.assertNotIn("Traceback", str(cm.exception))
-        self.assertNotIn(keymap.KEY_LEFTCTRL, d.down,
-                         "the compositor released what we held; so must we")
-        # ... and the one after it reconnects and re-uploads the keymap.
         resp = d.handle({"op": "type", "text": "a", "delay_ms": 0})
         self.assertTrue(resp.get("ok"), resp)
+        self.assertTrue(any("keys wdotool was holding" in w
+                            for w in resp["warnings"]), resp["warnings"])
+        self.assertNotIn(keymap.KEY_LEFTCTRL, d.down,
+                         "the compositor released what we held; so must we")
         self.assertEqual(len(self.comp.created), 2)
-        self.assertEqual(len(self.comp.keymaps), 2)
+        self.assertEqual(len(self.comp.keymaps), 2, "re-uploaded on reconnect")
         self.assertEqual(self.comp.connections, 2)
+        self.assertIn((30, 1), self.comp.keys)
+
+    def test_a_restart_with_nothing_held_says_nothing(self):
+        d = self.daemon(uinput=False)
+        d.op_type("a", 0, False)
+        self.comp.drop_clients()
+        resp = d.handle({"op": "type", "text": "b", "delay_ms": 0})
+        self.assertTrue(resp.get("ok"), resp)
+        self.assertEqual(resp["warnings"], [])
+        self.assertIn((48, 1), self.comp.keys)      # b
+
+    def test_a_compositor_that_does_not_come_back_is_a_clean_error(self):
+        d = self.daemon(uinput=False)
+        d.op_type("a", 0, False)
+        self.comp.close()                # socket gone, nothing to reconnect to
+        with self.assertRaises(RuntimeError) as cm:
+            d.handle({"op": "type", "text": "b", "delay_ms": 0})
+        self.assertEqual(str(cm.exception), UINPUT_ERROR,
+                         "the error is the kernel device's, unchanged")
+
+    def test_a_restart_falls_back_to_uinput_when_that_is_what_works(self):
+        """uinput available, a key held on the virtual keyboard, and the
+        compositor gone: the hold cannot be honoured by anyone, so auto is
+        free to choose again -- and chooses the kernel device rather than
+        failing the command."""
+        d = self.daemon(uinput=True)
+        d.op_key("ctrl", "down", 0, False, None, None, "on")
+        self.comp.drop_clients()
+        self.comp.close()
+        resp = d.handle({"op": "type", "text": "x", "delay_ms": 0})
+        self.assertTrue(resp.get("ok"), resp)
+        self.assertEqual(d.kb.events, [("KEY", 45, 1), ("KEY", 45, 0)])
+        self.assertFalse(d.down)
+
+    def test_the_protocol_withdrawn_mid_session_does_not_break_the_hold(self):
+        """global_remove for the manager. A Wayland object outlives the
+        global it came from, so the keyboard we already have keeps typing and
+        our client must not choke on the event; only the next connection
+        finds the protocol gone, and falls back cleanly."""
+        d = self.daemon(uinput=False)
+        d.op_key("ctrl", "down", 0, False)
+        self.comp.withdraw_manager()
+        d.op_type("c", 0, False)
+        self.assertIn((46, 1), self.comp.keys)
+        d.op_key("ctrl", "up", 0, False)
+        self.assertEqual(len(self.comp.created), 1)
+        # now really gone: the reconnect cannot find it
+        self.comp.manager_version = None
+        self.comp.drop_clients()
+        with self.assertRaises(RuntimeError) as cm:
+            d.handle({"op": "type", "text": "a", "delay_ms": 0})
+        self.assertEqual(str(cm.exception), UINPUT_ERROR)
+
+
+class AConnectionThatDiesMidInjection(VkbdTest):
+    """The worst outcome this path could have: a key the daemon believes is
+    held on a keyboard that no longer exists. Nothing can release it -- not a
+    later keyup (it goes to a fresh keyboard), not --clearmodifiers (it sees
+    the key as already down) -- and every later `type A` comes out as `a`."""
+
+    def test_no_key_survives_the_drop_in_the_daemons_model(self):
+        d = self.daemon(uinput=False)
+        d.op_key("shift", "down", 0, False)
+        self.assertIn(keymap.KEY_LEFTSHIFT, d.down)
+        self.comp.drop_clients()
+        # --clearmodifiers: the release of the very key we hold is the write
+        # that fails, so the object's own `held` no longer lists it.
+        try:
+            d.handle({"op": "type", "text": "a", "delay_ms": 0,
+                      "clearmods": True})
+        except RuntimeError:
+            pass
+        self.assertEqual(d.down, set(), "nothing may stay down after a drop")
+
+    def test_and_the_characters_are_right_afterwards(self):
+        d = self.daemon(uinput=False)
+        d.op_key("shift", "down", 0, False)
+        self.comp.drop_clients()
+        try:
+            d.handle({"op": "key", "spec": "shift", "direction": "up",
+                      "delay_ms": 0})
+        except RuntimeError:
+            pass
+        self.comp.keys.clear()
+        d.handle({"op": "type", "text": "A", "delay_ms": 0})
+        self.assertEqual(self.comp.keys,
+                         [(keymap.KEY_LEFTSHIFT, 1), (30, 1), (30, 0),
+                          (keymap.KEY_LEFTSHIFT, 0)])
+
+
+class SwitchingSinks(VkbdTest):
+    """`self.down` is one set and there are two devices behind it. Whichever
+    one is about to type has to own it, or the modifier bookkeeping describes
+    a device that is not typing -- which produced the wrong characters."""
+
+    def test_a_key_held_on_the_virtual_keyboard_is_released_when_forced_off(self):
+        d = self.daemon(uinput=True)
+        d.op_key("shift", "down", 0, False, None, None, "on")
+        d.kb.events.clear()
+        warns = d.op_type("A", 0, False, None, None, "off")
+        self.assertEqual(self.comp.keys[-1], (keymap.KEY_LEFTSHIFT, 0),
+                         "released on the keyboard that was holding it")
+        self.assertEqual(d.kb.events,
+                         [("KEY", keymap.KEY_LEFTSHIFT, 1), ("KEY", 30, 1),
+                          ("KEY", 30, 0), ("KEY", keymap.KEY_LEFTSHIFT, 0)],
+                         "the kernel path presses its own shift for 'A'")
+        self.assertTrue(any("were released" in w for w in warns), warns)
+
+    def test_a_key_held_on_the_kernel_device_is_released_when_forced_on(self):
+        d = self.daemon(uinput=True)
+        d.op_key("shift", "down", 0, False, None, None, "off")
+        d.kb.events.clear()
+        warns = d.op_type("A", 0, False, None, None, "on")
+        self.assertEqual(d.kb.events, [("KEY", keymap.KEY_LEFTSHIFT, 0)])
+        self.assertEqual(self.comp.keys,
+                         [(keymap.KEY_LEFTSHIFT, 1), (30, 1), (30, 0),
+                          (keymap.KEY_LEFTSHIFT, 0)])
+        self.assertTrue(any("were released" in w for w in warns), warns)
+
+    def test_nothing_is_said_when_nothing_is_held(self):
+        d = self.daemon(uinput=True)
+        warns = d.op_type("a", 0, False, None, None, "on")
+        self.assertEqual(warns, [])
+        warns = d.op_type("a", 0, False, None, None, "off")
+        self.assertEqual(warns, [])
+
+
+class ThePointerNeverGoesThroughTheProtocol(VkbdTest):
+    def test_a_click_still_needs_the_kernel_device(self):
+        d = self.daemon(uinput=False)
+        d.op_type("a", 0, False)              # the protocol is live and used
+        for req in ({"op": "button", "btn": 1, "down": True},
+                    {"op": "mousemove_abs", "x": 3, "y": 4},
+                    {"op": "mousemove_rel", "dx": 1, "dy": 1}):
+            with self.assertRaises(RuntimeError) as cm:
+                d.handle(req)
+            self.assertEqual(str(cm.exception), UINPUT_ERROR, req["op"])
+        self.assertEqual([c for c, st in self.comp.keys], [30, 30],
+                         "nothing the pointer did reached the keyboard")
+
+    def test_a_pointer_clearmodifiers_releases_what_the_protocol_holds(self):
+        """uinput works, but the shift we are holding is on the virtual
+        keyboard: a key-up on the kernel device would release nothing."""
+        d = self.daemon(uinput=True)
+        d.mouse = RecorderDev()
+        d.op_key("shift", "down", 0, False, None, None, "on")
+        self.comp.events.clear()
+        d.handle({"op": "button", "btn": 1, "down": True, "clearmods": True})
+        self.assertEqual(d.mouse.events, [("KEY", 0x110, 1)])
+        kinds = [e for e in self.comp.events if e[0] in ("key", "mods")]
+        self.assertEqual(kinds[0], ("key", keymap.KEY_LEFTSHIFT, 0))
+        self.assertEqual(kinds[-1], ("key", keymap.KEY_LEFTSHIFT, 1))
+        self.assertIn(keymap.KEY_LEFTSHIFT, d.down, "still held afterwards")
+
+    def test_clear_modifiers_alone_works_without_a_kernel_device(self):
+        """The frozen DaemonClient API. It is a keyboard operation, so it
+        must work wherever typing does."""
+        d = self.daemon(uinput=False)
+        d.op_key("ctrl", "down", 0, False)
+        held = d.handle({"op": "clear_modifiers"})["held"]
+        self.assertEqual(held, [keymap.KEY_LEFTCTRL])
+        self.assertEqual(self.comp.keys[-1], (keymap.KEY_LEFTCTRL, 0))
+        d.handle({"op": "restore_modifiers", "held": held})
+        self.assertEqual(self.comp.keys[-1], (keymap.KEY_LEFTCTRL, 1))
+        self.assertIn(keymap.KEY_LEFTCTRL, d.down)
+
+
+class TheNoticeIsSaidWhenItHappens(VkbdTest):
+    manager_version = None
+
+    def test_a_daemon_that_started_before_the_compositor_still_says_it(self):
+        """The two diagnostics used to share one one-shot tag, so a daemon
+        that first met a compositor without the protocol never announced the
+        switch when a later one had it -- the one line telling the user that
+        typing works but clicking still does not."""
+        d = self.daemon(uinput=False)
+        with self.assertRaises(RuntimeError):
+            d.op_type("a", 0, False)
+        self.comp.manager_version = 1
+        d._vk_backoff = 0.0
+        warns = d.op_type("a", 0, False)
+        self.assertTrue(any("zwp_virtual_keyboard_v1" in w for w in warns),
+                        warns)
+        self.assertTrue(any("still need /dev/uinput" in w for w in warns),
+                        warns)
+        self.assertEqual(d.op_type("a", 0, False), [], "and only once")
+
+
+class LocksAreNotClearedByClearModifiers(VkbdTest):
+    def test_caps_lock_survives_a_clearmodifiers(self):
+        """`--clearmodifiers` releases held modifiers. CapsLock is not one:
+        the kernel path does not touch it (it is not in
+        keymap.MODIFIER_KEYCODES), so neither may this path -- one flag, one
+        meaning."""
+        d = self.daemon(uinput=False)
+        d.op_key("Caps_Lock", "press", 0, False)
+        self.assertEqual(self.comp.mods[-1][2], vkbd.MOD_LOCK)
+        d.op_type("a", 0, True)
+        self.assertEqual(self.comp.mods[-1][2], vkbd.MOD_LOCK,
+                         "the locked mask is not a held modifier")
+
+    def test_a_second_press_unlocks_it(self):
+        d = self.daemon(uinput=False)
+        d.op_key("Caps_Lock", "press", 0, False)
+        d.op_key("Caps_Lock", "press", 0, False)
+        self.assertEqual(self.comp.mods[-1][2], 0)
 
 
 class TheWire(VkbdTest):

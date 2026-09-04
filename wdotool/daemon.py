@@ -280,6 +280,19 @@ VKBD_CHOSE_WARNING = (
     "mousemove, mousedown/up) have no such protocol and still need "
     "/dev/uinput.")
 
+# The compositor we were typing through went away between two commands. Said
+# only when we were holding something, because that is the only part the next
+# command cannot simply redo.
+VKBD_RESTART_WARNING = (
+    "the compositor restarted; the keys wdotool was holding on its virtual "
+    "keyboard were released with it")
+
+# The two sinks are separate devices with separate key state (see _own_sink).
+SINK_SWITCH_WARNING = (
+    "the keys wdotool was holding on the %s keyboard (%s) were released: "
+    "this command types through the %s one, and only the device that pressed "
+    "a key can release it")
+
 _UNSET = object()
 
 CGROUP_ROOT = "/sys/fs/cgroup"
@@ -383,6 +396,11 @@ class _Daemon:
         self.kb = self.mouse = self.tablet = None
         self.dev_error = "uinput devices not initialized"
         self.down: set[int] = set()  # keycodes we injected as down
+        # ...and which of the two sinks they are down ON. The kernel device
+        # and the virtual keyboard are separate devices with separate key
+        # state; `self.down` describes exactly one of them at a time. See
+        # _own_sink() for what happens when the sink changes under a held key.
+        self._down_virtual = False
         # keycodes released by the op running inside _mods_cleared(); see
         # _mods_cleared() for why the restore has to subtract them
         self._released_mods: set[int] = set()
@@ -461,7 +479,8 @@ class _Daemon:
             if dev is not None:
                 dev.close()
         self.kb = self.mouse = self.tablet = None
-        self.down.clear()      # the kernel released them with the device
+        if not self._down_virtual:
+            self.down.clear()  # the kernel released them with the device
         self._reader = _UNSET
         if why != self.dev_error:
             print(why, file=sys.stderr, flush=True)
@@ -527,11 +546,36 @@ class _Daemon:
         mode = (forced or os.environ.get(VKBD_ENV) or "auto").strip().lower()
         return mode if mode in VKBD_MODES else "auto"
 
-    def _vkbd(self):
+    def _vk_alive(self) -> bool:
+        """Is the connection we cached still there?
+
+        One wl_display.sync round trip, paid once per command and only on
+        this path. It buys the case a long-lived daemon cannot otherwise
+        survive: the compositor restarted while nothing was being typed, and
+        the first command afterwards would otherwise be spent discovering
+        that. A slow compositor that misses the connection's 2s timeout is
+        treated as gone and reconnected to, which costs one reconnect and
+        never a wrong keystroke."""
+        try:
+            self._vk.flush()
+        except vkbd.VkbdError:
+            return False
+        return True
+
+    def _vkbd(self, warnings=None):
         """The live virtual keyboard, connecting on first use. Raises
         vkbd.VkbdError with the reason; the caller decides what that means."""
         if self._vk is not None:
-            return self._vk
+            if self._vk_alive():
+                return self._vk
+            # Gone since the last command. The keys it was holding went with
+            # it -- that is the one thing reconnecting cannot redo, so it is
+            # the one thing worth a line -- and then we reconnect rather than
+            # spending a command on the discovery.
+            lost = bool(self.down and self._down_virtual)
+            self._drop_vkbd()
+            if lost:
+                self._xkb_print(VKBD_RESTART_WARNING, warnings)
         now = time.monotonic()
         if now < self._vk_backoff:
             raise vkbd.VkbdError(self._vk_error or "not available")
@@ -554,46 +598,100 @@ class _Daemon:
         not the keys it was holding -- so the keycodes we thought were down
         go with it; the next command reconnects and re-uploads."""
         vk, self._vk = self._vk, None
+        if self._down_virtual:
+            # Everything `self.down` named was down on THAT keyboard, so it
+            # is all released now -- including a key whose key-up is what
+            # broke the connection in the first place, which `vk.held` no
+            # longer lists. Trusting `vk.held` here left `shift` down in the
+            # daemon's model for the rest of its life, and every later
+            # `type A` came out as `a`.
+            self.down.clear()
+            self._down_virtual = False
         if vk is not None:
-            self.down.difference_update(vk.held)
             vk.close()
 
     def _keyboard(self, warnings=None, mode=None):
         """(device, is_virtual) for one typing op -- see THE POLICY above."""
+        dev, virtual = self._pick_keyboard(warnings, mode)
+        self._own_sink(virtual, warnings)
+        return dev, virtual
+
+    def _pick_keyboard(self, warnings=None, mode=None):
         mode = self._vkbd_setting(mode)
         if mode == "off":
             self._need_devices()
             return self.kb, False
         if mode == "on":
             try:
-                return self._vkbd(), True
+                return self._vkbd(warnings), True
             except vkbd.VkbdError as e:
                 # Forced and impossible: say exactly what was asked for and
                 # what refused it, and do not quietly type through uinput.
                 raise RuntimeError(
                     f"--vkbd on: cannot use zwp_virtual_keyboard_v1: {e}") from None
         # auto: the kernel device unless it cannot be used at all.
-        if self._vk is not None and self._vk.held:
+        if self._vk is not None and self.down and self._down_virtual:
             # Never change sinks under a held key: a key held on the virtual
             # keyboard can only be released there (`--vkbd on wdotool keydown
             # ctrl` then a plain `wdotool type c`), and a key-up sent to the
-            # other device releases nothing at all.
-            return self._vk, True
+            # other device releases nothing at all. Asking _vkbd() rather
+            # than using the object directly is what makes this safe when the
+            # compositor restarted in between: it notices, drops the hold it
+            # can no longer honour, and says so -- and then there is no hold
+            # left to stay for, so the choice is made again from scratch.
+            try:
+                vk = self._vkbd(warnings)
+            except vkbd.VkbdError:
+                vk = None
+            if vk is not None and self.down and self._down_virtual:
+                return vk, True
         try:
             self._need_devices()
             return self.kb, False
         except RuntimeError as e:
             why = str(e)
         try:
-            dev = self._vkbd()
+            dev = self._vkbd(warnings)
         except vkbd.VkbdError as e:
             # No kernel device and no protocol: the error the user gets is
             # the kernel device's, unchanged -- that is still the thing they
             # have to fix. The protocol's reason goes to the daemon log.
-            self._xkb_say("vkbd", f"no virtual-keyboard protocol either: {e}")
+            # Its own tag: sharing one with the notice below meant a daemon
+            # that started before the compositor never said it had switched.
+            self._xkb_say("vkbd-none",
+                          f"no virtual-keyboard protocol either: {e}")
             raise RuntimeError(why) from None
         self._xkb_say("vkbd", VKBD_CHOSE_WARNING % why, warnings)
         return dev, True
+
+    def _own_sink(self, virtual: bool, warnings=None):
+        """Make `self.down` describe the sink that is about to type.
+
+        The kernel device and the virtual keyboard are separate devices with
+        separate key state, and `self.down` is one set. Letting it describe
+        one device while the other types is how `wdotool --vkbd on keydown
+        shift` followed by `wdotool --vkbd off type A` produced `a`: the
+        kernel path found shift in `self.down`, believed it was already held,
+        and pressed nothing. So when the sink changes with keys still down,
+        they are released on the device that is actually holding them -- the
+        only device that can -- and the user is told, every time, because it
+        is a state change and not a fact about the environment."""
+        if self.down and self._down_virtual != virtual:
+            old = self._vk if self._down_virtual else self.kb
+            codes = sorted(self.down)
+            self.down.clear()
+            for code in codes:
+                if old is None:
+                    break
+                try:
+                    old.key(code, False)
+                except (OSError, vkbd.VkbdError):
+                    break     # that device is gone; so are its keys
+            self._xkb_print(SINK_SWITCH_WARNING % (
+                "virtual" if self._down_virtual else "kernel",
+                ", ".join(_MOD_LABELS.get(c, "keycode %d" % c) for c in codes),
+                "kernel" if self._down_virtual else "virtual"), warnings)
+        self._down_virtual = virtual
 
     @contextlib.contextmanager
     def _vk_guard(self):
@@ -1083,15 +1181,24 @@ class _Daemon:
         process could inject with the modifiers down, or land its own
         injection between ours and the restore.
 
-        `dev` is the sink the typing ops already chose; the pointer ops pass
-        none and clear on the kernel keyboard, which is the only device they
-        could be using anyway."""
+        `dev` is the sink the typing ops already chose. The pointer ops pass
+        none: they inject through the kernel device whatever happens, but the
+        modifiers they have to clear are wherever *we* are holding them, and
+        a key-up on the kernel device releases nothing the virtual keyboard
+        is holding. So they clear (and restore) on that one when that is
+        where our keys are, and still say what a foreign keyboard is holding,
+        which a click rides just as a keystroke does."""
         if not on:
             yield
             return
+        ours = dev is None      # we chose the sink; we owe it a round trip
         if dev is None:
-            self._need_devices()
-            dev = self.kb
+            if self.down and self._down_virtual and self._vk is not None:
+                dev, vkbd_path = self._vk, True
+                self._warn_foreign_mods(warnings, session)
+            else:
+                self._need_devices()
+                dev = self.kb
         held = self._clear_mods(warnings, session, dev, vkbd_path)
         self._released_mods = set()
         try:
@@ -1105,20 +1212,35 @@ class _Daemon:
             # opposite of that.
             self._restore_mods(held - self._released_mods, dev)
             self._released_mods = set()
+            if ours:
+                # The typing ops flush after this block; the pointer ops do
+                # not inject on this sink at all, so the clear/restore pair
+                # is the only thing that could fail on it and this is the
+                # only place that would ever notice.
+                self._flush(dev)
 
     def op_clear_modifiers(self, warnings=None, session=None) -> list:
         """The clear half on its own (DaemonClient.clear_modifiers, kept for
         the frozen API). Every wdotool command uses the `clearmods` flag on
-        the injection op instead, which keeps the pair atomic."""
-        self._need_devices()
-        return sorted(self._clear_mods(warnings, session))
+        the injection op instead, which keeps the pair atomic.
+
+        It goes through _keyboard() like the injection ops do, so it clears
+        the modifiers on the device that is holding them and works wherever
+        typing works at all -- demanding /dev/uinput for it would have left
+        the frozen API as the one keyboard call that still needed root where
+        the rest no longer does."""
+        dev, vk = self._keyboard(warnings)
+        held = sorted(self._clear_mods(warnings, session, dev, vk))
+        self._flush(dev)   # a sink that acknowledges gets to say it failed
+        return held
 
     def op_restore_modifiers(self, held):
         """The restore half; see op_clear_modifiers. `held` is validated to
         modifier keycodes by handle(), and _restore_mods presses nothing
         else, so a client cannot use this to hold down an arbitrary key."""
-        self._need_devices()
-        self._restore_mods(held)
+        dev, _vk = self._keyboard()
+        self._restore_mods(held, dev)
+        self._flush(dev)
 
     def _typing_layout(self, vkbd_path, warnings, layout_mode):
         """The character table for one typing op.
@@ -1247,10 +1369,12 @@ class _Daemon:
                         _layout_mode(req.get("layout_mode")),
                         _vkbd_mode(req.get("vkbd_mode")))
             elif op == "clear_modifiers":
-                held = self.op_clear_modifiers(warnings, session)
+                with self._vk_guard():
+                    held = self.op_clear_modifiers(warnings, session)
                 return {"ok": True, "held": held, "warnings": warnings}
             elif op == "restore_modifiers":
-                self.op_restore_modifiers(_mods(req.get("held"), "held"))
+                with self._vk_guard():
+                    self.op_restore_modifiers(_mods(req.get("held"), "held"))
             elif op == "mousemove_abs":
                 with self._mods_cleared(req.get("clearmods", False), warnings, session):
                     self.op_mousemove_abs(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
