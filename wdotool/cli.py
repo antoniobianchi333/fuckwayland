@@ -181,6 +181,7 @@ def run_chain(ctx: Context, prog: str, tokens: list[str]) -> int:
             sys.stderr.write("command: %s\n" % name)
         args = tokens[i + 1 :]
         ctx.cmd_name = name  # as typed; commands use it in usage text
+        ctx.cmd_usage = None  # set by window_get_arg(); never stale across links
         try:
             n = fn(ctx, args)
         except CmdError as e:
@@ -216,19 +217,21 @@ class _ScriptError(Exception):
 
 def _script_line_tokens(line: str, argv: list[str], prog: str) -> list[str]:
     """Tokenize one script line exactly like script_main in xdotool.c:
-    whitespace-separated tokens, leading '"' or '\\'' quotes a token, '#' at a
-    token start comments out the rest of the line, and a token beginning with
+    whitespace-separated tokens, leading '"' or '\\'' quotes a token, a line
+    whose first token starts with '#' is a comment, and a token beginning with
     '$' is replaced wholesale by a positional parameter ($N -> argv[N+1]) or
-    an environment variable. Empty tokens are dropped."""
+    an environment variable. Empty tokens are kept -- `echo A "" B` passes
+    three arguments."""
     tokens: list[str] = []
     i, n = 0, len(line)
+    first = True
     while i < n:
         while i < n and line[i] in " \t":
             i += 1
         if i >= n:
             break
         c = line[i]
-        if c == "#":
+        if c == "#" and first:
             break
         if c in "\"'":
             i += 1
@@ -243,9 +246,13 @@ def _script_line_tokens(line: str, argv: list[str], prog: str) -> list[str]:
                 j += 1
             raw = line[i:j]
             i = j + 1
+        first = False
         if raw.startswith("$"):
             name = raw[1:]
-            if name[:1] in "0123456789":
+            # `in "0123456789"` is True for the empty string, so a bare "$"
+            # became "$0" -- the script path -- instead of the environment
+            # lookup that fails.
+            if name[:1].isdigit():
                 pos = _atoi(name) + 1  # $1 is argv[2]
                 if pos >= len(argv):
                     sys.stderr.write(
@@ -270,8 +277,7 @@ def _script_line_tokens(line: str, argv: list[str], prog: str) -> list[str]:
                     raise _ScriptError()
         else:
             token = raw
-        if token:
-            tokens.append(token)
+        tokens.append(token)
     return tokens
 
 
@@ -330,14 +336,17 @@ def main(argv: list[str] | None = None) -> int:
     # does not run, so no layout code executes at all. Ours, not xdotool's,
     # so it is stripped here and never reaches a command's own parser or the
     # parity-checked usage text.
+    #
+    # It is a *leading* option, and the scan stops where xdotool's own
+    # getopt_long_only(argc, argv, "++hv", ...) stops: at the first token that
+    # is not an option. Walking to the end of the command line ate the flag
+    # wherever it appeared -- inside `exec` arguments, inside a script's
+    # positional parameters, and before the X11 handover, so the real xdotool
+    # was handed a mangled argv.
     layout_mode = None
     rest = []
-    it = iter(range(1, len(argv)))
-    skip = False
-    for i in range(1, len(argv)):
-        if skip:
-            skip = False
-            continue
+    i = 1
+    while i < len(argv):
         a = argv[i]
         if a == "--layout":
             if i + 1 >= len(argv):
@@ -345,12 +354,17 @@ def main(argv: list[str] | None = None) -> int:
                                  "(us, auto or xkb)\n")
                 return 1
             layout_mode = argv[i + 1]
-            skip = True
+            i += 2
             continue
         if a.startswith("--layout="):
             layout_mode = a.split("=", 1)[1]
+            i += 1
             continue
+        if a == "--" or a == "-" or not a.startswith("-"):
+            break          # the command name, the script path, or "--"
         rest.append(a)
+        i += 1
+    rest.extend(argv[i:])
     if layout_mode is not None:
         layout_mode = layout_mode.strip().lower()
         if layout_mode not in ("us", "fixed", "auto", "xkb"):

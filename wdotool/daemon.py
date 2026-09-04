@@ -1004,13 +1004,15 @@ class _Daemon:
                 warnings = self.op_type(
                     _text(req.get("text"), "text"),
                     _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
-                    req.get("clearmods", False), session)
+                    req.get("clearmods", False), session,
+                    req.get("layout_mode"))
             elif op == "key":
                 warnings = self.op_key(
                     _text(req.get("spec"), "spec"),
                     req.get("direction", "press"),
                     _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
-                    req.get("clearmods", False), session)
+                    req.get("clearmods", False), session,
+                    req.get("layout_mode"))
             elif op == "clear_modifiers":
                 held = self.op_clear_modifiers(warnings, session)
                 return {"ok": True, "held": held, "warnings": warnings}
