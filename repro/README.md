@@ -15,6 +15,7 @@ a machine with no Plasma 6.7 on it.
 | `kde-1-script-id-race.sh` | the same, through concurrent wdotool commands | any KDE |
 | `kde-5-pointer-no-uinput.sh` | `getmouselocation` needed /dev/uinput for a pure query | any KDE |
 | `kde-tools-3-argv0-oracle.sh` | what the real wmctrl/xprop print as their program name | any |
+| `kde-xid-twins.py` | one X11 client, N windows sharing a pid, a class, a title and a rectangle: the tie the Plasma 6 xid matcher used to settle by coin flip. `WM_WINDOW_ROLE` carries the truth (KWin exposes it, the matcher ignores it), so `wwmctl -l` can be graded against it | `resolute-kde` |
 | `kdex11-1-sddm-x-cookie.sh` | Plasma on X11: SDDM keeps the X cookie in `/tmp/xauth_*`, so from a root shell the handover found no cookie at all (run as **root**) | `noble-kde-x11` |
 | `kde5-verify.sh` | SHADED on a native window, the X-plane state fallback, WM_CLASS case, `-l -G` | `noble-kde` |
 | `kde6-before.sh`, `kde6-verify-a.sh`, `kde6-verify-b.sh` | the Plasma 6.6 sweep | `resolute-kde` |

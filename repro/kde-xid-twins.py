@@ -1,14 +1,35 @@
 #!/usr/bin/env python3
 """One X11 client, N top-level windows: the adversarial case for the
 Plasma 6 xid matcher.  Same pid, same WM_CLASS, titles and geometry
-exactly as told.  Prints "WIN <label> <xid>" per window, then idles.
+exactly as told, so that nothing but the order of the two window lists
+can tell the windows apart.  Prints "WIN <label> <xid>" per window, then
+idles until killed.
 
-Built on the repo's own wwmctl.x11_mini connection (stdlib only).
+    kde-xid-twins.py --win 'a|Term|800x600+100+100' \
+                     --win 'b|Term|800x600+100+100'
+
+WM_WINDOW_ROLE carries the label, which makes it the oracle: KWin
+exposes the role to scripts as `ro` and the matcher never looks at it,
+so `wwmctl -l` can be checked against the truth without perturbing what
+is being measured.  Run it inside a Plasma session (`vmctl user <vm> --
+python3 /tmp/kde-xid-twins.py ...`) with `_NET_CLIENT_LIST` and
+`wwmctl -l` read alongside it.
+
+Built on the repo's own wwmctl.x11_mini connection (stdlib only, no
+python-xlib): a checkout beside this file, else the wwmctl zipapp
+`deploy-to-vm.sh` installs on a guest (zipimport reads it directly).
 """
 import argparse, os, struct, sys, time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from wwmctl import x11_mini
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _cand in (_ROOT, "/usr/local/bin/wwmctl", "/usr/bin/wwmctl"):
+    if os.path.exists(_cand):
+        sys.path.insert(0, _cand)
+try:
+    from wwmctl import x11_mini
+except ImportError:                                        # pragma: no cover
+    sys.exit("kde-xid-twins: no wwmctl to import: run me from a checkout, "
+             "or install the wwmctl zipapp (repro/deploy-to-vm.sh)")
 
 CW_BACK_PIXEL = 0x2
 CW_EVENT_MASK = 0x800
