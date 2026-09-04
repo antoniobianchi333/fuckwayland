@@ -17,6 +17,7 @@ import io
 import os
 import shutil
 import signal
+import socket
 import sys
 import tempfile
 import unittest
@@ -938,6 +939,85 @@ class WarandrBackend(Base):
         b.set_display("localhost:10.0")
         self.assertEqual(b.env["DISPLAY"], "localhost:10.0")
 
+
+
+class EmptyPathElement(unittest.TestCase):
+    """An empty PATH element ("PATH=:/usr/bin", a trailing colon, os.defpath)
+    means the current directory. We re-resolve the real tool *inside* the
+    process, long after the user chose how to invoke us, so honouring it
+    would execve a file out of whatever directory they had cd'd into."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.plant = os.path.join(self.d, "xdotool")
+        with open(self.plant, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(self.plant, 0o755)
+        self.cwd = os.getcwd()
+        os.chdir(self.d)
+        self.addCleanup(os.chdir, self.cwd)
+
+    def test_the_cwd_is_never_searched(self):
+        for path in (":/nonexistent", "/nonexistent:", "/nonexistent::/x"):
+            self.assertIsNone(passthrough.real_tool("xdotool", {"PATH": path}),
+                              "PATH=%r searched the cwd" % path)
+            self.assertIsNone(passthrough._which_any("xdotool", {"PATH": path}),
+                              "PATH=%r searched the cwd" % path)
+        # os.defpath (the PATH-unset fallback) leads with an empty element
+        # too; whatever it finds must come from a real directory on it
+        for got in (passthrough.real_tool("xdotool", {"PATH": ""}),
+                    passthrough._which_any("xdotool", {"PATH": ""})):
+            if got is not None:
+                self.assertFalse(got.startswith(self.d), got)
+                self.assertTrue(os.path.isabs(got), got)
+
+    def test_a_real_directory_on_PATH_still_wins(self):
+        self.assertEqual(passthrough.real_tool("xdotool", {"PATH": self.d}),
+                         self.plant)
+
+
+class RootWithNoSession(unittest.TestCase):
+    """Root with no SUDO_UID and no logind record (root cron, `ssh root@box`)
+    falls back to scanning /tmp/.X11-unix, which is world-writable. Pairing
+    the lowest-numbered socket there with a cookie found by a separate scan
+    could hand a planted X server the real user's MIT-MAGIC-COOKIE, which is
+    full access to their session."""
+
+    def test_the_cookie_owner_follows_the_display_we_chose(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        xd = os.path.join(d, "X11-unix")
+        os.makedirs(xd)
+        rd = os.path.join(d, "run-user")
+        os.makedirs(os.path.join(rd, "1000"))
+        with open(os.path.join(rd, "1000", "xauth_victim"), "wb") as f:
+            f.write(b"cookie")
+        s = socket.socket(socket.AF_UNIX)
+        self.addCleanup(s.close)
+        s.bind(os.path.join(xd, "X0"))          # "the attacker's" :0
+        saved = (passthrough._X11_SOCK_DIR, passthrough._LOGIND_DIR,
+                 passthrough._RUN_USER_DIR)
+        passthrough._X11_SOCK_DIR = xd
+        passthrough._LOGIND_DIR = os.path.join(d, "none")
+        passthrough._RUN_USER_DIR = rd
+        passthrough.reset_cache()
+        self.addCleanup(passthrough.reset_cache)
+
+        def restore():
+            (passthrough._X11_SOCK_DIR, passthrough._LOGIND_DIR,
+             passthrough._RUN_USER_DIR) = saved
+        self.addCleanup(restore)
+
+        with mock.patch.object(passthrough.os, "getuid", lambda: 0), \
+                mock.patch.object(passthrough.os, "geteuid", lambda: 0):
+            env = passthrough.repair_x_env({})
+        self.assertEqual(env.get("DISPLAY"), ":0")
+        # the socket is ours (uid 1000 is somebody else here), so no cookie
+        # from another uid's runtime dir may be handed to it
+        self.assertIsNone(env.get("XAUTHORITY"))
+        self.assertEqual(passthrough._display_owner_uid(":0"), os.getuid())
+        self.assertIsNone(passthrough._display_owner_uid("host:0"))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

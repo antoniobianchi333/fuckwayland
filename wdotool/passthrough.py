@@ -555,10 +555,22 @@ def self_paths():
     return out
 
 
+def _skip_path_element(d: str) -> bool:
+    """An empty PATH element (a leading, trailing or doubled colon, and the
+    one in os.defpath) means "the current directory" -- and we resolve the
+    real tool *inside* the process, long after the user chose how to invoke
+    us. Honouring it would search a directory the user merely cd'd into (an
+    unpacked tarball, a shared /tmp, ~/Downloads) for a program we are about
+    to execve, as them or as root; nobody installs xdotool there."""
+    return not d
+
+
 def _which_any(name, e=None):
     e = os.environ if e is None else e
     for d in (e.get("PATH") or os.defpath).split(os.pathsep):
-        cand = os.path.join(d or ".", name)
+        if _skip_path_element(d):
+            continue
+        cand = os.path.join(d, name)
         if os.path.isfile(cand) and os.access(cand, os.X_OK):
             return cand
     return None
@@ -652,7 +664,9 @@ def real_tool(name: str, env=None):
                 "%s=%s is not an executable file" % (var, override))
         return os.path.abspath(override)
     for d in (e.get("PATH") or os.defpath).split(os.pathsep):
-        cand = os.path.join(d or ".", name)
+        if _skip_path_element(d):
+            continue
+        cand = os.path.join(d, name)
         if not os.path.isfile(cand) or not os.access(cand, os.X_OK):
             continue
         if is_us(cand):
@@ -741,6 +755,18 @@ def _argv0(tool):
     return base if base == tool else tool
 
 
+def _display_owner_uid(display):
+    """uid owning the unix socket `display` names, or None (a remote or
+    non-local DISPLAY has no socket to own)."""
+    d = (display or "").strip()
+    if not d.startswith(":"):
+        return None
+    num = d[1:].split(".")[0]
+    if not num.isdigit():
+        return None
+    return _owner(os.path.join(_X11_SOCK_DIR, "X" + num))
+
+
 def repair_x_env(e):
     """Fill the session's `$DISPLAY`/`$XAUTHORITY` into the dict `e`, in place;
     returns `e`.
@@ -763,6 +789,14 @@ def repair_x_env(e):
         found = find_x_display(e, uid)
         if found:
             e["DISPLAY"] = found
+    if uid is None:
+        # With no session uid, find_x_display() fell back to scanning
+        # /tmp/.X11-unix -- which is world-writable, so the lowest-numbered
+        # socket there may be one a local user bound ahead of the real
+        # server. Take the cookie owner from the display we are about to use:
+        # a planted server then only ever gets its own owner's cookie, never
+        # the real user's (which is full X11 access to their session).
+        uid = _display_owner_uid(e.get("DISPLAY"))
     xa = (e.get("XAUTHORITY") or "").strip()
     if not xa or not os.path.exists(xa):
         found = find_xauthority(e, uid)
