@@ -349,8 +349,10 @@ nothing installed. wwmctl consumes the same typed hooks as on GNOME
 `:SELECT:` work with no wwmctl-side special casing. What is worth knowing:
 
 * **Ids.** XWayland rows print the real X id (`w.windowId` on 5.27; matched
-  through the X server's client list on 6, where KWin exports none), native
-  rows print the backend id KWin's uuid is minted into — 30 bits of the uuid,
+  through the X server's client list on 6, where KWin exports none -- pid and
+  `WM_CLASS` filter, title and geometry score, and the order of the two lists
+  breaks the tie two windows of one application in one place leave behind),
+  native rows print the backend id KWin's uuid is minted into — 30 bits of the uuid,
   so `0x40000000`–`0x7FFFFFFF`. `-i` takes either.
 * **`-l -G`.** Real `wmctrl` doubles the frame offset under a non-reparenting
   window manager; our positions are the true ones (the same divergence as on

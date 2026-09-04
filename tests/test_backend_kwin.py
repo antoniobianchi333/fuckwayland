@@ -11,6 +11,8 @@ line (`/* wdotool-kwin 1 {...} */`) -- there is no JS engine here -- and
 answers with a callDBus-shaped method call to the destination the script
 carries, sent before run()'s reply, exactly as KWin does."""
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -1387,6 +1389,108 @@ class PayloadShapeTests(_Base):
         # ...and so is one that agrees on the pid alone
         self.assertEqual(backend_kwin._match_xids(
             raw, [dict(anon[0], pid=1400)]), {"a": 11})
+
+
+    def test_two_identical_windows_are_told_apart_by_list_order(self):
+        # Two windows of one client, same pid, same class, same title, the
+        # same rectangle: title and geometry tie and only the order of the
+        # two lists is left. Measured on Plasma 6.6, the old coin flip moved
+        # the other window in four runs out of ten.
+        raw = [dict(u="a", c="XTerm", n="xterm", p=900, t="Terminal",
+                    x=300, y=200, w=400, h=328, ix=2),
+               dict(u="b", c="XTerm", n="xterm", p=900, t="Terminal",
+                    x=300, y=200, w=400, h=328, ix=4)]
+        clients = [{"xid": 0x1000001, "pid": 900, "inst": "xterm",
+                    "cls": "XTerm", "name": "Terminal",
+                    "geo": (300, 228, 400, 300)},
+                   {"xid": 0x1000003, "pid": 900, "inst": "xterm",
+                    "cls": "XTerm", "name": "Terminal",
+                    "geo": (300, 228, 400, 300)}]
+        self.assertEqual(backend_kwin._match_xids(raw, clients),
+                         {"a": 0x1000001, "b": 0x1000003})
+        # the same two windows the other way round in KWin's list
+        raw[0]["ix"], raw[1]["ix"] = 4, 2
+        self.assertEqual(backend_kwin._match_xids(raw, clients),
+                         {"a": 0x1000003, "b": 0x1000001})
+
+    def test_order_is_only_a_tiebreak_geometry_still_wins(self):
+        # The positions must never overrule a rectangle that already says
+        # which is which -- here the client list is in the other order.
+        raw = [dict(u="a", c="XTerm", n="xterm", p=0, t="", x=0, y=0,
+                    w=200, h=100, ix=0),
+               dict(u="b", c="XTerm", n="xterm", p=0, t="", x=800, y=600,
+                    w=200, h=100, ix=1)]
+        clients = [{"xid": 11, "pid": 0, "inst": "xterm", "cls": "XTerm",
+                    "name": "", "geo": (802, 604, 196, 92)},
+                   {"xid": 12, "pid": 0, "inst": "xterm", "cls": "XTerm",
+                    "name": "", "geo": (2, 4, 196, 92)}]
+        self.assertEqual(backend_kwin._match_xids(raw, clients),
+                         {"a": 12, "b": 11})
+
+    def test_a_window_kwin_lists_but_x_does_not_only_shifts_positions(self):
+        # An override-redirect popup (a menu, a tooltip) is in
+        # workspace.windowList() with its client's pid and class, and never
+        # in _NET_CLIENT_LIST. It must not drag the windows after it onto
+        # the wrong ids.
+        raw = [dict(u="a", c="XTerm", n="xterm", p=900, t="Terminal",
+                    x=300, y=200, w=400, h=328, ix=2),
+               dict(u="pop", c="XTerm", n="xterm", p=900, t="",
+                    x=300, y=228, w=400, h=300, ix=3),
+               dict(u="b", c="XTerm", n="xterm", p=900, t="Terminal",
+                    x=300, y=200, w=400, h=328, ix=4)]
+        clients = [{"xid": 0x1000001, "pid": 900, "inst": "xterm",
+                    "cls": "XTerm", "name": "Terminal",
+                    "geo": (300, 228, 400, 300)},
+                   {"xid": 0x1000003, "pid": 900, "inst": "xterm",
+                    "cls": "XTerm", "name": "Terminal",
+                    "geo": (300, 228, 400, 300)}]
+        self.assertEqual(backend_kwin._match_xids(raw, clients),
+                         {"a": 0x1000001, "b": 0x1000003})
+
+    def test_a_title_kwin_simplified_still_matches_its_own_window(self):
+        # KWin runs an X11 caption through QString::simplified(); the X
+        # server hands back what the client set. Compared raw, the window
+        # whose title has a trailing space matches the *other* window's
+        # title exactly and nothing else -- worse than no title at all.
+        raw = [dict(u="a", c="XTerm", n="xterm", p=900, t="Term",
+                    x=300, y=200, w=400, h=328, ix=2),
+               dict(u="b", c="XTerm", n="xterm", p=900, t="Term",
+                    x=300, y=200, w=400, h=328, ix=4)]
+        clients = [{"xid": 21, "pid": 900, "inst": "xterm", "cls": "XTerm",
+                    "name": "Term ", "geo": (300, 228, 400, 300)},
+                   {"xid": 22, "pid": 900, "inst": "xterm", "cls": "XTerm",
+                    "name": "Term", "geo": (300, 228, 400, 300)}]
+        self.assertEqual(backend_kwin._match_xids(raw, clients),
+                         {"a": 21, "b": 22})
+        self.assertEqual(backend_kwin._simplified("  a\t b \n"), "a b")
+        self.assertEqual(backend_kwin._simplified(None), "")
+
+    def test_three_identical_windows_keep_their_own_ids(self):
+        raw = [dict(u=u, c="XTerm", n="xterm", p=900, t="Terminal",
+                    x=300, y=200, w=400, h=328, ix=i)
+               for i, u in enumerate("abc")]
+        clients = [{"xid": 30 + i, "pid": 900, "inst": "xterm",
+                    "cls": "XTerm", "name": "Terminal",
+                    "geo": (300, 228, 400, 300)} for i in range(3)]
+        self.assertEqual(backend_kwin._match_xids(raw, clients),
+                         {"a": 30, "b": 31, "c": 32})
+
+    def test_an_unbreakable_tie_gets_no_id_rather_than_a_guess(self):
+        # No `ix` (an older script): nothing is left to separate the two,
+        # and one of the two ids at random is the outcome that moves the
+        # wrong window. Both keep xid 0 and the run says so.
+        raw = [dict(u="a", c="XTerm", n="xterm", p=900, t="Terminal",
+                    x=300, y=200, w=400, h=328),
+               dict(u="b", c="XTerm", n="xterm", p=900, t="Terminal",
+                    x=300, y=200, w=400, h=328)]
+        clients = [{"xid": 41, "pid": 900, "inst": "xterm", "cls": "XTerm",
+                    "name": "Terminal", "geo": (300, 228, 400, 300)},
+                   {"xid": 42, "pid": 900, "inst": "xterm", "cls": "XTerm",
+                    "name": "Terminal", "geo": (300, 228, 400, 300)}]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(backend_kwin._match_xids(raw, clients), {})
+        self.assertIn("could not be told apart", err.getvalue())
 
     def test_two_windows_that_collide_both_keep_an_id(self):
         # 30 bits of the uuid: a collision is a one-in-a-million session,
