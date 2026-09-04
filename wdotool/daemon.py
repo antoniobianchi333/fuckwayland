@@ -15,6 +15,7 @@ DESIGN.md).
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import socket
@@ -23,7 +24,7 @@ import threading
 import time
 import traceback
 
-from wdotool import keymap, uinput
+from wdotool import keymap, uinput, xkbmap
 from wdotool.ctx import CmdError
 
 # Per-euid log path: /tmp is shared, and a root-owned log must not break (or
@@ -267,6 +268,15 @@ class _Daemon:
         self._rel_abs = None      # relative moves as absolute warps? (B1)
         self.pos_known = False    # has px/py ever been established? (B6)
         self.geom_fallback = False  # last geometry() used FALLBACK_GEOMETRY
+        # Active-layout state (B13). `_layout_cache` is ((keymap digest,
+        # group), ReverseMap or None); None means "the fixed US table is the
+        # answer", which is both the bypass and every failure mode.
+        self._layout_cache = None
+        self._xkb_backoff = 0.0    # monotonic: don't re-try a failing read
+        self._xkb_mods_wait = 0.08  # seconds to wait for a modifiers event
+        self._xkb_said: set = set()  # one-shot diagnostics already emitted
+        self._xkb_degraded = None  # set while the keymap cannot be used
+        self._xkb_group_said = None  # layout state the group notice was for
 
     def _key_gap(self, delay: float):
         """Inter-keystroke pause. Sleeps `delay` seconds but never lets the
@@ -471,50 +481,186 @@ class _Daemon:
 
     # -- keyboard ----------------------------------------------------------
 
-    def _press(self, keys, delay):
-        for code, shifted in keys:
-            if shifted and not any(s in self.down for s in _SHIFTS):
-                self.kb.key(keymap.KEY_LEFTSHIFT, True)
-                self.down.add(keymap.KEY_LEFTSHIFT)
+    # -- the active layout (B13) ------------------------------------------
+
+    def _xkb_say(self, tag: str, msg: str, warnings=None):
+        """One diagnostic per daemon per subject: the daemon log always, the
+        answering client's stderr once."""
+        if tag in self._xkb_said:
+            return
+        self._xkb_said.add(tag)
+        self._xkb_print(msg, warnings)
+
+    def _xkb_print(self, msg: str, warnings):
+        print("wdotool: " + msg, file=sys.stderr, flush=True)
+        if warnings is not None:
+            warnings.append("wdotool: " + msg)
+
+    def _xkb_say_group(self, state, msg: str, warnings):
+        """The "which layout is active?" notice: once per layout state, and
+        again whenever the state changes -- a layout switch is exactly when
+        the guess is worth repeating."""
+        if self._xkb_group_said == state:
+            return
+        self._xkb_group_said = state
+        self._xkb_print(msg, warnings)
+
+    def _xkb_warn_degraded(self, warnings):
+        """Tell *this* client that the keymap could not be used, whether or
+        not an earlier client was told. A session typing US characters
+        because the read failed is typing the wrong thing on every command,
+        and a single line to whoever happened to ask first tells nobody."""
+        if self._xkb_degraded and warnings is not None:
+            warnings.append(self._xkb_degraded)
+
+    def _xkb_fell_back(self, why: str, tag: str, warnings):
+        msg = why + "; typing with the built-in US layout table"
+        self._xkb_degraded = "wdotool: " + msg
+        self._xkb_say(tag, msg)          # the log says it once ...
+        self._xkb_warn_degraded(warnings)  # ... the client, every time
+
+    def _layout(self, warnings=None):
+        """The reverse map for the compositor's ACTIVE layout, or None when
+        the fixed US table is the right answer (B13).
+
+        None is returned for the US bypass *and* for every failure: no
+        compositor, an unreadable or unparsable keymap, a keymap with no
+        typable character. The old path is the floor, never a traceback.
+        """
+        mode = (os.environ.get("WDOTOOL_LAYOUT") or "auto").strip().lower()
+        if mode in ("us", "fixed"):
+            return None
+        force = mode == "xkb"
+        now = time.monotonic()
+        if now < self._xkb_backoff:
+            self._xkb_warn_degraded(warnings)
+            return None
+        try:
+            snap = xkbmap.fetch(mods_wait=self._xkb_mods_wait)
+        except xkbmap.XkbError as e:
+            self._xkb_backoff = now + 5.0
+            self._xkb_fell_back(f"cannot read the compositor's keymap ({e})",
+                                "read", warnings)
+            return None
+        except Exception as e:  # a bug in the new code must not break typing
+            self._xkb_backoff = now + 60.0
+            self._xkb_fell_back(f"keymap read failed ({e!r})", "read", warnings)
+            return None
+        if not snap.mods_seen:
+            # This compositor does not send wl_keyboard.modifiers to an
+            # unfocused client, and never will: stop paying for the wait.
+            # (Keying this off `group_known` instead left the wait switched
+            # on for ever on the commonest GNOME session there is, whose two
+            # groups are the same `us` twice -- +87 ms on every command, B5.)
+            self._xkb_mods_wait = 0.0
+        key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(),
+               snap.group)
+        if self._layout_cache is not None and self._layout_cache[0] == key:
+            self._xkb_warn_degraded(warnings)
+            return self._layout_cache[1]
+        self._xkb_degraded = None
+        rmap = None
+        bypassed = False
+        try:
+            if not force and xkbmap.active_group_is_plain_us(snap.text, snap.group):
+                bypassed = True  # THE BYPASS: nothing below this line runs
+            else:
+                rmap = xkbmap.build(snap.text, snap.group)
+        except xkbmap.XkbError as e:
+            rmap = None
+            self._xkb_fell_back(f"cannot use the compositor's keymap ({e})",
+                                "build", warnings)
+        except Exception as e:
+            rmap = None
+            self._xkb_fell_back(f"keymap conversion failed ({e!r})",
+                                "build", warnings)
+        try:
+            if not snap.group_known and (bypassed or rmap is not None):
+                # Which layout is active was a guess. Say so on the bypass
+                # path too: a `us,de` session sitting on its German group is
+                # precisely the one that types the wrong characters, and it
+                # is the bypass that takes it (B1). Once per layout state,
+                # so a switch is announced again.
+                name = (rmap.name if rmap is not None
+                        else xkbmap.group_name(snap.text, snap.group))
+                self._xkb_say_group(
+                    key,
+                    "the compositor does not say which keyboard layout is "
+                    "active (it sends that only to the focused window); "
+                    f"assuming '{name}'. Set WDOTOOL_XKB_GROUP=<n> to "
+                    "pin one.", warnings)
+        except Exception:
+            pass  # a notice must never be the thing that breaks typing
+        self._layout_cache = (key, rmap)
+        return rmap
+
+    def _mod_keycodes(self, mask: int, layout) -> list:
+        """The modifier keys to hold for one entry's mask."""
+        if not mask:
+            return []
+        if layout is not None:
+            return layout.modifier_keycodes(mask)
+        return [keymap.KEY_LEFTSHIFT] if mask & xkbmap.MOD_SHIFT else []
+
+    def _press(self, keys, delay, layout=None):
+        for code, mask in keys:
+            mask = int(mask)
+            for mod in self._mod_keycodes(mask, layout):
+                if mod in (keymap.KEY_LEFTSHIFT, keymap.KEY_RIGHTSHIFT):
+                    if any(s in self.down for s in _SHIFTS):
+                        continue
+                elif mod in self.down:
+                    continue
+                self.kb.key(mod, True)
+                self.down.add(mod)
             self.kb.key(code, True)
             self.down.add(code)
             self._key_gap(delay)
 
-    def _release(self, keys, delay):
-        for code, shifted in keys:
-            if shifted and keymap.KEY_LEFTSHIFT in self.down:
-                self.kb.key(keymap.KEY_LEFTSHIFT, False)
-                self.down.discard(keymap.KEY_LEFTSHIFT)
+    def _release(self, keys, delay, layout=None):
+        for code, mask in keys:
+            mask = int(mask)
+            for mod in self._mod_keycodes(mask, layout):
+                if mod not in self.down:
+                    continue
+                self.kb.key(mod, False)
+                self.down.discard(mod)
             self.kb.key(code, False)
             self.down.discard(code)
             self._key_gap(delay)
 
     def op_key(self, spec, direction, delay_ms, clearmods):
         self._need_devices()
+        warnings = []
+        layout = self._layout(warnings)
         if clearmods:
             for code in keymap.MODIFIER_KEYCODES:
                 self.kb.key(code, False)
                 self.down.discard(code)
-        keys, warnings = keymap.parse_keyseq(spec)  # ValueError on bad sequence
+        # ValueError on a sequence xdo rejects outright
+        keys, warns = keymap.parse_keyseq(spec, layout)
         d = delay_ms / 1000
         if direction == "press":
             # xdo_send_keysequence_window converts the sequence once per pass
             # (press, then release), so every "(symbol) No such key name"
-            # diagnostic is printed twice by the real xdotool (B12).
-            warnings = warnings * 2
-            self._press(keys, d / 2)
-            self._release(keys, d / 2)
+            # diagnostic is printed twice by the real xdotool (B12). Our own
+            # one-shot layout notice is not one of xdo's and is not doubled.
+            warns = warns * 2
+            self._press(keys, d / 2, layout)
+            self._release(keys, d / 2, layout)
         elif direction == "down":
-            self._press(keys, d)
+            self._press(keys, d, layout)
         elif direction == "up":
-            self._release(keys, d)
+            self._release(keys, d, layout)
         else:
             raise RuntimeError(f"invalid key direction {direction!r}")
-        return warnings
+        return warnings + warns
 
     def op_type(self, text, delay_ms, clearmods):
         self._need_devices()
         warnings = []
+        layout = self._layout(warnings)
+        lname = "US" if layout is None else layout.name
         if clearmods:
             for code in keymap.MODIFIER_KEYCODES:
                 self.kb.key(code, False)
@@ -523,21 +669,31 @@ class _Daemon:
         down_d = min(delay_ms / 2, 50) / 1000
         up_d = delay_ms / 1000 - down_d
         for ch in text:
-            hit = keymap.char_to_key(ch)
-            if hit is None:
-                warnings.append(f"Can't type character '{ch}' (not on the US layout). Skipping.")
+            if layout is None:
+                hit = keymap.char_to_key(ch)
+                seq = None if hit is None else [(hit[0], int(hit[1]))]
+            else:
+                # One character can be two keystrokes: a dead key and then
+                # the base letter, which is how a French keyboard types "ô".
+                seq = layout.lookup_char(ch)
+            if not seq:
+                warnings.append(
+                    f"Can't type character '{ch}' (not on the {lname} layout). Skipping.")
                 continue
-            code, shifted = hit
-            synth_shift = shifted and not any(s in self.down for s in _SHIFTS)
-            if synth_shift:
-                self.kb.key(keymap.KEY_LEFTSHIFT, True)
-            self.kb.key(code, True)
-            if down_d > 0:
-                time.sleep(down_d)
-            self.kb.key(code, False)
-            if synth_shift:
-                self.kb.key(keymap.KEY_LEFTSHIFT, False)
-            self._key_gap(up_d)
+            for code, mask in seq:
+                mods = [m for m in self._mod_keycodes(mask, layout)
+                        if not (m in (keymap.KEY_LEFTSHIFT, keymap.KEY_RIGHTSHIFT)
+                                and any(s in self.down for s in _SHIFTS))
+                        and m not in self.down]
+                for mod in mods:
+                    self.kb.key(mod, True)
+                self.kb.key(code, True)
+                if down_d > 0:
+                    time.sleep(down_d)
+                self.kb.key(code, False)
+                for mod in reversed(mods):
+                    self.kb.key(mod, False)
+                self._key_gap(up_d)
         return warnings
 
     # -- protocol ----------------------------------------------------------

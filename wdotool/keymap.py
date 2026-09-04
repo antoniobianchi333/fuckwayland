@@ -2,6 +2,14 @@
 
 A resolved key is (evdev_keycode, shifted). "shifted" means the key needs
 Shift held to produce the requested symbol on a US layout.
+
+Every resolver here takes an optional `layout`: a `xkbmap.ReverseMap` for the
+compositor's *active* layout (B13). When it is None -- the US bypass, and
+every case where the keymap could not be read -- this file is the whole
+answer, exactly as it was. When it is given, a keysym that the active layout
+binds somewhere resolves to that key and its modifier mask instead; keys that
+are the same on every layout (Return, the function keys, the keypad, the
+modifiers themselves) keep their fixed keycodes.
 """
 
 from wdotool.keysyms import KEYSYM_TO_UNICODE, NAME_TO_KEYSYM
@@ -253,15 +261,24 @@ def char_to_key(ch: str) -> tuple[int, bool] | None:
     return CHAR_TO_KEY.get(ch)
 
 
+def layout_name(layout) -> str:
+    """What to call the layout in a diagnostic."""
+    return "US" if layout is None else layout.name
+
+
 _EVDEVK_BASE = 0x10081000  # XF86keysym.h: _EVDEVK(v) == 0x10081000 + evdev code
 
 
-def _keysym_value_to_key(ks: int) -> tuple[int, bool] | None:
+def _keysym_value_to_key(ks: int, layout=None) -> tuple[int, bool] | None:
     """Resolve a raw keysym number to (keycode, shifted) via unicode (or, for
     _EVDEVK-range XF86 keysyms, the evdev code embedded in the keysym)."""
     if 0 < ks - _EVDEVK_BASE < 0x1000:
         code = ks - _EVDEVK_BASE
         return (code, False) if code < 256 else None
+    if layout is not None:
+        hit = layout.keysyms.get(ks)
+        if hit is not None:
+            return hit
     cp = KEYSYM_TO_UNICODE.get(ks)
     if cp is None:
         if 0x20 <= ks <= 0xFF:
@@ -273,28 +290,37 @@ def _keysym_value_to_key(ks: int) -> tuple[int, bool] | None:
     return CHAR_TO_KEY.get(chr(cp))
 
 
-def keysym_to_key(name: str) -> tuple[int, bool] | None:
-    """Resolve one keysym name (no aliases) to (keycode, shifted)."""
+def keysym_to_key(name: str, layout=None) -> tuple[int, bool] | None:
+    """Resolve one keysym name (no aliases) to (keycode, shifted).
+
+    KEYSYM_KEYS wins over the active layout on purpose: Return, F5, KP_7 and
+    the modifier keys sit on the same physical key in every layout, and their
+    keycode must not depend on a keymap we just read."""
     hit = KEYSYM_KEYS.get(name)
     if hit:
         return hit
+    if layout is not None:
+        hit = layout.keysym_entry(name)
+        if hit is not None:
+            return hit
     ks = NAME_TO_KEYSYM.get(name)
     if ks is None:
         return None
-    return _keysym_value_to_key(ks)
+    return _keysym_value_to_key(ks, layout)
 
 
-def resolve_token(tok: str) -> tuple[int, bool] | None | str:
+def resolve_token(tok: str, layout=None) -> tuple[int, bool] | None | str:
     """Resolve one '+'-separated keysequence token.
 
     Returns (keycode, shifted), or a warning string (token skipped), matching
     xdotool: unknown names warn and are ignored; digits are X keycodes.
     """
+    lname = layout_name(layout)
     name = ALIASES.get(tok.lower(), tok)
     if name in KEYSYM_KEYS or name in NAME_TO_KEYSYM:
-        hit = keysym_to_key(name)
+        hit = keysym_to_key(name, layout)
         if hit is None:
-            return f"key '{tok}' is not reachable on the US layout. Ignoring it."
+            return f"key '{tok}' is not reachable on the {lname} layout. Ignoring it."
         return hit
     if len(tok) > 2 and tok[0] == "0" and tok[1] in "xX":
         # XStringToKeysym parity: "0x<hex>" is a raw keysym number.
@@ -303,9 +329,9 @@ def resolve_token(tok: str) -> tuple[int, bool] | None | str:
         except ValueError:
             ks = None
         if ks is not None:
-            hit = _keysym_value_to_key(ks)
+            hit = _keysym_value_to_key(ks, layout)
             if hit is None:
-                return f"key '{tok}' is not reachable on the US layout. Ignoring it."
+                return f"key '{tok}' is not reachable on the {lname} layout. Ignoring it."
             return hit
     if tok[:1].isdigit():
         # Explicit numeric X keycode; evdev keycode = X keycode - 8.
@@ -317,11 +343,11 @@ def resolve_token(tok: str) -> tuple[int, bool] | None | str:
         code = n - 8
         if 0 < code < 256:
             return (code, False)
-        return f"key '{tok}' is not reachable on the US layout. Ignoring it."
+        return f"key '{tok}' is not reachable on the {lname} layout. Ignoring it."
     return f"(symbol) No such key name '{tok}'. Ignoring it."
 
 
-def parse_keyseq(spec: str) -> tuple[list[tuple[int, bool]], list[str]]:
+def parse_keyseq(spec: str, layout=None) -> tuple[list[tuple[int, bool]], list[str]]:
     """Parse 'ctrl+shift+t' into resolved keys + warnings.
 
     Raises ValueError for sequences xdo rejects outright (bad characters).
@@ -333,7 +359,7 @@ def parse_keyseq(spec: str) -> tuple[list[tuple[int, bool]], list[str]]:
     for tok in spec.split("+"):
         if not tok:
             continue
-        hit = resolve_token(tok)
+        hit = resolve_token(tok, layout)
         if isinstance(hit, str):
             warnings.append(hit)
         elif hit is not None:
