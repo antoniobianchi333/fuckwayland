@@ -5,7 +5,11 @@ supported scales [1, 1.25, 1.5, 2], an interlaced mode, layout modes 1 and 2)
 and validates ApplyMonitorsConfig exactly like mutter does (serial, connector
 and mode ids, scale in supported_scales, mirror members' modes equal, no
 overlap, edge adjacency, exactly one primary, positions anchored at 0,0,
-ApplyMonitorsConfigAllowed) and emits MonitorsChanged. No GNOME needed."""
+ApplyMonitorsConfigAllowed) and emits MonitorsChanged. No GNOME needed.
+
+wxrandr itself has no geometry policy: an overlapping --pos is sent exactly
+as asked (X11, KWin and wlroots all take one and draw the shared region on
+both screens), and GNOME's refusal of it is relayed in GNOME's name."""
 
 import contextlib
 import io
@@ -27,6 +31,10 @@ from wdotool import dbus_mini, session as wsession              # noqa: E402
 from wdotool.dbus_mini import Bus, Message, Variant             # noqa: E402
 from wxrandr import cli, core, mutter                           # noqa: E402
 from wxrandr.core import Mode, Stanza, State                    # noqa: E402
+
+#: every refusal reaches the user in Mutter's name: we pass overlapping and
+#: gapped layouts on unchanged, so a "no" is always GNOME's, not ours
+REFUSED = "xrandr: GNOME's Mutter refused this layout: %s\n"
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -981,7 +989,7 @@ class Apply(MutterCase):
         before = self.lms()
         code, out, err = self.run_cli("--output", "DP-1", "--off")
         self.assertEqual((code, out), (1, ""))
-        self.assertEqual(err, "xrandr: Logical monitors not adjacent\n")
+        self.assertEqual(err, REFUSED % "Logical monitors not adjacent")
         self.assertEqual(self.lms(), before)
 
     def test_rotate_in_the_middle_keeps_the_row_adjacent(self):
@@ -1057,7 +1065,8 @@ class Apply(MutterCase):
         before = self.lms()
         code, out, err = self.run_cli("--output", "DP-1", "--rotate", "left",
                                       "--output", "HDMI-1", "--pos", "4480x0")
-        self.assertEqual((code, err), (1, "xrandr: Logical monitors not adjacent\n"))
+        self.assertEqual((code, err),
+                         (1, REFUSED % "Logical monitors not adjacent"))
         self.assertEqual(self.lms(), before)
         # ...and the documented workaround needs no help (no warning)
         code, out, err = self.run_cli("--output", "DP-1", "--rotate", "left",
@@ -1105,17 +1114,52 @@ class Apply(MutterCase):
     def test_off_everything(self):
         code, out, err = self.run_cli("--output", "eDP-1", "--off", "--output", "DP-1",
                                       "--off", "--output", "HDMI-1", "--off")
-        self.assertEqual((code, err), (1, "xrandr: Monitors config incomplete\n"))
+        self.assertEqual((code, err),
+                         (1, REFUSED % "Monitors config incomplete"))
 
     def test_pos_overlap_is_mutters_error(self):
         code, out, err = self.run_cli("--output", "DP-1", "--pos", "100x0")
-        self.assertEqual((code, err), (1, "xrandr: Logical monitors overlap\n"))
+        self.assertEqual((code, err),
+                         (1, REFUSED % "Logical monitors overlap"))
+
+    def test_an_overlapping_pos_is_sent_exactly_as_asked(self):
+        """The refusal has to be Mutter's, which means the request has to
+        reach Mutter unchanged: the plan carries the overlapping origin, no
+        client-side nudge and no client-side veto.  (Measured on GNOME 46:
+        with two monitors every non-adjacent layout, overlap and gap alike,
+        answers "Logical monitors not adjacent"; this mock checks overlap
+        first, which is the same refusal on a different string.)"""
+        mo, st = self.outputs(), self.state()
+        targets = core.build_targets(mo.snapshot(st),
+                                     [Stanza(name="DP-1", pos=(100, 0))], st)
+        plan = mo.plan(st, targets)
+        self.assertEqual(sorted((p["x"], p["y"]) for p in plan),
+                         [(0, 0), (100, 0), (4480, 0)])
+        code, out, err = self.run_cli("--output", "DP-1", "--pos", "100x0")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, REFUSED % "Logical monitors overlap")
+        # it was Mutter that said no, at the very call xrandr would make
+        self.assertEqual([c[1] for c in self.svc.calls], [1])
+        self.assertIn("Mutter", err)
+
+    def test_a_refusal_is_diagnosable_without_applying(self):
+        """--dryrun is Mutter's own method-0 verify, so the same attributed
+        one-liner comes back with nothing touched."""
+        before = self.lms()
+        code, out, err = self.run_cli("--dryrun", "--output", "DP-1",
+                                      "--pos", "100x0")
+        self.assertEqual(code, 1)
+        self.assertEqual(err, REFUSED % "Logical monitors overlap")
+        self.assertIn("crtc", out)          # xrandr's dryrun bytes, on stdout
+        self.assertNotIn("Mutter", out)
+        self.assertEqual([c[1] for c in self.svc.calls], [0])
+        self.assertEqual(self.lms(), before)
 
     def test_apply_disabled_by_policy(self):
         self.svc.allowed = False
         code, out, err = self.run_cli("--output", "HDMI-1", "--off")
-        self.assertEqual((code, err), (1, "xrandr: Monitor configuration via D-Bus is "
-                                          "disabled\n"))
+        self.assertEqual((code, err), (1, REFUSED % "Monitor configuration "
+                                            "via D-Bus is disabled"))
 
     def test_primary_moves_and_query_shows_it(self):
         code, out, err = self.run_cli("--output", "DP-1", "--primary")
@@ -1209,7 +1253,8 @@ class Apply(MutterCase):
 
     def test_dryrun_reports_mutters_rejection(self):
         code, out, err = self.run_cli("--dryrun", "--output", "DP-1", "--off")
-        self.assertEqual((code, err), (1, "xrandr: Logical monitors not adjacent\n"))
+        self.assertEqual((code, err),
+                         (1, REFUSED % "Logical monitors not adjacent"))
         self.assertNotIn("mutter verify", out)
         self.assertEqual([c[1] for c in self.svc.calls], [0])
 

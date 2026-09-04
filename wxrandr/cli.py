@@ -827,6 +827,16 @@ class Session:
         kprobe = reuse("kwin")
         probe = reuse("mutter")
         wprobe = reuse("wlr")
+        # detection may have opened a connection per backend it tried; only
+        # the chosen one is reused, so the rest are closed here rather than
+        # left to the garbage collector (which reports them as a
+        # ResourceWarning at whatever moment it gets round to them)
+        self.probes = probes
+        keep = {id(h) for h in (sway_sock, kprobe, probe, wprobe)
+                if h is not None}
+        for p in probes.values():
+            if p.handle is not None and id(p.handle) not in keep:
+                p.close()
         self.ipc = None
         self.wlr = None
         self.mutter = None

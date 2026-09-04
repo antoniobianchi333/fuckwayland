@@ -1,5 +1,6 @@
-"""warandr model tests: snapping, overlap rejection (exact mirrors excepted),
-origin normalisation, the xrandr command line (arandr's shape, --off,
+"""warandr model tests: snapping, the per-backend overlap policy (taken
+wherever the backend takes one, refused in the backend's name where it does
+not), origin normalisation, the xrandr command line (arandr's shape, --off,
 --same-as, --rate, --reflect, --scale), layout-script save/load round trips,
 a genuine arandr-saved script, backend selection and the --save/--command
 CLI against the fake xrandr.  No display needed."""
@@ -149,30 +150,59 @@ class Snapping(unittest.TestCase):
 
 
 class Edits(unittest.TestCase):
-    def test_move_and_overlap_rejected(self):
+    def test_move_and_overlap_taken(self):
+        """arandr allows overlaps and X11 has always drawn them, so the
+        model does not refuse one of its own accord."""
         lay = synthetic()
         lay.move("B", 1950, 12)
         self.assertEqual((lay.get("B").x, lay.get("B").y), (1950, 12))
+        self.assertEqual(lay.overlaps(), [])
+        lay.move("B", 100, 100)
+        self.assertEqual((lay.get("B").x, lay.get("B").y), (100, 100))
+        self.assertEqual(lay.overlaps(), [("A", "B")])
+        self.assertIn("--pos", lay.args())
+        self.assertIn("100x100", lay.args())
+
+    def test_overlap_refused_only_in_the_backends_name(self):
+        """A backend that refuses one (Mutter) refuses it with its own
+        sentence: the user must read whose limit it is, and the layout is
+        reverted like any other rejected edit."""
+        why = randr.OVERLAP["mutter"][1]
+        lay = synthetic()
+        lay.overlap_refusal = why
+        lay.move("B", 1950, 12)                 # no overlap: still fine
         with self.assertRaises(LayoutError) as cm:
             lay.move("B", 100, 100)
-        self.assertIn("overlaps", str(cm.exception))
-        # reverted
+        self.assertEqual(str(cm.exception), why)
+        self.assertIn("Mutter", str(cm.exception))
+        self.assertNotIn("overlaps", str(cm.exception))
         self.assertEqual((lay.get("B").x, lay.get("B").y), (1950, 12))
+        # dropping the refusal is all it takes: same edit, same layout
+        lay.overlap_refusal = None
+        lay.move("B", 100, 100)
+        self.assertEqual(lay.overlaps(), [("A", "B")])
 
     def test_move_normalizes(self):
         lay = synthetic()
         lay.move("B", -1280, 0)
         self.assertEqual((lay.get("B").x, lay.get("A").x), (0, 1280))
 
-    def test_same_origin_is_a_clone(self):
+    def test_same_origin_is_a_clone_not_an_overlap(self):
         lay = synthetic()
         lay.get("B").mode = Mode("1920x1080", 1920, 1080, [60.0])
-        lay.move("B", 0, 0)        # identical rect: a clone, legal
+        lay.move("B", 0, 0)        # identical rect: a clone
         lay.get("B").mode = lay.get("B").modes[0]
         lay.check()                # same origin, different size: still a
         lay.set_primary("B", True)  # clone (xrandr --same-as), editable
+        self.assertEqual(lay.overlaps(), [])
+        lay.move("B", 100, 0)      # any other intersection is an overlap
+        self.assertEqual(lay.overlaps(), [("A", "B")])
+        # and a clone stays legal even where overlaps are refused
+        lay.overlap_refusal = randr.OVERLAP["mutter"][1]
         with self.assertRaises(LayoutError):
-            lay.move("B", 100, 0)  # any other intersection is an overlap
+            lay.move("B", 100, 0)
+        lay.move("B", 0, 0)
+        self.assertEqual(lay.overlaps(), [])
 
     def test_mirror_of(self):
         lay = synthetic()
@@ -254,14 +284,21 @@ class Edits(unittest.TestCase):
         self.assertEqual(lay.get("C").mirror_of, "B")
         self.assertEqual((lay.get("C").x, lay.get("C").y), (0, 0))
 
-    def test_rotation_overlap_rejected(self):
+    def test_rotation_into_a_neighbour(self):
         lay = synthetic()
         lay.move("B", 0, 1080)                # B below A, A 1920x1080
         lay.get("A").x = 0
-        # rotating A to portrait (1080x1920) would run into B
-        with self.assertRaises(LayoutError):
+        # rotating A to portrait (1080x1920) runs into B -- taken, because
+        # the backend takes it; refused, in its name, where it does not
+        lay.overlap_refusal = randr.OVERLAP["mutter"][1]
+        with self.assertRaises(LayoutError) as cm:
             lay.set_rotation("A", "left")
+        self.assertEqual(str(cm.exception), randr.OVERLAP["mutter"][1])
         self.assertEqual(lay.get("A").rotation, "normal")
+        lay.overlap_refusal = None
+        lay.set_rotation("A", "left")
+        self.assertEqual(lay.overlaps(), [("A", "B")])
+        lay.set_rotation("A", "normal")
         lay.move("B", 1920, 0)
         lay.set_rotation("A", "left")
         self.assertEqual(lay.get("A").size(), (1080, 1920))
@@ -443,6 +480,147 @@ class Scripts(unittest.TestCase):
         # saving back is byte-identical to arandr's file
         self.assertEqual(lay.to_script(), text)
 
+    def test_the_overlap_note_names_the_shared_region_either_way_round(self):
+        """The note is symmetric and order-free: on every backend that takes
+        an overlap *both* outputs draw the shared region, so neither is
+        "over" the other, and the pair must read the same however the server
+        happened to order the two outputs.  What it does say is the
+        rectangle they share, in xrandr's own WxH+X+Y spelling."""
+        b = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11",
+                          "PATH": "/nonexist"})
+
+        def note(big_first):
+            lay = Layout(screen_max=(8192, 8192))
+            big = Output("BIG", modes=[Mode("1920x1080", 1920, 1080, [60.0],
+                                            60.0)])
+            small = Output("SMALL", modes=[Mode("1280x720", 1280, 720, [60.0],
+                                                60.0)])
+            for o in ((big, small) if big_first else (small, big)):
+                lay.add(o)
+                o.active = True
+                o.mode = o.modes[0]
+                o.rate = 60.0
+            small.x, small.y = 320, 180          # wholly inside BIG
+            return cli.script_notes(lay, b)[0]
+
+        # SMALL is inside BIG: the shared region is the whole of SMALL
+        self.assertEqual(note(True), "warandr: partial overlap (BIG and "
+                                     "SMALL share 1280x720 at +320+180)")
+        self.assertEqual(note(False), "warandr: partial overlap (SMALL and "
+                                      "BIG share 1280x720 at +320+180)")
+        # and a half overlap is the half
+        lay = synthetic()
+        lay.move("B", 960, 0)
+        self.assertEqual(lay.shared_region("A", "B"), (960, 0, 960, 1024))
+        self.assertEqual(cli.script_notes(lay, b)[0],
+                         "warandr: partial overlap (A and B share 960x1024 "
+                         "at +960+0)")
+
+    def test_an_exact_overlap_is_still_a_clone_everywhere(self):
+        """Dropping an output exactly on another is not a partial overlap:
+        it is what --same-as makes, every backend groups same-position
+        outputs into one logical monitor (Mutter) or replicates them (KWin,
+        X11), and Mutter takes it -- measured.  So it must stay allowed even
+        where a partial overlap is refused."""
+        lay = synthetic()
+        lay.overlap_refusal = randr.OVERLAP["mutter"][1]
+        lay.get("B").mode = lay.get("B").mode_named("1024x768")
+        lay.move("B", 0, 0)                      # exact origin, other size
+        self.assertEqual(lay.overlaps(), [])
+        self.assertEqual((lay.get("B").x, lay.get("B").y), (0, 0))
+        # read the same geometry back off a screen and it is a mirror again
+        lay._mark_clones()
+        self.assertEqual(lay.get("B").mirror_of, "A")
+        self.assertIn("--same-as A", lay.command_line())
+        # one pixel off is a partial overlap, and that one is refused --
+        # in Mutter's name, with the drop reverted (un-mirroring parks B
+        # right of the layout, which is where it must land back)
+        lay.set_mirror("B", None)
+        parked = (lay.get("B").x, lay.get("B").y)
+        with self.assertRaises(LayoutError) as cm:
+            lay.move("B", 1, 0)
+        self.assertEqual(str(cm.exception), randr.OVERLAP["mutter"][1])
+        self.assertEqual((lay.get("B").x, lay.get("B").y), parked)
+
+    def test_an_overlap_cannot_shrink_the_screen_away(self):
+        """Taking overlaps cannot cost the user a screen: every output stays
+        a viewport of its own size, the bounding box only ever gets smaller,
+        and the one bound that could bite -- the server's maximum -- is
+        still checked."""
+        lay = synthetic()
+        wide = lay.bounding_box()
+        lay.move("B", 100, 0)
+        x0, y0, x1, y1 = lay.bounding_box()
+        self.assertLess(x1 - x0, wide[2] - wide[0])
+        self.assertGreaterEqual(x1 - x0, max(o.size()[0]
+                                             for o in lay.active_outputs()))
+        for o in lay.active_outputs():           # nothing is off-screen
+            ox, oy, ow, oh = o.rect()
+            self.assertTrue(x0 <= ox and oy >= y0 and ox + ow <= x1
+                            and oy + oh <= y1)
+        small = Layout(screen_max=(2000, 2000))
+        for name in ("A", "B"):
+            o = small.add(Output(name, modes=[Mode("1920x1080", 1920, 1080,
+                                                   [60.0], 60.0)]))
+            o.active = True
+            o.mode = o.modes[0]
+            o.rate = 60.0
+        small.get("B").x = 1920
+        with self.assertRaises(LayoutError) as cm:
+            small.move("B", 1900, 0)             # 3820 wide: still too wide
+        self.assertIn("outside the virtual screen", str(cm.exception))
+
+    def test_gaps_are_nobodys_business_here_overlap_or_not(self):
+        """Gaps did not change and must not: arandr allows them, warandr has
+        never refused one, and the overlap policy does not touch them -- on
+        Mutter, which refuses a gap as flatly as an overlap, the refusal
+        still arrives from Mutter at Apply, in its own words."""
+        for refusal in (None, randr.OVERLAP["mutter"][1]):
+            lay = synthetic()
+            lay.overlap_refusal = refusal
+            lay.move("B", 3000, 0)               # a 1080 px hole
+            self.assertEqual(lay.overlaps(), [])
+            self.assertEqual((lay.get("B").x, lay.get("B").y), (3000, 0))
+            self.assertIn("--pos 3000x0", lay.command_line())
+
+    def test_overlapping_script_loads_and_round_trips(self):
+        """arandr writes overlapping layouts and xrandr runs them, so one
+        has to open here too -- and a save carries what the overlap means
+        on the backend that wrote it, as two comment lines."""
+        text = ("#!/bin/sh\nxrandr --output DP-1 --primary --mode 1920x1080 "
+                "--pos 0x0 --rotate normal --output HDMI-1 --mode 1280x1024 "
+                "--pos 960x0 --rotate normal --output DP-2 --off "
+                "--output HDMI-2 --off\n")
+        lay = fixture_layout()
+        lay.load_script(text)
+        self.assertEqual((lay.get("HDMI-1").x, lay.get("HDMI-1").y), (960, 0))
+        self.assertEqual(lay.overlaps(), [("DP-1", "HDMI-1")])
+        self.assertEqual(lay.to_script(), text)      # template preserved
+
+        b = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11",
+                          "PATH": "/nonexist"})
+        notes = cli.script_notes(lay, b)
+        self.assertEqual(notes, ["warandr: partial overlap (DP-1 and "
+                                 "HDMI-1 share 960x1024 at +960+0)",
+                                 randr.OVERLAP["x11"][1]])
+        fresh = fixture_layout()                     # default template
+        fresh.load_script(text)
+        fresh.template = list(model.DEFAULT_TEMPLATE)
+        saved = fresh.to_script("xrandr", notes)
+        lines = saved.rstrip("\n").split("\n")
+        self.assertEqual(lines[0], "#!/bin/sh")
+        self.assertEqual(lines[1], "# warandr: partial overlap (DP-1 and "
+                                   "HDMI-1 share 960x1024 at +960+0)")
+        self.assertEqual(lines[2], "# " + randr.OVERLAP["x11"][1])
+        self.assertTrue(lines[3].startswith("xrandr --output "))
+        again = fixture_layout()
+        again.load_script(saved)              # comments are not commands
+        self.assertEqual(again.args(), lay.args())
+        self.assertEqual(again.overlaps(), [("DP-1", "HDMI-1")])
+        # nothing overlapping, nothing forced: arandr's own two lines
+        plain = fixture_layout()
+        self.assertEqual(cli.script_notes(plain, b), [])
+
     def test_template_preserved(self):
         text = ("#!/bin/sh\n# my layout\n" + ARANDR_LINE +
                 "\nnotify-send done\n")
@@ -494,8 +672,6 @@ class Scripts(unittest.TestCase):
                 "Not a known output",
             "#!/bin/sh\nxrandr --output DP-1 --brightness 0.5\n":
                 "Unsupported option",
-            "#!/bin/sh\nxrandr --output DP-1 --pos 0x0 --output HDMI-1 "
-            "--pos 100x0\n": "overlaps",
             "#!/bin/sh\nxrandr --output DP-1 --primary --output HDMI-1 "
             "--primary\n": "More than one primary",
             "#!/bin/sh\nxrandr --pos 0x0\n": "must be used after --output",
@@ -649,6 +825,54 @@ class ForcedBackend(unittest.TestCase):
             randr._package_root = orig
         self.assertIn("needs wxrandr", str(cm.exception))
         self.assertNotIn("xrandr --", str(cm.exception))   # no silent fallback
+
+    def test_the_overlap_policy_is_the_backends_own(self):
+        """Three of the four desktops take an overlapping layout and draw
+        the shared region on both screens; GNOME refuses it.  Nobody but the
+        backend decides, and the refusal carries Mutter's own words."""
+        env = {"PATH": "/nonexist"}
+        for name in ("x11", "sway", "wlr", "kwin"):
+            b = randr.choose(env, forced=name)
+            self.assertEqual(b.overlap()[0], True, name)
+            self.assertIsNone(b.overlap_refusal(), name)
+            self.assertIn("same pixels on both", b.overlap_note(), name)
+        b = randr.choose(env, forced="mutter")
+        self.assertEqual(b.overlap()[0], False)
+        self.assertEqual(b.overlap_refusal(), b.overlap_note())
+        self.assertIn("GNOME's Mutter refuses", b.overlap_note())
+        self.assertIn("Logical monitors not adjacent", b.overlap_note())
+        self.assertEqual(randr.choose(env, forced="kde").overlap_note(),
+                         randr.OVERLAP["kwin"][1])
+        # a Wayland runner nobody has identified yet claims nothing
+        unknown = randr.Backend(["/nonexistent/wxrandr"], True)
+        self.assertEqual(unknown.overlap(), randr.OVERLAP_UNKNOWN)
+        self.assertIsNone(unknown.overlap_refusal())
+        self.assertIn("has not been measured", unknown.overlap_note())
+
+    def test_the_snapshot_carries_the_backends_overlap_policy(self):
+        """The layout the window edits is refused an overlap only where the
+        backend refuses one -- so the check that fires is never our own."""
+        env = self.fake_env()
+        x11 = randr.choose(env, forced="x11")
+        self.assertIsNone(x11.snapshot().overlap_refusal)
+        gnome = randr.choose(env, forced="mutter")
+        self.assertEqual(gnome.snapshot().overlap_refusal,
+                         randr.OVERLAP["mutter"][1])
+
+    def test_the_explanation_says_what_an_overlap_does_here(self):
+        """The indicator's tooltip (and the About and Script Properties
+        text it feeds) is the paragraph that already explains the backend,
+        so the overlap sentence belongs there -- the Backend menu's own
+        tooltips are taken, they say why a backend is unreachable."""
+        b = randr.choose(self.fake_env(), forced="mutter").identify()
+        line = "overlap: " + randr.OVERLAP["mutter"][1]
+        self.assertIn(line, b.detail().splitlines())
+        self.assertIn(line, b.report())
+        self.assertEqual(b.report()[0], "mutter")     # still the bare token
+        x = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11",
+                          "PATH": "/nonexist"}).identify()
+        self.assertIn("overlap: " + randr.OVERLAP["x11"][1],
+                      x.detail().splitlines())
 
     def test_an_unknown_name_lists_the_valid_ones(self):
         with self.assertRaises(randr.RandrError) as cm:
@@ -817,6 +1041,50 @@ class Cli(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         self.assertIn("--output DP-2 --off", out)
         self.assertNotIn("--output DP-2 --mode", out)
+
+    def test_saving_an_overlapping_layout_explains_the_overlap(self):
+        src = os.path.join(self.tmp, "over.sh")
+        with open(src, "w") as f:
+            f.write("#!/bin/sh\nxrandr --output DP-1 --primary --mode "
+                    "1920x1080 --pos 0x0 --rotate normal --output HDMI-1 "
+                    "--mode 1280x1024 --pos 960x0 --rotate normal "
+                    "--output DP-2 --off --output HDMI-2 --off\n")
+        target = os.path.join(self.tmp, "saved")
+        rc, out, err = self.run_cli("--save", target, src)
+        self.assertEqual((rc, err), (0, ""))
+        with open(target + ".sh") as f:
+            lines = f.read().rstrip("\n").split("\n")
+        # the loaded file's own template is arandr's default, so the header
+        # is written: what overlaps, and what that means on this backend
+        self.assertEqual(lines[0], "#!/bin/sh")
+        self.assertEqual(lines[1], "# warandr: partial overlap (DP-1 and "
+                                   "HDMI-1 share 960x1024 at +960+0)")
+        self.assertEqual(lines[2], "# " + randr.OVERLAP["x11"][1])
+        self.assertIn("--pos 960x0", lines[3])
+        self.assertEqual(len(lines), 4)
+
+    def test_an_overlap_the_backend_refuses_is_refused_in_its_name(self):
+        """`auto` on Wayland is only "wxrandr" until `--print-backend` has
+        answered, so --save/--command ask first: otherwise a layout GNOME
+        will not take would be written out as if it were fine."""
+        self.env["WARANDR_BACKEND"] = "wayland"     # an unforced Wayland run
+        self.env["FAKE_XRANDR_AUTO_BACKEND"] = "mutter"
+        src = os.path.join(self.tmp, "over.sh")
+        with open(src, "w") as f:
+            f.write("#!/bin/sh\nwxrandr --output DP-1 --primary --mode "
+                    "1920x1080 --pos 0x0 --rotate normal --output HDMI-1 "
+                    "--mode 1280x1024 --pos 960x0 --rotate normal "
+                    "--output DP-2 --off --output HDMI-2 --off\n")
+        rc, out, err = self.run_cli("--command", src)
+        self.assertEqual((rc, out), (1, ""))
+        self.assertEqual(err, "warandr: %s\n" % randr.OVERLAP["mutter"][1])
+        self.assertIn("Mutter", err)
+        # the same file on the same fake, backend x11: taken
+        self.env["FAKE_XRANDR_AUTO_BACKEND"] = "x11"
+        self.env.pop("WARANDR_BACKEND")
+        rc, out, err = self.run_cli("--command", src)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("--pos 960x0", out)
 
     def test_errors(self):
         rc, out, err = self.run_cli("--command", os.path.join(self.tmp, "nope"))

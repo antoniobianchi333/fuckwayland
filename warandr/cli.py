@@ -61,11 +61,36 @@ def load_layout(backend, savedfile):
     return layout
 
 
-def write_script(layout, path, word=None, note=None):
+def script_notes(layout, backend):
+    """The comment header a saved layout carries: the forced backend, if
+    one was forced, and — when the layout has a partial overlap — what that
+    overlap means on the backend that wrote it.  Comments only: the script
+    still runs anywhere."""
+    notes = []
+    forced = backend.script_note()
+    if forced:
+        notes.append(forced)
+    pairs = layout.overlaps()
+    if pairs:
+        # neither output is "over" the other -- on every backend that takes
+        # an overlap both draw the shared region, which is the whole point --
+        # so the note names the pair symmetrically and says which rectangle
+        # they share, in xrandr's own WxH+X+Y spelling
+        shared = []
+        for a, b in pairs:
+            x, y, w, h = layout.shared_region(a, b)
+            shared.append("%s and %s share %dx%d at +%d+%d"
+                          % (a, b, w, h, x, y))
+        notes.append("warandr: partial overlap (%s)" % "; ".join(shared))
+        notes.append(backend.overlap_note())
+    return notes
+
+
+def write_script(layout, path, word=None, notes=None):
     if not path.endswith(".sh"):
         path += ".sh"
     with open(path, "w") as f:
-        f.write(layout.to_script(word, note))
+        f.write(layout.to_script(word, notes))
     os.chmod(path, stat.S_IRWXU)
     return path
 
@@ -84,12 +109,18 @@ def main(argv=None):
                 print(line)
             return 0
         if args.save or args.command:
+            # which backend this really is decides whether an overlapping
+            # layout is refused and in whose name, so ask before reading
+            # one; `auto` on Wayland is only "wxrandr" until it has.  (The
+            # window asks off the main loop instead, and patches the layout
+            # when the answer lands.)
+            backend.identify()
             layout = load_layout(backend, args.savedfile)
             if args.command:
                 print(layout.command_line(backend.run_word))
             if args.save:
                 write_script(layout, args.save, backend.word,
-                             backend.script_note())
+                             script_notes(layout, backend))
             return 0
     except (randr.RandrError, LayoutError, OSError) as e:
         sys.stderr.write("warandr: %s\n" % e)

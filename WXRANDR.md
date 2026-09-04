@@ -44,7 +44,10 @@ sway/i3 IPC socket wins, then a compositor advertising
 `org.gnome.Mutter.DisplayConfig`, then wlr — which is the fallback and is
 therefore never probed for the decision. The KWin probe *is* the Wayland
 connection the backend then keeps, so a KDE session still opens exactly one,
-and a backend forced with the flag is probed the same way.
+and a backend forced with the flag is probed the same way. Whatever the other
+probes opened on the way is closed as soon as the backend is chosen, rather
+than left to the collector — an unclosed socket comes back as a
+`ResourceWarning` on stderr at an arbitrary later moment.
 `--listproviders` names the chosen one (`name:sway`, `name:wlroots`,
 `name:kwin`, `name:mutter`).
 
@@ -124,6 +127,64 @@ both directions, the two outputs byte for byte, every error path) and, for
 the handover itself, `BackendFlag` in `tests/test_passthrough_exec.py`
 against the fake install tree.
 
+## Overlapping outputs
+
+wxrandr has no geometry policy of its own and never gains one. An overlapping
+`--pos` is resolved, normalised and sent exactly as asked, on every backend;
+so is a rotation or a mode change that runs one output into its neighbour.
+Overlap is what X11 has always done — every output is a viewport into one
+framebuffer — and refusing it here would refuse what real `xrandr` accepts.
+The guards that stay are the ones protecting against something real: no
+enabled output at all (KWin), a negative origin the protocol rejects
+(`normalise`, KWin's "Position of enabled output %1 is negative"), Mutter's
+no-holes follow-your-neighbour shift, which never moves an output the
+invocation positioned explicitly.
+
+What each compositor then does with it, measured on two 1920×1080 heads with
+the second placed at x=960 (the shared region cropped from each head and
+compared with ImageMagick `compare -metric AE` plus an md5 of the raw RGB):
+
+| backend | geometry | shared region | evidence |
+|---|---|---|---|
+| `x11` | taken, silently | **same pixels** | `--pos 960x0` exit 0, no output; screen 3840×1080 → 2880×1080; `AE 0`, `PAE 0`, both crops md5 `c05208d2…` (measured, Xorg) |
+| `kwin` | taken | **same pixels** | `AE 0` and equal md5 at 960 px *and* 480 px of overlap; no warning from KWin. The XML's "no gaps or overlaps" sentence is not enforced by the code, and KWin renders each output as a view onto one shared scene (measured, Plasma 6 / KWin Wayland) |
+| `sway` / `wlr` | taken | **same pixels** | `swaymsg … position 960 0` → `"success": true`; a window floated to layout 1100,300, wholly inside the region, is drawn on **both** heads, `AE 0`, equal md5 (measured, sway 1.11 / wlroots) |
+| `mutter` | **refused** | n/a | `ApplyMonitorsConfig` → `Logical monitors not adjacent` for x = 0, 100, 960, 1919, 1921, 2500 — every layout that is not exactly edge-adjacent, overlap and gap alike, adjacency being checked first. `GetCurrentState` is unchanged afterwards: nothing is half-applied. `--same-as` (one logical monitor, two members) *is* accepted (measured, GNOME 46 / Mutter) |
+
+All four rows are measured. **Inferred**, and only inferred: the `wlr` backend
+beyond sway (same wlroots renderer; only sway 1.11 was on the bench); KWin
+5.27 (only Plasma 6 was measured); and Mutter's other string, `Logical
+monitors overlap`, which two monitors never produce. The expectation that
+sway's per-output workspaces would prevent mirroring was **wrong** — a
+workspace binds where the tiler *places* windows, not which pixels an output
+scans out.
+
+An overlapping layout is also nothing special to the KWin backend's undo
+line: `restore_command` spells every position out absolutely, so the line
+printed while the *previous* layout overlapped replays into that same
+overlap (verified live on Plasma 6, and pinned in `tests/test_wxrandr_kwin.py`).
+
+**Refusals are said in the compositor's name.** We pass every layout on
+unchanged, so a "no" is never ours: Mutter's D-Bus error comes back as
+`xrandr: GNOME's Mutter refused this layout: <Mutter's words>`, KWin's
+`failure_reason` as `xrandr: KWin rejected the output configuration:
+<KWin's words>`, and sway/wlroots as `xrandr: compositor rejected …`. On
+Mutter `--dryrun` is the compositor's own method-0 verify, so the same
+attributed one-liner is available on stderr without applying anything
+(stdout stays xrandr's dryrun bytes).
+
+**Out of scope: true region mirroring.** Making a region show the same pixels
+where the compositor does not already do it is a different, much larger
+thing — a resident helper capturing one output and painting it onto another
+every frame. wxrandr does not do it and is not going to. On wlroots the route
+is the existing [wl-mirror](https://github.com/Ferdi265/wl-mirror) as an
+optional helper, not a reimplementation; there is no route worth having on
+GNOME or KDE. Two reasons it stays outside: no `xrandr` syntax expresses
+"mirror this rectangle onto that one", so it could not be spelled in a
+command line or a saved layout script; and on GNOME and KDE the only capture
+route is the desktop portal, which prompts the user for every session, which
+makes it useless from the hotkey a layout script exists for.
+
 ## Mutter backend (`wxrandr/mutter.py`)
 
 Mutter has no `zwlr_output_management`; its display API is the D-Bus object
@@ -171,10 +232,14 @@ get Mutter's own verdict — re-place the neighbour in the same call
 (`--output C --right-of A`). The `--verbose`/`--dryrun` plan and the `--fb` check
 show the shifted layout.
 
-What fails, one line and exit 1, with Mutter's own text: a hole (`xrandr: Logical
-monitors not adjacent`, see above), overlapping positions
-(`Logical monitors overlap`), turning everything off (`Monitors config incomplete`),
-`ApplyMonitorsConfigAllowed=false` (`Monitor configuration via D-Bus is disabled`).
+What fails, one line and exit 1, with Mutter's own text after
+`xrandr: GNOME's Mutter refused this layout: ` — Mutter's words, in Mutter's
+name, because the refusal is never ours: a hole or an overlap (`Logical
+monitors not adjacent`; with two monitors that one sentence covers both,
+adjacency being checked first — `Logical monitors overlap` needs a layout
+where adjacency already holds), turning everything off (`Monitors config
+incomplete`), `ApplyMonitorsConfigAllowed=false` (`Monitor configuration via
+D-Bus is disabled`).
 A configuration serial that went stale between our read and the apply is re-read:
 when the monitors and the layout are still the ones the plan was built from (GNOME
 bumps the serial on its own as well) the same call is retried once; otherwise — a

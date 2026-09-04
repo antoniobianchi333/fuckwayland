@@ -412,7 +412,9 @@ Relative placement, rotation, mirroring (`--same-as` becomes one logical monitor
 scales snapped to what Mutter offers, `--primary`, `--off` and `--dryrun` (Mutter
 verifies the configuration without applying it) all map; Mutter's own validation
 errors ("Logical monitors not adjacent", "Logical monitors overlap") come back as
-one-line `xrandr:` failures — and since Mutter, unlike X, allows no gaps, an output
+one-line failures in Mutter's name (`xrandr: GNOME's Mutter refused this layout:
+...`) — nothing is refused here, so a "no" is always the compositor's — and since
+Mutter, unlike X, allows neither gaps nor overlaps, an output
 that changes size (`--rotate`, `--mode`, `--scale`, `-s`, `-o`) keeps its neighbours
 touching it, with a warning. Changes are temporary like xrandr's; `--persistent`
 writes `monitors.xml` (GNOME then asks "Keep changes?"). It finds the session from a
@@ -463,9 +465,17 @@ wxrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal --out
 
 On top of arandr's menu (Active, Primary, Resolution, Orientation) every output also
 gets Refresh rate, Reflection, Mirror of, and — Wayland only — Scale (1 … 3, the
-compositor's HiDPI factor). Overlaps are refused unless they are clones (same
-origin, like `--same-as`), the layout is kept anchored at 0,0, Apply runs off the
-main loop and a failed Apply keeps your edits. It needs the GTK 3 bindings every stock Ubuntu
+compositor's HiDPI factor). **Overlapping outputs are allowed wherever the desktop
+allows them** — measured: X11, KWin and sway/wlroots all take the geometry *and*
+show the same pixels in the shared region (byte-identical crops on both heads), so
+a partial overlap really is a partial mirror there; GNOME's Mutter refuses any
+layout that is not edge-adjacent (`Logical monitors not adjacent`) and warandr
+reports that refusal in Mutter's name, not its own. The status bar says which of
+the four you are getting at the moment of the drop, and the saved script keeps it
+in its comment header; `WARANDR.md` and `WXRANDR.md` have the table, the evidence,
+and why true region mirroring (a resident capture-and-paint helper, `wl-mirror` on
+wlroots) is deliberately out of scope. The layout is kept anchored at 0,0, Apply
+runs off the main loop and a failed Apply keeps your edits. It needs the GTK 3 bindings every stock Ubuntu
 desktop already has (`python3-gi`, `gir1.2-gtk-3.0`) and nothing else — no cairo:
 the canvas is plain widgets. `warandr.desktop` puts it in the Settings menu.
 Contract: `WARANDR.md`.

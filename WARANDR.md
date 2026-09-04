@@ -106,12 +106,15 @@ warandr runs `--verbose` once per snapshot (arandr does the same).
   bottom edge, the dragged output's own opposite edge, or a centre line, the
   coordinate snaps there. Deviation: the *nearest* candidate wins (arandr
   takes an arbitrary set member).
-- **Overlap rejection** (deviation: arandr allows overlaps): two active
-  outputs may intersect only as clones — the same origin, whatever their
-  sizes, which is what xrandr's `--same-as` produces. Every edit is validated
-  as a whole and reverted on failure; the GUI reports "<edit> is not possible
-  here: A overlaps B" like arandr's messages, a refused drop snaps back with
-  "<output> not moved: A overlaps B" in the status bar.
+- **Overlaps are the backend's business, not ours** (arandr allows them and
+  so do we): two active outputs may intersect freely. `Layout.overlaps()`
+  lists the pairs that intersect at *different* origins (same origin is a
+  clone, below); `Layout.overlap_refusal` holds the live backend's reason for
+  refusing one, or `None` where it takes one, and `check()` raises exactly
+  that sentence — so a refused drop snaps back with "<output> not moved:
+  GNOME's Mutter refuses monitors that are not edge-adjacent …" and never
+  with a rule of our own. Every edit is still validated as a whole and
+  reverted on failure. See *What an overlap means*, below.
 - **Clones read back as mirrors**: an active output sharing its origin with
   an earlier one (a screen already running `DP-2 --same-as DP-1`, or our own
   Mirror-of after Apply → New) loads as *Mirror of* that output — drawn
@@ -128,6 +131,106 @@ warandr runs `--verbose` once per snapshot (arandr does the same).
   is there). Deactivating drops primary and detaches mirrors of it.
 - Screen bound: a layout wider/taller than the server's maximum is refused
   with arandr's "A part of an output is outside the virtual screen."
+
+## What an overlap means (per backend)
+
+Two active outputs may intersect. arandr allows it, `xrandr --pos` has always
+taken it, and warandr no longer refuses it: a drop that creates an overlap is
+accepted wherever the backend in use accepts one, and refused **only** where
+the backend refuses — with that backend's own sentence, so the user reads
+whose limit it is. The layout half (does the compositor take the geometry?)
+is the only half we control; whether the shared region then shows the same
+pixels is a property of how that compositor renders, which no client can
+influence from outside. Both halves were measured on two 1920×1080 heads with
+the second at x=960, comparing the two crops of the shared region with
+ImageMagick `compare -metric AE` and an md5 of the raw RGB:
+
+| backend | geometry | shared region | evidence |
+|---|---|---|---|
+| `x11` (Xorg) | taken, silently | **same pixels** | `--pos 960x0` exit 0, screen 3840×1080 → 2880×1080; a yellow window at 1052,348 inside the region: `AE 0`, both crops md5 `c05208d2…` (measured, Xorg + Xfce) |
+| `kwin` (Plasma 6) | taken | **same pixels** | `kscreen-doctor …position.960,0` exit 0, no warning; `AE 0`, equal md5 at *two* overlap widths (960 px and 480 px) — KWin renders each output as a view onto one shared scene (measured, Plasma 6 / KWin Wayland) |
+| `sway` / `wlr` (wlroots) | taken | **same pixels** | `swaymsg … position 960 0` → success; a window floated to layout 1100,300, wholly inside the region, is drawn on **both** heads: `AE 0`, equal md5 (measured, sway 1.11) |
+| `mutter` (GNOME) | **refused** | n/a | `ApplyMonitorsConfig` → `Logical monitors not adjacent` for x = 0, 100, 960, 1919, 1921, 2500 — every layout that is not exactly edge-adjacent, overlap and gap alike; nothing half-applied (measured, GNOME 46 / Mutter) |
+
+Measured, all four rows. **Inferred**, and said as inference: the `wlr`
+backend beyond sway (same wlroots renderer, only sway 1.11 on the bench);
+KWin 5.27 (only Plasma 6 was measured); Mutter's other message, `Logical
+monitors overlap`, which two monitors never produce because adjacency is
+checked first. A backend nobody has measured claims nothing — the window says
+*This backend has not been measured here; Apply reports whatever the
+compositor makes of it* and takes the overlap.
+
+The expectation that sway's per-output workspaces would stop the mirroring
+was **wrong**: a workspace binds where the tiler *places* windows, not which
+pixels an output scans out, and a surface straddling two outputs is drawn on
+both, identically.
+
+Two things an overlap deliberately does **not** change. *Clones*: outputs at
+the same origin are `--same-as`, not a partial overlap — `overlaps()` skips
+them, they are still drawn and saved as a mirror, every backend groups
+same-position outputs into one logical monitor (Mutter) or replicates them,
+and Mutter takes them, so a clone stays legal even where a partial overlap is
+refused. *Gaps*: they were never refused here and still are not, on any
+backend. Mutter refuses a hole exactly as flatly as an overlap (the same
+`Logical monitors not adjacent`), but arranging a layout means passing
+through gaps, so warandr keeps arandr's behaviour and lets Mutter say no at
+Apply, in its own words. The only geometry warandr itself refuses is a
+layout larger than the server's maximum screen — and an overlap can only
+make the screen *smaller*.
+
+Where the user meets it: the status bar, at the moment of the drop
+(`DP-2 overlaps DP-1. X11 draws both outputs from one framebuffer, so the
+shared region shows the same pixels on both.`); the saved script's comment
+header, two lines, what overlaps and what it means; and the backend
+indicator's tooltip, as an `overlap:` line — that paragraph (`--print-backend
+--verbose`, the About dialog, Script Properties ▸ Backend) is the one that
+already explains the live backend, whereas the Backend menu's own tooltips
+are taken: they say why a backend is unreachable, and GTK 3 pops no tooltip
+over an insensitive menu item anyway. On GNOME the drop is refused with
+Mutter's sentence, never with ours. `--save`/`--command` ask
+`--print-backend` first, because `auto` on Wayland is only "wxrandr" until
+it has answered and a layout GNOME will not take must not be written out as
+if it were fine; the window asks off the main loop instead and patches the
+layout when the answer lands.
+
+Verified live, end to end, on all four rows, each in its own VM:
+
+- **Xfce/X11.** An overlapping drop in the real window is taken, the sentence
+  appears in the status bar, Apply returns 0, `xrandr --listmonitors` really
+  reads `+960+0`, the saved script carries both comment lines and re-runs on
+  a plain X11 box with bare `xrandr` on the PATH. Screendumps of the two
+  heads: the shared region is byte-identical (`AE 0`, equal md5).
+- **Plasma 6 / KWin Wayland.** The same drag and Apply through the window:
+  rc 0, `kscreen-doctor -o` reads `Geometry: 960,0`, `wxrandr --listmonitors`
+  agrees, the saved script says KWin's sentence — and the two heads' crops of
+  the shared region are byte-identical. The undo line wxrandr prints for an
+  overlapping *previous* layout is a real inverse: replaying it verbatim put
+  `+960+0` back.
+- **GNOME 46 / Mutter.** `wxrandr --output V-2 --pos 960x0` and its `--dryrun`
+  both come back `xrandr: GNOME's Mutter refused this layout: Logical
+  monitors not adjacent` with nothing half-applied; a *gap* (`--pos 2500x0`)
+  gets that same sentence from Mutter, at Apply; `warandr --command` on an
+  overlapping arandr script exits 1 with Mutter's sentence; the window's drop
+  reverts with it and the boxes go back; `--same-as` is still accepted.
+- **sway 1.11 / wlroots.** `--pos 960x0` and `--backend wlr --pos 480x0` both
+  apply (`swaymsg -t get_outputs` agrees), `warandr --save` writes sway's
+  sentence, and the pixels bear it out: a `foot` window floated to layout
+  1100,300 — wholly inside the shared region — is drawn on **both** heads,
+  `AE 0`, equal md5, `srgb(0,0,204)` at the same layout point on each. It
+  opened on the focused output's workspace, which is the only thing that
+  stayed per-output.
+
+**Out of scope: true region mirroring.** Making a region show the same pixels
+on a compositor that does not already do it is a different and much larger
+thing — a resident helper capturing one output and painting it onto another
+every frame. It is not part of warandr or wxrandr and is not planned as one.
+If someone wants it on wlroots, the route is the existing
+[wl-mirror](https://github.com/Ferdi265/wl-mirror) as an optional helper, not
+a reimplementation. Two reasons it stays outside: no `xrandr` syntax
+expresses "mirror this rectangle onto that one", so it could not be spelled
+in a layout script or a saved hotkey; and on GNOME and KDE the only capture
+route is the desktop portal, which prompts the user for every session —
+useless from the hotkey that is the whole point of a layout script.
 
 ## Command line (`Layout.args()`)
 
@@ -187,8 +290,24 @@ is a comment and nothing else:
 wxrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal
 ```
 
-It appears only when a backend was forced (an untouched auto save is
-byte-identical to arandr's, as before) and only in the *default* template, so
+**A partial overlap is recorded the same way**, as two more comment lines —
+what overlaps and what it means on the backend that wrote the file:
+
+```
+#!/bin/sh
+# warandr: partial overlap (DP-1 and DP-2 share 1280x720 at +320+180)
+# X11 draws both outputs from one framebuffer, so the shared region shows the same pixels on both.
+xrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal --output DP-2 --mode 1280x720 --pos 320x180 --rotate normal
+```
+
+The pair is named symmetrically and the shared rectangle spelled xrandr's way
+(`WxH+X+Y`, `--listmonitors`' spelling): neither output is *over* the other —
+on every backend that takes an overlap both draw that rectangle, which is the
+whole point — and the note must not read differently just because the server
+happened to list the two outputs the other way round. The sentence is the
+backend's, not the file's: the same layout saved on GNOME
+would not exist (Mutter refuses it) and the same layout saved on KDE says
+KWin's sentence. Both notes appear only in the *default* template, so
 a file loaded from disk is still written back byte-identically — arandr's
 template rule wins. Nothing reads it back: it documents which backend the
 window was talking to when the layout was captured, so that a hotkey script
@@ -222,14 +341,20 @@ and underlined when primary (arandr), resolution (and `= mirror target` /
 `@scale`) below, label rotated with the orientation, dimmed when inactive,
 white border when selected, dashed when a mirror. No tooltips (one would pop
 over the context menu): hovering a box puts its description in the status
-bar. Left-drag moves (snap on motion, validate on drop, revert + status
-message on rejection); right-click (or the Outputs menu) opens arandr's
+bar. Boxes are stacked smallest last, i.e. on top: an overlap may put one
+box wholly inside another, a `Gtk.Fixed` would hand the click to whichever
+output the server listed last, and an output you cannot press is an output
+you cannot drag back out. Left-drag moves (snap on motion, validate on drop;
+a drop that creates an overlap is taken wherever the backend takes one and
+says in the status bar what it will mean there, and where the backend refuses
+one the drop reverts with *that backend's* sentence); right-click (or the Outputs menu) opens arandr's
 per-output menu — **Active**, **Primary**, **Resolution** ▸, **Orientation** ▸
 (normal/right/inverted/left) — then, after a separator, **Refresh rate** ▸,
 **Reflection** ▸, **Mirror of** ▸ (none / each other non-mirror active
 output) and, on Wayland only, **Scale** ▸. Right-click on empty canvas: the
 outputs menu. Empty-layout Apply asks first, like arandr. The status bar
-shows, by priority, a transient message (refused drop, saved file; cleared
+shows, by priority, a transient message (what a new overlap means, a refused
+drop, a saved file; cleared
 by the next redraw or after a few seconds), the hovered output's
 description, or the command Apply would run — which is the *whole* command,
 so a forced backend shows there too (`wxrandr --backend mutter --output
@@ -238,8 +363,10 @@ always visible, is the backend indicator: `backend: mutter (Wayland)`,
 `backend: xrandr (X11)` — the compositor backend on Wayland (once
 `--print-backend` has answered, `wxrandr` until then), the tool itself on
 X11. Its tooltip is the fuller explanation, `--print-backend --verbose`'s
-lines under what warandr runs and why it picked it; the same text is a
-paragraph in the About dialog and a page of Script Properties. Save As reports `saved PATH`
+lines under what warandr runs and why it picked it — including the
+`overlap:` line, the one sentence about what an overlapping layout does on
+this backend; the same text is a paragraph in the About dialog and a page of
+Script Properties. Save As reports `saved PATH`
 and, when the script's command word is not on `PATH` (a stock desktop has
 no `wxrandr`), appends `- note: wxrandr is not on PATH, the script needs
 it` — arandr's scripts call bare `xrandr`, ours call bare `wxrandr`, and a

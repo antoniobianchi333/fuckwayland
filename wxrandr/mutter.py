@@ -24,7 +24,12 @@ any client on the user bus — no extension, no root:
   another (a hole is "not adjacent"), min x = min y = 0, scale exactly one of
   the mode's supported scales, mirror members with identical modes, only mode
   ids it handed out (no custom modes). Rejections come back as D-Bus errors
-  whose text is relayed verbatim after `xrandr: `.
+  whose text is relayed verbatim after `xrandr: GNOME's Mutter refused this
+  layout: ` -- Mutter's words, said in Mutter's name, because we never refuse
+  a layout ourselves. Measured: with two monitors an overlap never produces
+  "Logical monitors overlap"; adjacency is checked first and every layout
+  that is not exactly edge-adjacent, overlap and gap alike, comes back
+  "Logical monitors not adjacent". Nothing is half-applied.
 - MonitorsChanged fires after a successful apply; the serial bumps on every
   change and a stale serial is AccessDenied: the state is re-read and the
   same plan re-sent once, but only when the monitors and layout it was built
@@ -168,6 +173,16 @@ def _int(v) -> int:
 
 def _text(e: DBusError) -> str:
     return (e.message or e.name) + "\n"
+
+
+def _refused(e: DBusError) -> str:
+    """A rejected ApplyMonitorsConfig, in Mutter's name.  We pass every
+    layout on unchanged -- overlaps included, which X11, KWin and wlroots
+    all take -- so when one comes back refused the limit is GNOME's, and
+    the line has to say so before quoting Mutter's own words (a two-monitor
+    overlap gets "Logical monitors not adjacent", the same sentence a gap
+    gets)."""
+    return "GNOME's Mutter refused this layout: " + _text(e)
 
 
 def _is_stale(e: DBusError) -> bool:
@@ -643,7 +658,7 @@ class MutterOutputs:
             self._call_apply(method, plan)
         except DBusError as e:
             if not _is_stale(e):
-                raise Fatal(_text(e))
+                raise Fatal(_refused(e))
             serial, monitors, logical, _props = self.get_current_state()
             if self._fingerprint(monitors, logical) != self.fingerprint:
                 raise Fatal(CANCELLED)
@@ -653,7 +668,7 @@ class MutterOutputs:
             except DBusError as e2:
                 if _is_stale(e2):
                     raise Fatal(CANCELLED)
-                raise Fatal(_text(e2))
+                raise Fatal(_refused(e2))
 
     def verify(self, state: core.State, targets: list):
         """--dryrun: method 0 — Mutter validates, nothing changes."""

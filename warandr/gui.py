@@ -255,15 +255,19 @@ class OutputBox(Gtk.EventBox):
         out = self.app.layout.get(self.name)
         pos = out.tentative
         out.tentative = None
-        rejected = None
+        rejected = note = None
         if pos is not None and pos != (out.x, out.y):
             try:
                 self.app.layout.move(self.name, *pos)
             except LayoutError as e:
                 rejected = e
+            else:
+                note = self.app.overlap_message(self.name)
         self.app.redraw()          # redraw resets the status bar first ...
         if rejected is not None:   # ... then the message goes on top
             self.app.show_message("%s not moved: %s" % (self.name, rejected))
+        elif note is not None:
+            self.app.show_message(note)
         return True
 
 
@@ -522,6 +526,7 @@ class Application:
         _dump("backend", {"name": self.backend.name,
                           "forced": self.backend.forced,
                           "indicator": self.backend.indicator(),
+                          "overlap": self.backend.overlap_note(),
                           "word": self.backend.run_word,
                           "available": {k: v["available"]
                                         for k, v in self.backends.items()},
@@ -545,6 +550,9 @@ class Application:
             self.backends = info
         if self.backend is backend:
             self._refresh_backend()
+            if self.layout is not None:
+                # identify() may have turned "wayland" into a real name
+                self.layout.overlap_refusal = backend.overlap_refusal()
         return False
 
     def set_backend(self, name):
@@ -620,7 +628,22 @@ class Application:
     def command_text(self):
         return self.layout.command_line(self.backend.run_word)
 
+    def overlap_message(self, name):
+        """What a drop that landed `name` on top of another output means on
+        the backend in use — the status bar's one sentence at the moment of
+        the drop.  None when this output overlaps nothing (an exact overlap
+        is a clone, not this)."""
+        others = [b if a == name else a
+                  for a, b in self.layout.overlaps() if name in (a, b)]
+        if not others:
+            return None
+        return "%s overlaps %s. %s" % (name, ", ".join(others),
+                                       self.backend.overlap_note())
+
     def set_layout(self, layout):
+        # whether an overlapping layout is refused, and in whose name, is
+        # the live backend's answer -- never our own geometry policy
+        layout.overlap_refusal = self.backend.overlap_refusal()
         self.layout = layout
         if self.selected and not layout.has(self.selected):
             self.selected = None
@@ -673,9 +696,34 @@ class Application:
                 self.place_box(box, park_x, park_y)
                 park_y += (o.size()[1] if o.mode else 40 * self.factor) \
                     + 10 * self.factor
+        if self._restack():
+            GLib.idle_add(self._restack_later)
         self.show_status(self.command_text())
         self._populate_outputs_menu()
         self._schedule_dump()
+
+    def _restack(self):
+        """Put the smaller box on top, and report whether any box had no
+        window yet.  A Gtk.Fixed gives the click to the child window created
+        last — the last output in server order — and an overlap may now put
+        one box wholly inside another: without this, an output dropped
+        inside a bigger one that happens to come later would be covered by
+        it, unclickable, with no way to drag it back out.  Ordering by drawn
+        area cannot hide anything, because a box that covers another is at
+        least as big as it."""
+        pending = False
+        for b in sorted(self.boxes.values(), key=lambda b: b._pw * b._ph,
+                        reverse=True):
+            w = b.get_window()
+            if w is None:
+                pending = True          # not realised yet: retry on idle
+            else:
+                w.raise_()
+        return pending
+
+    def _restack_later(self):
+        self._restack()
+        return False
 
     # -- test hook: geometry dumps -------------------------------------------
 
@@ -1039,7 +1087,8 @@ class Application:
                 return
         try:
             path = cli.write_script(self.layout, fn, self.backend.word,
-                                    self.backend.script_note())
+                                    cli.script_notes(self.layout,
+                                                     self.backend))
         except OSError as e:
             _msg(self.window, Gtk.MessageType.ERROR, "Cannot save:\n%s" % e)
             return
@@ -1112,7 +1161,7 @@ class Application:
         tv.set_editable(False)
         tv.set_monospace(True)
         tv.get_buffer().set_text(self.layout.to_script(
-            self.backend.word, self.backend.script_note()))
+            self.backend.word, cli.script_notes(self.layout, self.backend)))
         sw = Gtk.ScrolledWindow()
         sw.add(tv)
         nb = Gtk.Notebook()
