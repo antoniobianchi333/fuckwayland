@@ -74,6 +74,15 @@ def stop_holder(state, output: str) -> bool:
     if not rec or not rec.get("pid"):
         return False
     pid = rec["pid"]
+    # Defence in depth behind the state file's ownership check: a holder we
+    # started runs as us, so a pid owned by anybody else is not our holder --
+    # never send it a signal, whatever the record claims. (Under sudo "us" is
+    # root, and the holder root forked is root too.)
+    try:
+        if os.stat("/proc/%d" % pid).st_uid != os.geteuid():
+            return False
+    except OSError:
+        return False
     start = rec.get("start")
     if start == "?":
         # starttime was unavailable when the record was written: fall back to

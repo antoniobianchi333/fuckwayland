@@ -34,6 +34,7 @@ import json
 import os
 import re
 import socket
+import stat
 import struct
 import sys
 import time
@@ -300,6 +301,43 @@ def _state_path() -> str:
     return "/tmp/wxrandr-state-%d.json" % os.getuid()
 
 
+def _read_state(path: str) -> dict:
+    """The state dict on disk, or `{}` when it is not ours to trust.
+
+    This file decides what wxrandr does next: which pid `--brightness` sends
+    SIGTERM to when it drops a gamma hold, the mode lines `--newmode` added,
+    which output is primary, what mode a re-enabled output goes back to. With
+    no XDG_RUNTIME_DIR -- which is every `sudo` run, and cron -- it lives in
+    world-writable /tmp under a guessable name, so another local user can
+    create it before we do and choose those answers, including the pid a root
+    wxrandr signals. The state is a cache and never load-bearing, so anything
+    we cannot prove is ours (a symlink, another user's file, a file others may
+    write) is ignored rather than obeyed. Group-writable is left alone: that
+    is the default umask on some distributions, and a group is not the open
+    door /tmp is."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return {}
+    try:
+        st = os.fstat(fd)
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid()
+                or st.st_mode & 0o002):
+            os.close(fd)
+            return {}
+        f = os.fdopen(fd, "r")
+    except OSError:
+        os.close(fd)
+        return {}
+    try:
+        loaded = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    finally:
+        f.close()
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def _merge3(base: dict, ours: dict, theirs: dict) -> dict:
     """Three-way merge of one state key across a concurrent writer: `base` is
     the value we loaded, `ours` our in-memory edits, `theirs` what is on disk
@@ -336,14 +374,7 @@ class State:
     def __init__(self, key: str, path: str | None = None):
         self.path = path or _state_path()
         self.key = key
-        self._all = {}
-        try:
-            with open(self.path) as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                self._all = loaded
-        except (OSError, ValueError):
-            pass
+        self._all = _read_state(self.path)
         d = self._all.get(key)
         self.d = d if isinstance(d, dict) else {}
         # snapshot of what we loaded, so save() can tell OUR edits apart from
@@ -354,7 +385,8 @@ class State:
         lockpath = self.path + ".lock"
         lock_fd = None
         try:
-            lock_fd = os.open(lockpath, os.O_CREAT | os.O_RDWR, 0o600)
+            lock_fd = os.open(lockpath,
+                              os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
         except OSError:
             lock_fd = None  # locking unavailable: proceed best-effort
@@ -362,14 +394,7 @@ class State:
             # re-read under the lock and merge, so a concurrent wxrandr's
             # writes (other compositor keys, or another output's gamma record
             # under this key) are not lost by our snapshot-then-replace
-            disk = {}
-            try:
-                with open(self.path) as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    disk = loaded
-            except (OSError, ValueError):
-                pass
+            disk = _read_state(self.path)
             theirs = disk.get(self.key)
             theirs = theirs if isinstance(theirs, dict) else {}
             merged = _merge3(self._orig, self.d, theirs)
