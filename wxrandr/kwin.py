@@ -943,8 +943,11 @@ class KwinOutputs:
             except _Invalidated:
                 # a hotplug between create_configuration and apply silently
                 # invalidated the object: rebuild from a fresh snapshot, once
-                state.primary = want      # the re-read must not eat --primary
                 targets = self._rebind(targets, self.snapshot(state))
+                # after the re-snapshot, not before: snapshot() overwrites
+                # state.primary with what kde_output_order_v1 still reports,
+                # which would eat a --primary that has not been applied yet
+                state.primary = want
                 records, primary = self.plan(state, targets)
                 if records or primary is not None:
                     self._send(records, primary, self._topology())
