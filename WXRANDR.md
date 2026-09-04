@@ -307,6 +307,15 @@ DisplayConfig service on `dbus_mini`'s mock bus that validates like mutter
 
 ## KWin backend (`wxrandr/kwin.py`)
 
+**This is the Wayland session only.** Plasma on Xorg is a plain X11 session: the X
+server's RandR is the truth there, so `main()` hands over to the real `xrandr` before
+any of this runs, `--print-backend` says `x11` (`compositor: X server (RandR)`), and
+`--backends` marks `kwin` `unavailable  no wayland socket` — measured on the
+`noble-kde-x11` flavor, where `kwin_x11` owns `org.kde.KWin` on the session bus and
+`/run/user/<uid>` holds no compositor socket at all. `--backend kwin` there is the
+same one-line refusal (`xrandr: --backend kwin is not available in this session: no
+wayland socket`), because the protocol pair below exists only in `kwin_wayland`.
+
 KWin has no `zwlr_output_management` and no D-Bus display API (`org.kde.KWin` only
 exposes `activeOutputName()`). Everything goes through the Wayland protocols from
 plasma-wayland-protocols — NOT from the kwin repo — which are unauthenticated:

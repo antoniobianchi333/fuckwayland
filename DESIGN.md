@@ -38,8 +38,10 @@ on stock Ubuntu. Root is acceptable and expected (for `/dev/uinput`). No kernel 
   graphical session: a dir holding a `wayland-*` socket sorts first (so `ssh root@`
   with its own empty `/run/user/0` still finds the user's bus), then `SUDO_UID` /
   `PKEXEC_UID`, then real users. The X plane (Xwayland) is found by
-  `session.find_x_display()` / `find_xauthority()` (`$DISPLAY`/`$XAUTHORITY`,
-  gnome-shell's own environment via `/proc`, Mutter's
+  `session.find_x_display()` / `find_xauthority()` (`$DISPLAY`/`$XAUTHORITY`, the
+  session leader's own environment via `/proc` — gnome-shell, `startplasma-x11`,
+  `kwin_x11`, `plasmashell`, `xfce4-session`, `sway`, uid-qualified, which is the
+  only route to SDDM's `/tmp/xauth_<random>` — Mutter's
   `$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` cookie, `/tmp/.X11-unix/X*`).
 
 ## X11 passthrough (`passthrough.py`)
@@ -50,7 +52,19 @@ server is authoritative there, `xdotool` has XTEST and `--sync` on real X
 events, `xprop` has the real property store, `xrandr` has the real RandR, and
 we cannot beat any of it from outside. Worse, backend detection would *half*
 succeed — GNOME-on-Xorg owns `org.gnome.Shell`, KWin-on-X11 owns
-`org.kde.KWin` — so the check has to run **before** it.
+`org.kde.KWin` — so the check has to run **before** it. Measured on the
+`noble-kde-x11` flavor (Plasma 5.27 on Xorg): `backend_detect.detect()` there
+does answer `KwinBackend`, the script backend does load into `kwin_x11` and
+list its windows — and on the same session our own `getdisplaygeometry` has
+nothing to ask, because a Plasma X11 session has no compositor socket at all.
+`wxprop` is the one tool with a native X11 path of its own, so it is also the
+one that could reach that backend *after* the handover declined (no real
+`xprop` installed): `wxprop.core._detect_backend()` therefore answers `None`
+outright on an X11 session, and `-root` is the X root, as the original's is.
+That last one is hardening rather than a fix — measured on both Plasma X11
+images the merged root was byte-identical to the real `xprop`, because every
+window on an X11 session is an X window; what it removes is the synthesized
+root the same code produces when the compositor's view carries no X id.
 
 `wdotool/passthrough.py` is shared and **frozen after landing** (like
 `session.py` and `dbus_mini.py`): wire-level fixes allowed, API changes need a
