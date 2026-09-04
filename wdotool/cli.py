@@ -282,7 +282,8 @@ def _script_line_tokens(line: str, argv: list[str], prog: str) -> list[str]:
 
 
 def script_main(argv: list[str], prog: str,
-                layout_mode: str | None = None) -> int:
+                layout_mode: str | None = None,
+                vkbd_mode: str | None = None) -> int:
     """xdotool.c script_main: read commands from a file or stdin ("-"), expand
     $N/$ENV, and execute each line as a chain sharing one context. A failing
     line does not stop later lines; the last executed line's status wins."""
@@ -300,6 +301,7 @@ def script_main(argv: list[str], prog: str,
             return 1
     ctx = Context()
     ctx.layout_mode = layout_mode
+    ctx.vkbd_mode = vkbd_mode
     result = 0
     with f:
         for line in f:
@@ -343,34 +345,54 @@ def main(argv: list[str] | None = None) -> int:
     # wherever it appeared -- inside `exec` arguments, inside a script's
     # positional parameters, and before the X11 handover, so the real xdotool
     # was handed a mangled argv.
-    layout_mode = None
+    #
+    # --vkbd: which keyboard the typing commands inject through. Same shape
+    # and same place as --layout, and documented next to it: `off` is the
+    # kernel device (/dev/uinput) whatever the compositor offers, `on` is
+    # zwp_virtual_keyboard_v1 or a clean error, `auto` is the default.
+    _FLAGS = (("layout", "us, auto or xkb"), ("vkbd", "auto, on or off"))
+    modes = {"layout": None, "vkbd": None}
     rest = []
     i = 1
     while i < len(argv):
         a = argv[i]
-        if a == "--layout":
-            if i + 1 >= len(argv):
-                sys.stderr.write("wdotool: --layout requires an argument "
-                                 "(us, auto or xkb)\n")
-                return 1
-            layout_mode = argv[i + 1]
-            i += 2
-            continue
-        if a.startswith("--layout="):
-            layout_mode = a.split("=", 1)[1]
-            i += 1
+        hit = False
+        for flag, valid in _FLAGS:
+            if a == "--" + flag:
+                if i + 1 >= len(argv):
+                    sys.stderr.write("wdotool: --%s requires an argument "
+                                     "(%s)\n" % (flag, valid))
+                    return 1
+                modes[flag] = argv[i + 1]
+                i += 2
+                hit = True
+                break
+            if a.startswith("--%s=" % flag):
+                modes[flag] = a.split("=", 1)[1]
+                i += 1
+                hit = True
+                break
+        if hit:
             continue
         if a == "--" or a == "-" or not a.startswith("-"):
             break          # the command name, the script path, or "--"
         rest.append(a)
         i += 1
     rest.extend(argv[i:])
+    layout_mode, vkbd_mode = modes["layout"], modes["vkbd"]
     if layout_mode is not None:
         layout_mode = layout_mode.strip().lower()
         if layout_mode not in ("us", "fixed", "auto", "xkb"):
             sys.stderr.write("wdotool: --layout: invalid argument %r; "
                              "valid: us, auto, xkb\n" % layout_mode)
             return 1
+    if vkbd_mode is not None:
+        vkbd_mode = vkbd_mode.strip().lower()
+        if vkbd_mode not in ("auto", "on", "off"):
+            sys.stderr.write("wdotool: --vkbd: invalid argument %r; "
+                             "valid: auto, on, off\n" % vkbd_mode)
+            return 1
+    if layout_mode is not None or vkbd_mode is not None:
         argv = argv[:1] + rest
 
     # Hidden diagnostic (B13): dump the compositor's keymap and what wdotool
@@ -409,7 +431,7 @@ def main(argv: list[str] | None = None) -> int:
         and not commands.is_command(argv[1])
         and (argv[1] == "-" or os.path.exists(argv[1]))
     ):
-        return script_main(argv, prog, layout_mode)
+        return script_main(argv, prog, layout_mode, vkbd_mode)
 
     if len(argv) < 2:
         sys.stderr.write(_USAGE % prog)
@@ -453,5 +475,6 @@ def main(argv: list[str] | None = None) -> int:
 
     ctx = Context()
     ctx.layout_mode = layout_mode
+    ctx.vkbd_mode = vkbd_mode
     ret = run_chain(ctx, prog, argv[1:])
     return ret if ret else ctx.exit_code

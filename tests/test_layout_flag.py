@@ -207,12 +207,12 @@ class TheWireCarriesIt(unittest.TestCase):
                 self.lock = threading.RLock()
 
             def op_type(self, text, delay_ms, clearmods, session=None,
-                        layout_mode=None):
+                        layout_mode=None, vkbd_mode=None):
                 seen.append(("type", layout_mode))
                 return []
 
             def op_key(self, spec, direction, delay_ms, clearmods,
-                       session=None, layout_mode=None):
+                       session=None, layout_mode=None, vkbd_mode=None):
                 seen.append(("key", layout_mode))
                 return []
 
@@ -231,7 +231,7 @@ class TheWireCarriesIt(unittest.TestCase):
                 self.lock = threading.RLock()
 
             def op_type(self, text, delay_ms, clearmods, session=None,
-                        layout_mode=None):
+                        layout_mode=None, vkbd_mode=None):
                 seen.append(layout_mode)
                 return []
 
@@ -303,12 +303,13 @@ class ItIsALeadingOptionOnly(unittest.TestCase):
         d.lock = threading.RLock()
         seen = {}
 
-        def op_type(text, delay_ms, clearmods, session=None, layout_mode=None):
+        def op_type(text, delay_ms, clearmods, session=None, layout_mode=None,
+                    vkbd_mode=None):
             seen["type"] = layout_mode
             return []
 
         def op_key(spec, direction, delay_ms, clearmods, session=None,
-                   layout_mode=None):
+                   layout_mode=None, vkbd_mode=None):
             seen["key"] = layout_mode
             return []
 

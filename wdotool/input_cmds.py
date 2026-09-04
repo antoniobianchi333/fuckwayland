@@ -213,7 +213,7 @@ def _key_common(ctx, args, default_name, direction):
                 try:
                     # only sent when --layout was given, so an older daemon
                     # and every test double keep their existing signature
-                    daemon.key(seq, direction, delay, clearmods, **_layout_kw(ctx))
+                    daemon.key(seq, direction, delay, clearmods, **_mode_kw(ctx))
                     clearmods = False
                 except CmdError as e:
                     if not str(e).startswith("Error: Invalid key sequence"):
@@ -264,11 +264,16 @@ If no window is given, %%1 is used. See WINDOW STACK in xdotool(1)
 """
 
 
-def _layout_kw(ctx):
-    """`layout_mode=` for the daemon call, but only when --layout was given:
-    an absent flag must leave the request exactly as it was."""
-    mode = getattr(ctx, "layout_mode", None)
-    return {"layout_mode": mode} if mode else {}
+def _mode_kw(ctx):
+    """`layout_mode=`/`vkbd_mode=` for the daemon call, each only when its
+    flag was given: an absent flag must leave the request exactly as it was,
+    so an older daemon and every test double keep their signature."""
+    kw = {}
+    for attr in ("layout_mode", "vkbd_mode"):
+        mode = getattr(ctx, attr, None)
+        if mode:
+            kw[attr] = mode
+    return kw
 
 
 def cmd_type(ctx, args):
@@ -325,7 +330,7 @@ def cmd_type(ctx, args):
             _activate_settle(ctx, wid)
         for piece in data:
             daemon.type_text(piece, delay, clearmods=clearmods,
-                             **_layout_kw(ctx))
+                             **_mode_kw(ctx))
     return i + consumed
 
 

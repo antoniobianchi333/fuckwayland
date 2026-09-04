@@ -13,6 +13,9 @@ on stock Ubuntu. Root is acceptable and expected (for `/dev/uinput`). No kernel 
 - **Input injection**: virtual evdev devices via `/dev/uinput` (keyboard, relative
   mouse, absolute pointer mimicking a QEMU USB tablet). Compositor-agnostic — injection
   happens at the kernel input layer, so it works on GNOME, KDE, wlroots, everything.
+  Typing has a second path where the kernel one is closed: `zwp_virtual_keyboard_v1`
+  (`vkbd.py`), which needs no root at all on wlroots — see "the virtual-keyboard
+  path" under B13 for the policy that picks it and for what still needs privilege.
 - **Daemon**: first invocation auto-spawns itself as a daemon (`argv[1] == "__daemon"`,
   double-fork; see `__main__.py`). The daemon owns the uinput devices (device creation
   costs ~500ms of compositor hotplug latency — pay it once), tracks the injected cursor
@@ -252,8 +255,9 @@ normally. `Context` (frozen, `ctx.py`) provides `stack`, `resolve_window(arg|Non
 ## File ownership (do not edit files you don't own)
 
 - **Agent A (cli core)**: `cli.py`, `commands.py`, `misc_cmds.py`
-- **Agent B (input)**: `daemon.py`, `uinput.py`, `keymap.py`, `keysyms.py`, `xkbmap.py`,
-  `input_cmds.py`, `keys_cmds.py`, `keystate.py`
+- **Agent B (input)**: `daemon.py`, `uinput.py`, `vkbd.py`, `us_keymap.py`,
+  `keymap.py`, `keysyms.py`, `xkbmap.py`, `input_cmds.py`, `keys_cmds.py`,
+  `keystate.py`
 - **Agent C (windows)**: `backend_detect.py`, `backend_sway.py`, `backend_wlr.py`,
   `backend_kwin.py`, `kwin_js.py`, `backend_gnome.py`, `window_cmds.py`,
   `desktop_cmds.py`
@@ -295,9 +299,12 @@ capability gaps in a detected backend: raise CmdError.
 class DaemonClient:
     @classmethod
     def connect_or_spawn(cls) -> "DaemonClient": ...
-    def type_text(self, text: str, delay_ms: int, clearmods: bool = False): ...
-    def key(self, spec: str, direction: str, delay_ms: int, clearmods: bool): ...
+    def type_text(self, text: str, delay_ms: int, clearmods: bool = False,
+                  layout_mode: str | None = None, vkbd_mode: str | None = None): ...
+    def key(self, spec: str, direction: str, delay_ms: int, clearmods: bool,
+            layout_mode: str | None = None, vkbd_mode: str | None = None): ...
         # spec "ctrl+shift+t"; direction in {"press","down","up"}
+        # layout_mode/vkbd_mode: --layout / --vkbd, sent only when given
         # clearmods: release the modifiers, inject, press back the ones we held
     def clear_modifiers(self) -> list: ...      # release them; -> the ones we held
     def restore_modifiers(self, held): ...      # press those back
@@ -467,10 +474,110 @@ Daemon notes (B):
     `WDOTOOL_LAYOUT=xkb` forces the reverse map even on a US layout,
     `WDOTOOL_XKB_KEYMAP=<file>` reads a keymap from a file (what the tests use),
     `WDOTOOL_XKB_GROUP=<n>` pins the group.
-  - **not adopted here**: sway and KWin *do* implement zwp_virtual_keyboard_v1,
-    which would let us upload our own keymap and skip all of this on those two.
-    It is a separate change: it needs a second injection path next to uinput,
-    and it does nothing for GNOME.
+- **the virtual-keyboard path (`vkbd.py`, `us_keymap.py`)**: the second
+  injection path, `zwp_virtual_keyboard_v1` — the client uploads its OWN
+  keymap and sends keycodes against it, so no reverse lookup is needed. All of
+  the below is measured on sway 1.11/wlroots and Plasma/KWin 6.6.6, one VM at
+  a time.
+  - **who has it**: sway/wlroots, v1, advertised to every client and
+    restricted to none — an ordinary uid-1000 client with no group and no
+    device access creates a keyboard and types, in ~2.5 ms against ~600 ms of
+    uinput hotplug. **KWin 6.6.6 does not implement it at all** (the string is
+    in no Plasma library; the same 62 globals go to root and to the session
+    user), and neither does Mutter. The earlier claim in this file that "sway
+    and KWin *do* implement" it was wrong: the reverse map stays for KDE as
+    well as GNOME.
+  - **THE POLICY, in one sentence**: `key`/`keydown`/`keyup`/`type` go through
+    the protocol when the kernel keyboard cannot be opened *and* the
+    compositor implements it, through `/dev/uinput` in every other case, and
+    `--vkbd on|off` (`WDOTOOL_VKBD`) forces either. Deliberately that narrow.
+    Where uinput works it keeps working byte for byte — the daemon tests pin
+    that event stream, and the protocol is not free where it exists: the
+    compositor hands the focused client OUR keymap ahead of our first key and
+    the session's keymap back when the real keyboard is next used, so every
+    injection makes that application recompile its keymap twice. What it does
+    buy is the case uinput cannot serve at all — `/dev/uinput` is
+    `crw------- root root` with no `uaccess` ACL on stock wlroots, so a
+    non-root user cannot type today — and turning a hard failure into the
+    right characters is the one change that is strictly better.
+  - **what still needs privilege**: everything with a pointer. The protocol
+    has four requests (keymap, key, modifiers, destroy) and no pointer, no
+    buttons, no scroll; `click`, `mousemove`, `mousemove_relative`,
+    `mousedown`, `mouseup` stay on the kernel tablet/mouse and still need
+    root. (`zwlr_virtual_pointer_manager_v1` is advertised and equally
+    unprivileged on wlroots — verified live — which would finish the job, and
+    is a separate change.) The window commands, `search` and
+    `getdisplaygeometry` never needed privilege.
+  - **the keymap** is captured, never generated: `us_keymap.TEXT` is
+    `tests/fixtures/keymaps/us.xkb` byte for byte, uploaded verbatim with the
+    trailing NUL that `size` counts. A keymap synthesised from
+    `include "complete"` plus our own symbols *compiles* — the focused client
+    gets it back under our group name — and then delivers no key events at
+    all, twice, unexplained. Uploading plain US is also what makes
+    `keymap.CHAR_TO_KEY` right by construction rather than by luck, and that
+    is asserted, not assumed: `tests/test_vkbd.py` runs
+    `xkbmap.active_group_is_plain_us()` — the same key-by-key check the uinput
+    path uses before it trusts the fixed table — over the text we upload. The
+    price of plain US is its character set: on a German session the reverse
+    map reaches `ü` and this path warns and skips it, exactly as it does for
+    any character the active layout cannot produce. Generating a keymap
+    holding precisely the characters asked for would fix that and is blocked
+    on the unexplained "compiles but delivers nothing" above; it is the first
+    thing to chase.
+  - **modifiers are the real difference**. wlroots does not run a virtual
+    keyboard's keys through xkb state: evdev 42 down, `y`, 42 up types `y`,
+    and a focused observer sees the 42 events with no `modifiers` event at
+    all. So `VirtualKeyboard.key()` maps a modifier *keycode* to that keymap's
+    own modifier bit (`_MOD_BITS`, checked against the file's `modifier_map`
+    by the tests) and sends `modifiers` before a press and after a release,
+    only when the mask really moved. The callers are unchanged.
+  - **`--layout` does not apply here** and says so once: the keymap reading
+    our keycodes is ours, so a table built from the session's keymap would
+    type garbage. `--layout us` is what this path already does; `--vkbd off`
+    is the way to ask for the session's keymap. The bypass, the reverse map
+    and the group guess are not consulted at all.
+  - **`--clearmodifiers` is complete here**, unlike on uinput: modifier state
+    is per device (measured both ways — with a real keyboard holding shift,
+    uinput typed `Y` and the virtual keyboard typed `y`), so we release the
+    keycodes we hold and send `modifiers(0,0,0,0)`, and the foreign-modifier
+    warning — true and unavoidable on the kernel path — is not emitted,
+    because there is nothing foreign to clear. The LOCKED mask is deliberately
+    left alone: CapsLock and NumLock are not held modifiers on the kernel path
+    either (neither is in `keymap.MODIFIER_KEYCODES`), and one flag may not
+    mean two things.
+  - **one connection, one keyboard, for the daemon's life**: the compositor
+    releases whatever a client holds when it disconnects (`keydown y` from a
+    process that exits gave one `y` and no repeat), so a held key across two
+    commands only works inside one connection. Nothing survives a compositor
+    restart: the object, the uploaded keymap and the held keys all go. The
+    connection is checked (one `wl_display.sync`) before each command uses it,
+    so a restart costs the *hold* and not the command: the daemon reconnects,
+    re-creates, re-uploads, types, and says one line about the keys it can no
+    longer claim to hold. Measured across a real `pkill -x sway` and re-login:
+    the daemon survives, `keyup shift` afterwards is that one line, and the
+    next `type A` gives `A`. It did not before — the failing key-up had
+    already taken the key out of the object's own `held`, the drop trusted
+    that, and shift stayed down in the daemon's model for good, with every
+    later `type A` arriving as `a`.
+  - **a hold does not move between the two paths**, and `self.down` is one set
+    describing two devices, which is the trap: a key can only be released by
+    the device that pressed it, so forcing `--vkbd` differently between two
+    commands of one daemon releases what the other sink holds, on that sink,
+    and says so (`_own_sink()`). Before that, `--vkbd on keydown shift` then
+    `--vkbd off type A` typed `a` on a live sway session — the kernel path
+    found shift in `self.down`, believed it held, and pressed nothing — and
+    the virtual shift was stuck for the daemon's life. Modifier state is per
+    device in both directions, measured with two daemons at once: a
+    kernel-held shift does not reach protocol keys, our `modifiers(0,0,0,0)`
+    does not clear the kernel device's shift, and a CapsLock we lock applies
+    to our own keys alone.
+  - **same reach as uinput, including the lock screen**: measured, with
+    `swaylock` holding an `ext_session_lock_v1` — an *unprivileged* client
+    typed the account password and Return through the protocol and swaylock
+    unlocked, while the terminal underneath received nothing. Root through
+    uinput does exactly the same. Not a new hole (sway advertises the protocol
+    to every client of the socket, so anything that can open it could already
+    do this) — but worth saying out loud.
   - `wdotool __keymap` (hidden, like `__daemon`) dumps the compositor's keymap,
     `--info` summarises it and says whether the bypass takes it, `--chars STR`
     prints the keystrokes each character would need. The test fixtures in
