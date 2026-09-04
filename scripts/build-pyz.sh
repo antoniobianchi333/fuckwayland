@@ -38,7 +38,11 @@ build() { # name entry_module packages...
 }
 
 # wwmctl/wxprop ride with the packages they import (wdotool backends, x11_mini)
-build wdotool wdotool.cli wdotool
+# and wdotool rides with wwmctl.x11_mini, which backend_kwin uses to read the
+# X plane: the XWayland ids KWin 6 does not export, and the WM_CLASS pair
+# 5.27 lower-cases. Without it in the zipapp that import failed silently and
+# the shipped wdotool answered differently from a source checkout.
+build wdotool wdotool.cli wdotool wwmctl
 build wwmctl  wwmctl.cli  wdotool wwmctl
 build wxprop  wxprop.cli  wdotool wwmctl wxprop
 build wxrandr wxrandr.cli wdotool wxrandr
