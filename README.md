@@ -318,6 +318,27 @@ Two things are still on the honest list:
 $ WDOTOOL_XKB_GROUP=2 wdotool type 'Grüße'   # the second configured layout
 ```
 
+### Forcing the layout
+
+`--layout` says which character table the typing commands use, ahead of
+everything else. It goes before the command, and it is ours, not xdotool's:
+
+```console
+$ wdotool --layout us type 'hello'    # the built-in US table, no questions asked
+$ wdotool --layout xkb type 'Grüße'   # the compositor's keymap, even on US
+$ wdotool --layout auto type 'hello'  # the default: decide per session
+```
+
+`--layout us` is the one that promises something. It does not read the
+compositor's keymap and it does not run the "is this plain US?" check either,
+so **no layout code executes at all** — nothing in the keymap reader or the
+reverse map can affect that run. Use it when you know your keyboard is US and
+you would rather the tool did not look, or to rule the layout machinery out
+while diagnosing something else. `--layout fixed` is a synonym.
+
+The option beats the variables below, which matters because those are read by
+the daemon and a daemon may already be running with different ones.
+
 | variable | effect |
 |---|---|
 | `WDOTOOL_LAYOUT=auto` | the default: the compositor's keymap, unless it is plain US |

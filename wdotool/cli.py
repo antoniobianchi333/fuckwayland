@@ -275,7 +275,8 @@ def _script_line_tokens(line: str, argv: list[str], prog: str) -> list[str]:
     return tokens
 
 
-def script_main(argv: list[str], prog: str) -> int:
+def script_main(argv: list[str], prog: str,
+                layout_mode: str | None = None) -> int:
     """xdotool.c script_main: read commands from a file or stdin ("-"), expand
     $N/$ENV, and execute each line as a chain sharing one context. A failing
     line does not stop later lines; the last executed line's status wins."""
@@ -292,6 +293,7 @@ def script_main(argv: list[str], prog: str) -> int:
             sys.stderr.write("Failure opening '%s': %s\n" % (path, e.strerror))
             return 1
     ctx = Context()
+    ctx.layout_mode = layout_mode
     result = 0
     with f:
         for line in f:
@@ -322,6 +324,41 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write("%s\n" % e)
             return 1
 
+    # --layout: which character table the typing commands use, ahead of the
+    # WDOTOOL_LAYOUT environment variable. `us` is the one that promises
+    # something: the compositor's keymap is not read and the bypass check
+    # does not run, so no layout code executes at all. Ours, not xdotool's,
+    # so it is stripped here and never reaches a command's own parser or the
+    # parity-checked usage text.
+    layout_mode = None
+    rest = []
+    it = iter(range(1, len(argv)))
+    skip = False
+    for i in range(1, len(argv)):
+        if skip:
+            skip = False
+            continue
+        a = argv[i]
+        if a == "--layout":
+            if i + 1 >= len(argv):
+                sys.stderr.write("wdotool: --layout requires an argument "
+                                 "(us, auto or xkb)\n")
+                return 1
+            layout_mode = argv[i + 1]
+            skip = True
+            continue
+        if a.startswith("--layout="):
+            layout_mode = a.split("=", 1)[1]
+            continue
+        rest.append(a)
+    if layout_mode is not None:
+        layout_mode = layout_mode.strip().lower()
+        if layout_mode not in ("us", "fixed", "auto", "xkb"):
+            sys.stderr.write("wdotool: --layout: invalid argument %r; "
+                             "valid: us, auto, xkb\n" % layout_mode)
+            return 1
+        argv = argv[:1] + rest
+
     # Hidden diagnostic (B13): dump the compositor's keymap and what wdotool
     # makes of it. Ours, like __daemon: never a passthrough, never in `help`.
     if len(argv) > 1 and argv[1] == "__keymap":
@@ -347,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
         and not commands.is_command(argv[1])
         and (argv[1] == "-" or os.path.exists(argv[1]))
     ):
-        return script_main(argv, prog)
+        return script_main(argv, prog, layout_mode)
 
     if len(argv) < 2:
         sys.stderr.write(_USAGE % prog)
@@ -390,5 +427,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     ctx = Context()
+    ctx.layout_mode = layout_mode
     ret = run_chain(ctx, prog, argv[1:])
     return ret if ret else ctx.exit_code

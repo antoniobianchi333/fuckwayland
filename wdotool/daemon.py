@@ -566,7 +566,7 @@ class _Daemon:
         self._xkb_say(tag, msg)          # the log says it once ...
         self._xkb_warn_degraded(warnings)  # ... the client, every time
 
-    def _layout(self, warnings=None):
+    def _layout(self, warnings=None, forced=None):
         """The reverse map for the compositor's ACTIVE layout, or None when
         the fixed US table is the right answer (B13).
 
@@ -574,8 +574,14 @@ class _Daemon:
         compositor, an unreadable or unparsable keymap, a keymap with no
         typable character. The old path is the floor, never a traceback.
         """
-        mode = (os.environ.get("WDOTOOL_LAYOUT") or "auto").strip().lower()
+        # `forced` is the client's --layout, which outranks the environment:
+        # a command line is the more specific statement of intent, and it is
+        # the only one that can reach a daemon spawned with a different one.
+        mode = (forced or os.environ.get("WDOTOOL_LAYOUT")
+                or "auto").strip().lower()
         if mode in ("us", "fixed"):
+            # Nothing is read, nothing is parsed and the bypass check itself
+            # is skipped: --layout us is a promise that no layout code runs.
             return None
         force = mode == "xkb"
         now = time.monotonic()
@@ -828,13 +834,14 @@ class _Daemon:
         self._need_devices()
         self._restore_mods(held)
 
-    def op_key(self, spec, direction, delay_ms, clearmods, session=None):
+    def op_key(self, spec, direction, delay_ms, clearmods, session=None,
+               layout_mode=None):
         self._need_devices()
         warnings = []
         # Outside the clear/restore window: reading the compositor's keymap
         # is a query, and holding the modifiers released across it buys
         # nothing.
-        layout = self._layout(warnings)
+        layout = self._layout(warnings, layout_mode)
         # Restore even when the sequence is rejected or the injection fails:
         # the modifiers are already released by then.
         with self._mods_cleared(clearmods, warnings, session):
@@ -857,10 +864,11 @@ class _Daemon:
                 raise RuntimeError(f"invalid key direction {direction!r}")
         return warnings + warns
 
-    def op_type(self, text, delay_ms, clearmods, session=None):
+    def op_type(self, text, delay_ms, clearmods, session=None,
+                layout_mode=None):
         self._need_devices()
         warnings = []
-        layout = self._layout(warnings)   # a query: see op_key
+        layout = self._layout(warnings, layout_mode)   # a query: see op_key
         lname = "US" if layout is None else layout.name
         with self._mods_cleared(clearmods, warnings, session):
             # xdo_enter_text_window: delay split between down and up, down capped at 50ms
@@ -1204,12 +1212,17 @@ class DaemonClient:
             raise CmdError(resp.get("error", "wdotool daemon error"))
         return resp
 
-    def type_text(self, text: str, delay_ms: int, clearmods: bool = False):
-        self._rpc(op="type", text=text, delay_ms=delay_ms, clearmods=clearmods)
+    def type_text(self, text: str, delay_ms: int, clearmods: bool = False,
+                  layout_mode: str | None = None):
+        extra = {"layout_mode": layout_mode} if layout_mode else {}
+        self._rpc(op="type", text=text, delay_ms=delay_ms, clearmods=clearmods,
+                  **extra)
 
-    def key(self, spec: str, direction: str, delay_ms: int, clearmods: bool):
+    def key(self, spec: str, direction: str, delay_ms: int, clearmods: bool,
+            layout_mode: str | None = None):
+        extra = {"layout_mode": layout_mode} if layout_mode else {}
         self._rpc(op="key", spec=spec, direction=direction, delay_ms=delay_ms,
-                  clearmods=clearmods)
+                  clearmods=clearmods, **extra)
 
     def clear_modifiers(self) -> list:
         """Release the modifier keys and report which ones wdotool itself was

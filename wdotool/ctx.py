@@ -39,6 +39,10 @@ class Context:
         # Non-fatal failure marker (e.g. `search` with no results): the chain
         # continues/completes but the process exits with this code.
         self.exit_code = 0
+        # --layout (ours, not xdotool's): "us"/"fixed" forces the built-in US
+        # character table without reading the compositor's keymap at all,
+        # "xkb" forces the reverse map, None leaves the choice to detection.
+        self.layout_mode: str | None = None
 
     def backend(self):
         if self._backend is None:

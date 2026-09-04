@@ -454,6 +454,13 @@ Daemon notes (B):
     wait per command cost a plain US GNOME session +87ms on every keystroke
     until the condition was keyed off the event instead of off the group.
   - **overrides** (all read by the *daemon*, which keeps the environment it was
+    `--layout us|fixed|auto|xkb` (a global option of ours, stripped in
+    `cli.main` before dispatch so no command's parser and no parity-checked
+    usage text sees it; carried to the daemon on the `type`/`key` request as
+    `layout_mode`, because the daemon cannot see the client's environment).
+    It outranks the variables below. `--layout us` returns from `_layout()`
+    before any fetch or bypass check, which is the promise it makes.
+    Then the environment (read by the daemon, which keeps what it was
     spawned with): `WDOTOOL_LAYOUT=us` never reads a keymap at all,
     `WDOTOOL_LAYOUT=xkb` forces the reverse map even on a US layout,
     `WDOTOOL_XKB_KEYMAP=<file>` reads a keymap from a file (what the tests use),
