@@ -253,7 +253,7 @@ normally. `Context` (frozen, `ctx.py`) provides `stack`, `resolve_window(arg|Non
 
 - **Agent A (cli core)**: `cli.py`, `commands.py`, `misc_cmds.py`
 - **Agent B (input)**: `daemon.py`, `uinput.py`, `keymap.py`, `keysyms.py`, `xkbmap.py`,
-  `input_cmds.py`
+  `input_cmds.py`, `keys_cmds.py`, `keystate.py`
 - **Agent C (windows)**: `backend_detect.py`, `backend_sway.py`, `backend_wlr.py`,
   `backend_kwin.py`, `kwin_js.py`, `backend_gnome.py`, `window_cmds.py`,
   `desktop_cmds.py`
@@ -474,7 +474,72 @@ Daemon notes (B):
   - `wdotool __keymap` (hidden, like `__daemon`) dumps the compositor's keymap,
     `--info` summarises it and says whether the bypass takes it, `--chars STR`
     prints the keystrokes each character would need. The test fixtures in
-    `tests/fixtures/keymaps/` were captured with it.
+    `tests/fixtures/keymaps/` were captured with it. It **stays**: dumping the
+    raw keymap is a bug-report tool, not a user command, and the fixture
+    capture in `tests/fixtures/keymaps/README.md` is written in terms of it.
+- **`wdotool keys watch|explain` (`keys_cmds.py`)**: the same two tables
+  pointed at the user. `explain` is the documented front door that `__keymap
+  --chars` was the sketch of; `watch` is new.
+  - **Spelling.** One command, two modes — `keys watch` and `keys explain` —
+    routed in `cli.main()` next to `__daemon`/`__keymap`, **before** the X11
+    passthrough and **not** in `commands.REGISTRY`. Three reasons, all forced:
+    `help` is byte-compatible with the real xdotool's and prints the registry,
+    so a registered command would break `tests/test_cli_parity.py`; xdotool has
+    no `keys`, so there is nothing to hand a passthrough over to; and the
+    registry is also what script-mode detection consults, where — exactly as
+    for the 48 built-ins — a command name has to beat a file of the same name.
+    Nothing existing changes spelling or behaviour: `keys` is not a chainable
+    command (`wdotool sleep 0 keys watch` still says "Unknown command"), which
+    is the same deal `__keymap` has.
+  - **Two reproductions, always both.** A keycode replay (`wdotool key 108+21`,
+    X keycodes = evdev + 8) is exact and meaningless under any other layout; a
+    character form (`wdotool type 'ç'`) is portable and may press different
+    keys. Printing one would be a trap either way, so every line prints both.
+  - **Chord versus sequence** is watch mode's whole job. A *run* is the span
+    from "nothing held" to "nothing held". It is renderable as a chord only if
+    every press precedes every release, at most one non-modifier key is
+    involved, and that key is pressed last. Otherwise the literal
+    `keydown …/keyup …` sequence is printed with the reason — two keys held at
+    once, released out of order, a modifier pressed after the key — because a
+    chord would change what the application sees. Two consecutive runs whose
+    keysyms compose (a dead key, then a base letter) also get a `= dead pair`
+    line: that is the case that looks like a chord written down and is not.
+  - **Which key carried level three** is read from the *event*, not assumed:
+    the modifier tags come from the keysym the active keymap binds to the
+    keycode that was actually pressed (`<RALT>` on German, `<CAPS>` on Neo, a
+    dedicated `<LVL3>` elsewhere), and the header separately reports the key
+    wdotool itself would press, which is often a different one.
+  - **Privilege.** `watch` reads `/dev/input/event*`, which is `root:input`
+    with no ACL on every session measured (`keystate.py`) and which no udev
+    rule tags — this repo's rule tags `/dev/uinput`, the injecting half — so it
+    needs root, and says which case the machine is in (unreadable nodes, no
+    nodes, only ours) and exits 1 rather than failing obscurely. It never
+    `EVIOCGRAB`s: the compositor keeps every key and stopping leaves nothing
+    behind. `explain` needs **no** privilege and opens no device — the keymap
+    comes off `wl_keyboard.keymap` — and it obeys the typing path's layout
+    rules exactly (`Layout.load()` mirrors `daemon._layout`), so what it prints
+    is what `type` would send, US bypass included.
+  - **Our own devices** are excluded by the `wdotool ` device-name prefix
+    (`keystate.OWN_NAME_PREFIX`): the daemon's uinput nodes belong to another
+    process, so its fd-based `UI_GET_SYSNAME` exclusion is not available here
+    and the name is the reliable cross-process test. A concurrent injection is
+    therefore never recorded.
+  - **A live stream is not a recorded one.** Three shapes only a real session
+    produces, each of which used to print something wrong: a release with no
+    press (the Enter that started the command — it ended the session with an
+    `IndexError`, and is now a line of its own); several keyboards, whose
+    rounds are merged by the kernel timestamp so the seat's shared modifier
+    state renders as one chord instead of two runs in the wrong order; and a
+    keyboard unplugged holding a key, whose keys are released as the kernel
+    releases them, or the run never closes again and every later line carries
+    a modifier nobody holds. `EV_KEY` from `BTN_MISC` up is a button, not a
+    key, and has no X keycode to replay; the table skips it and `--raw` keeps
+    it. A keycode token is zero-padded when the number is also a keysym name
+    (`key 9` is the digit nine, `key 09` is Escape).
+  - Devices appearing and disappearing are handled on a 1 s rescan; a read that
+    answers `EAGAIN` is a spurious wakeup, not a lost keyboard. Ctrl-C exits 0.
+    `--count N` stops after N key events (scripting), `--raw` prints unfiltered
+    evdev lines. The table is stdout, everything else stderr.
 - **spawn hygiene (B10/B11)**: the double-forked grandchild closes every fd
   above stdio (it used to keep the client's session-D-Bus socket ESTABLISHED
   for its whole life), `chdir("/")`, keeps only the environment it needs

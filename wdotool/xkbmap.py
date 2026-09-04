@@ -220,7 +220,9 @@ _FIELD_RE = re.compile(r"^(\w+)\s*(?:\[\s*(?:Group)?(\d+)\s*\])?\s*=\s*(.*)$", r
 
 # level -> mask, when the key's type says nothing else. This is the
 # xkeyboard-config convention every layout follows: 3 is AltGr, 5 is level five.
-_LEVEL_MASK = {
+# Public: keys_cmds.py builds the *forward* map (keycode + mask -> keysym)
+# from the same convention, and a second copy of it would drift.
+LEVEL_MASK = {
     1: 0,
     2: MOD_SHIFT,
     3: MOD_LEVEL3,
@@ -764,7 +766,7 @@ def reverse(km: Keymap, group: int = 1) -> ReverseMap:
             if ks is None:
                 continue
             level = i + 1
-            mask = masks.get(level) if masks else _LEVEL_MASK.get(level)
+            mask = masks.get(level) if masks else LEVEL_MASK.get(level)
             if mask is None:
                 continue
             # A level we cannot press (no AltGr key in this layout) is a level

@@ -689,14 +689,132 @@ single command, so a long-running daemon follows a layout switch by itself.
 
 `wdotool __keymap` is a hidden diagnostic that prints what the compositor
 actually sent; `--info` summarises it (groups, active group, whether the US
-bypass takes it), and `--chars STRING` shows the keystrokes each character
-would need — from the built-in table when the bypass applies, since that is
-what wdotool will send.
+bypass takes it). For "what do I press for this character?" the documented
+command is `wdotool keys explain`, below.
 
 sway and KWin implement `zwp_virtual_keyboard_v1`, which would let wdotool
 upload a keymap of its own and skip the reverse lookup entirely on those two.
 That is a separate change and deliberately not part of this one: it needs a
 second injection path beside uinput, and it does nothing for GNOME.
+
+### Which key was that? — `wdotool keys`
+
+`wdotool keys` is the layout machinery pointed the other way: what to press
+for a character, or what you just pressed.
+
+```
+wdotool keys explain 'ç'   what to press, without touching the keyboard
+wdotool keys watch         one line per key event, as you type
+```
+
+`keys` is ours, not xdotool's. It is a standalone command rather than a link
+in a command chain, and it is not in `help` — that output stays byte-for-byte
+the real xdotool's.
+
+#### `explain` — no privilege, no devices
+
+The keymap arrives on `wl_keyboard.keymap`, which every Wayland client is
+handed, so `explain` needs no root and opens nothing under `/dev/input`. It
+follows the same layout rules as `type` (`WDOTOOL_LAYOUT`, `WDOTOOL_XKB_GROUP`,
+the US bypass), so what it prints is what `type` sends.
+
+```console
+$ wdotool keys explain 'ç'
+layout: German -- group 1 of 2 (assumed), from wayland
+level keys: shift = key 42 <LFSH>   level3 = key 100 <RALT>   level5 = key 195 <LVL5>   (what wdotool presses)
+'ç' -- 2 presses on German (a dead-key pair: two presses in order, not a chord)
+    1. press key 13 <AE12> with level3 (key 100 <RALT>, ISO_Level3_Shift) -> dead_cedilla
+    2. press key 46 <AB03> -> 'c'
+    wdotool key 108+21 key 54                  (keycodes)
+    wdotool type 'ç'                           (characters)
+```
+
+That is the awkward case in full: **a dead key that is itself on the third
+level**. `ç` on a German keyboard is AltGr held down across the `´` key, both
+let go of, and *then* `c` — two presses in order, not one chord, and which of
+the two it is changes the events completely. An argument that is a keysym name
+(`Return`, `EuroSign`) is taken as one; anything else is taken character by
+character, and `--chars`/`--keysym` say which explicitly. A character this
+layout cannot produce says so, names the layout, and makes the exit status 1.
+
+#### `watch` — needs root
+
+`watch` is the same question asked by pressing the key. It reads
+`/dev/input/event*`, which is `root:input` with no ACL on every desktop
+measured, and nothing tags it: the `uaccess` tag is one *this project's* udev
+rule puts on `/dev/uinput` (the injecting half, above), and no rule anywhere
+grants read on a keyboard. So watch mode needs root. Without it, it says which
+case this machine is in — nodes it may not read, no nodes at all, or only
+wdotool's own — and exits 1; it never grabs a device (`EVIOCGRAB`), so the
+compositor keeps seeing every key and stopping leaves nothing behind.
+
+```console
+# wdotool keys watch
+layout: German -- group 1 of 2 (assumed), from wayland
+level keys: shift = key 42 <LFSH>   level3 = key 100 <RALT>   level5 = key 195 <LVL5>   (what wdotool presses)
+watching 2 keyboards, ignoring 1 of our own; codes are evdev keycodes, the replay column uses X keycodes (evdev+8). Ctrl-C to stop.
+    TIME EV     CODE KEY      MODIFIERS       PRODUCES         REPLAY (keycodes)          CHARACTER (portable)
+   0.000 down   100 <RALT>   -               ISO_Level3_Shift wdotool keydown 108        wdotool keydown ISO_Level3_Shift
+   0.090 down    13 <AE12>   level3          dead_cedilla     wdotool key 108+21         wdotool key dead_cedilla
+   0.150 up      13 <AE12>   level3          dead_cedilla     wdotool keyup 21           wdotool keyup dead_acute
+   0.210 up     100 <RALT>   -               ISO_Level3_Shift wdotool keyup 108          wdotool keyup ISO_Level3_Shift
+= chord     | wdotool key 108+21 | wdotool key dead_cedilla
+   0.440 down    46 <AB03>   -               'c'              wdotool key 54             wdotool type 'c'
+   0.500 up      46 <AB03>   -               'c'              wdotool keyup 54           wdotool keyup c
+= chord     | wdotool key 54 | wdotool type 'c'
+= dead pair | wdotool key 108+21 key 54 | wdotool type 'ç' | two presses in order, not a chord
+```
+
+That is the same `ç`, typed rather than looked up — and the two presses are
+plainly two presses, because the `´` key is released before `c` is touched.
+
+* **Every event, press and release.** A chord holds a modifier down *across*
+  another key press; a dead-key pair is two presses in turn. Written down as
+  "AltGr, `´`, `c`" they look alike, so the ordering is printed rather than
+  summarised away.
+* **Which key actually carried level three.** `MODIFIERS` says `level3`; the
+  `CODE`/`KEY` columns say the key it came from. On German that is `<RALT>`;
+  on Neo it is `<CAPS>`, and on a board with a dedicated key it is that key.
+  Nothing is assumed — the header line separately reports which key *wdotool*
+  would press, which is not always the same one.
+* **Both reproductions on every line.** `REPLAY` is keycodes, exact and
+  meaningless under a different layout (and it is X keycodes, evdev + 8, which
+  is what `wdotool key` takes — zero-padded when the number would also read as
+  a keysym name, since `key 9` is the *digit* and `key 09` is Escape). `CHARACTER` is characters and keysym names,
+  which travel. A *release* line names its key by what it produces with no
+  modifier at all (`keyup dead_acute` for the key that gave `dead_cedilla`
+  while AltGr was down), because that is the plain way to say "let go of
+  that one key" and nothing else.
+* **A `=` line closes each run of held keys.** `= chord` when the run really
+  is one chord; `= sequence` with the literal down/up commands and the reason
+  when it is not — two keys held at once, released out of order, or a modifier
+  pressed after the key, all of which a chord would silently change. `= dead
+  pair` when two runs composed into one character.
+* **Our own devices are skipped**, by the `wdotool ` device-name prefix, so a
+  recording session does not capture a concurrent `wdotool type`.
+* **Several keyboards are one timeline.** Every keyboard on the seat is read
+  at once and each round is merged by the kernel's timestamps, because the
+  seat merges modifier state too: Shift held on the laptop's board really does
+  shift the key struck on the external one, and it is printed as the one chord
+  it is. A board unplugged while it still holds a key has that key released —
+  the kernel does the same for everyone else — so the run closes and nothing
+  afterwards is reported under a modifier nobody is holding.
+* **A release with no press** (the Enter that started the command is still
+  down when the device is opened) is printed as itself and labelled, not
+  guessed at.
+* **Buttons are not keys.** A combined keyboard+mouse sends both down one
+  node; the table is keys, and `--raw` is everything.
+
+Keyboards that appear or disappear while watching are picked up and dropped;
+Ctrl-C exits 0. The table goes to **stdout** and everything else to stderr, so
+`wdotool keys watch --count 4 > keys.log` is a usable recording.
+
+| option | |
+|---|---|
+| `--count N` | stop after N key events — for scripting |
+| `--raw` | unfiltered evdev event lines instead of the table (autorepeat, `EV_SYN`, every device) |
+| `--group N` | read group N of the keymap instead of the active one |
+| `--keymap FILE` | read the keymap from a file instead of the compositor |
 
 ### Session readiness and exit codes
 
