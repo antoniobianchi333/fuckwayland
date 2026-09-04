@@ -13,6 +13,7 @@ failure), and it can be told to fail at startup or to die later.
 """
 
 import contextlib
+import fcntl
 import io
 import os
 import shutil
@@ -226,6 +227,47 @@ class Reaping(Base):
         supervise.reap(recs)
         self.assertEqual(recs, {})
 
+    def test_a_zombie_helper_is_not_a_running_mirror(self):
+        """A process that has exited but has not been waited for keeps its
+        /proc directory, its owner and its start time, so every other test
+        here says it is alive. `--list` would print a mirror that had
+        stopped painting, and `--stop` would report stopping it."""
+        pid = os.fork()
+        if pid == 0:                                   # the "helper"
+            os._exit(0)
+        self.addCleanup(self._reap, pid)
+        for _ in range(200):
+            if supervise._zombie(pid):
+                break
+            time.sleep(0.01)
+        start = supervise.proc_starttime(pid)
+        self.assertTrue(supervise._zombie(pid), "no zombie to test with")
+        self.assertIsNotNone(start)                    # /proc still has it
+        self.assertEqual(os.stat("/proc/%d" % pid).st_uid, os.geteuid())
+        self.assertFalse(supervise.alive(pid, start, core.HELPER))
+
+    def test_a_record_whose_helper_is_a_zombie_is_reaped(self):
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        self.addCleanup(self._reap, pid)
+        for _ in range(200):
+            if supervise._zombie(pid):
+                break
+            time.sleep(0.01)
+        recs = {"B": {"source": "A", "helper_pid": pid,
+                      "helper_start": supervise.proc_starttime(pid)}}
+        self.assertEqual(supervise.liveness(recs["B"]), (False, False))
+        self.assertTrue(supervise.reap(recs))
+        self.assertEqual(recs, {})
+
+    @staticmethod
+    def _reap(pid):
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+
     @unittest.skipIf(os.geteuid() == 0, "runs as root: everything is ours")
     def test_a_process_that_is_not_ours_is_never_signalled(self):
         """The uid guard from gamma.stop_holder: a state file is a cache,
@@ -234,6 +276,42 @@ class Reaping(Base):
         self.assertFalse(supervise.alive(1, "?", core.HELPER))
         self.assertFalse(supervise.stop_record(
             {"helper_pid": 1, "helper_start": "?"}))
+
+
+class Diagnosis(unittest.TestCase):
+    """What a start says when the helper is gone before the window is out.
+
+    wl-mirror prints `error:` lines while it works -- measured on the rig, a
+    mirror that ran for minutes and matched its source pixel for pixel
+    printed `error: mirror-screencopy::on_dmabuf_allocated(): failed to
+    allocate dmabuf` and fell back to shm. Reporting a helper's death in
+    the words of an error it survived is a confident wrong answer."""
+
+    CHATTER = ["libEGL warning: DRI2: failed to authenticate",
+               "error: mirror-screencopy::on_dmabuf_allocated(): "
+               "failed to allocate dmabuf",
+               "warning: falling back to shm capture"]
+
+    def test_its_own_fatal_line_is_the_verdict(self):
+        self.assertEqual(
+            supervise._diagnosis(
+                self.CHATTER
+                + ["error: options::find_output(): output NOPE not found"],
+                1),
+            "error: options::find_output(): output NOPE not found")
+
+    def test_the_chatter_it_survives_is_never_the_verdict(self):
+        said = supervise._diagnosis(self.CHATTER, 1)
+        self.assertNotIn("dmabuf", said)
+        self.assertIn("exited with status 1", said)
+
+    def test_a_signal_is_named_rather_than_a_negative_number(self):
+        said = supervise._diagnosis(self.CHATTER, -11)
+        self.assertIn("SIGSEGV", said)
+        self.assertNotIn("dmabuf", said)
+
+    def test_a_helper_that_said_nothing_at_all(self):
+        self.assertIn("exited with status 3", supervise._diagnosis([], 3))
 
 
 class Watching(Base):
@@ -274,7 +352,7 @@ class Watching(Base):
                 "transform": 0, "scale": 1.0, "current": 1,
                 "modes": [{"id": 1, "w": w, "h": 1080}]}
 
-    def supervise_in_thread(self, watch, life="30"):
+    def supervise_in_thread(self, watch, life="30", **kw):
         with mock.patch.dict(os.environ, {"WMIRROR_STUB_LIFE": life}):
             proc = subprocess.Popen([self.stub, "x"],
                                     stdout=subprocess.DEVNULL,
@@ -284,7 +362,7 @@ class Watching(Base):
         self.addCleanup(proc.stderr.close)
         t = threading.Thread(
             target=lambda: (supervise._supervise(
-                proc, None, "A", "B", "sock"), done.set()),
+                proc, None, "A", "B", "sock", **kw), done.set()),
             daemon=True)
         # cleanup is LIFO: end the helper first, which ends the loop, then
         # join the thread
@@ -347,6 +425,23 @@ class Watching(Base):
         proc, done, t = self.supervise_in_thread(watch, life="0.4")
         self.assertTrue(done.wait(3))
 
+    def test_the_source_moving_ends_a_region_mirror(self):
+        """wl-mirror resolves a layout rectangle against the source once,
+        when it starts, and then clamps in silence. A start refuses a
+        region that does not fit its source; the layout must not be able to
+        arrange that afterwards behind the mirror's back."""
+        watch = self.FakeWatch([self.head("A"), self.head("B", x=1920)])
+        proc, done, t = self.supervise_in_thread(
+            watch, region=(100, 100, 500, 300), src_rect=(0, 0, 1920, 1080))
+        watch.change([self.head("A", x=3840), self.head("B", x=1920)])
+        self.assertTrue(done.wait(3))
+
+    def test_the_same_move_leaves_a_whole_output_mirror_alone(self):
+        watch = self.FakeWatch([self.head("A"), self.head("B", x=1920)])
+        proc, done, t = self.supervise_in_thread(watch)
+        watch.change([self.head("A", x=3840), self.head("B", x=1920)])
+        self.assertFalse(done.wait(1.5))
+
 
 class HelperEnvironment(Base):
     """wmirror runs from a hotkey, from `sudo` and from `ssh root@box` with
@@ -373,9 +468,9 @@ class HelperEnvironment(Base):
             self.assertIn("wayland=/run/user/4242/wayland-9", f.read())
 
 
-class Commands(Base):
-    """The same transitions through the command line, with the compositor
-    faked out but real processes underneath."""
+class FakeCompositor:
+    """cli.main() with the compositor faked out and real processes
+    underneath. Not a TestCase: mixed into the ones below."""
 
     def outputs(self):
         return [core.Output("A", True, 0, 0, 1920, 1080),
@@ -399,6 +494,9 @@ class Commands(Base):
         for rec in recs.values():
             self.started.append(rec)
         return recs
+
+class Commands(FakeCompositor, Base):
+    """The transitions through the command line."""
 
     def test_start_list_stop(self):
         rc, o, e = self.invoke(["A", "--to", "B"])
@@ -467,6 +565,171 @@ class Commands(Base):
                 "--fullscreen-output B --scaling cover "
                 "--region 100,100 500x300 A")
         self.assertIn("region 500x300+100+100", self.invoke(["--list"])[1])
+
+
+class Serialising(FakeCompositor, Base):
+    """Two wmirrors at once.
+
+    The state file is the only trace a mirror leaves -- wl-mirror is
+    invisible to output management -- so a write that loses a record leaves
+    a helper fullscreen on somebody's screen that `--list` cannot see and
+    `--stop` cannot end. Measured before the lock existed: two starts on
+    one target, two helpers, one record, one orphan."""
+
+    def _record_of_something_running(self):
+        """A record that survives a reap: our own pid as the supervisor,
+        a real stub as the helper."""
+        helper = subprocess.Popen([self.stub, "x"],
+                                  stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
+        self.addCleanup(helper.wait)
+        self.addCleanup(helper.kill)
+        return {"source": "A", "target": "B", "scaling": "fit",
+                "region": None,
+                "pid": os.getpid(),
+                "start": supervise.proc_starttime(os.getpid()),
+                "helper_pid": helper.pid,
+                "helper_start": supervise.proc_starttime(helper.pid)}
+
+    def test_a_start_waits_for_the_one_in_flight_and_then_sees_it(self):
+        """Without the lock both starts read an empty file, both spawn a
+        helper, and the second write drops the first record."""
+        rec = self._record_of_something_running()
+        pid = os.fork()
+        if pid == 0:                       # the wmirror already in flight
+            try:
+                with core.state_lock():
+                    time.sleep(0.5)        # ...still starting its helper
+                    state = core.load_state()
+                    core.records(state)["B"] = rec
+                    state.save()
+            finally:
+                os._exit(0)
+        self.addCleanup(self._reap, pid)
+        time.sleep(0.1)
+        began = time.monotonic()
+        with mock.patch.object(supervise, "start") as start:
+            rc, o, e = self.invoke(["A", "--to", "B"])
+        waited = time.monotonic() - began
+        self.assertEqual(rc, 1)
+        self.assertIn("already mirroring", e)
+        start.assert_not_called()
+        self.assertGreater(waited, 0.3, "did not wait for the lock")
+
+    def test_a_killed_start_does_not_leave_the_lock_to_the_mirror(self):
+        """The lock is a POSIX record lock, which belongs to the process,
+        so the supervisor we fork does not carry it. With flock the lock
+        lives in the open file description the supervisor inherits: kill a
+        start before it can unlock and every later wmirror would wait out
+        the whole timeout (both measured)."""
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid == 0:                       # a start that holds the lock
+            os.close(r)
+            try:
+                with core.state_lock():
+                    grand = os.fork()      # ...and forks its supervisor
+                    if grand == 0:
+                        os.close(w)
+                        time.sleep(5)
+                        os._exit(0)
+                    os.write(w, str(grand).encode() + b"\n")
+                    time.sleep(5)
+            finally:
+                os._exit(0)
+        os.close(w)
+        supervisor = int(os.read(r, 32))   # named once the lock is held
+        os.close(r)
+        self.addCleanup(self._kill, supervisor)
+        os.kill(pid, signal.SIGKILL)       # killed before it can unlock
+        self._reap(pid)
+        began = time.monotonic()
+        with core.state_lock():
+            waited = time.monotonic() - began
+        self.assertLess(waited, 1.0,
+                        "the lock outlived the command that took it")
+
+    def _lock_is_free(self):
+        """Can another process take the start lock right now?"""
+        pid = os.fork()
+        if pid == 0:
+            code = 2
+            try:
+                fd = os.open(core.lock_path(),
+                             os.O_CREAT | os.O_RDWR, 0o600)
+                try:
+                    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    code = 0
+                except OSError:
+                    code = 1
+            except OSError:
+                pass
+            os._exit(code)
+        return os.waitpid(pid, 0)[1] == 0
+
+    def test_saving_the_state_does_not_drop_the_start_lock(self):
+        """Closing any fd to a file drops that process's POSIX locks on it,
+        and State.save opens and closes its own lock file on every write --
+        so the two locks must not live on the same file."""
+        self.assertNotEqual(core.lock_path(), core.state_path() + ".lock")
+        with core.state_lock():
+            self.assertFalse(self._lock_is_free())
+            state = core.load_state()
+            core.records(state)["B"] = {"source": "A"}
+            state.save()                   # opens and closes ITS lock file
+            self.assertFalse(self._lock_is_free(),
+                             "State.save's lock file dropped ours")
+        self.assertTrue(self._lock_is_free())
+
+    def test_a_start_interrupted_mid_flight_is_still_stoppable(self):
+        """Ctrl-C in the second a start blocks for. The supervisor names
+        itself before it can fail, so the record exists -- it just has to
+        reach the file, or the mirror is one nobody can end."""
+        real = supervise.start
+
+        def interrupted(*a, **kw):
+            real(*a, **kw)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(supervise, "start", interrupted):
+            rc, o, e = self.invoke(["A", "--to", "B"])
+        self.assertEqual(rc, 130)
+        recs = self.live()
+        self.assertIn("B", recs)
+        helper = recs["B"]["helper_pid"]
+        self.assertEqual(self.invoke(["--stop", "B"])[0], 0)
+        self.assertTrue(gone(helper))
+
+    def test_a_start_that_cannot_be_written_down_is_stopped_again(self):
+        """An unwritable state file is not a reason to leave a mirror
+        painting with nothing able to find it."""
+        seen = []
+
+        def unwritable(target, rec):
+            seen.append(dict(rec))
+            return False
+
+        with mock.patch.object(core, "recorded", unwritable):
+            rc, o, e = self.invoke(["A", "--to", "B"])
+        self.assertEqual(rc, 1)
+        self.assertIn("could not write it down", e)
+        self.assertTrue(gone(seen[0]["helper_pid"]))
+        self.assertTrue(gone(seen[0]["pid"]))
+        self.assertEqual(self.invoke(["--list"])[1], "")
+
+    @staticmethod
+    def _reap(pid):
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _kill(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

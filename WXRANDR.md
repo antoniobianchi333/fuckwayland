@@ -204,7 +204,8 @@ reasons it stays out of `wxrandr`: no `xrandr` syntax expresses "mirror this
 rectangle onto that one", so it could not be spelled in a command line or in
 a saved layout script that has to keep running on a plain X11 box; a shared
 rectangle is the one geometry in which the helper would capture its own
-window (a fullscreen window on the target is drawn on the source too), so
+window (a fullscreen window on the target is drawn on the source too --
+measured directly, both heads went entirely black, every pixel), so
 `--same-as` cannot host it; and it leaves a resident process that stops the
 compositor ever idling, which is not what a layout tool should leave behind.
 On GNOME and KDE there is still no route worth having: the only capture path

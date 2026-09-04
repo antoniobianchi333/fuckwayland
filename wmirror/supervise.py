@@ -73,6 +73,30 @@ def _comm(pid: int):
         return None
 
 
+def _zombie(pid: int) -> bool:
+    """Has that process already exited, with only its exit status left?
+
+    /proc still has the directory, the uid and the start time of a zombie,
+    so every other test here says it is alive -- and `--list` would print a
+    mirror whose wl-mirror had exited, `--stop` would report stopping it.
+    The state letter is the only thing that tells them apart."""
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            data = f.read()
+    except OSError:
+        return False
+    try:                    # comm is parenthesised and may contain spaces
+        return data.rsplit(")", 1)[1].split()[0] == "Z"
+    except IndexError:
+        return False
+
+
+#: `--list` and `--stop` find our own supervisor by name only when the
+#: record has no start time. It is a python process from a clone or a pyz,
+#: and `wmirror` from a pip console script.
+SUPERVISOR_COMM = ("python", "wmirror")
+
+
 def alive(pid, start, comm_hint=None) -> bool:
     """Is that exact process still running?
 
@@ -87,10 +111,14 @@ def alive(pid, start, comm_hint=None) -> bool:
     cur = proc_starttime(pid)
     if cur is None:
         return False
+    if _zombie(pid):
+        return False
     if start and start != "?":
         return cur == start
     comm = _comm(pid)
-    return bool(comm and comm_hint and comm_hint.lower() in comm.lower())
+    hints = ((comm_hint,) if isinstance(comm_hint, str)
+             else tuple(comm_hint or ()))
+    return bool(comm and any(h.lower() in comm.lower() for h in hints))
 
 
 def _kill(pid: int, start) -> bool:
@@ -113,7 +141,7 @@ def _kill(pid: int, start) -> bool:
 
 def liveness(rec: dict) -> tuple:
     """(supervisor alive, helper alive) for one record."""
-    return (alive(rec.get("pid"), rec.get("start"), "python"),
+    return (alive(rec.get("pid"), rec.get("start"), SUPERVISOR_COMM),
             alive(rec.get("helper_pid"), rec.get("helper_start"),
                   core.HELPER))
 
@@ -148,7 +176,7 @@ def stop_record(rec: dict) -> bool:
     waits), then the helper directly, in case the supervisor was killed
     before it could. True if anything was actually running."""
     killed = False
-    if alive(rec.get("pid"), rec.get("start"), "python"):
+    if alive(rec.get("pid"), rec.get("start"), SUPERVISOR_COMM):
         killed = _kill(rec["pid"], rec.get("start")) or killed
     if alive(rec.get("helper_pid"), rec.get("helper_start"), core.HELPER):
         killed = _kill(rec["helper_pid"], rec.get("helper_start")) or killed
@@ -158,7 +186,8 @@ def stop_record(rec: dict) -> bool:
 # -- starting -----------------------------------------------------------------
 
 def start(recs: dict, source: str, target: str, argv: list, region=None,
-          scaling: str = core.DEFAULT_SCALING, wayland_socket=None):
+          scaling: str = core.DEFAULT_SCALING, wayland_socket=None,
+          src_rect=None):
     """Spawn the detached supervisor for one mirror.
 
     Writes the record into `recs` as soon as the supervisor names itself --
@@ -179,7 +208,8 @@ def start(recs: dict, source: str, target: str, argv: list, region=None,
             os.dup2(devnull, 2)
             os.close(devnull)
             supervisor_main(argv, source, target, status_fd=w,
-                            wayland_socket=wayland_socket)
+                            wayland_socket=wayland_socket, region=region,
+                            src_rect=src_rect)
         finally:
             os._exit(0)
     os.close(w)
@@ -242,22 +272,48 @@ def _on_term(signum, frame):
     raise SystemExit(0)
 
 
+#: `error:` lines wl-mirror prints while it is working perfectly. Measured
+#: on the rig: a mirror that ran for minutes, and was pixel-checked, printed
+#: `error: mirror-screencopy::on_dmabuf_allocated(): failed to allocate
+#: dmabuf` and then fell back to shm. Blaming one of these for an exit turns
+#: "it crashed, here is why" into a confident wrong answer.
+BENIGN_ERROR = ("dmabuf", "libegl", "libgl", "mesa", "dri2", "dri3")
+
+
+def _benign(line: str) -> bool:
+    low = line.lower()
+    return any(word in low for word in BENIGN_ERROR)
+
+
+def _exit_words(rc) -> str:
+    """How the helper ended, when it did not say so itself."""
+    if isinstance(rc, int) and rc < 0:
+        try:
+            name = signal.Signals(-rc).name
+        except ValueError:
+            name = "signal %d" % -rc
+        return "%s was killed by %s" % (core.HELPER, name)
+    return "%s exited with status %s" % (core.HELPER, rc)
+
+
 def _diagnosis(tail: list, rc) -> str:
     """What to blame when wl-mirror exits during the startup window.
 
-    Its own `error:` line if it printed one. Nothing here reads stderr as
-    failure on its own: libEGL prints both `warning:` and `error:` lines
-    there while wl-mirror works perfectly, so these lines are only ever
-    consulted for a process that has actually exited, and wl-mirror's own
-    format (`error: options::find_output(): ...`) is preferred over anything
-    else that merely contains the word."""
-    for line in reversed(tail):
-        if line.strip().startswith("error:"):
-            return line.strip()
-    for line in reversed(tail):
-        if "error" in line.lower():
-            return line.strip()
-    return "%s exited with status %s" % (core.HELPER, rc)
+    Its own `error:` line if it printed a fatal one. Nothing here reads
+    stderr as failure on its own: libEGL prints both `warning:` and `error:`
+    lines there while wl-mirror works perfectly, so these lines are only
+    ever consulted for a process that has actually exited -- and even then
+    the chatter is skipped, because a helper that dies for some other reason
+    (a signal, an exit with nothing said) must not be reported in the words
+    of an error it survived."""
+    lines = [line.strip() for line in tail if line.strip()]
+    for want_prefix in (True, False):
+        for line in reversed(lines):
+            hit = (line.startswith("error:") if want_prefix
+                   else "error" in line.lower())
+            if hit and not _benign(line):
+                return line
+    return _exit_words(rc)
 
 
 class _Stderr:
@@ -310,7 +366,7 @@ class _Stderr:
 
 
 def supervisor_main(argv: list, source: str, target: str, status_fd=None,
-                    wayland_socket=None) -> int:
+                    wayland_socket=None, region=None, src_rect=None) -> int:
     """Run wl-mirror, report the start, then own it until it must end."""
 
     def emit(msg: str, close: bool = False):
@@ -347,7 +403,8 @@ def supervisor_main(argv: list, source: str, target: str, status_fd=None,
                 return 1
             time.sleep(0.02)
         emit("ok", close=True)
-        _supervise(proc, stderr, source, target, wayland_socket)
+        _supervise(proc, stderr, source, target, wayland_socket,
+                   region=region, src_rect=src_rect)
     finally:
         _stop_child(proc)
         stderr.close()
@@ -398,7 +455,8 @@ def _open_watch(wayland_socket):
         return None
 
 
-def _supervise(proc, stderr, source, target, wayland_socket):
+def _supervise(proc, stderr, source, target, wayland_socket, region=None,
+               src_rect=None):
     """Until the helper dies, an output change makes the mirror impossible,
     or the compositor goes away."""
     wlr = _open_watch(wayland_socket)
@@ -418,7 +476,8 @@ def _supervise(proc, stderr, source, target, wayland_socket):
                 if wlr.serial != serial:
                     serial = wlr.serial
                     if core.watch_reason(core.outputs_from_heads(wlr),
-                                         source, target):
+                                         source, target, region=region,
+                                         src_rect=src_rect):
                         return
         else:
             time.sleep(POLL_SECONDS)

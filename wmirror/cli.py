@@ -92,37 +92,47 @@ def _state():
 
 
 def _cmd_list() -> int:
-    state, recs, changed = _state()
-    if changed:
-        state.save()
-    for target in sorted(recs):
-        _out(core.fmt_record(target, recs[target]))
+    # under the lock like every other command that may write: a reap that
+    # dropped a record a concurrent start had just replaced would take the
+    # new mirror out of the file and leave it running, unfindable.
+    with core.state_lock():
+        state, recs, changed = _state()
+        if changed:
+            state.save()
+        lines = [core.fmt_record(t, recs[t]) for t in sorted(recs)]
+    for line in lines:
+        _out(line)
     return 0
 
 
 def _cmd_stop(target: str) -> int:
-    state, recs, changed = _state()
-    rec = recs.pop(target, None)
-    if changed or rec is not None:
-        state.save()
-    if rec is None:
-        _err(["no mirror is running on %s" % target,
-              "`wmirror --list` shows the ones that are"])
-        return 1
-    supervise.stop_record(rec)
+    with core.state_lock():
+        state, recs, changed = _state()
+        rec = recs.pop(target, None)
+        if changed or rec is not None:
+            state.save()
+        if rec is None:
+            _err(["no mirror is running on %s" % target,
+                  "`wmirror --list` shows the ones that are"])
+            return 1
+        supervise.stop_record(rec)
     _out("stopped  %s" % core.fmt_record(target, rec))
     return 0
 
 
 def _cmd_stop_all() -> int:
-    state, recs, changed = _state()
-    for target in sorted(recs):
-        rec = recs[target]
-        supervise.stop_record(rec)
-        _out("stopped  %s" % core.fmt_record(target, rec))
-    if recs or changed:
-        recs.clear()
-        state.save()
+    with core.state_lock():
+        state, recs, changed = _state()
+        stopped = []
+        for target in sorted(recs):
+            rec = recs[target]
+            supervise.stop_record(rec)
+            stopped.append(core.fmt_record(target, rec))
+        if recs or changed:
+            recs.clear()
+            state.save()
+    for line in stopped:
+        _out("stopped  %s" % line)
     return 0
 
 
@@ -186,6 +196,11 @@ def _cmd_start(args) -> int:
 
     helper = core.find_helper()
     if helper is None:
+        # on an X11 box the missing binary is not the point: there is no
+        # wl-mirror for X11 and never will be, and `xrandr --same-as` is the
+        # answer. Say what is missing only where installing it would help.
+        if session.find_wayland_socket() is None:
+            raise core.Refusal(core.no_session_lines())
         raise core.Refusal(core.missing_helper_lines())
 
     conn = core.open_conn()
@@ -195,6 +210,17 @@ def _cmd_start(args) -> int:
     finally:
         conn.close()
 
+    with core.state_lock():
+        return _start_locked(args, source, target, region, outputs, helper)
+
+
+def _start_locked(args, source, target, region, outputs, helper) -> int:
+    """Decide and start with the records held still.
+
+    The lock spans read-decide-start-write because every part of it reads
+    the file: two starts that both read it empty would both spawn a helper,
+    and the second write would drop the first record -- leaving a wl-mirror
+    fullscreen on the target that nothing here could find or stop."""
     state, recs, changed = _state()
     # --replace must not be destructive on a refusal: decide FIRST, with the
     # record it would replace out of the way, and only then stop it.
@@ -218,14 +244,30 @@ def _cmd_start(args) -> int:
         supervise.stop_record(recs.pop(target))
 
     hit = session.find_wayland_socket()
-    err = supervise.start(recs, source, target, argv, region=region,
-                          scaling=args.scaling,
-                          wayland_socket=hit[2] if hit else None)
-    state.save()
+    src = core.by_name(outputs, source)
+    try:
+        err = supervise.start(recs, source, target, argv, region=region,
+                              scaling=args.scaling,
+                              wayland_socket=hit[2] if hit else None,
+                              src_rect=src.rect if src else None)
+    finally:
+        # even a Ctrl-C in the second this blocks for must leave the mirror
+        # written down: the supervisor names itself before it can fail, and
+        # an unrecorded helper is one nobody can stop.
+        state.save()
     if err:
         _err(err)
         return 1
-    _out(core.fmt_record(target, recs[target]))
+    rec = recs[target]
+    if not core.recorded(target, rec):
+        supervise.stop_record(rec)
+        recs.pop(target, None)
+        state.save()
+        _err(["started %s but could not write it down in %s"
+              % (core.HELPER, core.state_path()),
+              "stopped it again rather than leave a mirror nothing can end"])
+        return 1
+    _out(core.fmt_record(target, rec))
     return 0
 
 

@@ -18,11 +18,14 @@ all, so wmirror refuses that case by name and points at `wxrandr --same-as`.
 wmirror never changes an output. It starts a client window and watches it.
 """
 
+import contextlib
 import dataclasses
+import fcntl
 import os
 import re
 import shutil
 import subprocess
+import time
 
 from wdotool import session
 from wxrandr import core as wxcore
@@ -364,9 +367,18 @@ def decide(outputs, source: str, target: str, region=None,
     return Decision(RUN)
 
 
-def watch_reason(outputs, source: str, target: str):
+def watch_reason(outputs, source: str, target: str, region=None,
+                 src_rect=None):
     """Why a running mirror must stop, or None. Evaluated by the supervisor
-    on every output change the compositor announces."""
+    on every output change the compositor announces.
+
+    The region rules are the start-time refusal, applied for as long as the
+    mirror lives. A region is a rectangle of the LAYOUT, resolved against
+    the source once, when wl-mirror starts: move or resize that output
+    afterwards and the same rectangle names different pixels, or pixels that
+    are no longer there at all -- and wl-mirror says nothing, it clamps. A
+    mirror that refuses to start on a region outside its source must not
+    keep running when the layout puts it there."""
     src = by_name(outputs, source)
     dst = by_name(outputs, target)
     if src is None:
@@ -380,7 +392,22 @@ def watch_reason(outputs, source: str, target: str):
     if rects_overlap(src, dst):
         return ("%s and %s now share pixels; the mirror would capture "
                 "itself" % (source, target))
+    if region is not None:
+        if src_rect is not None and tuple(src_rect) != src.rect:
+            return ("%s moved or changed size (%dx%d+%d+%d -> %s); the "
+                    "region %s no longer names the pixels this mirror was "
+                    "started on"
+                    % ((source,) + _rect_wh(src_rect) + (src.geom(),
+                                                         fmt_region(region))))
+        if not rect_inside(region, src):
+            return ("the region %s is no longer inside %s (%s)"
+                    % (fmt_region(region), source, src.geom()))
     return None
+
+
+def _rect_wh(rect) -> tuple:
+    x, y, w, h = rect
+    return (w, h, x, y)
 
 
 # -- state --------------------------------------------------------------------
@@ -393,6 +420,63 @@ def state_path() -> str:
     if rd and os.path.isdir(rd):
         return os.path.join(rd, "wmirror-state.json")
     return "/tmp/wmirror-state-%d.json" % os.getuid()
+
+
+#: How long a command waits for another wmirror to finish before going
+#: ahead without the lock. A start holds it for about a second.
+LOCK_SECONDS = 8.0
+
+
+def lock_path() -> str:
+    return state_path() + ".start.lock"
+
+
+@contextlib.contextmanager
+def state_lock(timeout: float = LOCK_SECONDS):
+    """Serialise the commands that CHANGE the records, for the whole of
+    read-decide-start-write.
+
+    Without it two starts on one target both read an empty file, both spawn
+    a helper, and the second write drops the first record -- leaving a
+    wl-mirror fullscreen on somebody's screen that `--list` cannot see and
+    `--stop` cannot end (measured: two interleaved starts, two helpers, one
+    record). `State.save`'s own lock cannot close that window: it is taken
+    after the helper already exists.
+
+    `fcntl.lockf`, not `flock`, and on a file of its own. A POSIX record
+    lock belongs to the process, so the supervisor we fork does NOT inherit
+    it -- with flock the mirror would hold the lock for its whole life
+    whenever an exception skipped the unlock (measured both ways). The file
+    is its own because closing any fd to a file drops that process's POSIX
+    locks on it, and `State.save` opens and closes its lock file on every
+    write.
+
+    A lock we cannot get is not a reason to refuse: after `timeout` we go
+    ahead unlocked, exactly as State does when locking is unavailable."""
+    fd = None
+    try:
+        fd = os.open(lock_path(),
+                     os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+    except OSError:
+        fd = None
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
 
 
 def load_state():
@@ -412,6 +496,22 @@ def records(state) -> dict:
     if not isinstance(d, dict):
         d = state.d["mirrors"] = {}
     return d
+
+
+def recorded(target: str, rec: dict) -> bool:
+    """Is that record really on disk?
+
+    The one thing a start must not do is leave a helper nobody can find. If
+    the file could not be written -- a full or read-only XDG_RUNTIME_DIR,
+    State's own refusal to trust what it found there -- the mirror is
+    stopped again rather than left painting with no way to end it."""
+    try:
+        on_disk = records(load_state()).get(target)
+    except Exception:
+        return False
+    return (isinstance(on_disk, dict)
+            and on_disk.get("pid") == rec.get("pid")
+            and on_disk.get("helper_pid") == rec.get("helper_pid"))
 
 
 def fmt_record(target: str, rec: dict) -> str:

@@ -19,6 +19,8 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from wdotool import passthrough                                  # noqa: E402
+from wdotool import session                                      # noqa: E402
 from wmirror import cli, core                                    # noqa: E402
 from wmirror import supervise                                    # noqa: E402
 
@@ -31,13 +33,22 @@ def out(name, enabled=True, x=0, y=0, w=1920, h=1080):
     return core.Output(name=name, enabled=enabled, x=x, y=y, w=w, h=h)
 
 
-def run(argv, outputs=None, helper="/usr/bin/wl-mirror", capture=True):
-    """cli.main() with the compositor faked out. -> (rc, stdout, stderr)."""
+SOCKET = "/run/user/1000/wayland-0"
+
+
+def run(argv, outputs=None, helper="/usr/bin/wl-mirror", capture=True,
+        wayland=SOCKET):
+    """cli.main() with the compositor faked out. -> (rc, stdout, stderr).
+
+    `wayland=None` is a session with no wayland socket at all -- an X11
+    login, where what is missing is not a package."""
     conn = mock.Mock()
+    hit = (1000, "user", wayland) if wayland else None
     patches = [
         mock.patch.object(core, "open_conn", return_value=conn),
         mock.patch.object(core, "read_outputs", return_value=outputs or []),
         mock.patch.object(core, "find_helper", return_value=helper),
+        mock.patch.object(session, "find_wayland_socket", return_value=hit),
     ]
     if capture:
         patches.append(mock.patch.object(
@@ -264,6 +275,45 @@ class Watch(Base):
         self.assertIn("capture", core.watch_reason(
             [out("A"), out("B", x=100)], "A", "B"))
 
+    def test_a_whole_output_mirror_follows_its_source_anywhere(self):
+        """Moving the source is not a reason to end a mirror OF the source:
+        the picture is still the picture that was asked for."""
+        self.assertIsNone(core.watch_reason(
+            [out("A", x=3840), out("B", x=1920)], "A", "B"))
+
+    def test_the_source_moving_ends_a_region_mirror(self):
+        """A region is a rectangle of the LAYOUT, resolved against the
+        source once, when wl-mirror starts. Move that output afterwards and
+        the same rectangle is a different picture -- and wl-mirror says
+        nothing about it, which is why the start refuses a region that does
+        not fit. The promise has to hold for as long as the mirror does."""
+        why = core.watch_reason([out("A", x=3840), out("B", x=1920)],
+                                "A", "B", region=(100, 100, 500, 300),
+                                src_rect=(0, 0, 1920, 1080))
+        self.assertIn("moved or changed size", why)
+        self.assertIn("500x300+100+100", why)
+
+    def test_the_source_shrinking_under_a_region_ends_it(self):
+        """The same rectangle, now off the end of a smaller source: what
+        wl-mirror would do here is clamp, silently."""
+        why = core.watch_reason([out("A", w=400, h=300), out("B", x=1920)],
+                                "A", "B", region=(100, 100, 500, 300),
+                                src_rect=(0, 0, 400, 300))
+        self.assertIn("no longer inside A", why)
+        self.assertIn("400x300+0+0", why)
+
+    def test_a_region_mirror_whose_layout_did_not_move(self):
+        self.assertIsNone(core.watch_reason(
+            [out("A"), out("B", x=1920)], "A", "B",
+            region=(100, 100, 500, 300), src_rect=(0, 0, 1920, 1080)))
+
+    def test_a_region_record_read_back_from_json_is_a_list(self):
+        """The rectangle in the state file comes back as a list, and a list
+        is never equal to the tuple /proc gives us."""
+        self.assertIsNone(core.watch_reason(
+            [out("A"), out("B", x=1920)], "A", "B",
+            region=[100, 100, 500, 300], src_rect=[0, 0, 1920, 1080]))
+
 
 # -- detection ----------------------------------------------------------------
 
@@ -390,6 +440,19 @@ class Cli(Base):
         self.assertEqual(rc, 1)
         self.assertIn("wmirror: wl-mirror is not installed", e)
         self.assertIn("apt install", e)
+        start.assert_not_called()
+
+    def test_on_x11_the_missing_package_is_not_the_answer(self):
+        """With no wayland socket there is no wl-mirror to install: X11
+        mirrors whole outputs with xrandr, and a region has no route here.
+        The order of the two checks is the whole of this test."""
+        with mock.patch.object(passthrough, "session_kind",
+                               return_value="x11"),                 mock.patch.object(supervise, "start") as start:
+            rc, o, e = run(["A", "--to", "B"], outputs=[out("A")],
+                           helper=None, wayland=None)
+        self.assertEqual(rc, 1)
+        self.assertIn("X11 session", e)
+        self.assertNotIn("apt install", e)
         start.assert_not_called()
 
     def test_a_compositor_without_capture_says_which_protocol(self):

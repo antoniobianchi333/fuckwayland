@@ -96,8 +96,11 @@ wmirror --check               # can this session mirror at all, and what is miss
   translate.)
 * **`--scaling`** is passed straight through: `fit` letterboxes (default),
   `cover` fills and crops the sides, `exact` uses whole multiples only.
-  Measured on a 1920x1080 → 1280x1024 pair: `fit` gives 1280x720+0+152,
-  `exact` gives 960x540+0+242.
+  Measured on a 1920x1080 → 1280x1024 pair, content box sampled from a
+  screendump of the target head: `fit` gives 1280x720+0+152, `cover` fills
+  it (1280x1024+0+0, sides cropped), and `exact` gives **960x540+160+242**
+  — wl-mirror centres what it cannot fill, horizontally as well as
+  vertically.
 * **`--keep-layout`** is the way to ask for a mirror the layout could
   deliver: two same-sized outputs, mirrored while the target keeps its own
   rectangle (so the desktop keeps its area). Without it, that case is
@@ -164,7 +167,36 @@ detach is a small supervisor of our own, and the record carries *two*
   `ssh root@box` with an empty environment, like everything else here.
 * Every command that reads the records **verifies them first**, and a query
   that found nothing to correct does not rewrite the file — a session that
-  has never mirrored has no state file at all.
+  has never mirrored has no state file at all. A **zombie is not alive**:
+  /proc keeps the owner and the start time of a process that has exited and
+  not been waited for, so without that test `--list` would print a mirror
+  that had stopped painting and `--stop` would report ending it.
+* **Two wmirrors at once cannot both start one.** Every command that writes
+  the records holds a lock across read-decide-start-write, so the second
+  start finds the first record and refuses instead of spawning a second
+  helper. (Without it, measured through the real command line: two starts,
+  two helpers, one record — and the unrecorded one survives `--stop-all`,
+  fullscreen on the target, with nothing in the toolbox able to end it.)
+  It is a POSIX record lock (`fcntl.lockf`) on a file of its own: a record
+  lock belongs to the process, so the supervisor we fork does not inherit
+  it — with `flock` a start that was killed before it could unlock would
+  leave the lock held for the life of the mirror (both measured) — and it
+  is a separate file because closing any fd to a file drops that process's
+  record locks on it, which `State.save` does to its own lock file on every
+  write.
+* **A start that is interrupted still leaves the mirror stoppable.** The
+  record is written in a `finally`, so a Ctrl-C in the second the start
+  blocks for cannot leave a helper nobody can find (measured before that:
+  it did). And a start whose record cannot reach the file at all is
+  **stopped again** rather than left painting.
+* A **region** mirror ends if its source moves or changes size. A region is
+  a rectangle of the layout, resolved against the source once, when
+  wl-mirror starts; move that output afterwards and the same rectangle is a
+  different picture, or one that is no longer there — and wl-mirror does
+  not complain, it clamps. The start already refuses a region that does not
+  fit; the layout must not be able to arrange it behind the mirror's back.
+  A **whole-output** mirror is left alone by the same move: it follows its
+  source, which is what was asked for.
 
 Measured helper behaviour this is built on: source unplugged **or disabled**
 → wl-mirror exits (`output disappeared, closing`); source mode change or
@@ -250,6 +282,19 @@ is read only when the process actually exits during the first second: that is
 what turns wl-mirror's `error: options::find_output(): output X not found`
 into our one-line refusal.
 
+The chatter is skipped even then. Live, a mirror that ran for minutes and
+matched its source pixel for pixel printed `error:
+mirror-screencopy::on_dmabuf_allocated(): failed to allocate dmabuf` and
+fell back to shm; blaming that line for a helper that died of something else
+— a signal, an exit with nothing said — is a confident wrong answer, so a
+dmabuf/EGL/Mesa line is never the verdict, and a helper killed by a signal
+is reported by the signal's name.
+
+On an **X11** session with no `wl-mirror` installed, the missing package is
+not what to say: there is no wl-mirror for X11 and never will be. The
+session is checked before the binary, so the answer is `xrandr --same-as`
+and not an apt line.
+
 ## Deliberately out of scope
 
 * **A warandr GUI surface.** It would save a script X11 cannot run — see
@@ -264,22 +309,71 @@ into our one-line refusal.
   the user (or their layout script) starts it again; nothing here polls for
   hardware.
 
-## What a live pass must still check
+## What the live pass settled
 
-Everything above is measured except these, which are honest gaps:
+Run on sway 1.11 with wl-mirror 0.18.5, three heads with different
+wallpapers and a window placed where only a region mirror can reach it,
+every head screendumped from outside the guest:
 
-1. **The self-capture claim** is derived from two measurements (a window on
-   one output's workspace drawn on both heads at a shared rectangle, and the
-   self-mirror that actually happened when the target was unplugged), not
-   run as one experiment. Two outputs at 0,0, `wl-mirror --fullscreen-output
-   B A`, screendump both heads.
-2. **The supervisor's watch on a disabled output**: wl-mirror's exit on a
-   disabled *source* is measured; that our watch also fires (sway destroying
-   or updating the head) is proven against a fake in the tests, not on a
-   live compositor.
-3. **`--no-show-cursor`**, before it is ever exposed.
-4. **The GPU numbers.** The CPU table is llvmpipe; only the shape of it
+* **The self-capture premise, as one experiment.** Two 1920x1080 outputs at
+  0,0, raw `wl-mirror --fullscreen-output Virtual-2 --scaling fit
+  Virtual-1`: **both heads went entirely black** — every sampled pixel
+  `000000`, the two heads `AE 0` against each other and `AE 2073600`
+  (every pixel) against the same head before the mirror. The feedback
+  destroys the desktop it was meant to copy. The whole overlap-refusal set
+  rests on this and it holds.
+* **The pictures.** A region mirror matched its source to `RMSE 0.46%`
+  (resampler noise) with the letterbox bars black rather than the target's
+  own wallpaper; the whole-output case onto a smaller head measured
+  `RMSE 0.25%`; and the window that a shared position crops away came back
+  in both.
+* **The simple path still wins.** `wxrandr --output B --same-as A` gave
+  `AE 0` including that window; `wmirror A --to B` then exited 0 saying so,
+  with no helper started.
+* **The watch is ours, not wl-mirror's.** With the *target* head unplugged,
+  a raw wl-mirror kept running (invisible, on no output); under wmirror the
+  helper was gone. Disabling the target with `wxrandr --off`, and running
+  `wxrandr --same-as` underneath a running mirror, both ended it within a
+  poll.
+* **Nothing was left behind** in any transition, including a SIGKILLed
+  supervisor (helper survives, `--list` shows `(supervisor gone)`, `--stop`
+  ends it) and a killed compositor (both gone, the stale record refused by
+  its start times and rewritten empty).
+* **The cost is real**: sway at ~60% of a software-rendered core with one
+  region mirror, from an idle desktop.
+
+Re-verified on the same rig after a review, each of these being a fix that
+came out of running the code rather than reading it:
+
+* **The region watch, live.** With a region mirror running, moving its
+  source (`wxrandr --output Virtual-1 --pos 0x1080`, no overlap created)
+  ended the mirror **before the `wxrandr` call returned** and reaped the
+  record. The identical move under a **whole-output** mirror left it running
+  and listed — the discrimination is real, not incidental. And raw
+  `wl-mirror` in the same situation kept running and kept painting a full
+  head (`AE 1307904` against the bare desktop, i.e. every pixel): it says
+  nothing about a region whose source has moved, which is the whole reason
+  the supervisor has to.
+* **Two starts at the same moment**, one target: one helper, one record, the
+  loser refused by name (`Virtual-3 is already mirroring Virtual-1`). Before
+  the lock, the same race through the same command line left two helpers,
+  one record, and an orphan that survived `--stop-all`.
+* **A start interrupted 0.4 s in** (`timeout -s INT`) left the helper
+  running *and* recorded: `--list` found it, `--stop` ended it.
+* The policy set, `--replace`, `--stop-all` and the overlap refusals are
+  unchanged, and a region mirror still paints (head 2 differs from its own
+  desktop by 1307904 pixels while it runs, and comes back byte for byte
+  when it stops).
+
+Still not measured, and marked as such:
+
+1. **`--no-show-cursor`**, which is why it is not exposed: QEMU's
+   `screendump` never composes the hardware cursor plane, so the rig cannot
+   answer it either way.
+2. **The GPU numbers.** The CPU table is llvmpipe; only the shape of it
    ("the desktop never idles again") is claimed to generalise.
+3. **wl-mirror 0.16.1** (Ubuntu 24.04) with the exact argv we build. The
+   three options are read from its own man page; only 0.18.5 was run.
 
 ## Tests
 
@@ -291,4 +385,7 @@ Everything above is measured except these, which are honest gaps:
   chatter the real one prints, and that can fail at startup or die later):
   start, stop, replace, reap, a killed supervisor, a dying helper, a
   disappearing output, a compositor that goes away, `SIGTERM` then
-  `SIGKILL`, and a recycled pid that must never be signalled.
+  `SIGKILL`, and a recycled pid that must never be signalled — plus what a
+  review found by running it: a zombie helper, two commands at once, a
+  start interrupted mid-flight, a start that cannot be written down, the
+  region watch, and what a dead helper is blamed on.

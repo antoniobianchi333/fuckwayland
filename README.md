@@ -38,6 +38,52 @@ this repo tests in)*
 x:640 y:360 screen:0 window:5
 ```
 
+## Version 0.2
+
+In progress. What has landed since 0.1, each measured on the rig the same
+way:
+
+- **On sway, nothing wdotool injects needs a privilege any more.** The
+  pointer goes through `zwlr_virtual_pointer_v1` where the kernel device is
+  closed to us, as the keyboard already went through the virtual-keyboard
+  protocol — so `click`, `mousemove` and the rest join `type` and `key` in
+  needing no root, no group and no udev rule there. See **(i)** in the
+  [support matrix](#desktop-support).
+- **What each desktop does with a layout after you set it**, measured
+  through a hotplug and a reboot on all four, with where each one keeps it
+  and what that means for a layout script: [Keeping a
+  layout](#keeping-a-layout). KDE saves whether you want it to or not; GNOME
+  writes nothing unless you confirm it.
+- **Plasma over Xorg** is an X11 session like any other and is handled like
+  one, on both generations, with the two things that look like they should
+  change the answer named and measured — **(j)** in the matrix. On the
+  Wayland side, KWin 6.7 stopped publishing outputs the way `wxrandr` found
+  them, and the registry path it needs instead is pinned to the protocol.
+- **wmirror**, a sixth tool and the only one here that clones nothing.
+  On wlroots it mirrors a **region** of an output, or a whole output onto a
+  **differently shaped** one, by running the packaged
+  [`wl-mirror`](https://github.com/Ferdi265/wl-mirror) and owning its
+  lifetime — the two pictures output geometry alone cannot produce, and
+  nothing else. Two outputs of the same size at the same position already
+  mirror byte for byte on wlroots, so `wxrandr --output B --same-as A` stays
+  the answer there and wmirror sends you to it rather than starting
+  anything. It refuses by name what the measurements showed goes wrong,
+  chief among them two outputs that **share pixels**, where a fullscreen
+  mirror window is drawn on its own source: run that deliberately and both
+  heads go **entirely black**, every pixel. Nothing it starts is left
+  running that `wmirror --list` cannot find and `wmirror --stop` cannot
+  end — not when its own supervisor is killed, not when a start is
+  interrupted, not when two of them race — and a mirror ends itself when the
+  layout moves out from under it. **GNOME and KDE have no unprivileged
+  capture protocol at all**, and `wmirror --check` names what is missing
+  instead of half-working (**(k)** in the matrix); on X11 the answer is
+  `xrandr --same-as`, and it says so rather than naming a package that does
+  not exist there.
+
+Everything above was measured on 0.1's rig — the same seven desktop images,
+the same heads plugged, resized and unplugged from outside the guest — and
+the suite is 2085 tests.
+
 ## Version 0.1
 
 The first tagged release. Everything below was measured on real desktops in
@@ -1592,9 +1638,13 @@ wmirror: DP-1 and DP-2 are both 1920x1080: the layout mirrors them byte for byte
 
 It also refuses, by name, what the measurements showed goes wrong: two
 outputs that share pixels (a fullscreen mirror window on the target is drawn
-on the source too, so the helper would capture itself), a region that runs
-off the source (wl-mirror silently clamps it), a target that is already
-mirroring, and two mirrors pointing at each other.
+on the source too, so the helper captures itself — run on purpose, both
+heads went entirely black), a region that runs off the source (wl-mirror
+silently clamps it), a target that is already mirroring, and two mirrors
+pointing at each other. A running mirror also ends itself if the layout
+moves out from under it: either output unplugged or switched off, the two
+brought on top of each other, or — for a region — its source moved or
+resized, which would leave the same rectangle naming different pixels.
 
 **What it costs**, and it says so up front: a resident process and a frame of
 latency (median ~63 ms measured, at the rig's floor). An idle sway desktop
