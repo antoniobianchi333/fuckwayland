@@ -2,7 +2,9 @@
 
 Drop-in `xdotool` clone for Wayland. Pure-stdlib **Python 3.10+**, packaged by
 `flake.nix` (nix is the only toolchain — never install compilers/toolchains into the
-home directory). Ships two ways: `nix build` (bin/wdotool + bin/xdotool symlink) and a
+home directory). Ships three ways: `pip install -e .` from a clone (the console scripts
+`pyproject.toml` declares; the README's Install section is the user-facing version of this),
+`nix build` (bin/wdotool + bin/xdotool symlink) and a
 single-file zipapp (`python3 -m zipapp` with a `/usr/bin/env python3` shebang) that runs
 on stock Ubuntu. Root is acceptable and expected (for `/dev/uinput`). No kernel modules.
 
