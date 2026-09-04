@@ -49,6 +49,8 @@ class FakeX11:
     def __init__(self, showing=0, viewport=()):
         self.calls = []
         self.atoms = {}
+        self.states = {}                 # win -> {atom} (_NET_WM_STATE)
+        self.wm_honours_state = True     # Mutter is the EWMH WM on X
         self.showing = showing
         self.viewport = list(viewport)   # _NET_DESKTOP_VIEWPORT, as published
         self.bridge = None  # the harness' bridge: frames to derive from
@@ -81,6 +83,8 @@ class FakeX11:
             return [self.showing]
         if (win, name) == (0x1C5, "_NET_DESKTOP_VIEWPORT"):
             return list(self.viewport)
+        if name == "_NET_WM_STATE":
+            return sorted(self.states.get(win, ()))
         return []
 
     def get_prop_string(self, win, name):
@@ -100,6 +104,14 @@ class FakeX11:
         self.calls.append(("client_message", win, type_name, tuple(data)))
         if type_name == "_NET_SHOWING_DESKTOP":
             self.showing = int(data[0])
+        if type_name == "_NET_WM_STATE" and self.wm_honours_state:
+            # what the caller now reads back to tell "sent" from "applied"
+            action, atom = data[0], data[1]
+            have = self.states.setdefault(win, set())
+            if action == 1 or (action == 2 and atom not in have):
+                have.add(atom)
+            else:
+                have.discard(atom)
 
     def close(self):
         pass
@@ -460,7 +472,10 @@ class ActionTests(GnomeCliBase):
         self.assertEqual(rc, 0)
         self.assertEqual(self.calls("Activate"), [(CALC,), (XTERM,), (XTERM,)])
         rc, _o, err = self.wm(["-i", "-a", "0x999"], x11=None)
-        self.assertEqual((rc, err), (1, ""))  # silent exit 1, like wmctrl
+        # exit 1 like wmctrl, and a line saying which id: real wmctrl asks
+        # the X server about an -i id and Xlib prints BadWindow
+        self.assertEqual(rc, 1)
+        self.assertIn("no window with id 0x00000999", err)
 
     def test_x_matches_class_pairs(self):
         rc, _o, _e = self.wm(["-x", "-a", "TextEditor"], x11=None)

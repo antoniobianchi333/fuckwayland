@@ -44,8 +44,17 @@ class ProgNameTest(unittest.TestCase):
         rc, _o, err, _b = run(["-q"], argv0="/x/wwmctl/__main__.py")
         self.assertEqual((rc, err), (1, "wwmctl: invalid option -- 'q'\n"))
 
-    def test_symlink_name_is_used(self):
+    def test_argv0_is_printed_verbatim(self):
+        """Measured against wmctrl 1.07 on Plasma 6.6: getopt prints argv[0]
+        as it was given -- "/usr/bin/wmctrl: invalid option -- 'q'" for the
+        absolute path, "./wmctrl: ..." from the directory. basename()'ing it
+        made a drop-in print a different line from the tool it replaces."""
         rc, _o, err, _b = run(["-q"], argv0="/usr/local/bin/wmctrl")
+        self.assertEqual(
+            (rc, err), (1, "/usr/local/bin/wmctrl: invalid option -- 'q'\n"))
+        rc, _o, err, _b = run(["-q"], argv0="./wmctrl")
+        self.assertEqual((rc, err), (1, "./wmctrl: invalid option -- 'q'\n"))
+        rc, _o, err, _b = run(["-q"], argv0="wmctrl")
         self.assertEqual((rc, err), (1, "wmctrl: invalid option -- 'q'\n"))
 
 

@@ -134,14 +134,20 @@ def _detect_backend():
 
 
 def _progname() -> str:
-    """argv[0] the way xprop prints it in its diagnostics."""
+    """argv[0] the way xprop prints it in its diagnostics.
+
+    Verbatim, not basename(): xprop sets `program_name = argv[0]` and never
+    trims it, so `/usr/bin/xprop -badflag` says "/usr/bin/xprop: ...". We
+    print the same string for the same invocation, which is the whole point
+    of a drop-in. `python -m wxprop` has no name worth printing, so the tool
+    name stands in (WXPROP_ARGV0 overrides both)."""
     override = os.environ.get("WXPROP_ARGV0")
     if override:
         return override
-    base = os.path.basename(sys.argv[0] or "")
-    if not base or base in ("__main__.py", "-c", "-m"):
+    argv0 = sys.argv[0] or ""
+    if not argv0 or os.path.basename(argv0) in ("__main__.py", "-c", "-m"):
         return "wxprop"
-    return base
+    return argv0
 
 
 def _hostname() -> str:
@@ -680,6 +686,11 @@ class NativeRootTarget(NativeTarget):
             cur = max(b.get_desktop(), 0)
         except Exception:
             pass
+        # A compositor can be on a desktop it does not count: sway creates a
+        # workspace on demand and GET_WORKSPACES lists only the ones that
+        # exist, so "current 3 of 2 desktops" reached the root and no EWMH
+        # reader can make sense of that.
+        num = max(num, cur + 1)
         props[b"_NET_NUMBER_OF_DESKTOPS"] = _p_cardinal([num])
         props[b"_NET_CURRENT_DESKTOP"] = _p_cardinal([cur])
         if rich:

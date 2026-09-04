@@ -112,6 +112,8 @@ _LAYER_TYPES = {"DESKTOP", "DOCK"}
 _GAP_REASONS = {"SHADED": "Plasma 6 removed window shading"}
 # How many times a load may lose the id race before it is called a fight
 _LOAD_ATTEMPTS = 8
+# select_window()'s deadline: see _select_timeout()
+SELECT_TIMEOUT = 120.0
 
 
 _UNSET = object()   # "not resolved yet", distinct from "no answer"
@@ -415,7 +417,45 @@ class KwinBackend(WindowBackend):
                                                  for d in data):
             raise CmdError("kwin backend: the window list came back malformed")
         self._uuids = _id_map(data)
+        self._fix_x_props(data)
         return data
+
+    def _fix_x_props(self, data: "list[dict]"):
+        """Take the WM_CLASS pair, and a caption KWin could not read, from
+        the X server for the XWayland windows in the list.
+
+        KWin 5.27 lower-cases `resourceClass`, so an xterm came out as
+        "xterm"/"xterm" where X (and xdotool, and wmctrl) say "xterm"/
+        "XTerm". And KWin leaves the caption empty for a client whose WM_NAME
+        is COMPOUND_TEXT with no _NET_WM_NAME beside it, where the X tools
+        print the title.
+
+        Only 5.27 reaches this: KWin 6 has no windowId property, so its ids
+        come from the X server in the first place and _match_xids has read
+        both already. Nothing is opened unless Xwayland is running --
+        connecting would start it -- and one failure turns the correction off
+        for the rest of the process."""
+        want = [d for d in data if d.get("xid")]
+        if not want:
+            return
+        x = self._x11()
+        if x is None:
+            return
+        for d in want:
+            xid = int(d["xid"])
+            try:
+                inst, cls = x.get_wm_class(xid)
+                title = ("" if d.get("t") else
+                         (x.get_prop_string(xid, "_NET_WM_NAME")
+                          or x.get_prop_string(xid, "WM_NAME")))
+            except Exception:  # noqa: BLE001 -- a window that just died
+                continue
+            if cls:
+                d["c"] = cls
+            if inst:
+                d["n"] = inst
+            if title:
+                d["t"] = title
 
     def _uuid_for(self, wid: int) -> str:
         u = self._uuids.get(wid)
@@ -542,7 +582,7 @@ class KwinBackend(WindowBackend):
     def move_resize(self, wid: int, x: int, y: int, w: int, h: int):
         self._act(wid, "geometry", x=int(x), y=int(y), w=int(w), h=int(h))
 
-    def set_state(self, wid: int, state: str, action: int):
+    def set_state(self, wid: int, state: str, action: int) -> "str | None":
         if action not in (0, 1, 2):
             raise CmdError("windowstate: bad action %r" % (action,))
         try:
@@ -566,13 +606,12 @@ class KwinBackend(WindowBackend):
                     # native one is accepted and ignored. Blaming a window
                     # rule sent people looking through kcmshell5 for a rule
                     # that was never there.
-                    _warn("windowstate SHADED: KWin can only shade X11 "
-                          "windows; window %d is a native Wayland window"
-                          % wid)
-                else:
-                    _warn("windowstate %s: KWin did not apply it to window %d "
-                          "(a window rule, or the window's size hints)"
-                          % (state, wid))
+                    return ("windowstate SHADED: KWin can only shade X11 "
+                            "windows; window %d is a native Wayland window"
+                            % wid)
+                return ("windowstate %s: KWin did not apply it to window %d "
+                        "(a window rule, or the window's size hints)"
+                        % (state, wid))
         except CmdError as e:
             kind = getattr(e, "kwin_error", "")
             if kind in ("nostate", "noshade"):
@@ -583,6 +622,15 @@ class KwinBackend(WindowBackend):
                 err.unsupported = True
                 raise err from None
             raise
+        return None
+
+    def unsupported_states(self) -> "set[str]":
+        """_NET_WM_STATE names KWin has no setter for at all, so wwmctl knows
+        to reach an XWayland window through the X server instead -- where
+        KWin, a full EWMH window manager for the X plane, honours the
+        ClientMessage. The dynamic "accepted and ignored" case is not in
+        here; set_state reports that one per call."""
+        return set(_GAP_REASONS)
 
     def pointer(self) -> "tuple[int, int] | None":
         """The compositor's real pointer (B6), from workspace.cursorPos.
@@ -661,11 +709,24 @@ class KwinBackend(WindowBackend):
 
     def select_window(self) -> int:
         """xdotool selectwindow: KWin's own interactive picker. The reply is
-        delayed until the user clicks a window (or cancels), so no timeout."""
+        delayed until the user clicks a window (or cancels).
+
+        KWin has ONE reply slot for queryWindowInfo: a second picker started
+        while the first is up takes the click, and the first call is never
+        answered at all. With timeout=None that was an unkillable wait --
+        no click, no cancel key and no error would end it. The deadline is
+        long enough not to interrupt a person deciding (and is overridable
+        with WDOTOOL_SELECT_TIMEOUT for a script that wants a short one)."""
         try:
             (info,) = self.bus.call(KWIN_NAME, KWIN_PATH, KWIN_IFACE,
-                                    "queryWindowInfo", timeout=None)
+                                    "queryWindowInfo",
+                                    timeout=_select_timeout())
         except DBusError as e:
+            if e.name == ERR + "NoReply" or e.name == ERR + "Timeout":
+                raise CmdError(
+                    "selectwindow: KWin never answered the window picker "
+                    "(another picker may have taken the click: KWin has one "
+                    "reply slot for queryWindowInfo)") from None
             if e.name == "org.kde.KWin.Error.UserCancel":
                 raise CmdError("selectwindow: cancelled") from None
             if e.name == "org.kde.KWin.Error.InvalidWindow":
@@ -904,6 +965,18 @@ class KwinBackend(WindowBackend):
 
 
 # ---------------------------------------------------------------- module bits
+
+def _select_timeout() -> float:
+    """How long select_window() waits for the picker's answer, in seconds.
+    Two minutes by default -- a person choosing a window is slow, a picker
+    whose click another process stole never answers at all."""
+    raw = os.environ.get("WDOTOOL_SELECT_TIMEOUT", "").strip()
+    try:
+        val = float(raw)
+    except ValueError:
+        return SELECT_TIMEOUT
+    return val if val > 0 else SELECT_TIMEOUT
+
 
 def _plugin_name(seq: int, tag: str = "") -> str:
     """The pluginName one script is loaded under.

@@ -849,7 +849,12 @@ def cmd_windowstate(ctx, args):
     has_error = False
     for wid in ctx.resolve_windows(warg):
         try:
-            ctx.backend().set_state(wid, name, action)
+            why = ctx.backend().set_state(wid, name, action)
+            if why:
+                # the compositor took the request and did not apply it; the
+                # X tools cannot tell either, so this is a warning, not a
+                # failure (wwmctl has a second route and uses it instead)
+                sys.stderr.write("wdotool: %s\n" % why)
         except CmdError as e:
             has_error = True
             sys.stderr.write("%s\n" % e)

@@ -40,6 +40,10 @@ from wwmctl.x11_mini import XUnavailable
 STATE_REMOVE = 0
 STATE_ADD = 1
 STATE_TOGGLE = 2
+# How long the EWMH fallback waits for the X window manager to act on the
+# ClientMessage before calling it dropped. It returns as soon as the state
+# shows up, so this is only ever paid by a message nobody honoured.
+_X_SETTLE = 0.4
 
 SELECT_WINDOW_MAGIC = ":SELECT:"
 ACTIVE_WINDOW_MAGIC = ":ACTIVE:"
@@ -345,6 +349,11 @@ class Core:
             for w in wins:
                 if w.node_id == wid or w.id == wid:
                     return w
+            # A no-match by title or class is wmctrl's silent exit 1, but an
+            # -i id that names nothing is not a search: real wmctrl asks the
+            # X server about it and Xlib prints BadWindow. Say so, in one
+            # line, rather than exiting 1 with nothing at all.
+            _warn("no window with id 0x%08x" % wid)
             return None
         if param_window == SELECT_WINDOW_MAGIC:
             # real wmctrl shows a crosshair cursor; the closest we can do is
@@ -634,11 +643,18 @@ class Core:
             if name in skip and self._x_set_state(w, name, action):
                 continue
             try:
-                self.backend().set_state(w.node_id, name, action)
+                why = self.backend().set_state(w.node_id, name, action)
             except CmdError as e:
                 if self._x_set_state(w, name, action):
                     continue
                 _warn("%s; ignoring" % e)
+                continue
+            # Accepted and ignored: KWin does that for a window rule and for
+            # size hints a fullscreen cannot satisfy. Real wmctrl gets these
+            # through, because the X plane is a different window manager --
+            # so take that route before calling it a loss.
+            if why and not self._x_set_state(w, name, action):
+                _warn("%s; ignoring" % why)
         return 0
 
     def _compositor_cannot_set(self):
@@ -654,7 +670,14 @@ class Core:
     def _x_set_state(self, w: UWindow, name: str, action: int) -> bool:
         """The EWMH _NET_WM_STATE ClientMessage, sent to the X root about
         an XWayland window -- byte for byte what real wmctrl does. False
-        when there is no X window or no X plane to send it on."""
+        when there is no X window, no X plane to send it on, or the window
+        manager dropped the message.
+
+        Real wmctrl returns as soon as the message is on the wire, and that
+        is all it can do. This is a *fallback*: its caller has already been
+        told the compositor said no, and answering "sent" for a message KWin
+        6 drops on the floor turned a failure into silence. So the property
+        is read back, which is what the caller means by success."""
         if not w.is_x:
             return False
         x = self.x11() if self._x_is_up() else None
@@ -662,12 +685,35 @@ class Core:
             return False
         try:
             atom = x.atom("_NET_WM_STATE_%s" % name)
+            before = self._x_state_has(x, w.id, atom)
             x.send_root_message(w.id, "_NET_WM_STATE",
                                 [action, atom, 0, 0, 0])
         except Exception as e:
             self.vprint("_NET_WM_STATE ClientMessage failed: %s\n" % e)
             return False
-        return True
+        if before is None:
+            return True     # unreadable: "sent" is the best answer there is
+        # want: add -> present, remove -> absent, toggle -> the other one
+        want = (action == STATE_ADD) if action != STATE_TOGGLE else not before
+        deadline = time.monotonic() + _X_SETTLE
+        while True:
+            now = self._x_state_has(x, w.id, atom)
+            if now is None or now == want:
+                return True
+            if time.monotonic() >= deadline:
+                self.vprint("_NET_WM_STATE_%s did not appear on 0x%08x "
+                            "within %gs\n" % (name, w.id, _X_SETTLE))
+                return False
+            time.sleep(0.02)
+
+    @staticmethod
+    def _x_state_has(x, win: int, atom: int):
+        """Is `atom` in the window's _NET_WM_STATE? None when it cannot be
+        read (an unmapped or already-gone window)."""
+        try:
+            return atom in x.get_prop_ints(win, "_NET_WM_STATE")
+        except Exception:
+            return None
 
     def set_title(self, w: UWindow, title: str, mode: str) -> int:  # -N/-I/-T
         if not w.is_x:
@@ -796,6 +842,13 @@ class Core:
             except Exception:
                 workspaces = None
         if workspaces is not None:
+            # sway answers GET_WORKSPACES in creation order; real wmctrl -d
+            # is always ascending and positionally indexed, which is what a
+            # caller reading "the third line is desktop 2" relies on.
+            workspaces = sorted(
+                workspaces, key=lambda ws: (ws.get("num", -1) < 0,
+                                            ws.get("num", -1),
+                                            ws.get("name") or ""))
             here = next((i for i, ws in enumerate(workspaces)
                          if ws.get("focused")), -1)
             vps = self._viewports(len(workspaces), here)

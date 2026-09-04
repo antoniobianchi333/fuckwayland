@@ -524,6 +524,17 @@ class NativePlaneTest(CliTestBase):
         self.assertIn(b"_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x0",
                       lines)
 
+    def test_root_never_says_current_is_past_the_count(self):
+        """sway-3: sway creates a workspace on demand and GET_WORKSPACES
+        lists only the ones that exist, so the synthesized root published
+        "current desktop 5, 2 desktops" -- which no EWMH reader can read."""
+        with mock.patch.object(_FakeSway, "get_desktop", lambda self: 5):
+            code, out, err = self.run_cli("-root", backend="fake")
+        self.assertEqual((code, err), (0, ""))
+        lines = out.splitlines()
+        self.assertIn(b"_NET_CURRENT_DESKTOP(CARDINAL) = 5", lines)
+        self.assertIn(b"_NET_NUMBER_OF_DESKTOPS(CARDINAL) = 6", lines)
+
     def test_root_without_anything(self):
         code, _out, err = self.run_cli("-root", backend="none")
         self.assertEqual(code, 1)

@@ -893,21 +893,16 @@ class BackendTests(_Base):
         w = self.kwin.find(UU["konsole"])       # native: xid 0 in the fixture
         self.assertFalse(w.get("xid"))
         w["refuse"] = True
-        err = _capture_stderr()
-        with err:
-            b.set_state(WID["konsole"], "SHADED", 1)
-        self.assertIn("can only shade X11 windows", err.getvalue())
-        self.assertNotIn("window rule", err.getvalue())
+        why = b.set_state(WID["konsole"], "SHADED", 1) or ""
+        self.assertIn("can only shade X11 windows", why)
+        self.assertNotIn("window rule", why)
 
     def test_a_refused_state_on_an_x11_window_still_blames_the_rule(self):
         b = self.backend(plasma=5)
         w = self.kwin.find(UU["xterm"])
         self.assertTrue(w.get("xid"))
         w["refuse"] = True
-        err = _capture_stderr()
-        with err:
-            b.set_state(WID["xterm"], "SHADED", 1)
-        self.assertIn("window rule", err.getvalue())
+        self.assertIn("window rule", b.set_state(WID["xterm"], "SHADED", 1) or "")
 
     def test_raise_on_5_27_warns_that_it_activates(self):
         b = self.backend(plasma=5)
@@ -948,24 +943,28 @@ class BackendTests(_Base):
         self.b.set_state(WID["kate"], "MAXIMIZED_VERT", 0)
         self.assertEqual(d["mm"], 2)
 
-    def test_set_state_warns_when_kwin_ignores_it(self):
+    def test_set_state_reports_when_kwin_ignores_it(self):
         # KWin 5.27 accepts fullscreen on a size-hinted X11 client and does
-        # nothing with it; the read-back is what says so.
+        # nothing with it; the read-back is what says so. The reason comes
+        # back rather than going straight to stderr, because wwmctl has a
+        # second route for an XWayland window and takes it first.
         d = self.kwin.find(UU["kate"])
         d["refuse"] = True
         err = _capture_stderr()
         with err:
-            self.b.set_state(WID["kate"], "FULLSCREEN", 1)
-        self.assertIn("did not apply", err.getvalue())
+            why = self.b.set_state(WID["kate"], "FULLSCREEN", 1)
+        self.assertIn("did not apply", why or "")
+        self.assertEqual(err.getvalue(), "")
         self.assertFalse(d["fs"])
         # maximize too: the script waits for the window to agree before it
         # answers, so a state that stays unapplied really is one KWin refused
-        err = _capture_stderr()
-        with err:
-            self.b.set_state(WID["kate"], "MAXIMIZED_VERT", 1)
-        self.assertIn("did not apply", err.getvalue())
+        why = self.b.set_state(WID["kate"], "MAXIMIZED_VERT", 1)
+        self.assertIn("did not apply", why or "")
 
-    def test_set_state_never_warns_on_an_unverifiable_read(self):
+    def test_set_state_says_nothing_when_it_applied(self):
+        self.assertIsNone(self.b.set_state(WID["kate"], "ABOVE", 1))
+
+    def test_set_state_never_complains_on_an_unverifiable_read(self):
         # `settled: false` = the script could arm neither the window's change
         # signal nor a timer, so its read-back says nothing. Warning on it is
         # the false alarm every FULLSCREEN on a Wayland client used to print.
@@ -974,8 +973,14 @@ class BackendTests(_Base):
         for state in ("FULLSCREEN", "MAXIMIZED_VERT", "ABOVE"):
             err = _capture_stderr()
             with err:
-                self.b.set_state(WID["kate"], state, 1)
+                self.assertIsNone(self.b.set_state(WID["kate"], state, 1),
+                                  state)
             self.assertEqual(err.getvalue(), "", state)
+
+    def test_unsupported_states_is_the_hook_wwmctl_asks_for(self):
+        """Without it wwmctl never tried the X route for an XWayland window
+        whose state KWin has no setter for at all."""
+        self.assertIn("SHADED", self.b.unsupported_states())
 
     def test_set_state_asks_the_script_to_wait(self):
         self.b.set_state(WID["kate"], "FULLSCREEN", 1)
@@ -1086,6 +1091,32 @@ class BackendTests(_Base):
         with self.assertRaises(CmdError) as cm:
             b.select_window()
         self.assertIn("not managed", str(cm.exception))
+
+    def test_select_window_does_not_wait_for_ever(self):
+        """KWin has ONE reply slot for queryWindowInfo: a second picker
+        started while the first is up takes the click, and the first call is
+        never answered at all. timeout=None made that an unkillable wait."""
+        b = self.backend(select_delay=30.0)
+        old = backend_kwin.SELECT_TIMEOUT
+        backend_kwin.SELECT_TIMEOUT = 0.3
+        try:
+            t0 = time.monotonic()
+            with self.assertRaises(CmdError) as cm:
+                b.select_window()
+        finally:
+            backend_kwin.SELECT_TIMEOUT = old
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertIn("never answered", str(cm.exception))
+        self.assertIn("another picker", str(cm.exception))
+
+    def test_the_select_deadline_is_overridable(self):
+        os.environ["WDOTOOL_SELECT_TIMEOUT"] = "0.25"
+        self.addCleanup(os.environ.pop, "WDOTOOL_SELECT_TIMEOUT", None)
+        self.assertEqual(backend_kwin._select_timeout(), 0.25)
+        for junk in ("", "nonsense", "0", "-3"):
+            os.environ["WDOTOOL_SELECT_TIMEOUT"] = junk
+            self.assertEqual(backend_kwin._select_timeout(),
+                             backend_kwin.SELECT_TIMEOUT, junk)
 
     # -- typed hooks
 
@@ -1380,6 +1411,62 @@ class PayloadShapeTests(_Base):
             self.assertTrue(0 < wid <= 0xFFFFFFFF, u)
             self.assertGreaterEqual(wid, 0x40000000, u)
             self.assertEqual(wid & 0xFFFFFFFF, wid, u)
+
+
+class XPropertyCorrectionTests(_Base):
+    """5.27 hands the X id straight to the script, so nothing ever asked the
+    X server about those windows -- and KWin's own answers are not the ones
+    xdotool and wmctrl give."""
+
+    class _FakeX:
+        def __init__(self, cls=("xterm", "XTerm"), name=""):
+            self.cls, self.name, self.asked = cls, name, []
+
+        def get_wm_class(self, xid):
+            self.asked.append(("class", xid))
+            return self.cls
+
+        def get_prop_string(self, xid, prop):
+            self.asked.append((prop, xid))
+            return self.name if prop == "_NET_WM_NAME" else ""
+
+    def setUp(self):
+        self.b = self.backend(plasma=5)      # only 5.27 has windowId
+
+    def test_wm_class_case_comes_from_x(self):
+        """kde-7: KWin 5.27 lower-cases resourceClass, so `wdotool
+        getwindowclassname` on an xterm printed "xterm" where xdotool (and
+        the X server) say "XTerm"."""
+        self.kwin.find(UU["xterm"])["c"] = "xterm"      # what 5.27 reports
+        self.kwin.find(UU["xterm"])["n"] = "xterm"
+        self.b._x = self._FakeX()
+        w = {x.id: x for x in self.b.list()}[WID["xterm"]]
+        self.assertEqual((w.instance, w.class_), ("xterm", "XTerm"))
+
+    def test_an_empty_caption_is_filled_from_x(self):
+        """kde-tools kde-4: KWin leaves the caption empty for a client whose
+        WM_NAME is COMPOUND_TEXT with no _NET_WM_NAME beside it."""
+        self.kwin.find(UU["xterm"])["t"] = ""
+        self.b._x = self._FakeX(name="a compound title")
+        w = {x.id: x for x in self.b.list()}[WID["xterm"]]
+        self.assertEqual(w.title, "a compound title")
+
+    def test_a_caption_kwin_has_is_not_overwritten(self):
+        x = self._FakeX(name="from the X server")
+        self.b._x = x
+        w = {y.id: y for y in self.b.list()}[WID["xterm"]]
+        self.assertEqual(w.title, "test@kde: ~")
+        self.assertNotIn(("_NET_WM_NAME", XTERM_XID), x.asked)
+
+    def test_native_windows_are_left_alone(self):
+        x = self._FakeX()
+        self.b._x = x
+        self.b.list()
+        self.assertEqual([a for a in x.asked if a[1] != XTERM_XID], [])
+
+    def test_no_x_server_is_not_an_error(self):
+        self.b._x = None
+        self.assertEqual(len(self.b.list()), 4)
 
 
 class PointerTests(_Base):
