@@ -11,7 +11,10 @@ one apply per configuration object (a second one is the fatal
 `already_applied` protocol error), no enabled output at a negative
 coordinate, never all outputs disabled, `failure_reason` only when the bound
 management version is >= 12, and the 1/120 scale quantisation with a
-non-positive scale silently dropped. No KDE needed."""
+non-positive scale silently dropped. It also mirrors: `set_replication_source`
+(management v13) is taken, reported back on the device (`replication_source`,
+device v13), refused for an output naming itself, and -- as KWin does -- a
+replicated output drops out of the output order. No KDE needed."""
 
 import contextlib
 import io
@@ -50,12 +53,13 @@ HDMI_MODES = [(1280, 1024, 60020, True), (1024, 768, 60004, False)]
 
 def head(name, make, model, serial, uuid, mm, modes, enabled=True, x=0, y=0,
          scale=1.0, transform=0, subpixel=1, current=0, caps=0, edid="",
-         eisa=""):
+         eisa="", repl=""):
     return {"name": name, "make": make, "model": model, "serial": serial,
             "uuid": uuid, "mm": mm, "modes": list(modes), "enabled": enabled,
             "x": x, "y": y, "scale": scale, "transform": transform,
             "subpixel": subpixel, "current": current, "caps": caps,
-            "edid": edid, "eisa": eisa, "priority": None, "gname": 0}
+            "edid": edid, "eisa": eisa, "repl": repl, "priority": None,
+            "gname": 0}
 
 
 def EDP(**kw):
@@ -246,6 +250,8 @@ class _Client(threading.Thread):
         if full:
             out += _msg(oid, 5, _s(h["edid"]))
         out += _msg(oid, 6, struct.pack("<i", 1 if h["enabled"] else 0))
+        if ver >= 13:
+            out += _msg(oid, 27, _s(h["repl"]))   # replication_source
         if full:
             out += _msg(oid, 7, _s(h["uuid"]))
             out += _msg(oid, 8, _s(h["serial"]))
@@ -277,6 +283,11 @@ class _Client(threading.Thread):
         if op == kwin.REQ_SET_PRIMARY:
             h = self.devs.get(cur.u32())
             cfg["requests"].append(("primary", h["name"] if h else "?"))
+            return
+        if op == kwin.REQ_SET_REPLICATION:
+            h = self.devs.get(cur.u32())
+            cfg["requests"].append(("repl", h["name"] if h else "?",
+                                    cur.string()))
             return
         if op == kwin.REQ_SET_PRIORITY:
             h = self.devs.get(cur.u32())
@@ -347,12 +358,18 @@ class _Client(threading.Thread):
                     # KWin takes the request and does nothing with it, on
                     # 5.27 as on 6.6: the output order does not move
                     svc.primary_requested = h["name"]
+                elif req[0] == "repl":
+                    h["repl"] = req[2]
                 elif req[0] == "priority":
                     h["priority"] = req[2]
             if not any(h["enabled"] for h in pend.values()):
                 self._fail(cid, "Disabling all outputs through configuration "
                                 "changes is not allowed")
                 return
+            for h in pend.values():
+                if h["repl"] and h["repl"] == h["uuid"]:
+                    self._fail(cid, "An output cannot mirror itself")
+                    return
             for h in pend.values():
                 if h["enabled"] and (h["x"] < 0 or h["y"] < 0):
                     self._fail(cid, "Position of enabled output %s is negative"
@@ -431,11 +448,22 @@ class FakeKWin:
         return out
 
     def output_order(self):
-        """KWin's output order: the enabled outputs by priority. Its first
-        entry is the primary plasmashell and XWayland follow."""
+        """KWin's output order: the enabled outputs by priority, minus the
+        replicas -- a replicated output is not a logical output at all, so it
+        never appears here (measured on KWin 6.6). Its first entry is the
+        primary plasmashell and XWayland follow."""
+        live = {h["uuid"] for h in self.heads if h["enabled"]}
         return [n for _p, _i, n in
                 sorted((h["priority"], i, h["name"])
-                       for i, h in enumerate(self.heads) if h["enabled"])]
+                       for i, h in enumerate(self.heads)
+                       if h["enabled"] and h["repl"] not in live)]
+
+    def mirrors(self):
+        """name -> the name it replicates, for the enabled outputs."""
+        by_uuid = {h["uuid"]: h["name"] for h in self.heads if h["enabled"]}
+        return {h["name"]: by_uuid[h["repl"]] for h in self.heads
+                if h["enabled"] and h["repl"] in by_uuid
+                and by_uuid[h["repl"]] != h["name"]}
 
     @property
     def primary(self):
@@ -698,6 +726,24 @@ class Helpers(unittest.TestCase):
         t.scale = 1.3
         self.assertEqual(ko._scale_for(t), 1.3)
 
+    def test_mirror_policy_is_the_pending_rectangle(self):
+        """What decides is the pending LOGICAL rectangle and nothing else:
+        equal rectangles are already a clone on KWin (measured byte-identical,
+        different refresh rates included), differing ones are a crop."""
+        self.assertFalse(kwin.mirror_needs_replication((1920, 1080),
+                                                       (1920, 1080)))
+        self.assertTrue(kwin.mirror_needs_replication((1280, 1024),
+                                                      (1920, 1080)))
+        self.assertTrue(kwin.mirror_needs_replication((960, 540),
+                                                      (1920, 1080)))
+        self.assertTrue(kwin.mirror_needs_replication((1080, 1920),
+                                                      (1920, 1080)))
+        # a 3840x2160 panel at scale 2 next to a 1920x1080 one at scale 1 is
+        # a clone with no replication at all
+        self.assertFalse(kwin.mirror_needs_replication(
+            kwin.logical_size(3840, 2160, "normal", 2.0),
+            kwin.logical_size(1920, 1080, "normal", 1.0)))
+
     def test_restore_command(self):
         a = core.OutputState(name="eDP-1", active=True, x=0, y=0,
                              current=Mode(w=1920, h=1080, refresh_mhz=60020))
@@ -745,10 +791,12 @@ class Discovery(KwinCase):
         self.assertEqual([o.name for o in outs], ["eDP-1", "DP-1"])
 
     def test_globals_path_66(self):
-        """Plasma 6.6: device 20 / management 19 — we still bind 2 / 12."""
+        """Plasma 6.6: device 20 / management 19 — we bind 13 / 13, the
+        version `replication_source` and `set_replication_source` need and
+        not one higher."""
         ko = self.outputs()
         self.assertEqual((ko.dev_version, ko.mgmt_version,
-                          ko.mgmt_advertised), (2, 12, 19))
+                          ko.mgmt_advertised), (13, 13, 19))
         outs = ko.snapshot(self.state())
         self.assertEqual([o.name for o in outs], ["eDP-1", "DP-1"])
 
@@ -997,12 +1045,18 @@ class Apply(KwinCase):
                          [("eDP-1", 0, 0), ("DP-1", 2020, 50)])
 
     def test_same_as_shares_the_position(self):
-        code, _out, err = self.run_cli("--output", "DP-1", "--same-as",
-                                       "eDP-1")
+        """The default path: DP-1 driven at eDP-1's size, so the two pending
+        logical rectangles coincide and the shared position already is the
+        clone. Nothing is replicated -- see class Mirroring for when that
+        stops being true."""
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--same-as", "eDP-1")
         self.assertEqual((code, self.strip_save(err)), (0, ""))
-        self.assertEqual(self.svc.applied[-1], [("position", "DP-1", (0, 0))])
+        self.assertEqual([r for r in self.svc.applied[-1] if r[0] != "mode"],
+                         [("position", "DP-1", (0, 0))])
         self.assertEqual([(h["x"], h["y"]) for h in self.svc.heads],
                          [(0, 0), (0, 0)])
+        self.assertEqual(self.svc.mirrors(), {})
 
     def test_rotate_and_scale_on_the_wire(self):
         code, _out, err = self.run_cli("--output", "eDP-1", "--rotate", "left",
@@ -1427,6 +1481,269 @@ class Apply(KwinCase):
 
 
 # ---------------------------------------------------------------- selection
+
+class Mirroring(KwinCase):
+    """`--same-as`: plainly the shared position for as long as that is the
+    clone, and `set_replication_source` only where it is not.
+
+    Measured on KWin 6.6 (device 20 / management 19): two outputs at one
+    position are byte-identical when their logical rectangles coincide,
+    because KWin draws every output as a view onto one shared scene; when the
+    rectangles differ the smaller one shows a crop of the bigger one's scene,
+    and only replication turns that into a copy."""
+
+    def mirrored(self):
+        return FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid")])
+
+    def reqs(self, kinds=None):
+        return [r for r in self.svc.applied[-1]
+                if kinds is None or r[0] in kinds]
+
+    # -- choosing the path -------------------------------------------------
+
+    def test_a_smaller_mode_replicates(self):
+        """DP-1's 2560x1600 against eDP-1's 1920x1080: at one position the
+        smaller rectangle is a crop of the bigger one's scene, so this is the
+        case a shared position cannot express."""
+        code, _out, err = self.run_cli("--output", "DP-1", "--same-as",
+                                       "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.svc.applied[-1],
+                         [("position", "DP-1", (0, 0)),
+                          ("repl", "DP-1", "d0a1b-eDP-1-uuid")])
+        self.assertEqual(self.svc.mirrors(), {"DP-1": "eDP-1"})
+
+    def test_a_different_scale_replicates(self):
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--scale", "2",
+                                       "--same-as", "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertIn(("repl", "DP-1", "d0a1b-eDP-1-uuid"),
+                      self.svc.applied[-1])
+
+    def test_an_axis_swapping_transform_replicates_and_a_flip_does_not(self):
+        """The rule is the rectangle, not the transform: `left` swaps the
+        axes (1080x1920 against 1920x1080) and needs replication, `inverted`
+        leaves the rectangle alone and does not."""
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--rotate", "left",
+                                       "--same-as", "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertIn(("repl", "DP-1", "d0a1b-eDP-1-uuid"),
+                      self.svc.applied[-1])
+        self.svc.close()
+        self.svc = two_heads()
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--rotate", "inverted",
+                                       "--same-as", "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.reqs(["repl"]), [])
+        self.assertEqual(self.svc.mirrors(), {})
+
+    def test_a_different_refresh_rate_does_not_replicate(self):
+        """DP-1 at 1920x1080@60.00 against eDP-1 at 1920x1080@60.02: the
+        rectangles coincide, the frames are identical, nothing to replicate
+        (Mutter's "same mode" rule would over-trigger here)."""
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--rate", "60",
+                                       "--same-as", "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.reqs(["repl"]), [])
+        self.assertEqual(self.svc.mirrors(), {})
+
+    def test_a_different_mode_at_the_same_logical_size_does_not(self):
+        """A 3840x2160 panel at scale 2 is 1920x1080 of layout, exactly like
+        the 1920x1080 one at scale 1: same rectangle, so the plain shared
+        position is the clone and no replication is sent."""
+        self.svc.close()
+        self.svc = FakeKWin([EDP(), head("DP-1", "DEL", "U", "S", "uhd-uuid",
+                                        (597, 373),
+                                        [(3840, 2160, 60000, True)], x=1920)])
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--scale", "2",
+                                       "--same-as", "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.reqs(["repl"]), [])
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected 1920x1080+0+0 ", out)
+
+    def test_same_as_a_disabled_output_never_replicates(self):
+        """xrandr lands a relation on a disabled output at 0,0, and KWin
+        ignores a replication source that is not enabled anyway."""
+        self.svc.close()
+        self.svc = three_heads()
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--same-as",
+                                       "HDMI-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.reqs(["repl"]), [])
+
+    # -- the version gate ---------------------------------------------------
+
+    def test_replication_needs_management_13(self):
+        self.svc.close()
+        self.svc = two_heads(dev_version=12, mgmt_version=12)
+        self.addCleanup(self.svc.close)
+        code, out, err = self.run_cli("--output", "DP-1", "--same-as", "eDP-1")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, (
+            "xrandr: cannot mirror DP-1 onto eDP-1: at the same position DP-1"
+            " would show a 2560x1600 crop of eDP-1's 1920x1080, and cloning"
+            " it needs kde_output_management_v2 version 13 (this KWin offers"
+            " 12)\n"))
+        self.assertEqual(self.svc.created, 0)     # nothing was attempted
+        self.assertEqual(self.svc.layout(), two_heads().layout())
+
+    def test_the_version_gate_also_refuses_a_dryrun(self):
+        self.svc.close()
+        self.svc = two_heads(dev_version=2, mgmt_version=3)   # Plasma 5.27
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--dryrun", "--output", "DP-1",
+                                       "--same-as", "eDP-1")
+        self.assertEqual(code, 1)
+        self.assertIn("needs kde_output_management_v2 version 13 (this KWin"
+                      " offers 3)", err)
+        self.assertEqual(self.svc.created, 0)
+
+    def test_a_shared_position_still_works_on_a_kwin_without_replication(self):
+        """The gate is only ever reached by the case that needs replication:
+        5.27 mirrors two same-sized outputs exactly as 6.6 does."""
+        self.svc.close()
+        self.svc = two_heads(dev_version=2, mgmt_version=3)
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--same-as", "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual([(h["x"], h["y"]) for h in self.svc.heads],
+                         [(0, 0), (0, 0)])
+
+    # -- living with a replicated output ------------------------------------
+
+    def test_query_renders_a_replicated_output_at_its_source(self):
+        """A replica has no rectangle of its own on KWin, so it is reported
+        with the source's -- one geometry at one position, which is how
+        xrandr renders a mirror -- while keeping its own mode table and its
+        own starred current mode. The Screen line then matches the desktop
+        the compositor really has."""
+        self.svc.close()
+        self.svc = self.mirrored()
+        self.addCleanup(self.svc.close)
+        code, out, err = self.run_cli()
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, (
+            "Screen 0: minimum 16 x 16, current 1920 x 1080, maximum 32767 x"
+            " 32767\n"
+            "eDP-1 connected primary 1920x1080+0+0 (normal left inverted right"
+            " x axis y axis) 344mm x 194mm\n"
+            "   1920x1080     60.02*+  48.00  \n"
+            "   1680x1050     59.95  \n"
+            "   1280x720      59.86  \n"
+            "DP-1 connected 1920x1080+0+0 (normal left inverted right x axis"
+            " y axis) 597mm x 373mm\n"
+            "   2560x1600     59.97*+\n"
+            "   1920x1200     59.95  \n"
+            "   1920x1080     60.00  \n"))
+        code, out, _err = self.run_cli("--listmonitors")
+        self.assertEqual(out, ("Monitors: 2\n"
+                               " 0: +*eDP-1 1920/344x1080/194+0+0  eDP-1\n"
+                               " 1: +DP-1 1920/597x1080/373+0+0  DP-1\n"))
+
+    def test_undoing_a_replication_returns_the_output_to_normal(self):
+        self.svc.close()
+        self.svc = self.mirrored()
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--right-of",
+                                       "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        # deltas only: DP-1's stored position was already 1920,0 (a replica
+        # keeps the geometry it had), so turning the mirror off is the whole
+        # changeset
+        self.assertEqual(self.svc.applied[-1], [("repl", "DP-1", "")])
+        self.assertEqual(self.svc.mirrors(), {})
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected 2560x1600+1920+0 ", out)
+
+    def test_same_as_that_no_longer_needs_it_clears_the_replication(self):
+        self.svc.close()
+        self.svc = self.mirrored()
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--same-as", "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertIn(("repl", "DP-1", ""), self.svc.applied[-1])
+        self.assertEqual(self.svc.mirrors(), {})
+
+    def test_re_enabling_an_output_clears_a_stale_replication(self):
+        self.svc.close()
+        self.svc = FakeKWin([EDP(), DP(enabled=False,
+                                       repl="d0a1b-eDP-1-uuid")])
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--auto",
+                                       "--right-of", "eDP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertIn(("repl", "DP-1", ""), self.svc.applied[-1])
+        self.assertEqual(self.svc.mirrors(), {})
+
+    def test_an_untouched_output_keeps_the_mirror_it_has(self):
+        """The replication source is only ever touched for an output this
+        invocation positions, so an unrelated call never dismantles a mirror
+        System Settings set up -- and a no-op invocation on a mirrored pair
+        still creates no configuration at all, even though the query reports
+        the replica at its source's position rather than its stored one."""
+        self.svc.close()
+        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=900, y=400)])
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "eDP-1", "--mode",
+                                       "1680x1050")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual([r for r in self.svc.applied[-1] if r[1] == "DP-1"],
+                         [])
+        self.assertEqual(self.svc.mirrors(), {"DP-1": "eDP-1"})
+        self.svc.applied.clear()
+        self.svc.created = 0
+        code, _out, err = self.run_cli("--output", "eDP-1", "--mode",
+                                       "1680x1050")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((self.svc.created, self.svc.applied), (0, []))
+        self.assertEqual(self.svc.by_name("DP-1")["x"], 900)
+
+    def test_a_replica_cannot_be_the_primary(self):
+        """Measured: a replicated output never enters kde_output_order_v1, so
+        set_priority on it moves nothing. Say so rather than send it."""
+        self.svc.close()
+        self.svc = self.mirrored()
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--primary")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.strip_save(err),
+                         "xrandr: DP-1 mirrors eDP-1 and cannot be the"
+                         " primary output on KWin\n")
+        self.assertEqual(self.svc.created, 0)
+        self.assertEqual(self.svc.primary, "eDP-1")
+        code, out, _err = self.run_cli()
+        self.assertIn("eDP-1 connected primary ", out)
+
+    def test_the_restore_command_puts_the_mirror_back(self):
+        """The undo line spells a mirror as `--same-as`, not as the position
+        the replica happens to have stored: replaying a `--pos` would restore
+        the layout without the mirror."""
+        self.svc.close()
+        # the shared position `--same-as` itself leaves behind
+        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=0)])
+        self.addCleanup(self.svc.close)
+        before = (self.svc.layout(), self.svc.mirrors())
+        code, _out, err = self.run_cli("--output", "DP-1", "--right-of",
+                                       "eDP-1")
+        self.assertEqual(code, 0)
+        line = self.restore_line(err)
+        self.assertIn("--output DP-1 --mode 2560x1600 --rate 59.97"
+                      " --same-as eDP-1 --rotate normal --reflect normal"
+                      " --scale 1", line)
+        code, _out, err = self.run_cli(*line.split()[1:])
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual((self.svc.layout(), self.svc.mirrors()), before)
+
 
 class Detection(unittest.TestCase):
     def session(self, *a, **kw):

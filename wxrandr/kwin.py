@@ -69,6 +69,37 @@ kde_output_*).
   layout to the origin before sending and refuse the last-output disable
   client-side, with our own xrandr-shaped message; every rejection KWin does
   send is relayed in KWin's name.
+- `--same-as` is a shared position for as long as a shared position is the
+  mirror, and `set_replication_source` (management request 23, since v13) only
+  where it is not. Measured on KWin 6.6: two outputs at one position are
+  byte-identical (AE 0) when their pending LOGICAL rectangles coincide -- at
+  equal size, and at different refresh rates alike -- because KWin draws every
+  output as a view onto one shared scene. When the rectangles differ the
+  smaller output shows a *crop* of the bigger one's scene, not a copy of it:
+  at 1280x1024 against 1920x1080 it is exactly the top-left crop (AE 0 against
+  that crop), at scale 2 it is the top-left quarter magnified, and rotated 90
+  it is the leftmost 1080 columns turned on their side. Replication is what
+  turns those into a copy: KWin fits the source's whole image into the
+  replica's panel, aspect preserved and centred -- scale
+  min(dst_w/src_w, dst_h/src_h) * src_scale, offset
+  (dst_px - src_px / src_scale * dst_scale) / 2, measured to the pixel in both
+  directions (96-row letterbox at 1024x768, first lit column 285 at 1920x1080)
+  -- and the requested scale is overridden outright, so the clone comes out
+  byte-identical where the sizes allow it. So the rectangles differing is the
+  whole trigger and nothing else is: not the refresh rate, not `--same-as`
+  itself.
+- A replicated output stops being a layout member: its `wl_output` global goes
+  away, it leaves `kde_output_order_v1` (so it can never be the primary --
+  set_priority on it is accepted and changes nothing), and it contributes
+  nothing to the desktop bounding box. Its own mode and transform still count
+  (they are the panel the copy is fitted onto); its own position and scale are
+  inert but still stored, and come back the moment the mirror ends. Clearing
+  the source (the empty string) restores it completely, and so does disabling
+  the source. Mirroring an output onto itself is KWin's own `failed` ("An
+  output cannot mirror itself"); a uuid naming no enabled output is accepted
+  and silently does nothing, so the source uuid always comes from a fresh
+  snapshot. The replication source is persisted like everything else, as
+  `replicationSource` in ~/.config/kwinoutputconfig.json.
 - There is no temporary mode and no confirmation dialog. KWin persists every
   applied configuration itself (Plasma 6: OutputConfigurationStore::storeConfig
   -> ~/.config/kwinoutputconfig.json, marked Source::User; 5.27: kded5 kscreen
@@ -90,8 +121,8 @@ Mapping to the wxrandr model (core.OutputState / core.Target):
                          Read back from kde_output_order_v1 (its first entry
                          is the primary, on 5.27 as on 6.6), else the device
                          `priority` event, else the state file
-    --same-as            the same position (set_replication_source is a
-                         different, mgmt-v13 concept and is not used)
+    --same-as            the same position while that is a clone, else
+                         set_replication_source (management v13) -- see below
     --brightness/--gamma no LUT here: zwlr_gamma_control_manager_v1 is probed
                          and, when absent as under KWin, warn + succeed
     --newmode/--addmode  applying one needs a real mode of the same size (and
@@ -120,10 +151,13 @@ GAMMA = "zwlr_gamma_control_manager_v1"
 
 # Bind low: every field xrandr needs exists at device 2, and a server only
 # sends events whose `since` is <= the bound version.
-DEV_WANT = 2         # `name` (the connector) is since 2. Reading `priority`
-                     # would need 18; kde_output_order_v1 gives the primary on
-                     # 5.27 too, so the device stays bound low.
-MGMT_WANT = 12       # set_primary_output since 2, failure_reason since 12
+DEV_WANT = 13        # `name` (the connector) is since 2 and is the reason to
+                     # bind above 1; `replication_source` is since 13 and is
+                     # the reason to stop at 13. Reading `priority` would need
+                     # 18; kde_output_order_v1 gives the primary on 5.27 too,
+                     # so the device goes no higher.
+MGMT_WANT = 13       # set_primary_output since 2, failure_reason since 12,
+                     # set_replication_source since 13
 REG_WANT = 25
 REG_MIN = 21         # binding the registry lower is error_unsupported_version
 ORDER_WANT = 1       # kde_output_order_v1 is v1 from 5.27 to master
@@ -133,6 +167,8 @@ PRIORITY_MGMT = 3    # set_priority -- what actually moves the primary
 REASON_MGMT = 12     # failure_reason
 CEIL_MGMT = 7        # Plasma 6.0+: the logical size is ceil(px/scale)
 PRIORITY_DEV = 18    # the readable `priority` event
+REPL_MGMT = 13       # set_replication_source
+REPL_DEV = 13        # the readable `replication_source` event
 CUSTOM_MODES_MGMT = 18   # create_mode_list / set_custom_modes
 CAP_CUSTOM_MODES = 0x2000
 
@@ -148,6 +184,7 @@ REQ_ENABLE, REQ_MODE, REQ_TRANSFORM = 0, 1, 2
 REQ_POSITION, REQ_SCALE, REQ_APPLY, REQ_DESTROY = 3, 4, 5, 6
 REQ_SET_PRIMARY = 10
 REQ_SET_PRIORITY = 11
+REQ_SET_REPLICATION = 23
 
 INVALID_HINT = "no longer available"
 SAVE_WARNING = ("KWin applies and saves this layout immediately: there is no "
@@ -257,7 +294,30 @@ def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
     return cands[0]
 
 
-def restore_command(outputs, primary: str | None = None) -> str:
+def mirror_needs_replication(replica: tuple, source: tuple) -> bool:
+    """Whether `--same-as` needs set_replication_source rather than plainly
+    the same position, from the two PENDING logical rectangles.
+
+    On KWin every output is a view onto one shared scene, so two outputs at
+    one position already show identical pixels over the region they share --
+    measured byte-identical (AE 0) whenever the logical rectangles coincide,
+    at a different refresh rate as much as at the same one. What a shared
+    position cannot do is make the *whole* of one output be the other: where
+    the rectangles differ, the smaller output shows a crop of the bigger
+    one's scene (measured: the exact top-left crop at a smaller mode, the
+    top-left quarter magnified at scale 2, the leftmost columns turned on
+    their side at a swapped transform). That -- and only that -- is what
+    replication is for.
+
+    A mode of a different size, a different scale and an axis-swapping
+    transform all reach here as one fact, the pending logical size, because
+    that is the fact the pixels follow: 2560x1440 at scale 2 next to 1280x720
+    at scale 1 is a clone with no replication at all."""
+    return tuple(replica) != tuple(source)
+
+
+def restore_command(outputs, primary: str | None = None,
+                    mirrors: dict | None = None) -> str:
     """The xrandr invocation that puts `outputs` back the way they were --
     KWin has already saved the new layout by the time we could offer an undo,
     so the pre-apply snapshot is printed as a command the user can paste.
@@ -277,7 +337,14 @@ def restore_command(outputs, primary: str | None = None) -> str:
             parts += ["--mode", "%dx%d" % (o.current.w, o.current.h)]
             if o.current.refresh_mhz:
                 parts += ["--rate", "%.2f" % o.current.refresh_hz]
-        parts += ["--pos", "%dx%d" % (o.x, o.y)]
+        # A replicated output is put back with `--same-as`, not `--pos`:
+        # its position is inert while it mirrors, and the position alone
+        # would restore the layout without the mirror.
+        src = (mirrors or {}).get(o.name)
+        if src:
+            parts += ["--same-as", src]
+        else:
+            parts += ["--pos", "%dx%d" % (o.x, o.y)]
         rot, refl = core.RANDR_VIEW.get(o.transform, ("normal", "normal"))
         parts += ["--rotate", rot, "--reflect", refl, "--scale", "%g" % o.scale]
         if primary is not None and o.name == primary:
@@ -380,6 +447,8 @@ class KwinOutputs:
         self.by_name = {}             # published name -> device record
         self.edid = {}                # name -> base64 EDID
         self.uuid = {}                # name -> KWin's stable uuid
+        self.mirror = {}              # name -> the output it replicates
+        self.previous_mirrors = {}    # the same, pre-apply
         self.primary = None           # the primary we believe KWin has
         self._primary_seen = False
         self._current = []            # the OutputStates of the last snapshot
@@ -468,8 +537,8 @@ class KwinOutputs:
              "model": "Unknown", "serial": "Unknown", "eisa": "", "uuid": "",
              "edid": "", "mm_w": 0, "mm_h": 0, "subpixel": 0, "transform": 0,
              "x": 0, "y": 0, "scale": 1.0, "enabled": False, "current": None,
-             "modes": [], "caps": 0, "priority": None, "gone": False,
-             "pub": None}
+             "modes": [], "caps": 0, "priority": None, "repl": "",
+             "gone": False, "pub": None}
         self._by_id[oid] = d
         if gname is not None:
             self._by_global[gname] = d
@@ -513,8 +582,10 @@ class KwinOutputs:
             d["caps"] = cur.u32()
         elif op == 14:   # name(connector) -- since device v2
             d["name"] = cur.string()
+        elif op == 27:   # replication_source(uuid) -- since device v13
+            d["repl"] = cur.string()
         elif op == 34:   # priority -- since device v18 (Plasma 6.3+),
-            d["priority"] = cur.u32()    # globals included; we bind 2
+            d["priority"] = cur.u32()    # globals included; we bind 13
         elif op == 36:   # removed -- since v21
             d["gone"] = True
 
@@ -593,6 +664,7 @@ class KwinOutputs:
             raise Fatal("%s is advertised but the compositor announced no "
                         "outputs\n" % MGMT)
         self.by_name, self.edid, self.uuid = {}, {}, {}
+        self.mirror = {}
         outs = []
         for i, d in enumerate(self.live()):
             p = d["pub"]
@@ -628,6 +700,25 @@ class KwinOutputs:
                 st.modes[0].preferred = True
             st.modes.extend(state.modes_for_output(name))
             outs.append(st)
+        # A replicated output is not a layout member on KWin at all -- no
+        # wl_output, gone from kde_output_order_v1, nothing of its own in the
+        # bounding box -- and its own position and scale are inert while it
+        # mirrors. What it shows is the source's rectangle, so that is the
+        # rectangle we report for it: the pair then reads as xrandr renders a
+        # mirror (one geometry, one position, each output keeping its own mode
+        # table and its own starred current mode), and the Screen line agrees
+        # with the desktop the compositor actually has.
+        by_uuid = {u: n for n, u in self.uuid.items() if u}
+        active = {o.name: o for o in outs if o.active}
+        for o in outs:
+            src = by_uuid.get(self.by_name[o.name]["pub"]["repl"] or None)
+            if src is None or src == o.name or o.name not in active:
+                continue
+            source = active.get(src)
+            if source is None:      # KWin ignores a source that is not enabled
+                continue
+            self.mirror[o.name] = src
+            o.x, o.y, o.w, o.h = source.x, source.y, source.w, source.h
         # The primary comes from the compositor whenever it can be read
         # (kde_output_order_v1, advertised on 5.27 as on 6.6) -- the state
         # file is only the record of what we set on a KWin that offers
@@ -717,6 +808,49 @@ class KwinOutputs:
                        key=lambda m: abs(m["refresh"] - mode.refresh_mhz))["id"]
         return cands[0]["id"]
 
+    def _mirror_plan(self, known: list, dims: dict) -> tuple:
+        """(outputs to replicate -> their source, outputs to stop replicating).
+
+        The narrow rule, straight off the measurement: `--same-as` is a shared
+        position while a shared position IS the clone -- which it is exactly
+        when the two pending logical rectangles coincide -- and
+        set_replication_source only when it is not.
+
+        The replication source is touched only for an output this invocation
+        *positions* (a relation or a `--pos`): that is what sets one, and it is
+        also what has to clear one, because a position request on a replicating
+        output would otherwise be silently inert. Every other output keeps the
+        mirroring it has, so an unrelated invocation never dismantles a mirror
+        somebody else set up."""
+        want, drop = {}, set()
+        by_name = {t.name: t for t in known}
+        for t in known:
+            s = t.stanza
+            if s is None or not t.enabled:
+                continue
+            if s.relation is None and s.pos is None:
+                continue
+            if s.relation is not None and s.relation[0] == "same-as":
+                src = by_name.get(s.relation[1])
+                # a `--same-as` onto a disabled output is xrandr's 0,0 landing,
+                # and KWin ignores a source that is not enabled anyway
+                if (src is not None and src.enabled and src.name != t.name
+                        and mirror_needs_replication(dims[t.name],
+                                                     dims[src.name])):
+                    want[t.name] = src.name
+                    continue
+            drop.add(t.name)
+        return want, drop
+
+    def _refuse_replication(self, name: str, src: str, dims: dict):
+        raise Fatal(
+            "cannot mirror %s onto %s: at the same position %s would show a "
+            "%dx%d crop of %s's %dx%d, and cloning it needs %s version %d "
+            "(this KWin offers %d)\n"
+            % (name, src, name, dims[name][0], dims[name][1], src,
+               dims[src][0], dims[src][1], MGMT, REPL_MGMT,
+               self.mgmt_advertised))
+
     def plan(self, state: core.State, targets: list) -> tuple:
         """(per-output delta records, primary device id or None).
 
@@ -739,13 +873,17 @@ class KwinOutputs:
         dims = {n: logical_size(modes[n].w, modes[n].h, by_target[n].sway_tf,
                                 scales[n], self.ceil_logical) for n in modes}
         pos = normalise(core.resolve_positions(known, dims))
+        mirrors, unmirror = self._mirror_plan(known, dims)
+        if mirrors and self.mgmt_version < REPL_MGMT:
+            name, src = sorted(mirrors.items())[0]
+            self._refuse_replication(name, src, dims)
         records = []
         for t in known:
             d = self.by_name[t.name]
             p = d["pub"]
             rec = {"name": t.name, "dev": d["id"], "enable": None,
                    "mode": None, "transform": None, "position": None,
-                   "scale": None}
+                   "scale": None, "repl": None}
             if not t.enabled:
                 if p["enabled"]:
                     rec["enable"] = False
@@ -763,19 +901,49 @@ class KwinOutputs:
             tf = to_transform(t.sway_tf)
             if full or tf != p["transform"]:
                 rec["transform"] = tf
+            src = mirrors.get(t.name)
+            if src is not None:
+                repl = self.uuid.get(src) or ""
+                if not repl:
+                    raise Fatal("cannot mirror %s onto %s: KWin reports no "
+                                "uuid for %s\n" % (t.name, src, src))
+            elif full or t.name in unmirror:
+                # an output coming back from disabled is described in full, and
+                # a positioned one must not stay silently mirrored
+                repl = ""
+            else:
+                repl = None            # leave the mirroring it has alone
+            if repl is not None and repl != p["repl"]:
+                rec["repl"] = repl
+            mirroring = bool(repl if repl is not None else p["repl"])
             xy = pos.get(t.name)
-            if xy is not None and (full or xy != (p["x"], p["y"])):
+            # An output that goes on mirroring ignores its position, so one is
+            # sent only when the invocation asked for it: the query reports a
+            # replica at its source's position, and re-sending that as a delta
+            # would cost a modeset for nothing.
+            asked = t.stanza is not None and (t.stanza.relation is not None
+                                              or t.stanza.pos is not None)
+            if (xy is not None and (full or xy != (p["x"], p["y"]))
+                    and (asked or not mirroring)):
                 rec["position"] = xy
             if full or abs(scales[t.name] - p["scale"]) > 1e-9:
                 rec["scale"] = scales[t.name]
             if any(rec[k] is not None for k in ("enable", "mode", "transform",
-                                                "position", "scale")):
+                                                "position", "scale", "repl")):
                 records.append(rec)
         primary = None
         want = state.primary
         if want and want != self.primary:
             t = next((t for t in known if t.name == want and t.enabled), None)
-            if t is not None:
+            if t is not None and (want in mirrors
+                                  or (want in self.mirror
+                                      and want not in unmirror)):
+                # measured: a replicated output never enters
+                # kde_output_order_v1, so set_priority on it moves nothing
+                warn("%s mirrors %s and cannot be the primary output on "
+                     "KWin\n" % (want, mirrors.get(want)
+                                 or self.mirror.get(want)))
+            elif t is not None:
                 if self.mgmt_version >= PRIORITY_MGMT:
                     primary = {"name": want,
                                "priority": self._priority_plan(want),
@@ -882,6 +1050,11 @@ class KwinOutputs:
                 # the wl_fixed is marshalled here, not by _marshal's "f"
                 self.conn.send(cfg, REQ_SCALE,
                                [("u", dev), ("i", to_fixed(rec["scale"]))])
+            if rec["repl"] is not None:
+                # set_replication_source(outputdevice, uuid) -- management
+                # v13; the empty string is how a mirror is turned off
+                self.conn.send(cfg, REQ_SET_REPLICATION,
+                               [("u", dev), ("s", rec["repl"])])
         if primary is not None:
             if primary["output"] is not None:
                 # sent for the courtesy of a KWin that honours it; measured
@@ -900,7 +1073,8 @@ class KwinOutputs:
             return
         self._warned_save = True
         warn(SAVE_WARNING)
-        cmd = restore_command(self.previous, self.previous_primary)
+        cmd = restore_command(self.previous, self.previous_primary,
+                              self.previous_mirrors)
         if cmd:
             warn("to restore the previous layout: %s\n" % cmd)
 
@@ -938,6 +1112,7 @@ class KwinOutputs:
         if records or primary is not None:
             self.previous = list(self._current)
             self.previous_primary = self.primary
+            self.previous_mirrors = dict(self.mirror)
             try:
                 self._send(records, primary, self._topology())
             except _Invalidated:

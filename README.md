@@ -549,7 +549,11 @@ Xwayland's real root window, and every other desktop gives root the real X root.
 
 **(f)** KWin applies a layout immediately and permanently — no temporary mode, no
 confirmation dialog — and says so on stderr, together with the line that puts the
-previous layout back.
+previous layout back. `--same-as` is plainly the same position, which on KWin
+already shows identical pixels; it reaches for the compositor's own
+`set_replication_source` only when the two outputs' logical rectangles differ and
+a shared position would give a crop instead of a copy (and says which KWin
+version that would need, when the running one is older).
 
 **(g)** X11 answers are the X server's own (`Screen 0: minimum 320 x 200 … maximum
 8192 x 8192`), and whether an output is marked `primary` is the desktop's business.
@@ -896,7 +900,10 @@ allows them** — measured: X11, KWin and sway/wlroots all take the geometry *an
 show the same pixels in the shared region (byte-identical crops on both heads), so
 a partial overlap really is a partial mirror there; GNOME's Mutter refuses any
 layout that is not edge-adjacent (`Logical monitors not adjacent`) and warandr
-reports that refusal in Mutter's name, not its own. The status bar says which of
+reports that refusal in Mutter's name, not its own. Mirror of two outputs whose
+sizes do not match is where that stops being enough — a shared position then
+crops rather than copies — and on KDE `--same-as` switches to KWin's own
+output replication for exactly those, and only those. The status bar says which of
 the four you are getting at the moment of the drop, and the saved script keeps it
 in its comment header; `WARANDR.md` and `WXRANDR.md` have the table, the evidence,
 and why true region mirroring (a resident capture-and-paint helper, `wl-mirror` on
