@@ -128,6 +128,54 @@ class CliTestBase(unittest.TestCase):
         return code, out.buffer.getvalue(), err.getvalue()
 
 
+class BackendOnAnX11SessionTest(unittest.TestCase):
+    """The native fallback on a plain X11 session must not consult a
+    compositor. We reach it only when no real xprop is installed, and the X
+    server is authoritative there -- but the detector goes by the session
+    bus, and KWin on Xorg owns org.kde.KWin exactly as KWin on Wayland
+    does, so `-root` would answer with KWin's synthesized window list where
+    the X root has the real one."""
+
+    def setUp(self):
+        from wdotool import passthrough
+        passthrough.reset_cache()
+        self.addCleanup(passthrough.reset_cache)
+
+    def _detect(self, env):
+        called = []
+
+        def detector():
+            called.append(True)
+            return "a backend"
+
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch("wdotool.backend_detect.detect", detector):
+            return core._detect_backend(), called
+
+    def test_x11_session_never_detects(self):
+        got, called = self._detect({"FUCKWAYLAND_PASSTHROUGH": "auto",
+                                    "XDG_SESSION_TYPE": "x11",
+                                    "DISPLAY": ":0"})
+        self.assertIsNone(got)
+        self.assertEqual(called, [])
+
+    def test_wayland_session_detects_as_before(self):
+        got, called = self._detect({"FUCKWAYLAND_PASSTHROUGH": "auto",
+                                    "XDG_SESSION_TYPE": "wayland"})
+        self.assertEqual(got, "a backend")
+        self.assertEqual(called, [True])
+
+    def test_the_escape_hatch_still_runs_our_own_code(self):
+        """FUCKWAYLAND_PASSTHROUGH=never means "our own code whatever the
+        session" -- including the compositor backends, on an X11 box. It is
+        what the whole suite runs under."""
+        got, called = self._detect({"FUCKWAYLAND_PASSTHROUGH": "never",
+                                    "XDG_SESSION_TYPE": "x11",
+                                    "DISPLAY": ":0"})
+        self.assertEqual(got, "a backend")
+        self.assertEqual(called, [True])
+
+
 class VersionHelpGrammarTest(CliTestBase):
     # The 1.2.8 RELEASE binary handles -grammar/-help/-version in the option
     # loop (NOT a pre-scan): single dash only, in argv order, after the
