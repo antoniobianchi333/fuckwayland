@@ -378,7 +378,7 @@ What differs from X, and why:
 | `wwmctl -l -G` positions | on Plasma 6.6 (and sway) `wmctrl` doubles the frame offset under a non-reparenting WM and ours are the real ones; KWin 5.27's xwm *does* reparent, so both agree there |
 | a state KWin ignores | KWin accepts a state a window rule or the client's size hints forbid and does nothing with it. `wwmctl` then sends the EWMH `_NET_WM_STATE` ClientMessage instead, which reaches an XWayland window through KWin's X-plane window manager, and checks that one landed too; `wdotool` has no second route and says what happened |
 | `selectwindow` | KWin has one reply slot for its window picker, so a second picker started while the first is up takes the click. The first call then waits until `WDOTOOL_SELECT_TIMEOUT` (2 minutes) and says so |
-| XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list: pid and `WM_CLASS` filter, title and geometry score. Where those tie -- two windows of one application in the same place under the same title, two maximized editor windows -- the order of the two lists decides, and that is exact rather than a guess: `_NET_CLIENT_LIST` is KWin's own window list with everything but the managed X11 windows dropped. A client that publishes neither `_NET_WM_PID` nor `WM_CLASS`, and a pair that nothing at all separates, keep id 0 rather than being handed one of two ids |
+| XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list: pid and `WM_CLASS` filter, title and geometry score. Where those tie — two windows of one application in the same place under the same title, two maximized editor windows — the order of the two lists decides, and that is exact rather than a guess: `_NET_CLIENT_LIST` is KWin's own window list with everything but the managed X11 windows dropped. A client that publishes neither `_NET_WM_PID` nor `WM_CLASS`, and a pair that nothing at all separates, keep id 0 rather than being handed one of two ids |
 | `wxprop -root` | `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW` and `_NET_DESKTOP_NAMES` are ours (native windows included), not KWin's stale X copies |
 | `getmouselocation` | answered by KWin (`workspace.cursorPos`), like GNOME's: a mouse moved by hand, or by another process, reads correctly, and the query needs no `/dev/uinput` at all |
 
@@ -610,11 +610,14 @@ If something did not work, the first thing to try:
 ## Desktop support
 
 What each tool does on each desktop, measured rather than assumed: the branch is run
-on eight golden VM images — GNOME 46 and 50, Plasma 5.27 and 6.6 on Wayland, Plasma
-5.27 on **Xorg**, Xfce 4.18 and 4.20, sway 1.11 on wlroots — twice per image, once
-**inside the session** and once as **root over ssh with an empty environment**,
-against real windows on a two-head layout. `vm/README.md` keeps the rig and the
-verbatim messages behind these cells.
+on nine golden VM images — GNOME 46 and 50, Plasma 5.27 and 6.6 on Wayland and the
+same two again on **Xorg**, Xfce 4.18 and 4.20, sway 1.11 on wlroots — twice per
+image, once **inside the session** and once as **root over ssh with an empty
+environment**, against real windows on a two-head layout. `vm/README.md` keeps the
+rig and the verbatim messages behind these cells. A tenth image, Plasma 6.7 on
+26.10, is a probe for one protocol change rather than a support target: what has
+been measured on it is `wxrandr` and nothing else, and the cells below do not
+count it.
 
 The last column is a *session type*, not a desktop: what an X11 session gets is the
 real tools, whichever desktop is drawing it.
@@ -627,7 +630,6 @@ real tools, whichever desktop is drawing it.
 | **wxrandr** | works (mutter) | works (kwin) **(f)** | hands over to `xrandr` **(g)** | works (sway) |
 | **warandr** | works (mutter) | works (kwin) **(f)** | works, driving the real `xrandr` **(g)** | works (sway); the stock image has no GTK 3 bindings **(h)** |
 | **`wdotool` without root** | pointer *and* keyboard need the udev rule (or root) | pointer *and* keyboard need the udev rule (or root) | nothing needs it (X11) | **nothing needs it**: keyboard and pointer both **(i)** |
-
 
 All of it works **as the desktop user and as root** — `sudo`, `ssh root@box`, cron —
 because the session's compositor socket, session bus, `DISPLAY` and X cookie are
@@ -718,8 +720,10 @@ it: on the same session our own `getdisplaygeometry` fails (`no wayland socket f
 rc 2) where the real `xdotool` answers, and the ids are only right by accident — 5.27
 still hands `windowId` to scripts, so those rows carry the real X ids, while KWin 6.6
 has dropped it and the same command prints ids minted from KWin uuids on a session
-where every window has an X id.
-
+where every window has an X id. The recovery that fills those in on a Wayland
+session cannot help here: it is gated on an `Xwayland` process being alive, on the
+sound principle that connecting to the X plane must not *start* one — and a Plasma
+X11 session has Xorg, not Xwayland.
 
 ## Compatibility
 
