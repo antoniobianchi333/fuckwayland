@@ -65,7 +65,7 @@ OVERLAP = {
                       "(\"Logical monitors not adjacent\")."),
 }
 #: a Wayland backend nobody has identified yet (and any future one)
-OVERLAP_UNKNOWN = (True, "this backend has not been measured here; Apply "
+OVERLAP_UNKNOWN = (True, "This backend has not been measured here; Apply "
                          "reports whatever the compositor makes of it.")
 
 

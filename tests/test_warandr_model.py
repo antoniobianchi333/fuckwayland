@@ -480,6 +480,109 @@ class Scripts(unittest.TestCase):
         # saving back is byte-identical to arandr's file
         self.assertEqual(lay.to_script(), text)
 
+    def test_the_overlap_note_names_the_shared_region_either_way_round(self):
+        """The note is symmetric and order-free: on every backend that takes
+        an overlap *both* outputs draw the shared region, so neither is
+        "over" the other, and the pair must read the same however the server
+        happened to order the two outputs.  What it does say is the
+        rectangle they share, in xrandr's own WxH+X+Y spelling."""
+        b = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11",
+                          "PATH": "/nonexist"})
+
+        def note(big_first):
+            lay = Layout(screen_max=(8192, 8192))
+            big = Output("BIG", modes=[Mode("1920x1080", 1920, 1080, [60.0],
+                                            60.0)])
+            small = Output("SMALL", modes=[Mode("1280x720", 1280, 720, [60.0],
+                                                60.0)])
+            for o in ((big, small) if big_first else (small, big)):
+                lay.add(o)
+                o.active = True
+                o.mode = o.modes[0]
+                o.rate = 60.0
+            small.x, small.y = 320, 180          # wholly inside BIG
+            return cli.script_notes(lay, b)[0]
+
+        # SMALL is inside BIG: the shared region is the whole of SMALL
+        self.assertEqual(note(True), "warandr: partial overlap (BIG and "
+                                     "SMALL share 1280x720 at +320+180)")
+        self.assertEqual(note(False), "warandr: partial overlap (SMALL and "
+                                      "BIG share 1280x720 at +320+180)")
+        # and a half overlap is the half
+        lay = synthetic()
+        lay.move("B", 960, 0)
+        self.assertEqual(lay.shared_region("A", "B"), (960, 0, 960, 1024))
+        self.assertEqual(cli.script_notes(lay, b)[0],
+                         "warandr: partial overlap (A and B share 960x1024 "
+                         "at +960+0)")
+
+    def test_an_exact_overlap_is_still_a_clone_everywhere(self):
+        """Dropping an output exactly on another is not a partial overlap:
+        it is what --same-as makes, every backend groups same-position
+        outputs into one logical monitor (Mutter) or replicates them (KWin,
+        X11), and Mutter takes it -- measured.  So it must stay allowed even
+        where a partial overlap is refused."""
+        lay = synthetic()
+        lay.overlap_refusal = randr.OVERLAP["mutter"][1]
+        lay.get("B").mode = lay.get("B").mode_named("1024x768")
+        lay.move("B", 0, 0)                      # exact origin, other size
+        self.assertEqual(lay.overlaps(), [])
+        self.assertEqual((lay.get("B").x, lay.get("B").y), (0, 0))
+        # read the same geometry back off a screen and it is a mirror again
+        lay._mark_clones()
+        self.assertEqual(lay.get("B").mirror_of, "A")
+        self.assertIn("--same-as A", lay.command_line())
+        # one pixel off is a partial overlap, and that one is refused --
+        # in Mutter's name, with the drop reverted (un-mirroring parks B
+        # right of the layout, which is where it must land back)
+        lay.set_mirror("B", None)
+        parked = (lay.get("B").x, lay.get("B").y)
+        with self.assertRaises(LayoutError) as cm:
+            lay.move("B", 1, 0)
+        self.assertEqual(str(cm.exception), randr.OVERLAP["mutter"][1])
+        self.assertEqual((lay.get("B").x, lay.get("B").y), parked)
+
+    def test_an_overlap_cannot_shrink_the_screen_away(self):
+        """Taking overlaps cannot cost the user a screen: every output stays
+        a viewport of its own size, the bounding box only ever gets smaller,
+        and the one bound that could bite -- the server's maximum -- is
+        still checked."""
+        lay = synthetic()
+        wide = lay.bounding_box()
+        lay.move("B", 100, 0)
+        x0, y0, x1, y1 = lay.bounding_box()
+        self.assertLess(x1 - x0, wide[2] - wide[0])
+        self.assertGreaterEqual(x1 - x0, max(o.size()[0]
+                                             for o in lay.active_outputs()))
+        for o in lay.active_outputs():           # nothing is off-screen
+            ox, oy, ow, oh = o.rect()
+            self.assertTrue(x0 <= ox and oy >= y0 and ox + ow <= x1
+                            and oy + oh <= y1)
+        small = Layout(screen_max=(2000, 2000))
+        for name in ("A", "B"):
+            o = small.add(Output(name, modes=[Mode("1920x1080", 1920, 1080,
+                                                   [60.0], 60.0)]))
+            o.active = True
+            o.mode = o.modes[0]
+            o.rate = 60.0
+        small.get("B").x = 1920
+        with self.assertRaises(LayoutError) as cm:
+            small.move("B", 1900, 0)             # 3820 wide: still too wide
+        self.assertIn("outside the virtual screen", str(cm.exception))
+
+    def test_gaps_are_nobodys_business_here_overlap_or_not(self):
+        """Gaps did not change and must not: arandr allows them, warandr has
+        never refused one, and the overlap policy does not touch them -- on
+        Mutter, which refuses a gap as flatly as an overlap, the refusal
+        still arrives from Mutter at Apply, in its own words."""
+        for refusal in (None, randr.OVERLAP["mutter"][1]):
+            lay = synthetic()
+            lay.overlap_refusal = refusal
+            lay.move("B", 3000, 0)               # a 1080 px hole
+            self.assertEqual(lay.overlaps(), [])
+            self.assertEqual((lay.get("B").x, lay.get("B").y), (3000, 0))
+            self.assertIn("--pos 3000x0", lay.command_line())
+
     def test_overlapping_script_loads_and_round_trips(self):
         """arandr writes overlapping layouts and xrandr runs them, so one
         has to open here too -- and a save carries what the overlap means
@@ -497,8 +600,8 @@ class Scripts(unittest.TestCase):
         b = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11",
                           "PATH": "/nonexist"})
         notes = cli.script_notes(lay, b)
-        self.assertEqual(notes, ["warandr: partial overlap "
-                                 "(HDMI-1 over DP-1)",
+        self.assertEqual(notes, ["warandr: partial overlap (DP-1 and "
+                                 "HDMI-1 share 960x1024 at +960+0)",
                                  randr.OVERLAP["x11"][1]])
         fresh = fixture_layout()                     # default template
         fresh.load_script(text)
@@ -506,8 +609,8 @@ class Scripts(unittest.TestCase):
         saved = fresh.to_script("xrandr", notes)
         lines = saved.rstrip("\n").split("\n")
         self.assertEqual(lines[0], "#!/bin/sh")
-        self.assertEqual(lines[1], "# warandr: partial overlap "
-                                   "(HDMI-1 over DP-1)")
+        self.assertEqual(lines[1], "# warandr: partial overlap (DP-1 and "
+                                   "HDMI-1 share 960x1024 at +960+0)")
         self.assertEqual(lines[2], "# " + randr.OVERLAP["x11"][1])
         self.assertTrue(lines[3].startswith("xrandr --output "))
         again = fixture_layout()
@@ -954,8 +1057,8 @@ class Cli(unittest.TestCase):
         # the loaded file's own template is arandr's default, so the header
         # is written: what overlaps, and what that means on this backend
         self.assertEqual(lines[0], "#!/bin/sh")
-        self.assertEqual(lines[1],
-                         "# warandr: partial overlap (HDMI-1 over DP-1)")
+        self.assertEqual(lines[1], "# warandr: partial overlap (DP-1 and "
+                                   "HDMI-1 share 960x1024 at +960+0)")
         self.assertEqual(lines[2], "# " + randr.OVERLAP["x11"][1])
         self.assertIn("--pos 960x0", lines[3])
         self.assertEqual(len(lines), 4)

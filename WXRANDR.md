@@ -44,7 +44,10 @@ sway/i3 IPC socket wins, then a compositor advertising
 `org.gnome.Mutter.DisplayConfig`, then wlr — which is the fallback and is
 therefore never probed for the decision. The KWin probe *is* the Wayland
 connection the backend then keeps, so a KDE session still opens exactly one,
-and a backend forced with the flag is probed the same way.
+and a backend forced with the flag is probed the same way. Whatever the other
+probes opened on the way is closed as soon as the backend is chosen, rather
+than left to the collector — an unclosed socket comes back as a
+`ResourceWarning` on stderr at an arbitrary later moment.
 `--listproviders` names the chosen one (`name:sway`, `name:wlroots`,
 `name:kwin`, `name:mutter`).
 
@@ -155,6 +158,11 @@ monitors overlap`, which two monitors never produce. The expectation that
 sway's per-output workspaces would prevent mirroring was **wrong** — a
 workspace binds where the tiler *places* windows, not which pixels an output
 scans out.
+
+An overlapping layout is also nothing special to the KWin backend's undo
+line: `restore_command` spells every position out absolutely, so the line
+printed while the *previous* layout overlapped replays into that same
+overlap (verified live on Plasma 6, and pinned in `tests/test_wxrandr_kwin.py`).
 
 **Refusals are said in the compositor's name.** We pass every layout on
 unchanged, so a "no" is never ours: Mutter's D-Bus error comes back as

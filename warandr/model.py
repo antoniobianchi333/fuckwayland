@@ -298,6 +298,16 @@ class Layout:
                 pairs.append((a.name, b.name))
         return pairs
 
+    def shared_region(self, a, b):
+        """The rectangle two outputs both draw, ``(x, y, w, h)`` in layout
+        pixels — what a partial overlap actually mirrors.  Empty (w or h 0)
+        when they do not intersect."""
+        ax, ay, aw, ah = self.get(a).rect()
+        bx, by, bw, bh = self.get(b).rect()
+        x, y = max(ax, bx), max(ay, by)
+        return (x, y, max(0, min(ax + aw, bx + bw) - x),
+                max(0, min(ay + ah, by + bh) - y))
+
     def check(self):
         """Raise LayoutError for outputs beyond the server's maximum screen
         size, and — only where the backend refuses one, `overlap_refusal`

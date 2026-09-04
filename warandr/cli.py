@@ -72,8 +72,16 @@ def script_notes(layout, backend):
         notes.append(forced)
     pairs = layout.overlaps()
     if pairs:
-        notes.append("warandr: partial overlap (%s)"
-                     % ", ".join("%s over %s" % (b, a) for a, b in pairs))
+        # neither output is "over" the other -- on every backend that takes
+        # an overlap both draw the shared region, which is the whole point --
+        # so the note names the pair symmetrically and says which rectangle
+        # they share, in xrandr's own WxH+X+Y spelling
+        shared = []
+        for a, b in pairs:
+            x, y, w, h = layout.shared_region(a, b)
+            shared.append("%s and %s share %dx%d at +%d+%d"
+                          % (a, b, w, h, x, y))
+        notes.append("warandr: partial overlap (%s)" % "; ".join(shared))
         notes.append(backend.overlap_note())
     return notes
 

@@ -135,7 +135,14 @@ class XvfbCase(unittest.TestCase):
             cls.xvfb.kill()
 
 
-class GuiDrive(XvfbCase):
+class GuiSession(XvfbCase):
+    """One warandr window on the Xvfb display, talking to the fake xrandr,
+    plus the driving helpers.  `STATE` seeds the fake's screen (None: its own
+    three-output default) and `NBOXES` is how many boxes that screen draws."""
+
+    STATE = None
+    NBOXES = 3
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="warandr-gui-")
         self.dump = os.path.join(self.tmp, "dump.jsonl")
@@ -143,6 +150,9 @@ class GuiDrive(XvfbCase):
         self.qlog = os.path.join(self.tmp, "query.log")
         self.saved = os.path.join(self.tmp, "saved")
         env = _base_env(self.tmp, self.display)
+        if self.STATE is not None:
+            with open(env["FAKE_XRANDR_STATE"], "w") as fh:
+                json.dump(self.STATE, fh)
         env.update({
             "FAKE_XRANDR_LOG": self.log,
             "FAKE_XRANDR_QUERY_LOG": self.qlog,
@@ -158,7 +168,8 @@ class GuiDrive(XvfbCase):
         self.app = subprocess.Popen([sys.executable, "-m", "warandr"],
                                     env=self.env, stdout=self.app_log,
                                     stderr=subprocess.STDOUT)
-        return self.wait_dump("layout", lambda d: len(d["boxes"]) == 3,
+        return self.wait_dump("layout",
+                              lambda d: len(d["boxes"]) == self.NBOXES,
                               after=after)
 
     def tearDown(self):
@@ -272,6 +283,10 @@ class GuiDrive(XvfbCase):
         self.click(menu["items"]["Backend"])
         return self.wait_dump("menu", lambda d: d["name"] == "backend"
                               and "Automatic" in d["items"], after=n)
+
+
+class GuiDrive(GuiSession):
+    """The drive above, against the fake's default three-output screen."""
 
     # -- the drive ----------------------------------------------------------
 
@@ -430,8 +445,8 @@ class GuiDrive(XvfbCase):
         with open(saved["path"]) as fh:
             lines = fh.read().rstrip("\n").split("\n")
         self.assertEqual(lines[0], "#!/bin/sh")
-        self.assertEqual(lines[1],
-                         "# warandr: partial overlap (DP-2 over DP-1)")
+        self.assertEqual(lines[1], "# warandr: partial overlap (DP-1 and "
+                                   "DP-2 share 1280x720 at +320+180)")
         self.assertEqual(lines[2], "# " + note.split(". ", 1)[1])
         self.assertTrue(lines[3].startswith("xrandr --output "))
         self.assertIn("--pos 320x180", lines[3])
@@ -628,6 +643,77 @@ class GuiDrive(XvfbCase):
         self.wait_dump("layout", lambda d: not d["busy"], after=n)
         self.assertEqual(len(self.calls()), 2)
         self.assertIsNone(self.app.poll())
+
+
+#: a screen whose *small* output comes first, which is the order that used
+#: to be safe and no longer is: see GuiCoveredBox
+SMALL_FIRST = {
+    "primary": "DP-1",
+    "outputs": [
+        {"name": "DP-2", "active": True, "x": 0, "y": 0,
+         "transform": "normal", "scale": 1.0, "current": 0, "ident": 0x44,
+         "mm": [344, 194],
+         "modes": [[1280, 720, 60000, True], [800, 600, 60317, False]]},
+        {"name": "DP-1", "active": True, "x": 1280, "y": 0,
+         "transform": "normal", "scale": 1.0, "current": 0, "ident": 0x42,
+         "mm": [598, 336],
+         "modes": [[1920, 1080, 60000, True], [1280, 720, 60000, False]]},
+    ],
+}
+
+
+class GuiCoveredBox(GuiSession):
+    """A box dropped wholly inside another must still be draggable.
+
+    While overlaps were refused no box could ever hide another, so the
+    canvas could leave stacking to Gtk.Fixed -- which hands the click to the
+    child window created last, i.e. the last output in *server* order.  Now
+    that a 1280x720 output may sit inside a 1920x1080 one, that order
+    decides whether the user can get it back out: here the small output
+    comes first, so without the canvas's own stacking rule the big box
+    covers it and the drag moves the big one instead."""
+
+    STATE = SMALL_FIRST
+    NBOXES = 2
+
+    def test_a_box_dropped_inside_another_can_be_dragged_back_out(self):
+        lay = self.layout()
+        n = len(self.dumps())
+        small, big = lay["boxes"]["DP-2"], lay["boxes"]["DP-1"]
+        self.assertLess(small[2] * small[3], big[2] * big[3])
+
+        # drop DP-2 in the middle of DP-1: it lands wholly inside it
+        self.drag(small, *self.centre(big))
+        lay, n = self.wait_dump(
+            "layout", lambda d: d["status"].startswith("DP-2 overlaps DP-1."),
+            after=n)
+        i = lay["command"].index("DP-2")
+        self.assertEqual(lay["command"][i:i + 5],
+                         ["DP-2", "--mode", "1280x720", "--pos", "320x180"])
+        inside, outer = lay["boxes"]["DP-2"], lay["boxes"]["DP-1"]
+        self.assertTrue(outer[0] <= inside[0]
+                        and outer[1] <= inside[1]
+                        and inside[0] + inside[2] <= outer[0] + outer[2]
+                        and inside[1] + inside[3] <= outer[1] + outer[3],
+                        (inside, outer))
+        self.shot("warandr-covered")
+
+        # a press in the middle of the covered box reaches *it*, not the
+        # box that covers it: DP-2 moves right, DP-1 stays where it is
+        before = list(lay["command"])
+        cx, cy = self.centre(inside)
+        self.drag(inside, cx + 80, cy)
+        lay, n = self.wait_dump("layout", lambda d: d["command"] != before
+                                and d["settled"], after=n)
+        j = lay["command"].index("DP-1")
+        self.assertEqual(lay["command"][j:j + 6],
+                         ["DP-1", "--primary", "--mode", "1920x1080",
+                          "--pos", "0x0"])
+        i = lay["command"].index("DP-2")
+        self.assertEqual(lay["command"][i + 3], "--pos")
+        x, y = (int(v) for v in lay["command"][i + 4].split("x"))
+        self.assertGreater(x, 320)
+        self.assertEqual(y, 180)
 
 
 class GuiProbe(XvfbCase):

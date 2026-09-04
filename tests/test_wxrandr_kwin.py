@@ -1258,6 +1258,27 @@ class Apply(KwinCase):
         self.assertEqual((code, self.strip_save(err)), (0, ""))
         self.assertEqual((self.svc.layout(), self.svc.primary), before)
 
+    def test_the_restore_command_survives_an_overlapping_layout(self):
+        """An overlapping layout is nothing special to the undo line, which
+        is worth pinning now that one is a layout a user can really be in:
+        KWin takes an overlapping position (measured on Plasma 6, the shared
+        region byte-identical on both heads), and because every position in
+        the line is spelled absolutely, replaying it puts the overlap back
+        rather than re-deriving a side-by-side layout."""
+        code, _out, err = self.run_cli("--output", "DP-1", "--pos", "960x0")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        before = (self.svc.layout(), self.svc.primary)
+        code, _out, err = self.run_cli("--output", "DP-1", "--right-of",
+                                       "eDP-1")
+        self.assertEqual(code, 0)
+        self.assertNotEqual((self.svc.layout(), self.svc.primary), before)
+        line = self.restore_line(err)
+        self.assertIn("--output DP-1 --mode 2560x1600", line)
+        self.assertIn("--pos 960x0", line)
+        code, _out, err = self.run_cli(*line.split()[1:])
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual((self.svc.layout(), self.svc.primary), before)
+
     def test_a_failed_apply_claims_nothing_was_saved(self):
         """K3: the warning says KWin has already saved the layout and offers
         a command that would change the live one -- neither is true when the
@@ -1392,6 +1413,16 @@ class Apply(KwinCase):
 # ---------------------------------------------------------------- selection
 
 class Detection(unittest.TestCase):
+    def session(self, *a, **kw):
+        """cli.Session, with everything detection opened closed again when
+        the test ends.  A CLI just exits; a test process does not, and a
+        connection left to the garbage collector surfaces as a
+        ResourceWarning in the middle of some later test's captured
+        stderr."""
+        sess = cli.Session(*a, **kw)
+        self.addCleanup(lambda: [pr.close() for pr in sess.probes.values()])
+        return sess
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wxrandr-kwin-det-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -1456,6 +1487,19 @@ class Detection(unittest.TestCase):
                 code = e.code if isinstance(e.code, int) else 0
         return code, out.getvalue(), err.getvalue()
 
+    def test_detection_closes_the_connections_it_does_not_keep(self):
+        """Detection opens a connection per backend it tries and Session
+        reuses exactly one; the others have to be closed there and then.
+        Left to the collector they surface as a ResourceWarning on stderr at
+        an arbitrary later moment -- in a CLI, in the middle of somebody
+        else's output."""
+        sess = self.session()
+        self.assertEqual(sess.backend, "kwin")
+        live = sorted(p.name for p in sess.probes.values()
+                      if p.handle is not None)
+        self.assertEqual(live, ["kwin"])
+        self.assertIs(sess.probes["kwin"].handle, sess.kwin.conn)
+
     def test_probe(self):
         conn = kwin.probe(self.svc.path)
         self.assertIsNotNone(conn)
@@ -1463,7 +1507,7 @@ class Detection(unittest.TestCase):
         self.assertIsNone(kwin.probe(os.path.join(self.tmp, "nope")))
 
     def test_auto_detect_picks_kwin_before_gnome_and_wlr(self):
-        sess = cli.Session()
+        sess = self.session()
         self.assertEqual((sess.backend, sess.compositor_name),
                          ("kwin", "kwin"))
         self.assertIsNone(sess.ipc)
@@ -1475,9 +1519,9 @@ class Detection(unittest.TestCase):
     def test_forced_and_alias(self):
         for val in ("kwin", "kde"):
             os.environ["WXRANDR_BACKEND"] = val
-            self.assertEqual(cli.Session().backend, "kwin", val)
+            self.assertEqual(self.session().backend, "kwin", val)
         os.environ["WXRANDR_PERSIST"] = "1"
-        self.assertTrue(cli.Session().persistent)
+        self.assertTrue(self.session().persistent)
 
     def test_sway_still_wins(self):
         wsession.find_sway_socket = lambda: "/nonexistent/sway.sock"

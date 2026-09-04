@@ -696,9 +696,34 @@ class Application:
                 self.place_box(box, park_x, park_y)
                 park_y += (o.size()[1] if o.mode else 40 * self.factor) \
                     + 10 * self.factor
+        if self._restack():
+            GLib.idle_add(self._restack_later)
         self.show_status(self.command_text())
         self._populate_outputs_menu()
         self._schedule_dump()
+
+    def _restack(self):
+        """Put the smaller box on top, and report whether any box had no
+        window yet.  A Gtk.Fixed gives the click to the child window created
+        last — the last output in server order — and an overlap may now put
+        one box wholly inside another: without this, an output dropped
+        inside a bigger one that happens to come later would be covered by
+        it, unclickable, with no way to drag it back out.  Ordering by drawn
+        area cannot hide anything, because a box that covers another is at
+        least as big as it."""
+        pending = False
+        for b in sorted(self.boxes.values(), key=lambda b: b._pw * b._ph,
+                        reverse=True):
+            w = b.get_window()
+            if w is None:
+                pending = True          # not realised yet: retry on idle
+            else:
+                w.raise_()
+        return pending
+
+    def _restack_later(self):
+        self._restack()
+        return False
 
     # -- test hook: geometry dumps -------------------------------------------
 
