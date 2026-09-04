@@ -425,6 +425,66 @@ what it pulls), `wbritish` (the installer's own language-support step, not ours)
 the `-30` files stay because nothing runs `autoremove`). The 13 snaps match the manifest
 exactly. Nothing is missing from it.
 
+*What a run on it actually found.* The repo README's install guide was followed on this image
+verbatim — `sudo apt install git python3-venv`, `git clone`, `python3 -m venv
+--system-site-packages`, `pip install -e .`, the five `/usr/local/bin` symlinks,
+`warandr.desktop`, `sh gnome/install-bridge.sh`, one session restart, `sudo sh
+gnome/install-bridge.sh --udev` — and then all five tools were exercised against a real
+Ptyxis window on the three-head layout, as the desktop user and as root over ssh with `env
+-i`. **Nothing had to be adapted.** Every stock fact the guide asserts holds here: no `pip`,
+no `venv`, no `pipx`, no `git`, no `curl`; `python3-setuptools`, `python3-gi`,
+`gir1.2-gtk-3.0`, `acl`, `x11-utils`, `x11-xserver-utils` present. `install-bridge.sh`
+printed exactly the documented "log out and back in" text and exit 1; after the relogin
+`--check` said `loaded in shell: yes` / `org.fuckwayland.Bridge owned: yes` / `uinput usable
+by test: yes (logind ACL)`; `wdotool --version` … `warandr --version` printed the five
+documented strings; `wxrandr --print-backend --verbose` said `mutter`; typing landed in the
+terminal; the `warandr` GUI opened with `backend: mutter (Wayland)`, a monitor dragged in it
+and applied with a click changed the real layout, `warandr --save` wrote an
+arandr-compatible script, and that script bound to `<Ctrl><Super>F7` and pressed with
+`wdotool key ctrl+super+F7` restored its layout.
+
+The same script was then run on `resolute-gnome`. Out of 220 lines of output the two images
+differ in **21**, and every one of them is the environment rather than a tool:
+
+| what differs | `resolute-gnome-iso` | `resolute-gnome` |
+|---|---|---|
+| `command -v xdotool` | nothing — a default install has neither `xdotool` nor `wmctrl` | `/usr/bin/xdotool` |
+| screen lock / idle / suspend | `lock-enabled true`, `idle-delay 300`, `sleep-inactive-ac-type 'suspend'` | `false`, `0`, `'nothing'` (gschema override) |
+| `_NET_SUPPORTING_WM_CHECK` | `0x400001` | `0x200001` — Xwayland is already running at login here, so it hands out different ids |
+| window ids, timestamps | differ per boot | differ per boot |
+
+Everything else — the five version strings, the backend line, `wwmctl -l/-lx/-lG`,
+`getdisplaygeometry` `5760 1080`, every `windowmove`/`windowsize`/`windowstate` result,
+`getmouselocation`, all of `wxprop`, the dynamic-workspaces warning, all nine `wxrandr`
+layout operations, `warandr --command`/`--save`, the hotkey, and the locked-screen messages
+— is byte-identical. **A claim measured on `resolute-gnome` has, for these five tools, been
+true of a default install.**
+
+Two behaviours the run turned up. Both reproduce **identically on both images**, so neither is
+about the default install; both are in tool code this branch deliberately does not touch, and
+both want scheduling:
+
+1. **`wwmctl -b remove,maximized_vert,maximized_horz` removes only the horizontal half, and
+   corrupts the window's saved size.** Single-axis add and remove are both correct, and
+   `-b add,maximized_vert,maximized_horz` correctly maximizes both. But removing both in one
+   command leaves a window that was `200 150 900 600` at `200 32 900 1048` — full height —
+   and from there `-b remove,maximized_vert`, `wdotool windowstate --remove MAXIMIZED_VERT`
+   and even `--toggle MAXIMIZED_VERT` twice all do nothing: Mutter now reports the window
+   unmaximized while its saved rectangle has kept the maximized height, so only an explicit
+   `windowsize` gets it back. `wmctrl -b remove,maximized_vert,maximized_horz` is the
+   documented way to unmaximize a window, so this is on a path people use. The two axes go
+   out as two separate `SetState` calls (`extension.js` `setMaximized()` →
+   `set_unmaximize_flags()`); the add path survives that and the remove path does not.
+2. **`wdotool windowstate` honours only the last `--add`/`--remove`/`--toggle` on the line.**
+   `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` maximizes horizontally only, and
+   `--add MAXIMIZED_VERT --remove SHADED` attempts the `SHADED` remove alone. The cause is
+   plain in `wdotool/window_cmds.py` `cmd_windowstate()`, whose option loop overwrites
+   `action`/`prop` on every iteration. Whether that is a *defect* or faithful parity is the
+   open question and it cannot be settled on this rig: both goldens carry `xdotool
+   3.20160805.1`, which has no `windowstate` at all, and parity is claimed against
+   4.20260303.1. Settle it against a 4.x binary first; if upstream applies each option, fix
+   the loop, and either way say which in the README, because the current text says nothing.
+
 Adding a flavor: copy a yaml, change `hostname`, `# vmctl-base:`, `# vmctl-desktop:` and
 `/etc/vmctl-build.env` (`DESKTOP`, `DESKTOP_PKG`, `EXTRA_PKGS`). A new *desktop* additionally
 needs a branch in `build-image.sh`, an entry in `vmctl`'s `DESKTOPS` table (session kind, logind
@@ -793,6 +853,16 @@ A cron-started tool must therefore wait for the session and set them itself:
 * **An ISO flavor's golden has no backing file.** `vmctl build`'s goldens are overlays on a
   cloud image in `~/images/` by absolute path; `vm/build-iso-golden.sh`'s is the installed disk
   itself, so it can be copied anywhere on its own — but it is 8.7 GB, not a few hundred MB.
+* **Logging out of a GNOME flavor parks it at the greeter, for good.** GDM performs an
+  automatic login **once per boot** — deliberately, so that a user who logs out can reach the
+  greeter — and these VMs have no keyboard to type a password into one (QEMU's D-Bus display
+  is output only). So `gnome-session-quit --logout`, or anything else that ends the session,
+  leaves `loginctl` showing only `gdm-greeter` on seat0 and `vmctl session` timing out with
+  `no active wayland session for user test`. When a test needs the "log out and back in" that
+  installing the GNOME Shell extension asks for, **reboot the instance** (`vmctl ssh <name> --
+  systemctl reboot`, then `vmctl session <name>`); autologin fires again on the fresh boot.
+  Measured identically on `resolute-gnome-iso` and `resolute-gnome`, so it is the rig, not the
+  image — and not something a person at a real keyboard ever sees.
 * **`resolute-gnome-iso` is the flavor that is allowed to be untidy.** Anything that makes a
   test on it pass by turning a default off belongs in the *test*, not in the image: quietly
   patching the image is how the cloud-image flavors came to differ from a real install by 226 packages, 55

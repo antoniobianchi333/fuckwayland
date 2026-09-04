@@ -659,6 +659,7 @@ If something did not work, the first thing to try:
 | `warandr: GTK 3 for Python is not available` | `sudo apt install python3-gi gir1.2-gtk-3.0` — and the venv must have been made `--system-site-packages` |
 | `xdotool: … no real xdotool was found on PATH`, exit 127 | you are on X11: `sudo apt install xdotool wmctrl` |
 | the tool does something you did not expect on X11 | it *is* the original there; `FUCKWAYLAND_PASSTHROUGH=never` runs our own code instead |
+| `gnome backend: the fuckwayland bridge is unavailable while the screen is locked` | unlock the session. GNOME Shell shuts its extensions down behind the lock screen, so every window command stops until you unlock — and a **default** Ubuntu desktop locks itself after 5 minutes idle (`org.gnome.desktop.session idle-delay 300`, `screensaver lock-enabled true`), which is why an unattended script that worked in the morning can fail in the afternoon. `wxrandr`, `warandr` and `wdotool`'s input commands are unaffected: they do not go through the extension |
 
 ## Desktop support
 
@@ -682,6 +683,26 @@ the first-run experience, screen lock and automatic updates still switched on �
 added to the default set (`openssh-server`, the only way into a VM) and nothing removed.
 The cells below are still the measurement on the nine; the default install is what they get
 re-measured on. How it is built and every deviation from stock: `vm/README.md`.
+
+**What that image says about this guide.** The install above was then run on it *verbatim*,
+as a reader would: `sudo apt install git python3-venv`, clone, venv, `pip install -e .`, the
+`/usr/local/bin` symlinks, `gnome/install-bridge.sh`, one logout, `--udev`. Every command
+worked as written and nothing had to be adapted — the stock facts the guide leans on hold on
+a real default install (no pip, no venv, no pipx, no `git`, no `curl`; `python3-setuptools`,
+`python3-gi`, `gir1.2-gtk-3.0`, `acl`, `x11-utils` and `x11-xserver-utils` all present, so
+`warandr`'s GUI comes up with nothing extra installed). All five tools then behaved
+**identically to the cloud-image `resolute-gnome`**, as the desktop user and as root over
+ssh with an empty environment. Two things about a default install are worth knowing before
+you trust a script on one, and neither is visible on the cloud-image flavors, which switch
+both off:
+
+* **it locks itself.** `idle-delay 300` and `lock-enabled true` are the defaults, and GNOME
+  Shell disables extensions behind the lock screen — so five idle minutes turn every window
+  command into `gnome backend: the fuckwayland bridge is unavailable while the screen is
+  locked`, rc 1 (rc 2 for `wdotool`). `wxrandr`, `warandr` and input injection keep working.
+* **it has no `xdotool` and no `wmctrl`**, so the [X11](#x11) hand-over has nothing to hand
+  to until you `sudo apt install xdotool wmctrl`. On a Wayland session nothing hands over,
+  so this only bites on an X11 session or under `FUCKWAYLAND_PASSTHROUGH=always`.
 
 The last column is a *session type*, not a desktop: what an X11 session gets is the
 real tools, whichever desktop is drawing it.
@@ -1768,11 +1789,12 @@ real Ubuntu 26.04 VM before it shipped. Vibe-check the code yourself — it can 
 ## Testing
 
 Developed against real desktops, not against a model of them. `vm/` is the rig:
-`vmctl` builds and runs seven golden images — GNOME, KDE Plasma, Xfce and sway on
-Ubuntu 24.04 and 26.04 — each with up to four virtual monitors that can be
+`vmctl` builds and runs eight golden images — GNOME, KDE Plasma, Xfce and sway on
+Ubuntu 24.04 and 26.04, plus one Ubuntu 26.04 desktop **installed from the release
+ISO by the Ubuntu installer** — each with up to four virtual monitors that can be
 plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/selftest.sh <flavor>` is its own check; `vm/README.md`
-documents the whole thing, including what the four tools do on each flavor.
+documents the whole thing, including what the five tools do on each flavor.
 
 The original sway rig (`mkvm.sh`, `run.sh`, `compositor.sh`) is still there and
 still works. `tests/` holds the suite: unit tests, wire-level fake compositors
