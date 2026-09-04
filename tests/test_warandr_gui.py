@@ -36,6 +36,7 @@ without any display must end in one line, not a traceback.
 
 Set WARANDR_TEST_SHOTS=DIR to keep `import -window root` screenshots."""
 
+import fcntl
 import json
 import os
 import shutil
@@ -142,6 +143,8 @@ class GuiSession(XvfbCase):
 
     STATE = None
     NBOXES = 3
+    SLOW_QUERY = None        # seconds a *query* takes (tests/fixtures/
+                             # slow_xrandr.py); None: the instant fake
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="warandr-gui-")
@@ -159,12 +162,17 @@ class GuiSession(XvfbCase):
             "WARANDR_TEST_LAYOUT_DUMP": self.dump,
             "WARANDR_TEST_SAVE_AS": self.saved,
         })
+        if self.SLOW_QUERY is not None:
+            env["WARANDR_XRANDR"] = "%s %s" % (
+                sys.executable, os.path.join(FIXTURES, "slow_xrandr.py"))
+            env["SLOW_QUERY"] = str(self.SLOW_QUERY)
         self.env = env
         self.app_log = open(os.path.join(self.tmp, "app.log"), "w")
         self.launch()
 
     def launch(self):
         after = len(self.dumps())      # a relaunch must not match old dumps
+        self.mark = after              # where this run's dumps start
         self.app = subprocess.Popen([sys.executable, "-m", "warandr"],
                                     env=self.env, stdout=self.app_log,
                                     stderr=subprocess.STDOUT)
@@ -185,11 +193,19 @@ class GuiSession(XvfbCase):
     # -- helpers ------------------------------------------------------------
 
     def dumps(self):
+        out = []
         try:
             with open(self.dump) as f:
-                return [json.loads(ln) for ln in f if ln.strip()]
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except ValueError:
+                        pass     # a line the editor is still writing
         except OSError:
-            return []
+            pass
+        return out
 
     def wait_dump(self, kind, pred=lambda d: True, timeout=15, after=0):
         deadline = time.time() + timeout
@@ -476,6 +492,19 @@ class GuiDrive(GuiSession):
             {"Automatic": True, "X11 (xrandr)": True, "sway": False,
              "wlroots (wlr)": False, "GNOME (mutter)": True,
              "KDE (kwin)": False})
+        # a Wayland driver only gets the model, so the indicator's popup has
+        # to report one: it is popped at the pointer, like the canvas menus
+        self.assert_modelled(menu)
+        # ...and this is the menubar's own Backend menu, so its next drop
+        # from Layout ▸ Backend is modelled from the item again
+        self.xdo("key", "Escape")
+        menu2, _n3 = self.open_backend_menu(len(self.dumps()))
+        self.assert_modelled(menu2)
+        self.xdo("key", "Escape", "key", "Escape")
+        n = len(self.dumps())
+        self.click(rect)
+        menu, n2 = self.wait_dump("menu", lambda d: d["name"] == "backend"
+                                  and "Automatic" in d["items"], after=n)
 
         # and it drives: pick GNOME from the menu the indicator opened
         self.click(menu["items"]["GNOME (mutter)"])
@@ -581,8 +610,12 @@ class GuiDrive(GuiSession):
         self.app.terminate()
         self.app.wait(5)
         lay, n = self.launch()
-        d, n = self.backend_dump(lambda d: d["available"], after=n)
+        # the identify answer and the first layout land in whichever order
+        # the two startup reads finish, so look from the relaunch, not from
+        # the layout dump
+        d, n = self.backend_dump(lambda d: d["available"], after=self.mark)
         self.assertEqual(d["indicator"], "backend: xrandr (X11)")
+        n = max(n, len(self.dumps()))
         menu, n = self.open_backend_menu(n)
         self.click(menu["items"]["GNOME (mutter)"])
         d, n = self.backend_dump(lambda d: not d["ok"], after=n)
@@ -763,6 +796,16 @@ class GuiProbe(XvfbCase):
         self.assertEqual(res["save_hint"], "saved %s - note: wxrandr is not "
                          "on PATH, the script needs it" % res["saved_path"])
         self.assertEqual(res["save_nohint"], "saved " + res["saved_path"])
+        # Save As appends `.sh` after the chooser's overwrite check, so the
+        # chooser never asks about the file that really gets replaced
+        self.assertTrue(res["sh_overwrite_asks"], res)
+        self.assertEqual(res["sh_overwrite_prompt"],
+                         "A file named \u201cdesk.sh\u201d already exists.\n"
+                         "Do you want to replace it?")
+        self.assertTrue(res["sh_overwrite_quiet_when_new"], res)
+        self.assertTrue(res["sh_overwrite_quiet_when_typed"], res)
+        self.assertEqual(res["sh_overwrite_kept"],
+                         "#!/bin/sh\n# an earlier layout\n")
         # popup menus do not accumulate
         self.assertTrue(res["popup_released"], res)
         self.assertLessEqual(res["popups_alive"], 1, res)
@@ -772,6 +815,34 @@ class GuiProbe(XvfbCase):
                          (4, [4]), res)
         self.assertEqual((res["zoom_out_factor"], res["zoom_out_radio"]),
                          (16, [16]), res)
+        # a redraw arriving while the Outputs drop-down is open leaves it
+        # alone (destroying a mapped menu strands the X pointer grab) and
+        # rebuilds it when it closes
+        self.assertTrue(res["outputs_menu_mapped"], res)
+        self.assertTrue(res["menu_kept_while_open"], res)
+        self.assertTrue(res["menu_still_mapped"], res)
+        self.assertTrue(res["menu_rebuilt_on_close"], res)
+        self.assertEqual(res["menu_rebuilt_items"], ["DP-1", "HDMI-1"], res)
+        # a backend read runs off the main loop too, not only Apply: Ctrl+N
+        # returns at once against a backend that takes 1.5 s to answer, the
+        # window keeps ticking, and the toolbar says so
+        self.assertLess(res["reload_returned_s"], 0.5, res)
+        self.assertTrue(res["reload_busy"], res)
+        self.assertEqual(res["reload_status"],
+                         "reading the screen configuration...")
+        self.assertTrue(res["reload_finished"], res)
+        self.assertLess(res["reload_longest_gap_s"], 0.5, res)
+        self.assertEqual(res["reload_snapshots"], 1, res)
+        # and one that fails keeps the layout that is on screen
+        self.assertEqual(res["reload_fail_dialog"],
+                         "Cannot read the screen configuration:\n"
+                         "stub: cannot open display")
+        self.assertTrue(res["reload_fail_keeps_layout"], res)
+        # a menu that was open when an Apply landed edits the layout that
+        # replaced the one it was built from, not the discarded one
+        self.assertTrue(res["stale_menu_is_not_live"], res)
+        self.assertEqual(res["stale_menu_edits_live"], "left", res)
+        self.assertEqual(res["stale_layout_untouched"], "normal", res)
         # per-output menu shape
         self.assertEqual(res["menu_x11"],
                          ["Active", "Primary", "Resolution", "Orientation",
@@ -862,6 +933,76 @@ class BackendCli(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         self.assertIn("--backend NAME", p.stdout)
         self.assertIn("--print-backend", p.stdout)
+
+
+@unittest.skipUnless(HAVE_GTK, "GTK 3 not importable (python3-gi + "
+                     "gir1.2-gtk-3.0)")
+@unittest.skipUnless(HAVE_X, "Xvfb/xdotool not on PATH")
+class MenuVsApply(GuiSession):
+    """An Apply that lands while the menubar's Outputs drop-down is open used
+    to rebuild it under itself: `set_submenu()` destroys the menu it replaces,
+    and destroying a *mapped* menu destroys the window holding the X pointer
+    grab -- which X then keeps, freezing every other client on the session
+    until warandr exits.  The backend read is slowed down so the Apply can be
+    made to land at exactly that moment."""
+
+    SLOW_QUERY = 4
+
+    def other_client(self):
+        """A second GTK client on the display: it answers a click unless
+        somebody holds a session-wide grab."""
+        o = subprocess.Popen([sys.executable,
+                              os.path.join(FIXTURES, "other_client.py")],
+                             env=self.env, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        self.addCleanup(o.terminate)
+        self.assertEqual(o.stdout.readline().strip(), "READY")
+        flags = fcntl.fcntl(o.stdout, fcntl.F_GETFL)
+        fcntl.fcntl(o.stdout, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        return o
+
+    def other_answers(self, other, tries=4):
+        """Escape, then up to `tries` clicks on it: an open menu legitimately
+        eats the click that dismisses it, so one alone proves nothing."""
+        self.xdo("key", "Escape")
+        for i in range(tries):
+            self.xdo("mousemove", 950, 730, "click", 1)
+            time.sleep(0.6)
+            try:
+                if other.stdout.read():
+                    return i + 1
+            except (OSError, ValueError, TypeError):
+                # a non-blocking text stream with nothing in it: the raw
+                # read gives None, which the decoder refuses
+                pass
+        return 0
+
+    def test_apply_under_the_open_outputs_menu(self):
+        other = self.other_client()
+        self.assertTrue(self.other_answers(other),
+                        "the rig is wedged before warandr did anything")
+        lay, n = self.wait_dump("layout", lambda d: d["settled"], timeout=30)
+        self.click(lay["buttons"]["apply"])
+        time.sleep(0.5)
+        self.click(lay["menubar"]["Outputs"])
+        # the drop-down is provably up: the editor dumps it when it pops
+        self.wait_dump("menu", lambda d: d["name"] == "outputs", after=n,
+                       timeout=15)
+        time.sleep(self.SLOW_QUERY + 2.0)   # the Apply lands with it open
+        self.assertTrue(self.other_answers(other),
+                        "the X pointer grab was stranded: the rebuild "
+                        "destroyed the menu that held it")
+        self.app_log.flush()
+        self.assertNotIn("Gtk-CRITICAL", open(self.app_log.name).read())
+        # and the drop-down is still usable afterwards: it lists the outputs
+        # the Apply's fresh layout has
+        after = len(self.dumps())
+        self.xdo("key", "Escape")
+        self.click(lay["menubar"]["Outputs"])
+        d, _ = self.wait_dump("menu", lambda d: d["name"] == "outputs",
+                              after=after, timeout=15)
+        self.assertEqual(sorted(d["items"]),
+                         ["DP-1", "DP-2", "HDMI-1", "HDMI-2"])
 
 
 @unittest.skipUnless(HAVE_GTK, "GTK 3 not importable")

@@ -31,6 +31,7 @@ import copy
 import dataclasses
 import fcntl
 import json
+import math
 import os
 import re
 import socket
@@ -215,13 +216,60 @@ def layout_box(outputs) -> tuple[int, int, int, int]:
             max(o.x + o.w for o in act), max(o.y + o.h for o in act))
 
 
+# -- wlroots scale arithmetic -------------------------------------------------
+#
+# Two single-precision steps, and both of them matter.  sway quantises any
+# scale it is given to 120ths -- fractional-scale-v1's unit -- in float32
+# (sway 1.9 output.c: `scale = round(scale * 120) / 120`), and
+# wlr_output_effective_resolution then divides the pixel size by that float
+# and truncates.  Modelling either step in double gets real layouts wrong.
+SCALE_STEPS = 120
+WL_FIXED_UNIT = 256
+
+
+def f32(x: float) -> float:
+    """`x` at the width wlroots keeps a scale and does its division at."""
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def round_half_away(x: float) -> int:
+    """C round(): halves go away from zero (Python's round() is banker's)."""
+    r = int(math.floor(abs(x) + 0.5))
+    return r if x >= 0 else -r
+
+
+def wlr_scale(scale: float, wire: str = "text") -> float:
+    """The scale a wlroots compositor really ends up running.
+
+    What it quantises depends on how the number reached it.  The sway IPC
+    takes it as text (`output NAME scale 1.03`, printed with %g and read back
+    with strtof); zwlr_output_management takes a wl_fixed, and wayland_mini's
+    marshaller truncates to 256ths on the way out.  So `--scale 1.03` runs as
+    1.0333 on the sway backend and as 1.025 on the wlr one, and a predicted
+    logical size has to know which it is being asked about -- placing the
+    neighbour of a fractionally scaled output against the wrong one leaves a
+    gap or an overlap of 1-10 px that nobody asked for."""
+    if wire == "fixed":
+        scale = int(scale * WL_FIXED_UNIT) / float(WL_FIXED_UNIT)
+    else:
+        scale = float("%g" % scale)
+    return f32(round_half_away(f32(scale) * SCALE_STEPS) / SCALE_STEPS)
+
+
 def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float
                  ) -> tuple[int, int]:
-    """Predict sway/wlroots logical dimensions: transform swap, then truncated
-    division by scale (observed: 1111/1.5->740, 1281/2->640, 1280/1.5->853)."""
+    """sway/wlroots logical dimensions: the transform swap, then
+    wlr_output_effective_resolution -- `*width /= output->scale` with an int
+    on the left and a C float on the right, so a single-precision division
+    truncated back to an int (observed: 1111/1.5->740, 1281/2->640,
+    1280/1.5->853, and 1920/1.6->1200 where a double division says 1199).
+
+    `scale` is what the compositor RUNS, not what was asked for: a prediction
+    passes it through wlr_scale() first."""
     if transform_swaps(sway_tf):
         px_w, px_h = px_h, px_w
-    return (int(px_w / scale), int(px_h / scale))
+    return (int(f32(f32(px_w) / f32(scale))),
+            int(f32(f32(px_h) / f32(scale))))
 
 
 # -- sway IPC -----------------------------------------------------------------
@@ -404,7 +452,19 @@ class State:
             self._orig = copy.deepcopy(merged)
             tmp = "%s.%d.tmp" % (self.path, os.getpid())
             try:
-                with open(tmp, "w") as f:
+                # O_EXCL|O_NOFOLLOW: the default state path is under /tmp
+                # when there is no XDG_RUNTIME_DIR, so the name is guessable
+                # and the directory is shared.  A symlink planted there must
+                # not be written through, and a leftover from a crashed run
+                # of ours (the name carries our pid) is unlinked, not opened.
+                flags = (os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                         | os.O_NOFOLLOW)
+                try:
+                    fd = os.open(tmp, flags, 0o600)
+                except FileExistsError:
+                    os.unlink(tmp)      # removes a symlink, not its target
+                    fd = os.open(tmp, flags, 0o600)
+                with os.fdopen(fd, "w") as f:
                     json.dump(disk, f)
                 os.replace(tmp, self.path)
             except OSError as e:
@@ -434,11 +494,23 @@ class State:
             self.d["primary"] = name
 
     # custom modes -----------------------------------------------------------
+    def _container(self, key: str) -> dict:
+        """One of the store's sub-dicts, coerced.  The state file is a plain
+        JSON file, hand-editable by design and shared by every wxrandr in the
+        session: a value of the wrong type used to survive setdefault() and
+        come back as a str, an int or a list, whose next [] or .get() raises
+        a TypeError somewhere else entirely.  __init__ already does exactly
+        this for the top level."""
+        d = self.d.get(key)
+        if not isinstance(d, dict):
+            d = self.d[key] = {}
+        return d
+
     def modes(self) -> dict:
-        return self.d.setdefault("modes", {})
+        return self._container("modes")
 
     def addmodes(self) -> dict:
-        return self.d.setdefault("addmode", {})
+        return self._container("addmode")
 
     def custom_mode(self, name: str) -> Mode | None:
         m = self.modes().get(name)
@@ -466,11 +538,11 @@ class State:
 
     # gamma holders ----------------------------------------------------------
     def gamma(self) -> dict:
-        return self.d.setdefault("gamma", {})
+        return self._container("gamma")
 
     # last known pixel mode of outputs wxrandr disabled ----------------------
     def lastmodes(self) -> dict:
-        return self.d.setdefault("lastmode", {})
+        return self._container("lastmode")
 
 
 # -- wlr-output-management snapshot + atomic apply ----------------------------
@@ -623,9 +695,18 @@ class WlrOutputs:
             self.conn.send(ch, 4, [("f", t.scale)])
         self.conn.send(conf, 2, [])  # apply
         deadline = time.monotonic() + 10.0
-        while not result and time.monotonic() < deadline:
-            if not self.conn.dispatch(timeout=1.0):
-                continue
+        try:
+            while not result and time.monotonic() < deadline:
+                if not self.conn.dispatch(timeout=1.0):
+                    continue
+        finally:
+            # whatever happens in here, the socket keeps a deadline: the
+            # post-apply re-read must not block forever on a compositor that
+            # has gone quiet (kwin.py carries the same guard)
+            try:
+                self.conn.sock.settimeout(10.0)
+            except OSError:
+                pass
         try:
             self.conn.send(conf, 4, [])  # destroy
         except OSError:
@@ -885,7 +966,7 @@ def build_targets(outputs: list, stanzas: list, state: State,
             t.sway_tf = sway_transform(rot, refl)
         if s.scale is not None:
             sx, sy = s.scale
-            if sx != sy:
+            if sx != sy and sx == sx and sy == sy:   # a nan differs from itself
                 warn("anisotropic scaling %gx%g not supported on Wayland; "
                      "using %g for both axes\n" % (sx, sy, sx))
             t.scale = sx
@@ -912,9 +993,12 @@ def build_targets(outputs: list, stanzas: list, state: State,
     return [targets[o.name] for o in outputs]
 
 
-def predicted_dims(t: Target, state: State) -> tuple[int, int]:
+def predicted_dims(t: Target, state: State, wire: str = "text"
+                   ) -> tuple[int, int]:
     """Pending logical size of an enabled target (for dryrun + wlr backend +
-    relative math when we cannot re-read)."""
+    relative math when we cannot re-read).  `wire` is how the scale will
+    reach the compositor -- "text" over the sway IPC, "fixed" over
+    zwlr_output_management -- because that decides which 120th it lands on."""
     mode = t.mode
     if mode is None:
         last = state.lastmodes().get(t.name)
@@ -924,7 +1008,7 @@ def predicted_dims(t: Target, state: State) -> tuple[int, int]:
             mode = t.output.modes[0]
         else:
             mode = Mode(w=1280, h=720)  # sway headless default
-    return logical_size(mode.w, mode.h, t.sway_tf, t.scale)
+    return logical_size(mode.w, mode.h, t.sway_tf, wlr_scale(t.scale, wire))
 
 
 def resolve_positions(targets: list, dims: dict) -> dict:
@@ -1122,7 +1206,7 @@ def apply_wlr(wlr: WlrOutputs, state: State, targets: list):
     dims = {}
     for t in targets:
         if t.enabled:
-            dims[t.name] = predicted_dims(t, state)
+            dims[t.name] = predicted_dims(t, state, wire="fixed")
     pos = resolve_positions(targets, dims)
     wlr.apply({t.name: t for t in targets}, pos)
 

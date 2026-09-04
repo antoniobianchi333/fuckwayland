@@ -15,6 +15,21 @@ the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
   apply of whole-layout configurations, which is exactly xrandr's model. This is the
   backend that makes crazy configs atomic: build the full config, apply once, handle
   `succeeded/failed/cancelled` events.
+- **wlroots scale arithmetic** (`core.wlr_scale` / `core.logical_size`, both
+  backends above): sway quantises any scale it is handed to 120ths —
+  fractional-scale-v1's unit — in float32 (`scale = round(scale * 120) / 120`,
+  sway 1.9 `output.c`), and `wlr_output_effective_resolution` then divides the
+  pixel size by that float and truncates. **What it is handed depends on the
+  transport**: the sway IPC takes the number as text (`output NAME scale 1.03`),
+  while `zwlr_output_management` takes a `wl_fixed` that `wayland_mini`'s
+  marshaller truncates to 256ths — so `--scale 1.03` runs as 1.0333 on the sway
+  backend and as 1.025 on the wlr one, and `--query` will say so. Both steps are
+  single precision and both matter: a double division puts 1920 ÷ 1.6 at 1199
+  where the compositor has 1200. The wlr backend is one atomic call with no
+  phase-2 re-read, so a position computed from the number the user typed is the
+  position the layout keeps — measured against a live sway at 201 scales per
+  backend (`tests/test_wxrandr_unit.py::WlrootsScale` pins the captures,
+  `test_wxrandr_live.py::test_42` re-measures).
 - **--brightness**: gamma via `zwlr_gamma_control_manager_v1` (ramps computed like
   xrandr's gamma math, passed over an fd). The control dies with its client, so a
   non-1.0 brightness forks a tiny detached holder process per output (pattern: the
@@ -209,7 +224,7 @@ What maps:
 | `--mode/--rate/--auto/--preferred` | mode id chosen by size + nearest rate |
 | `--scale S` | snapped to the nearest of the mode's `supported_scales` (warning when it changed); logical size = `roundf(px / scale)` in layout-mode 1, raw pixels in layout-mode 2 (GNOME 46 without "Fractional Scaling": integer scales only) — the dryrun plan uses the same math |
 | `--pos`, `--left-of/--right-of/--above/--below` | positions in Mutter's logical space, resolved against pending sizes like everywhere else |
-| `--same-as` | one logical monitor with several members (Mutter requires the same mode, rotation and scale: otherwise `xrandr: cannot mirror B onto A: ...`) |
+| `--same-as` | one logical monitor with several members (Mutter requires the same mode, rotation and scale: otherwise `xrandr: cannot mirror B onto A: ...`). Mutter flags the primary *logical monitor*, not a connector, so a mirror group holds several and names none: wxrandr keeps whichever member the user made primary and falls back to the group's first only when the choice is not in it (taking the first outright moved the primary onto whichever output the group happened to be built around) |
 | `--primary` | the real primary flag (exactly one; what Mutter reports overrides the state file). GNOME 50 keeps a stale `primary=true` on the previous logical monitor after a temporary re-primary (until that monitor is rebuilt), so when several are flagged the legacy `GetResources` output property `primary` — which tracks the real one, as XWayland shows — breaks the tie |
 | `--off` | the connector is left out of the configuration. A disabled output cannot stay primary on Mutter (X keeps the flag and prints `connected primary` for it): the primary moves to the first enabled output and the query shows it there |
 | `--listmonitors` | one RandR monitor per active output, the primary listed first (the X server orders monitors that way; verified against real xrandr on GNOME 50) |
@@ -405,6 +420,43 @@ mid-apply and the query bytes.
   the whole target layout first, then apply; on the wlr backend literally atomic).
 - Errors byte-styled like xrandr ("cannot find output", "cannot find mode") with its
   exit codes.
+
+## Known limitations
+
+Measured, understood, and left as they are. Each says why.
+
+- **`--reflect y` and `--reflect xy` are not idempotent.** Wayland has eight
+  transforms where RandR has sixteen (rotation × reflection) pairs, so
+  `core.RANDR_VIEW` has to read every flipped transform back as a reflection in
+  *x* — the compositor cannot tell us which axis the user meant. Repeating
+  `--reflect y` therefore composes with what is already there instead of being a
+  no-op: `normal → y → (x, rotated 180) → ...`. `--reflect x` and
+  `--reflect normal` are unaffected. Spell **both** `--rotate` and `--reflect` in
+  the same command and the result is exact whatever the current state (which is
+  what the saved layout lines and the `--restore` path already do).
+- **sway's two-phase apply can be interrupted.** The sway backend applies modes,
+  scales and transforms in one IPC batch, re-reads the logical sizes the
+  compositor really produced, and pins the positions in a second batch — the
+  re-read is what makes relative placement exact there. A signal in the 0.04–0.06 s
+  between the two leaves the modes applied and the positions stale, exactly as
+  killing xrandr between two CRTC calls does on X11. Mutter (one
+  `ApplyMonitorsConfig`) and KWin (one configuration) are atomic and have no such
+  window; the wlr backend is one atomic call as well. Re-running the same command
+  converges.
+- **`--primary` on a disabled output does different things per backend.** On
+  Mutter and KWin it is a silent no-op — neither compositor will hold a primary
+  flag on an output that is not in the configuration — while sway and the wlr
+  backend keep it in the state file and show it again when the output comes back.
+  xrandr on X11 keeps the flag and prints `connected primary` for a disabled
+  output, so no behaviour here is "the" right one, and wxrandr warns about none of
+  them.
+- **The warn-and-ignore options do not validate their argument.** `--panning`,
+  `--setmonitor`, `--transform`, `--set` and a `--scale-from 0x0` warn that they
+  do nothing on Wayland and succeed, without looking at what they were given —
+  so four argv forms that real xrandr rejects are accepted here. This is
+  deliberate: refusing an argument to an option that has no effect would fail
+  scripts that the tool otherwise runs unchanged, which is the whole point of the
+  warn-and-ignore set.
 
 ## Crazy-config requirements (torture will check these)
 

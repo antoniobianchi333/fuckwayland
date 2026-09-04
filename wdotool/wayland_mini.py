@@ -178,7 +178,14 @@ class WlConn:
         del self.handlers[cb]
 
     def dispatch(self, timeout: float | None = None) -> bool:
-        """Dispatch pending events; False on timeout without data."""
+        """Dispatch pending events; False on timeout without data.
+
+        The caller's own socket timeout is restored on the way out, never
+        cleared: a caller that armed a deadline before the loop (every
+        wxrandr backend does, so a compositor that goes quiet cannot hang
+        the CLI) would otherwise come back to a blocking socket and stall
+        forever on its next read.
+        """
         prev = self.sock.gettimeout()
         self.sock.settimeout(timeout)
         try:
@@ -188,7 +195,10 @@ class WlConn:
         finally:
             # the caller's own deadline, not None: restoring None left the
             # connection blocking for every later read
-            self.sock.settimeout(prev)
+            try:
+                self.sock.settimeout(prev)
+            except OSError:
+                pass
         return True
 
     def _dispatch_some(self):

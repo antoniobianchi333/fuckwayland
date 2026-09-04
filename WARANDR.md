@@ -256,6 +256,24 @@ timeout; Apply is greyed meanwhile); a non-zero exit shows stderr in an
 re-reading the screen); on success the screen is re-read. The status bar
 shows the command Apply would run.
 
+**Every backend read runs there too** — startup, New, Open and a backend
+switch — for the same reason: a read is an `xrandr --query`, on Wayland a
+`wxrandr --query` against a compositor that may be busy reconfiguring
+outputs or wedged, and the backend allows one up to 30 s. So the window is
+up and answering before the first layout is, the toolbar is greyed and the
+status bar says what is being read, and a read whose result a newer one has
+already superseded is dropped. A read that fails keeps the layout on screen
+and says so in a dialog; when there is no layout at all — the first read of
+all — warandr prints the same one `warandr:` line the command line would and
+exits 1.
+
+**Save As and the `.sh` suffix.** A layout script is saved with `.sh`, appended
+when the typed name has none — *after* the file chooser has confirmed
+overwriting the name it was given, so the chooser never asks about the file
+that really gets replaced. arandr 0.1.11 does the same, and silently: typing
+`desk` over an existing `desk.sh` loses it. warandr asks for that case itself,
+in the chooser's words, before writing anything.
+
 ## Layout scripts
 
 ```

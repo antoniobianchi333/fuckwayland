@@ -675,12 +675,76 @@ class Scripts(unittest.TestCase):
             "#!/bin/sh\nxrandr --output DP-1 --primary --output HDMI-1 "
             "--primary\n": "More than one primary",
             "#!/bin/sh\nxrandr --pos 0x0\n": "must be used after --output",
+            # a hand-edited --scale: the old `[0-9.]+` also matched these,
+            # and the bare float() behind it raised a ValueError that
+            # warandr's top level does not catch -- a traceback, not a line
+            "#!/bin/sh\nxrandr --output DP-1 --scale 1.2.3\n":
+                "failed to parse '1.2.3' as a scaling factor",
+            "#!/bin/sh\nxrandr --output DP-1 --scale .\n":
+                "failed to parse '.' as a scaling factor",
+            "#!/bin/sh\nxrandr --output DP-1 --scale .x.\n":
+                "failed to parse '.x.' as a scaling factor",
+            "#!/bin/sh\nxrandr --output DP-1 --scale nan\n":
+                "failed to parse 'nan' as a scaling factor",
+            # and 0, which set_scale has always refused, divided by in
+            # Output.size() when it came in through a script instead
+            "#!/bin/sh\nxrandr --output DP-1 --scale 0\n":
+                "scaling factors must be positive",
+            "#!/bin/sh\nxrandr --output DP-1 --scale 0x0\n":
+                "scaling factors must be positive",
         }
         for text, msg in cases.items():
             with self.assertRaises(LayoutError, msg=text) as cm:
                 lay.load_script(text)
             self.assertIn(msg, str(cm.exception))
             self.assertEqual(lay.args(), before)   # untouched on error
+
+
+class ScaleParsing(unittest.TestCase):
+    """``--scale`` out of a layout script goes through set_scale's own rule."""
+
+    def test_good_spellings(self):
+        for text, want in [("2", 2.0), ("1.5", 1.5), (".5", 0.5),
+                           ("1.", 1.0), ("1.5x1.5", 1.5), ("2x3", 2.0)]:
+            self.assertEqual(model._parse_stanzas(
+                ["--output", "DP-1", "--scale", text])[0]["scale"], want)
+
+    def test_zero_is_refused_here_as_in_set_scale(self):
+        with self.assertRaises(LayoutError) as cm:
+            model._parse_stanzas(["--output", "DP-1", "--scale", "0"])
+        self.assertEqual(str(cm.exception), "scaling factors must be positive")
+
+    def test_malformed_is_a_layout_error_not_a_value_error(self):
+        for text in ("1.2.3", ".", ".x.", "nan", "inf", "-1", "", "1e3"):
+            with self.assertRaises(LayoutError, msg=text):
+                model._parse_stanzas(["--output", "DP-1", "--scale", text])
+
+    def test_the_cli_prints_one_line_for_each(self):
+        tmp = tempfile.mkdtemp(prefix="warandr-scale-")
+        env = dict(os.environ)
+        env["WARANDR_XRANDR"] = "%s %s" % (
+            sys.executable, os.path.join(FIXTURES, "fake_xrandr.py"))
+        env["FAKE_XRANDR_STATE"] = os.path.join(tmp, "state.json")
+        env["PYTHONPATH"] = ROOT
+        for text in ("1.2.3", ".", "0", "nan"):
+            path = os.path.join(tmp, "layout.sh")
+            with open(path, "w") as f:
+                f.write("#!/bin/sh\nxrandr --output DP-1 --mode 1920x1080 "
+                        "--pos 0x0 --scale %s\n" % text)
+            p = subprocess.run([sys.executable, "-m", "warandr", "--command",
+                                path], env=env, capture_output=True,
+                               text=True, timeout=60)
+            self.assertEqual((p.returncode, p.stdout), (1, ""), text)
+            self.assertNotIn("Traceback", p.stderr)
+            self.assertEqual(len(p.stderr.strip().split("\n")), 1, p.stderr)
+            self.assertTrue(p.stderr.startswith("warandr: "), p.stderr)
+
+    def test_a_zero_scale_can_no_longer_reach_size(self):
+        o = model.Output("DP-1")
+        o.hidpi = True
+        o.mode = model.Mode("1920x1080", 1920, 1080, [60.0])
+        o.scale = 0.0                      # not reachable through the parser
+        self.assertEqual(o.size(), (1920, 1080))   # and no ZeroDivisionError
 
 
 class BackendChoice(unittest.TestCase):

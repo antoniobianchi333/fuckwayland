@@ -112,7 +112,8 @@ class Output:
         if self.mode is None:
             return (0, 0)
         w, h = self.mode.w, self.mode.h
-        if self.scale != 1.0:
+        if self.scale != 1.0 and self.scale > 0 and \
+                math.isfinite(self.scale):
             if self.hidpi:
                 w, h = int(w / self.scale), int(h / self.scale)
             else:
@@ -692,11 +693,7 @@ def _parse_stanzas(argv):
             cur["reflect"] = value()
             i += 2
         elif a == "--scale":
-            m = re.fullmatch(r"([0-9.]+)(?:x([0-9.]+))?", value())
-            if not m:
-                raise LayoutError("failed to parse '%s' as a scaling factor"
-                                  % value())
-            cur["scale"] = float(m.group(1))
+            cur["scale"] = _parse_scale(value())
             i += 2
         elif a == "--same-as":
             cur["same-as"] = value()
@@ -707,6 +704,23 @@ def _parse_stanzas(argv):
         else:
             raise LayoutError("Unsupported option in layout: %s" % a)
     return stanzas
+
+
+def _parse_scale(text):
+    """``--scale`` out of a layout script.  The old ``[0-9.]+`` also matched
+    ``1.2.3`` and ``.``, whose bare float() raised a ValueError that warandr's
+    top level does not catch (it handles RandrError/LayoutError/OSError), so a
+    hand-edited script ended in a traceback; and a parsed ``0`` was accepted
+    here although set_scale refuses it, then divided by in Output.size().
+    Both spellings now give the one ``warandr:`` line xrandr would."""
+    m = re.fullmatch(r"(\d+(?:\.\d*)?|\.\d+)(?:x(\d+(?:\.\d*)?|\.\d+))?",
+                     text)
+    if not m:
+        raise LayoutError("failed to parse '%s' as a scaling factor" % text)
+    scale = float(m.group(1))
+    if scale <= 0:
+        raise LayoutError("scaling factors must be positive")
+    return scale
 
 
 def _derive_scale(po, o, hidpi):

@@ -523,6 +523,35 @@ class WxrandrLiveTest(unittest.TestCase):
         w, h = self.bbox()
         self.assertIn("current %d x %d," % (w, h), out.splitlines()[0])
 
+    def test_42_wlr_relative_placement_at_fractional_scales(self):
+        """--right-of has to land edge to edge at any scale.  wlroots runs a
+        scale quantised to 120ths in float32, and the wl_fixed the wlr
+        backend sends is itself truncated to 256ths, so a position computed
+        from the number the user typed misses by 1-10 px -- a gap or an
+        overlap nobody asked for, and (unlike the sway backend) there is no
+        second phase to correct it."""
+        for asked in ("1.03", "1.08", "1.14", "1.35", "1.6", "2.67"):
+            with self.subTest(scale=asked):
+                rc, _o, err = self.wx(
+                    "--output", self.n1, "--scale", asked, "--pos", "0x0",
+                    "--output", self.n2, "--scale", "1", "--right-of",
+                    self.n1, WXRANDR_BACKEND="wlr")
+                self.assertEqual(rc, 0, err)
+                self.assertTrue(self.wait_layout(
+                    lambda: self.rect(self.n2)[0] ==
+                    self.rect(self.n1)[0] + self.rect(self.n1)[2]),
+                    "%s: %r" % (asked, self.outs()))
+        # put the wall back the way test_41 left it: the later tests build
+        # on that layout
+        rc, _o, err = self.wx(
+            "--output", self.n1, "--scale", "1", "--pos", "0x0",
+            "--output", self.n2, "--scale", "1", "--right-of", self.n1,
+            "--output", self.n3, "--scale", "1", "--same-as", self.n1,
+            WXRANDR_BACKEND="wlr")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(self.wait_layout(
+            lambda: self.rect(self.n2) == (1280, 0, 1024, 768)), self.outs())
+
     def test_50_negative_origin_normalizes_like_xrandr(self):
         rc, _o, err = self.wx("--output", self.n3, "--pos", "-500x-300")
         self.assertEqual(rc, 0, err)

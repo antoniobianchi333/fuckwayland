@@ -1032,6 +1032,27 @@ class Apply(KwinCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual((self.svc.created, self.svc.applied), (0, []))
 
+    def test_the_plan_lists_outputs_the_normalisation_moves(self):
+        """--dryrun/--verbose printed a crtc line only for the outputs the
+        command names.  Placing one at a negative coordinate slides the whole
+        layout back to the origin, so every *other* output moves too -- and
+        the plan said nothing about them."""
+        code, out, err = self.run_cli("--dryrun", "--output", "eDP-1",
+                                      "--pos", "-100x-50")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("screen 0: "), out)
+        crtcs = [ln for ln in lines if ln.startswith("crtc ")]
+        self.assertEqual(len(crtcs), 2, out)
+        self.assertIn('+0+0 "eDP-1"', crtcs[0])
+        self.assertIn('+2020+50 "DP-1"', crtcs[1])
+        # ...and the run it describes really does move both
+        code, _out, err = self.run_cli("--output", "eDP-1", "--pos",
+                                       "-100x-50")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.svc.applied[-1],
+                         [("position", "DP-1", (2020, 50))])
+
     def test_negative_positions_are_normalised(self):
         code, _out, err = self.run_cli("--output", "eDP-1", "--pos",
                                        "-100x-50")

@@ -34,7 +34,13 @@ from wxrandr.core import Mode, Stanza, State                    # noqa: E402
 
 #: every refusal reaches the user in Mutter's name: we pass overlapping and
 #: gapped layouts on unchanged, so a "no" is always GNOME's, not ours
-REFUSED = "xrandr: GNOME's Mutter refused this layout: %s\n"
+# Mutter's own sentence, plus the hint wxrandr adds to a geometry refusal
+# (the usual cause -- `--output MIDDLE --off` -- has one obvious answer, and
+# "Logical monitors not adjacent" does not say what it is)
+HINT = (" (GNOME allows neither a gap nor an overlap between outputs; "
+        "re-place the neighbours in the same command)")
+REFUSED = "xrandr: GNOME's Mutter refused this layout: %s" + HINT + "\n"
+PLAIN_REFUSED = "xrandr: GNOME's Mutter refused this layout: %s\n"
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -974,6 +980,32 @@ class Apply(MutterCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(self.lms()[1][:2], (1920, 0))
 
+    def test_same_as_keeps_the_primary_the_user_chose(self):
+        """Mutter flags the primary *logical monitor*, not a connector, so a
+        mirror group has several members and no order that means anything --
+        it is the order the group was built in.  Taking the first member
+        moved the primary onto whichever output happened to lead, silently
+        undoing a --primary the user had set on the other one."""
+        self.mock.mutter = two_monitors()
+        code, _out, err = self.run_cli("--output", "DP-1", "--primary")
+        self.assertEqual((code, err), (0, ""))
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected primary ", out)
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--same-as", "eDP-1")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(len(self.lms()), 1)          # one mirror group
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected primary 1920x1080+0+0 ", out)
+        self.assertNotIn("eDP-1 connected primary", out)
+        code, out, _err = self.run_cli("--listmonitors")
+        self.assertIn(" +*DP-1 ", out)
+        # ...and a primary that leaves the group falls back to a member
+        code, _out, err = self.run_cli("--output", "DP-1", "--off")
+        self.assertEqual((code, err), (0, ""))
+        code, out, _err = self.run_cli()
+        self.assertIn("eDP-1 connected primary ", out)
+
     def test_same_as_with_different_modes_is_fatal(self):
         self.mock.mutter = two_monitors()
         before = self.lms()
@@ -1115,7 +1147,7 @@ class Apply(MutterCase):
         code, out, err = self.run_cli("--output", "eDP-1", "--off", "--output", "DP-1",
                                       "--off", "--output", "HDMI-1", "--off")
         self.assertEqual((code, err),
-                         (1, REFUSED % "Monitors config incomplete"))
+                         (1, PLAIN_REFUSED % "Monitors config incomplete"))
 
     def test_pos_overlap_is_mutters_error(self):
         code, out, err = self.run_cli("--output", "DP-1", "--pos", "100x0")
@@ -1158,7 +1190,7 @@ class Apply(MutterCase):
     def test_apply_disabled_by_policy(self):
         self.svc.allowed = False
         code, out, err = self.run_cli("--output", "HDMI-1", "--off")
-        self.assertEqual((code, err), (1, REFUSED % "Monitor configuration "
+        self.assertEqual((code, err), (1, PLAIN_REFUSED % "Monitor configuration "
                                             "via D-Bus is disabled"))
 
     def test_primary_moves_and_query_shows_it(self):

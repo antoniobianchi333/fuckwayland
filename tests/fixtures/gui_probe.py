@@ -21,8 +21,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 sys.path.insert(0, ROOT)
 
 import gi                                                        # noqa: E402
+gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk                              # noqa: E402
+from gi.repository import Gdk, GLib, Gtk                         # noqa: E402
 
 from warandr import gui, randr, xrandr_parse                     # noqa: E402
 from warandr.model import Layout                                 # noqa: E402
@@ -37,14 +38,20 @@ SLEEP = 1.5
 
 
 class Stub(randr.Backend):
-    def __init__(self, wayland=False, rc=0):
+    def __init__(self, wayland=False, rc=0, read_delay=0.0, read_error=None):
         super().__init__(["stub"], wayland, env={}, source="stub")
         self.rc = rc
+        self.read_delay = read_delay     # a compositor that answers slowly
+        self.read_error = read_error     # ...or not at all
         self.snapshots = 0
         self.applied = []
 
     def snapshot(self):
         self.snapshots += 1
+        if self.read_delay:
+            time.sleep(self.read_delay)
+        if self.read_error:
+            raise randr.RandrError(self.read_error)
         return Layout.from_screen(xrandr_parse.parse(TEXT),
                                   hidpi=self.wayland, command_word=self.word)
 
@@ -175,6 +182,70 @@ def main():
     res["zoom_out_radio"] = [f for f, r in app._zoom_items.items()
                              if r.get_active()]
 
+    # -- a redraw must not destroy the Outputs drop-down while it is open ----
+    # (set_submenu() destroys the menu it replaces; destroying a mapped menu
+    # destroys the window holding the pointer grab, and X keeps that grab)
+    sub = app.outputs_menu_item.get_submenu()
+    sub.popup_at_widget(app.outputs_menu_item, Gdk.Gravity.SOUTH_WEST,
+                        Gdk.Gravity.NORTH_WEST, None)
+    pump(lambda: sub.get_mapped(), timeout=5)
+    res["outputs_menu_mapped"] = sub.get_mapped()
+    app.layout.set_rotation("HDMI-1", "left")
+    app.redraw()
+    res["menu_kept_while_open"] = app.outputs_menu_item.get_submenu() is sub
+    res["menu_still_mapped"] = sub.get_mapped()
+    sub.deactivate()
+    pump(lambda: app.outputs_menu_item.get_submenu() is not sub, timeout=5)
+    fresh = app.outputs_menu_item.get_submenu()
+    res["menu_rebuilt_on_close"] = fresh is not sub
+    res["menu_rebuilt_items"] = menu_labels(fresh)
+    app.layout.set_rotation("HDMI-1", "normal")
+    app.redraw()
+
+    # -- reads run off the main loop too, not only Apply ---------------------
+    slow = Stub(read_delay=SLEEP)
+    app.backend = slow
+    ticks.clear()
+    t0 = time.monotonic()
+    app.do_new()                        # Ctrl+N: re-read the screen
+    res["reload_returned_s"] = round(time.monotonic() - t0, 3)
+    res["reload_busy"] = app._busy
+    res["reload_status"] = app.status_text()
+    start = len(ticks)
+    res["reload_finished"] = pump(lambda: not app._busy, timeout=SLEEP + 10)
+    window = ticks[max(start - 1, 0):]
+    gaps = [b - a for a, b in zip(window, window[1:])]
+    res["reload_longest_gap_s"] = round(max(gaps), 3) if gaps else None
+    res["reload_snapshots"] = slow.snapshots
+
+    # a read that fails keeps the layout that is on screen, and says so
+    dialogs.clear()
+    app.backend = Stub(read_error="stub: cannot open display")
+    app.do_new()
+    pump(lambda: not app._busy, timeout=10)
+    pump(lambda: bool(dialogs), timeout=5)
+    res["reload_fail_dialog"] = dialogs[-1] if dialogs else None
+    res["reload_fail_keeps_layout"] = app.layout is not None
+    app.backend = backend
+
+    # -- a menu built before an Apply edits the layout that is live now -----
+    # (an Apply's re-read replaces app.layout wholesale; a menu still holding
+    # the old object edited a layout nothing draws and nothing will apply)
+    menu = app.output_menu("HDMI-1")
+    orientation = [it for it in menu.get_children()
+                   if (it.get_label() or "").replace("_", "") ==
+                   "Orientation"][0]
+    stale = app.layout
+    app.set_layout(backend.snapshot())        # what _applied installs
+    left = [r for r in orientation.get_submenu().get_children()
+            if (r.get_label() or "") == "left"][0]
+    left.set_active(True)                     # what clicking it does
+    pump(lambda: False, timeout=0.3)
+    res["stale_menu_edits_live"] = app.layout.get("HDMI-1").rotation
+    res["stale_layout_untouched"] = stale.get("HDMI-1").rotation
+    res["stale_menu_is_not_live"] = stale is not app.layout
+    app.set_layout(backend.snapshot())
+
     # -- per-output menu: arandr's order; Scale only on Wayland ---------------
     res["menu_x11"] = menu_labels(app.output_menu("DP-1"))
     app.window.destroy()
@@ -198,6 +269,21 @@ def main():
     res["save_nohint"] = wapp.status_text()
     res["saved_path"] = os.path.join(tmp, "layout.sh")
     os.environ["PATH"] = old_path
+    # -- Save As asks about the `.sh` the chooser never saw ------------------
+    with open(os.path.join(tmp, "desk.sh"), "w") as f:
+        f.write("#!/bin/sh\n# an earlier layout\n")
+    dialogs.clear()
+    # the stub answers anything but YES, so a prompt means "do not save"
+    res["sh_overwrite_asks"] = not wapp._confirm_sh_overwrite(
+        os.path.join(tmp, "desk"))
+    res["sh_overwrite_prompt"] = dialogs[-1] if dialogs else None
+    res["sh_overwrite_quiet_when_new"] = wapp._confirm_sh_overwrite(
+        os.path.join(tmp, "brandnew"))
+    res["sh_overwrite_quiet_when_typed"] = wapp._confirm_sh_overwrite(
+        os.path.join(tmp, "desk.sh"))
+    with open(os.path.join(tmp, "desk.sh")) as f:
+        res["sh_overwrite_kept"] = f.read()
+
     wapp.window.destroy()
     print(json.dumps(res))
     return 0

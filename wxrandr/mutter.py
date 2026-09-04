@@ -65,7 +65,8 @@ import struct
 from wdotool import session as wsession
 from wdotool.dbus_mini import Bus, DBusError, Variant
 from wxrandr import core
-from wxrandr.core import Fatal, Mode, OutputState, warn
+from wxrandr.core import (Fatal, Mode, OutputState,   # noqa: F401
+                          round_half_away, warn)
 
 DEST = "org.gnome.Mutter.DisplayConfig"
 PATH = "/org/gnome/Mutter/DisplayConfig"
@@ -82,12 +83,6 @@ PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the '
 
 
 # -- pure helpers (unit-tested) ----------------------------------------------
-
-def round_half_away(x: float) -> int:
-    """C roundf(): halves go away from zero (Mutter's logical-size math)."""
-    r = int(math.floor(abs(x) + 0.5))
-    return r if x >= 0 else -r
-
 
 def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
                  layout_mode: int = LAYOUT_LOGICAL) -> tuple[int, int]:
@@ -181,8 +176,17 @@ def _refused(e: DBusError) -> str:
     all take -- so when one comes back refused the limit is GNOME's, and
     the line has to say so before quoting Mutter's own words (a two-monitor
     overlap gets "Logical monitors not adjacent", the same sentence a gap
-    gets)."""
-    return "GNOME's Mutter refused this layout: " + _text(e)
+    gets).
+
+    Mutter's own sentence does not say what to do about it, and the usual
+    cause -- `--output MIDDLE --off`, which leaves the row with a hole -- has
+    one obvious answer, so adjacency refusals carry it."""
+    line = "GNOME's Mutter refused this layout: " + _text(e)
+    if "adjacent" in (e.message or "") or "overlap" in (e.message or ""):
+        line = line.rstrip("\n") + (
+            " (GNOME allows neither a gap nor an overlap between outputs; "
+            "re-place the neighbours in the same command)\n")
+    return line
 
 
 def _is_stale(e: DBusError) -> bool:
@@ -401,7 +405,20 @@ class MutterOutputs:
             for spec in lm[5]:
                 lm_of[spec[0]] = lm
         primary_lm = self._primary_lm(logical, lm_of)
-        self.primary = primary_lm[5][0][0] if primary_lm is not None else None
+        # Which CONNECTOR is primary, out of the primary logical monitor's
+        # members.  A mirror group has several and Mutter names none of them
+        # -- the flag is on the group -- so its member order decides, and
+        # that order is the order the group was built in, not a choice
+        # anybody made.  Mirroring A onto B therefore used to move the
+        # primary to whichever came first, silently overwriting a --primary
+        # the user had set on the other member.  Keep the user's choice
+        # whenever it is still in the group.
+        if primary_lm is None:
+            self.primary = None
+        else:
+            members = [spec[0] for spec in primary_lm[5]]
+            self.primary = (state.primary if state.primary in members
+                            else members[0])
         self.scales = {}
         self.underscan = {}
         current_ids = {}
