@@ -36,6 +36,7 @@ without any display must end in one line, not a traceback.
 
 Set WARANDR_TEST_SHOTS=DIR to keep `import -window root` screenshots."""
 
+import fcntl
 import json
 import os
 import shutil
@@ -142,6 +143,8 @@ class GuiSession(XvfbCase):
 
     STATE = None
     NBOXES = 3
+    SLOW_QUERY = None        # seconds a *query* takes (tests/fixtures/
+                             # slow_xrandr.py); None: the instant fake
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="warandr-gui-")
@@ -159,6 +162,10 @@ class GuiSession(XvfbCase):
             "WARANDR_TEST_LAYOUT_DUMP": self.dump,
             "WARANDR_TEST_SAVE_AS": self.saved,
         })
+        if self.SLOW_QUERY is not None:
+            env["WARANDR_XRANDR"] = "%s %s" % (
+                sys.executable, os.path.join(FIXTURES, "slow_xrandr.py"))
+            env["SLOW_QUERY"] = str(self.SLOW_QUERY)
         self.env = env
         self.app_log = open(os.path.join(self.tmp, "app.log"), "w")
         self.launch()
@@ -862,6 +869,76 @@ class BackendCli(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         self.assertIn("--backend NAME", p.stdout)
         self.assertIn("--print-backend", p.stdout)
+
+
+@unittest.skipUnless(HAVE_GTK, "GTK 3 not importable (python3-gi + "
+                     "gir1.2-gtk-3.0)")
+@unittest.skipUnless(HAVE_X, "Xvfb/xdotool not on PATH")
+class MenuVsApply(GuiSession):
+    """An Apply that lands while the menubar's Outputs drop-down is open used
+    to rebuild it under itself: `set_submenu()` destroys the menu it replaces,
+    and destroying a *mapped* menu destroys the window holding the X pointer
+    grab -- which X then keeps, freezing every other client on the session
+    until warandr exits.  The backend read is slowed down so the Apply can be
+    made to land at exactly that moment."""
+
+    SLOW_QUERY = 4
+
+    def other_client(self):
+        """A second GTK client on the display: it answers a click unless
+        somebody holds a session-wide grab."""
+        o = subprocess.Popen([sys.executable,
+                              os.path.join(FIXTURES, "other_client.py")],
+                             env=self.env, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        self.addCleanup(o.terminate)
+        self.assertEqual(o.stdout.readline().strip(), "READY")
+        flags = fcntl.fcntl(o.stdout, fcntl.F_GETFL)
+        fcntl.fcntl(o.stdout, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        return o
+
+    def other_answers(self, other, tries=4):
+        """Escape, then up to `tries` clicks on it: an open menu legitimately
+        eats the click that dismisses it, so one alone proves nothing."""
+        self.xdo("key", "Escape")
+        for i in range(tries):
+            self.xdo("mousemove", 950, 730, "click", 1)
+            time.sleep(0.6)
+            try:
+                if other.stdout.read():
+                    return i + 1
+            except (OSError, ValueError, TypeError):
+                # a non-blocking text stream with nothing in it: the raw
+                # read gives None, which the decoder refuses
+                pass
+        return 0
+
+    def test_apply_under_the_open_outputs_menu(self):
+        other = self.other_client()
+        self.assertTrue(self.other_answers(other),
+                        "the rig is wedged before warandr did anything")
+        lay, n = self.wait_dump("layout", lambda d: d["settled"], timeout=30)
+        self.click(lay["buttons"]["apply"])
+        time.sleep(0.5)
+        self.click(lay["menubar"]["Outputs"])
+        # the drop-down is provably up: the editor dumps it when it pops
+        self.wait_dump("menu", lambda d: d["name"] == "outputs", after=n,
+                       timeout=15)
+        time.sleep(self.SLOW_QUERY + 2.0)   # the Apply lands with it open
+        self.assertTrue(self.other_answers(other),
+                        "the X pointer grab was stranded: the rebuild "
+                        "destroyed the menu that held it")
+        self.app_log.flush()
+        self.assertNotIn("Gtk-CRITICAL", open(self.app_log.name).read())
+        # and the drop-down is still usable afterwards: it lists the outputs
+        # the Apply's fresh layout has
+        after = len(self.dumps())
+        self.xdo("key", "Escape")
+        self.click(lay["menubar"]["Outputs"])
+        d, _ = self.wait_dump("menu", lambda d: d["name"] == "outputs",
+                              after=after, timeout=15)
+        self.assertEqual(sorted(d["items"]),
+                         ["DP-1", "DP-2", "HDMI-1", "HDMI-2"])
 
 
 @unittest.skipUnless(HAVE_GTK, "GTK 3 not importable")

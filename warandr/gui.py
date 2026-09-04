@@ -901,6 +901,21 @@ class Application:
     # -- menus ----------------------------------------------------------------
 
     def _populate_outputs_menu(self):
+        """Rebuild the menubar's Outputs drop-down -- but never while it is
+        open.  set_submenu() destroys the menu it replaces, and destroying a
+        menu that is mapped destroys the window holding the pointer and
+        keyboard grab: X keeps that grab, so every other client on the
+        session is frozen until warandr exits.  A redraw can arrive at any
+        moment with the menu up (an Apply finishing on the worker thread
+        calls set_layout -> redraw from _applied), so a rebuild that comes
+        then is deferred to the menu's own deactivate."""
+        open_menu = self.outputs_menu_item.get_submenu()
+        if open_menu is not None and open_menu.get_mapped():
+            if not getattr(open_menu, "_repopulate", False):
+                open_menu._repopulate = True
+                open_menu.connect("deactivate", lambda m: GLib.idle_add(
+                    self._repopulate_outputs_menu))
+            return
         menu = Gtk.Menu()
         self._track_menu(menu, "outputs")
         for o in self.layout.outputs:
@@ -911,6 +926,12 @@ class Application:
             menu.append(it)
         menu.show_all()
         self.outputs_menu_item.set_submenu(menu)
+
+    def _repopulate_outputs_menu(self):
+        """The deferred rebuild, once the drop-down has closed."""
+        if self.layout is not None:
+            self._populate_outputs_menu()
+        return False
 
     def _canvas_press(self, _w, ev):
         if ev.button == 3:
