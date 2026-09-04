@@ -276,6 +276,15 @@ def _mode_kw(ctx):
     return kw
 
 
+def _vkbd_kw(ctx):
+    """The same, for the pointer commands: `--vkbd` selects which pointer
+    injects as well as which keyboard (one switch, one decision -- see the
+    daemon's POLICY note), while `--layout` is a keyboard-only question and
+    has no meaning here."""
+    mode = getattr(ctx, "vkbd_mode", None)
+    return {"vkbd_mode": mode} if mode else {}
+
+
 def cmd_type(ctx, args):
     cmdname = getattr(ctx, "cmd_name", "type")
     usage = _USAGE_TYPE % cmdname
@@ -379,7 +388,8 @@ def cmd_click(ctx, args):
     for wid in _target_windows(ctx, window_arg):
         if wid is not None:
             _activate_settle(ctx, wid)
-        daemon.click(button, repeat, delay, clearmods=clearmods)
+        daemon.click(button, repeat, delay, clearmods=clearmods,
+                     **_vkbd_kw(ctx))
     return i + 1
 
 
@@ -408,7 +418,8 @@ def _mouse_updown(ctx, args, default_name, down, noargs_msg):
     for wid in _target_windows(ctx, opts.get("window")):
         if wid is not None:
             _activate_settle(ctx, wid)
-        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")))
+        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")),
+                      **_vkbd_kw(ctx))
     return i + 1
 
 
@@ -481,7 +492,8 @@ def cmd_mousemove(ctx, args):
         elif wid is not None:
             win = ctx.backend().find(wid)
             tx, ty = win.x + x, win.y + y
-        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")))
+        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")),
+                             **_vkbd_kw(ctx))
         # --sync: our injected position is authoritative, nothing to wait for
     return i + consumed
 
@@ -527,7 +539,8 @@ def cmd_mousemove_relative(ctx, args):
     # acceleration curve would scale. Outside the clearmodifiers window: it
     # is a query, not part of the injection.
     _pointer(ctx)
-    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")))
+    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")),
+                               **_vkbd_kw(ctx))
     return i + 2
 
 

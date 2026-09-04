@@ -346,10 +346,13 @@ def main(argv: list[str] | None = None) -> int:
     # positional parameters, and before the X11 handover, so the real xdotool
     # was handed a mangled argv.
     #
-    # --vkbd: which keyboard the typing commands inject through. Same shape
-    # and same place as --layout, and documented next to it: `off` is the
-    # kernel device (/dev/uinput) whatever the compositor offers, `on` is
-    # zwp_virtual_keyboard_v1 or a clean error, `auto` is the default.
+    # --vkbd: which devices the injecting commands go through -- the pointer
+    # ones as well as the typing ones, because it is one decision and the
+    # daemon makes it the same way for both. Same shape and same place as
+    # --layout, and documented next to it: `off` is the kernel device
+    # (/dev/uinput) whatever the compositor offers, `on` is
+    # zwp_virtual_keyboard_v1 / zwlr_virtual_pointer_v1 or a clean error,
+    # `auto` is the default.
     _FLAGS = (("layout", "us, auto or xkb"), ("vkbd", "auto, on or off"))
     modes = {"layout": None, "vkbd": None}
     rest = []

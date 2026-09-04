@@ -613,7 +613,8 @@ class ThePolicy(VkbdTest):
         self.assertEqual(len(self.comp.created), 1)
         self.assertTrue(any("zwp_virtual_keyboard_v1" in w for w in warns),
                         warns)
-        self.assertTrue(any("still need" in w for w in warns), warns)
+        self.assertTrue(any("no root and no device rule" in w for w in warns),
+                        warns)
 
     def test_without_uinput_and_without_the_protocol_nothing_changes(self):
         self.comp.manager_version = None
@@ -971,8 +972,15 @@ class SwitchingSinks(VkbdTest):
         self.assertEqual(warns, [])
 
 
-class ThePointerNeverGoesThroughTheProtocol(VkbdTest):
-    def test_a_click_still_needs_the_kernel_device(self):
+class ThePointerIsANeighbourNotAPassenger(VkbdTest):
+    """The pointer has its own protocol (zwlr_virtual_pointer_v1,
+    `tests/test_vptr.py`) and this compositor advertises only the keyboard
+    one, which is exactly the case worth pinning here: the keyboard half
+    switching to the protocol must not carry the pointer half with it, and a
+    click on a compositor that offers no pointer protocol still says what it
+    always said."""
+
+    def test_a_click_still_needs_the_kernel_device_when_only_the_keyboard_has_one(self):
         d = self.daemon(uinput=False)
         d.op_type("a", 0, False)              # the protocol is live and used
         for req in ({"op": "button", "btn": 1, "down": True},
@@ -1026,8 +1034,6 @@ class TheNoticeIsSaidWhenItHappens(VkbdTest):
         d._vk_backoff = 0.0
         warns = d.op_type("a", 0, False)
         self.assertTrue(any("zwp_virtual_keyboard_v1" in w for w in warns),
-                        warns)
-        self.assertTrue(any("still need /dev/uinput" in w for w in warns),
                         warns)
         self.assertEqual(d.op_type("a", 0, False), [], "and only once")
 

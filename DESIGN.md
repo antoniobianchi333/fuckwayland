@@ -13,9 +13,11 @@ on stock Ubuntu. Root is acceptable and expected (for `/dev/uinput`). No kernel 
 - **Input injection**: virtual evdev devices via `/dev/uinput` (keyboard, relative
   mouse, absolute pointer mimicking a QEMU USB tablet). Compositor-agnostic — injection
   happens at the kernel input layer, so it works on GNOME, KDE, wlroots, everything.
-  Typing has a second path where the kernel one is closed: `zwp_virtual_keyboard_v1`
-  (`vkbd.py`), which needs no root at all on wlroots — see "the virtual-keyboard
-  path" under B13 for the policy that picks it and for what still needs privilege.
+  Both halves have a second path where the kernel one is closed:
+  `zwp_virtual_keyboard_v1` (`vkbd.py`) for keys and `zwlr_virtual_pointer_v1`
+  (`vptr.py`) for the pointer, neither of which needs any root on wlroots — see
+  "the virtual-keyboard path" and "the virtual-pointer path" under B13 for the one
+  policy that picks them.
 - **Daemon**: first invocation auto-spawns itself as a daemon (`argv[1] == "__daemon"`,
   double-fork; see `__main__.py`). The daemon owns the uinput devices (device creation
   costs ~500ms of compositor hotplug latency — pay it once), tracks the injected cursor
@@ -255,9 +257,9 @@ normally. `Context` (frozen, `ctx.py`) provides `stack`, `resolve_window(arg|Non
 ## File ownership (do not edit files you don't own)
 
 - **Agent A (cli core)**: `cli.py`, `commands.py`, `misc_cmds.py`
-- **Agent B (input)**: `daemon.py`, `uinput.py`, `vkbd.py`, `us_keymap.py`,
-  `keymap.py`, `keysyms.py`, `xkbmap.py`, `input_cmds.py`, `keys_cmds.py`,
-  `keystate.py`
+- **Agent B (input)**: `daemon.py`, `uinput.py`, `vkbd.py`, `vptr.py`,
+  `us_keymap.py`, `keymap.py`, `keysyms.py`, `xkbmap.py`, `input_cmds.py`,
+  `keys_cmds.py`, `keystate.py`
 - **Agent C (windows)**: `backend_detect.py`, `backend_sway.py`, `backend_wlr.py`,
   `backend_kwin.py`, `kwin_js.py`, `backend_gnome.py`, `window_cmds.py`,
   `desktop_cmds.py`
@@ -312,10 +314,16 @@ class DaemonClient:
         # trips it leaves gaps another process can inject into. Every
         # injection op below carries `clearmods` instead and the daemon does
         # clear/inject/restore under one hold of its lock.
-    def mousemove_abs(self, x: int, y: int, clearmods: bool = False): ...
-    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False): ...
-    def button(self, btn: int, down: bool, clearmods: bool = False): ...   # 1=L 2=M 3=R 4..7=wheel 8..12=side/extra/fwd/back/task
-    def click(self, btn: int, repeat: int, delay_ms: int, clearmods: bool = False): ...
+    def mousemove_abs(self, x: int, y: int, clearmods: bool = False,
+                      vkbd_mode: str | None = None): ...
+    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False,
+                      vkbd_mode: str | None = None): ...
+    def button(self, btn: int, down: bool, clearmods: bool = False,
+               vkbd_mode: str | None = None): ...   # 1=L 2=M 3=R 4..7=wheel 8..12=side/extra/fwd/back/task
+    def click(self, btn: int, repeat: int, delay_ms: int, clearmods: bool = False,
+              vkbd_mode: str | None = None): ...
+        # vkbd_mode: --vkbd, which selects the POINTER path as well as the
+        # keyboard one (one switch, one decision); sent only when given
     def pointer(self) -> tuple[int, int]: ...
     def seed_pointer(self, x: int, y: int): ...   # adopt the compositor's real pointer
     def geometry(self) -> tuple[int, int]: ...    # (w, h) of the full output layout
@@ -371,7 +379,10 @@ Daemon notes (B):
   says `fallback: true` so `getdisplaygeometry` can refuse to print a guess
   (rc 2) instead of pretending. `DaemonClient.geometry()` keeps returning
   `(w, h)`, `geometry_full()` adds the origin, `geometry_status()` adds the flag.
-- **abs scaling (B7)**: `ceil((x - min_x) * 32768 / w)`, clamped to 0..32767.
+- **abs scaling (B7)**: on the kernel tablet, `ceil((x - min_x) * 32768 / w)`,
+  clamped to 0..32767. (On the virtual-pointer path there is no axis at all: see
+  "the virtual-pointer path" below — the coordinate is sent as a ratio over the
+  layout and lands exactly, so neither this nor B2 has a counterpart there.)
   libinput maps an absolute axis with `scale_axis()`, `v * w / (max - min + 1)`
   = `v * w / 32768`, and the compositor truncates that to a pixel; the forward
   map that round-trips exactly through that inverse is the *ceiling*, since
@@ -399,7 +410,10 @@ Daemon notes (B):
   `seed_pointer`, so `getmouselocation` reports reality and a following
   relative move counts from it. sway's IPC has no pointer query, so the model
   stands there. A daemon that never opened `/dev/uinput` refuses the `pointer`
-  op with that reason rather than answering `0,0` with rc 0.
+  op with that reason rather than answering `0,0` with rc 0; a daemon on the
+  virtual-pointer path refuses it with the protocol's reason instead
+  (`POINTER_UNKNOWN`) — /dev/uinput is not what the user would have to fix
+  there, and cannot be, because nothing on that path can be asked.
 - **the active layout (B13, `xkbmap.py`)**: we inject *keycodes*, and the
   compositor reads them through whatever XKB layout the session has active, so
   the fixed US table is wrong for everyone else: `type y` gives `z` on German,
@@ -487,10 +501,13 @@ Daemon notes (B):
     user), and neither does Mutter. The earlier claim in this file that "sway
     and KWin *do* implement" it was wrong: the reverse map stays for KDE as
     well as GNOME.
-  - **THE POLICY, in one sentence**: `key`/`keydown`/`keyup`/`type` go through
-    the protocol when the kernel keyboard cannot be opened *and* the
-    compositor implements it, through `/dev/uinput` in every other case, and
-    `--vkbd on|off` (`WDOTOOL_VKBD`) forces either. Deliberately that narrow.
+  - **THE POLICY, in one sentence, and it is one policy for both halves**:
+    `key`/`keydown`/`keyup`/`type` go through `zwp_virtual_keyboard_v1`, and
+    `click`/`mousedown`/`mouseup`/`mousemove`/`mousemove_relative` through
+    `zwlr_virtual_pointer_v1`, when the matching kernel device cannot be
+    opened *and* the compositor implements that protocol — through
+    `/dev/uinput` in every other case, with `--vkbd on|off` (`WDOTOOL_VKBD`)
+    forcing either, for both halves. Deliberately that narrow.
     Where uinput works it keeps working byte for byte — the daemon tests pin
     that event stream, and the protocol is not free where it exists: the
     compositor hands the focused client OUR keymap ahead of our first key and
@@ -500,14 +517,11 @@ Daemon notes (B):
     `crw------- root root` with no `uaccess` ACL on stock wlroots, so a
     non-root user cannot type today — and turning a hard failure into the
     right characters is the one change that is strictly better.
-  - **what still needs privilege**: everything with a pointer. The protocol
-    has four requests (keymap, key, modifiers, destroy) and no pointer, no
-    buttons, no scroll; `click`, `mousemove`, `mousemove_relative`,
-    `mousedown`, `mouseup` stay on the kernel tablet/mouse and still need
-    root. (`zwlr_virtual_pointer_manager_v1` is advertised and equally
-    unprivileged on wlroots — verified live — which would finish the job, and
-    is a separate change.) The window commands, `search` and
-    `getdisplaygeometry` never needed privilege.
+  - **what still needs privilege**: nothing wdotool injects, on wlroots. This
+    protocol has four requests (keymap, key, modifiers, destroy) and no
+    pointer, no buttons, no scroll — the pointer half is a second protocol,
+    `zwlr_virtual_pointer_v1`, and it has its own section below. The window
+    commands, `search` and `getdisplaygeometry` never needed privilege.
   - **the keymap** is captured, never generated: `us_keymap.TEXT` is
     `tests/fixtures/keymaps/us.xkb` byte for byte, uploaded verbatim with the
     trailing NUL that `size` counts. A keymap synthesised from
@@ -584,6 +598,101 @@ Daemon notes (B):
     `tests/fixtures/keymaps/` were captured with it. It **stays**: dumping the
     raw keymap is a bug-report tool, not a user command, and the fixture
     capture in `tests/fixtures/keymaps/README.md` is written in terms of it.
+- **the virtual-pointer path (`vptr.py`)**: the pointer's half of the same
+  policy, `zwlr_virtual_pointer_v1` — motion, buttons and scroll with no
+  kernel device. Everything below was measured on sway 1.11 / wlroots 0.19.2
+  against a three-head layout (one head at a negative origin, one at scale
+  1.5), with a transparent `zwlr_layer_shell_v1` overlay on every output
+  reporting the cursor's position as the compositor's own statement of it.
+  - **who has it**: sway/wlroots, advertised at **v2** to every client and
+    restricted to none — an ordinary session user creates a pointer and drives
+    it, and root reaching the same socket gets the identical registry. Mutter
+    and KWin have neither protocol. sway lists ours as
+    `0:0:wlr_virtual_pointer_v1`, type pointer, with an **empty libinput
+    configuration**, appearing and vanishing with the client.
+  - **we bind v1 deliberately.** v2's only addition is
+    `create_virtual_pointer_with_output`, which maps the coordinate space into
+    one output's logical box **and confines the cursor to it** — measured, a
+    relative motion of +4000 from the leftmost head stopped at that head's own
+    right edge. Every wdotool coordinate is a layout coordinate, so the plain
+    constructor is the one we want. The `seat` argument is allow-null and a
+    NULL was accepted; we still pass the seat when there is one.
+  - **the coordinate map is the identity, and exact.**
+    `motion_absolute(time, x, y, x_extent, y_extent)` is a **ratio**, not
+    pixels: extents of 2, 100, 65535 and 1000000 all landed the same point.
+    Created without an output it addresses the **whole layout bounding box in
+    logical coordinates**, so `x = target − bbox_x` with `x_extent = bbox_w`
+    — 14 of 14 targets landed with **0.000** error, bbox corners, the
+    negative-origin head and the 1.5-scaled head included. There is no
+    quantisation, so B7's ceiling map and B2's unchanged-EV_ABS nudge have no
+    counterpart and no way to reintroduce the off-by-one they fix. Guards:
+    `x_extent == 0` is a silent no-op, so the extents are floored at 1;
+    `x >= x_extent` clamps just inside the right edge; a coordinate in a hole
+    between outputs clamps to the nearest edge, which is the compositor's
+    business and not the map's. The layout box comes from `_wayland_bbox()`
+    unchanged — and it has to be the `zxdg_output_v1` one: `wl_output.scale`
+    reported **2** for the 1.5-scaled head, and the wl_output-only fallback
+    would put the layout's right edge 320px out.
+  - **relative motion cannot be accelerated here.** A virtual pointer is not a
+    libinput device (the empty config above), so `pointer_accel` and
+    `accel_profile` cannot apply to it on any wlroots compositor: 1, 10, 100,
+    500 and 1000 px each moved exactly that far, and 500 separate one-pixel
+    motions moved exactly 500. On the same seat a `/dev/uinput` mouse asked
+    for 500 units of REL_X moved the cursor 858.33 — which is B1. So the
+    protocol path always sends `motion` and never the warp B1 introduced
+    (`_rel_absolute(virtual=True)`), unless `WDOTOOL_REL_MODE` says otherwise;
+    it is exact, and it needs no position model, so it is right even on the
+    first command of a daemon that has never been told where the cursor is.
+  - **buttons and scroll**: `button()` takes raw evdev codes and does not
+    validate them; all eight wdotool buttons arrive verbatim (0x110..0x117 —
+    the numbers `_BTN` already uses for the kernel device). Button state is
+    **refcounted per seat**: press, press then release leaves the button DOWN,
+    where the kernel drops the duplicate and the release lands. So the daemon
+    presses only what it is not holding and releases only what it is, on
+    **both** paths, which is what makes them behave identically and keeps
+    `self.btns` honest. Scroll uses `axis_discrete` (a wheel click is a notch:
+    the client sees `axis_value120` = 120), with `axis_source(wheel)` ahead of
+    it, and **Wayland's sign, not evdev's** — positive vertical is scroll
+    *down*, so buttons 4/5/6/7 map to axis 0 −, axis 0 +, axis 1 −, axis 1 +,
+    the mirror of `_WHEEL`. Every request group ends in `frame()`: motion
+    applies without one but the client then never sees `wl_pointer.frame`, and
+    an axis is **not delivered at all** until a frame.
+  - **`getmouselocation` is refused, not guessed.** The protocol has no events
+    — zero arrive on the object across motion, buttons and axes — sway's IPC
+    carries no cursor position, and Xwayland only knows the pointer while it
+    is over an X surface (it answered a frozen 1600,540 for all eight test
+    positions). So the daemon answers with the position it put the pointer at,
+    which on this path is exact, and raises `POINTER_UNKNOWN` when it has put
+    it nowhere. `ext-image-copy-capture-v1`'s pointer cursor session *can*
+    answer it — `create_pointer_cursor_session(output, wl_pointer)` delivers
+    `position` in that output's device pixels, advertised unprivileged here —
+    and is the route if this ever has to be answered in general; it needs a
+    session per output and only the one that reported `enter` is
+    authoritative, which is why it is not in this change.
+  - **one connection, one pointer, for the daemon's life**, exactly as for the
+    keyboard: a held button does not survive the client disconnecting (the
+    release was delivered the instant the holder exited), `destroy` releases
+    too, and nothing survives a compositor restart — which the client learns
+    only on its next write, as a `BrokenPipeError`. The connection is checked
+    (one `wl_display.sync`) before each command uses it, so a restart costs
+    the *hold* and not the command. `_drop_vptr()` clears `self.btns` rather
+    than trusting `vp.held`, for the reason `_drop_vkbd()` spells out: the
+    write that failed is the one that took the button out of `held`.
+  - **a hold does not move between the two paths** — `_own_pointer()` is
+    `_own_sink()` for buttons, and exists for the same defect: `--vkbd on
+    mousedown 1` then `--vkbd off mouseup 1` would otherwise leave a button
+    down for the daemon's life, released by nobody, turning every later click
+    into a drag. It is released on the pointer that holds it and said out
+    loud. The keyboard and the pointer are **two connections and two
+    objects** on purpose: a disconnect releases only what that connection
+    holds, so one half's troubles cannot drop the other's.
+  - **`--clearmodifiers` on a pointer command** clears on whichever *keyboard*
+    sink holds our modifiers (a key-up on one device releases nothing the
+    other holds), and when there is no keyboard of either kind it says so once
+    and lets the pointer command through rather than failing it. The
+    foreign-modifier warning stays on this path: modifier state reaches the
+    seat from the seat's keyboards, so a shift held on a real one rides our
+    click whichever device sends it.
 - **`wdotool keys watch|explain` (`keys_cmds.py`)**: the same two tables
   pointed at the user. `explain` is the documented front door that `__keymap
   --chars` was the sketch of; `watch` is new.

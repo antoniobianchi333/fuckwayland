@@ -11,7 +11,14 @@ It is only a model -- REL events, a physical mouse, or another daemon move
 the compositor's pointer behind its back -- so clients that can ask the
 compositor for the real position (the GNOME bridge's GetPointer) push it
 back with the `seed_pointer` op before a relative move (see B1/B6 in
-DESIGN.md).
+DESIGN.md). Neither injection path can ask: `zwlr_virtual_pointer_v1` has no
+events and sway's IPC carries no cursor position, so a daemon that has moved
+nothing refuses the `pointer` op instead of inventing an answer.
+
+There are two of everything below. Keys go to /dev/uinput or to
+zwp_virtual_keyboard_v1 (`vkbd.py`), the pointer to /dev/uinput or to
+zwlr_virtual_pointer_v1 (`vptr.py`), by one policy stated once under
+"which devices inject".
 """
 
 import contextlib
@@ -27,7 +34,7 @@ import threading
 import time
 import traceback
 
-from wdotool import keymap, keystate, uinput, vkbd, xkbmap
+from wdotool import keymap, keystate, uinput, vkbd, vptr, xkbmap
 from wdotool.ctx import CmdError
 
 # Per-euid log path: /tmp is shared, and a root-owned log must not break (or
@@ -269,16 +276,18 @@ NO_KEYSTATE_ENV = "WDOTOOL_NO_KEYSTATE"
 VKBD_ENV = "WDOTOOL_VKBD"
 VKBD_MODES = ("auto", "on", "off")
 
-# Said once per daemon when the policy picks the protocol: this is the case
-# where wdotool now types for a user who could not type at all before, and
-# the pointer half of the same command line still cannot, so it is worth one
-# line rather than a silent change of mechanism.
+# Said once per daemon when the policy picks a protocol: this is the case
+# where wdotool now works for a user who could not inject at all before, so
+# it is worth one line rather than a silent change of mechanism.
 # (no "wdotool: " prefix -- _xkb_say adds one.)
 VKBD_CHOSE_WARNING = (
     "%s -- typing through the compositor's zwp_virtual_keyboard_v1 instead, "
-    "which needs no root and no device rule. Pointer commands (click, "
-    "mousemove, mousedown/up) have no such protocol and still need "
-    "/dev/uinput.")
+    "which needs no root and no device rule.")
+
+VPTR_CHOSE_WARNING = (
+    "%s -- moving and clicking through the compositor's "
+    "zwlr_virtual_pointer_v1 instead, which needs no root and no device "
+    "rule either.")
 
 # The compositor we were typing through went away between two commands. Said
 # only when we were holding something, because that is the only part the next
@@ -287,11 +296,42 @@ VKBD_RESTART_WARNING = (
     "the compositor restarted; the keys wdotool was holding on its virtual "
     "keyboard were released with it")
 
+# The compositor we were clicking through went away between two commands.
+# Same rule as the keyboard's: only said when we were holding something.
+VPTR_RESTART_WARNING = (
+    "the compositor restarted; the mouse buttons wdotool was holding on its "
+    "virtual pointer were released with it")
+
 # The two sinks are separate devices with separate key state (see _own_sink).
 SINK_SWITCH_WARNING = (
     "the keys wdotool was holding on the %s keyboard (%s) were released: "
     "this command types through the %s one, and only the device that pressed "
     "a key can release it")
+
+# ...and the pointer's exact counterpart (see _own_pointer). A button, like a
+# key, can only be released by the device that pressed it.
+BTN_SWITCH_WARNING = (
+    "the mouse buttons wdotool was holding on the %s pointer (%s) were "
+    "released: this command injects through the %s one, and only the device "
+    "that pressed a button can release it")
+
+# Names for that warning, one per _Daemon._BTN entry.
+_BTN_LABELS = {uinput.BTN_LEFT: "left", uinput.BTN_MIDDLE: "middle",
+               uinput.BTN_RIGHT: "right", uinput.BTN_SIDE: "side",
+               uinput.BTN_EXTRA: "extra", uinput.BTN_FORWARD: "forward",
+               uinput.BTN_BACK: "back", uinput.BTN_TASK: "task"}
+
+# `getmouselocation` with nothing to report, on the virtual-pointer path.
+# The protocol sends input and receives nothing at all -- zero events on the
+# object, across motion, buttons and axes -- and sway's IPC has no cursor
+# position either, so there is nothing to fall back to and no /dev/uinput
+# error worth quoting: uinput is not what the user would have to fix.
+POINTER_UNKNOWN = (
+    "wdotool does not know where the pointer is: it has not moved it, and "
+    "zwlr_virtual_pointer_v1 cannot be asked -- the protocol delivers no "
+    "events, and neither sway's IPC nor Xwayland carries the cursor "
+    "position. Move the pointer once (mousemove) and this answers exactly "
+    "where it was put; on GNOME and KDE the compositor answers it directly.")
 
 _UNSET = object()
 
@@ -377,6 +417,64 @@ def _close_inherited_fds():
     os.closerange(3, limit)
 
 
+class _KernelPointer:
+    """The uinput tablet and relative mouse behind the same four calls the
+    virtual pointer answers to, so the pointer ops read the same on both
+    paths and cannot drift apart.
+
+    Nothing here is new. The ceiling axis map (B7), the unchanged-EV_ABS
+    nudge (B2), the evdev button codes and the REL_WHEEL detents are the
+    kernel contract the daemon tests pin, moved behind an interface and
+    otherwise untouched. It holds the *daemon* rather than the two devices
+    because those are replaced under it (create_devices, _drop_devices) and
+    the last absolute report has to outlive any one pointer op.
+    """
+
+    def __init__(self, d):
+        self.d = d
+
+    def warp(self, x, y, gx, gy, w, h):
+        """The absolute tablet. The compositor maps its axes across the FULL
+        output layout, so scale the offset from the layout origin, not the
+        raw (possibly negative) global coordinate."""
+        d = self.d
+        ax = d._axis(x - gx, w)
+        ay = d._axis(y - gy, h)
+        # B2: the kernel drops an EV_ABS whose value equals the axis' current
+        # value, so re-sending the coordinates the tablet reported last time
+        # is a silent no-op -- and the pointer may well have moved since, via
+        # REL events, a physical mouse, or another daemon. Nudge one axis by a
+        # single unit (1/32768 of the layout: sub-pixel on any real screen)
+        # first, so the second report is always a change and always lands.
+        if (ax, ay) == d._last_abs:
+            nudge = ax + 1 if ax < 32767 else ax - 1
+            d.tablet.emit(uinput.EV_ABS, uinput.ABS_X, nudge)
+            d.tablet.syn()
+        d.tablet.emit(uinput.EV_ABS, uinput.ABS_X, ax)
+        d.tablet.emit(uinput.EV_ABS, uinput.ABS_Y, ay)
+        d.tablet.syn()
+        d._last_abs = (ax, ay)
+
+    def move(self, dx, dy):
+        d = self.d
+        if dx:
+            d.mouse.emit(uinput.EV_REL, uinput.REL_X, dx)
+        if dy:
+            d.mouse.emit(uinput.EV_REL, uinput.REL_Y, dy)
+        d.mouse.syn()
+
+    def button(self, code, down):
+        self.d.mouse.key(code, down)
+
+    def wheel(self, btn):
+        """One detent of wdotool's wheel button 4/5/6/7, in evdev's sign --
+        REL_WHEEL positive is up, which is the opposite of Wayland's axis 0.
+        vptr.WHEEL is the same four gestures in the other convention."""
+        rel, value = _Daemon._WHEEL[btn]
+        self.d.mouse.emit(uinput.EV_REL, rel, value)
+        self.d.mouse.syn()
+
+
 class _Daemon:
     # Injection rate cap. Keystrokes injected faster than the compositor
     # drains its per-open evdev buffer are lost wholesale to the kernel's
@@ -431,6 +529,21 @@ class _Daemon:
         self._vk = None
         self._vk_error = None
         self._vk_backoff = 0.0
+        # zwlr_virtual_pointer_v1 (see vptr.py), the pointer's exact
+        # counterpart: ONE connection and ONE pointer object for the daemon's
+        # life, for the same reason -- the compositor releases whatever a
+        # client was holding when it disconnects, so a `mousedown` that has
+        # to survive until the matching `mouseup` cannot be a per-command
+        # connection.
+        self._vp = None
+        self._vp_error = None
+        self._vp_backoff = 0.0
+        # Evdev button codes we injected as down, and which of the two
+        # pointers they are down ON -- the same trap `down`/`_down_virtual`
+        # carry for keys: one set, two devices, and only the device that
+        # pressed a button can release it (see _own_pointer).
+        self.btns: set[int] = set()
+        self._btns_virtual = False
 
     def _key_gap(self, delay: float):
         """Inter-keystroke pause. Sleeps `delay` seconds but never lets the
@@ -481,6 +594,8 @@ class _Daemon:
         self.kb = self.mouse = self.tablet = None
         if not self._down_virtual:
             self.down.clear()  # the kernel released them with the device
+        if not self._btns_virtual:
+            self.btns.clear()  # ...and the buttons with it
         self._reader = _UNSET
         if why != self.dev_error:
             print(why, file=sys.stderr, flush=True)
@@ -516,27 +631,35 @@ class _Daemon:
         if self.dev_error:
             raise RuntimeError(self.dev_error)
 
-    # -- which keyboard types (the kernel device, or the protocol) ---------
+    # -- which devices inject (the kernel ones, or the protocols) ---------
     #
-    # THE POLICY, in one sentence: `key`/`keydown`/`keyup`/`type` go through
-    # zwp_virtual_keyboard_v1 when the kernel keyboard cannot be opened and
-    # the compositor implements the protocol, and through /dev/uinput in
-    # every other case -- `--vkbd on|off` forces either.
+    # THE POLICY, in one sentence, and it is ONE policy for both halves:
+    # `key`/`keydown`/`keyup`/`type` go through zwp_virtual_keyboard_v1, and
+    # `click`/`mousedown`/`mouseup`/`mousemove`/`mousemove_relative` through
+    # zwlr_virtual_pointer_v1, when the matching kernel device cannot be
+    # opened and the compositor implements that protocol -- and through
+    # /dev/uinput in every other case. `--vkbd on|off` (WDOTOOL_VKBD) forces
+    # either, for both halves: it is one switch because it is one decision.
     #
     # It is deliberately that narrow. Where uinput works today it keeps
-    # working, byte for byte: the daemon tests pin that event stream, the
-    # protocol is not on GNOME or KDE at all so most sessions could not use
-    # it anyway, and it is not free where it does exist -- the compositor
-    # hands the focused application OUR keymap ahead of our first key and the
-    # session's keymap back when the real keyboard is next touched, so every
-    # injection makes that application recompile its keymap twice. What the
-    # protocol does buy is the case uinput cannot serve at all: a session
-    # where /dev/uinput is root-only (it is `crw------- root root` on stock
-    # wlroots, with no uaccess ACL) and the user is not root. There, today,
-    # `wdotool type` fails outright; through the protocol it works, with no
-    # privilege whatsoever. Turning a hard failure into the right characters
-    # is the one change that is strictly better, so it is the only one the
-    # default makes.
+    # working, byte for byte: the daemon tests pin that event stream, and
+    # neither protocol is on GNOME or KDE at all, so most sessions could not
+    # use them anyway. Typing through the protocol is not free either -- the
+    # compositor hands the focused application OUR keymap ahead of our first
+    # key and the session's keymap back when the real keyboard is next
+    # touched, so every injection makes that application recompile its keymap
+    # twice. What the protocols buy is the case uinput cannot serve at all: a
+    # session where /dev/uinput is root-only (it is `crw------- root root` on
+    # stock wlroots, with no uaccess ACL) and the user is not root. There,
+    # today, `wdotool type` and `wdotool click` fail outright; through the
+    # protocols they work, with no privilege whatsoever. Turning a hard
+    # failure into the right characters -- and the right clicks -- is the one
+    # change that is strictly better, so it is the only one the default
+    # makes.
+    #
+    # The two halves are two connections and two objects, deliberately: a
+    # disconnect releases only what THAT connection holds, so the keyboard's
+    # troubles cannot drop the pointer's held button or the other way round.
 
     def _vkbd_setting(self, forced=None) -> str:
         """`--vkbd` (per command) over WDOTOOL_VKBD (per daemon) over auto.
@@ -687,6 +810,7 @@ class _Daemon:
                     old.key(code, False)
                 except (OSError, vkbd.VkbdError):
                     break     # that device is gone; so are its keys
+            self._flush_quietly(old)
             self._xkb_print(SINK_SWITCH_WARNING % (
                 "virtual" if self._down_virtual else "kernel",
                 ", ".join(_MOD_LABELS.get(c, "keycode %d" % c) for c in codes),
@@ -713,6 +837,180 @@ class _Daemon:
         f = getattr(dev, "flush", None)
         if f is not None:
             f()
+
+    def _flush_quietly(self, dev):
+        """Round-trip a sink we are letting go of, so the releases we just
+        sent it have reached the compositor before the other sink starts
+        injecting -- the two are different connections, and nothing else
+        orders them. A sink that is already gone took its keys and buttons
+        with it, which is the outcome either way, so a failure here is not
+        news."""
+        try:
+            self._flush(dev)
+        except (OSError, vkbd.VkbdError, vptr.VptrError):
+            pass
+
+    # -- which pointer moves (the kernel devices, or the protocol) ---------
+    #
+    # Everything below mirrors the keyboard's half above, request for
+    # request, because it is the same policy and the same lifetime; see
+    # vptr.py for what the wire does differently.
+
+    def _kernel_pointer(self) -> "_KernelPointer":
+        return _KernelPointer(self)
+
+    def _vp_alive(self) -> bool:
+        """Is the connection we cached still there? One wl_display.sync,
+        paid once per pointer command and only on this path -- see
+        _vk_alive() for why it is worth it."""
+        try:
+            self._vp.flush()
+        except vptr.VptrError:
+            return False
+        return True
+
+    def _vptr(self, warnings=None):
+        """The live virtual pointer, connecting on first use. Raises
+        vptr.VptrError with the reason; the caller decides what that means."""
+        if self._vp is not None:
+            if self._vp_alive():
+                return self._vp
+            # Gone since the last command. The buttons it was holding went
+            # with it -- the one thing reconnecting cannot redo, so the one
+            # thing worth a line.
+            lost = bool(self.btns and self._btns_virtual)
+            self._drop_vptr()
+            if lost:
+                self._xkb_print(VPTR_RESTART_WARNING, warnings)
+        now = time.monotonic()
+        if now < self._vp_backoff:
+            raise vptr.VptrError(self._vp_error or "not available")
+        try:
+            self._vp = vptr.VirtualPointer.open()
+        except vptr.VptrError as e:
+            self._vp_error = str(e)
+            self._vp_backoff = now + 5.0
+            raise
+        except Exception as e:   # a bug here must not be a traceback either
+            self._vp_error = repr(e)
+            self._vp_backoff = now + 60.0
+            raise vptr.VptrError(self._vp_error) from None
+        self._vp_error = None
+        return self._vp
+
+    def _drop_vptr(self):
+        """Forget a virtual pointer that failed. Nothing survives a
+        compositor restart -- not the object and not the buttons it was
+        holding -- so the codes we thought were down go with it.
+
+        `vp.held` is deliberately NOT consulted, for the reason _drop_vkbd()
+        spells out: the write that failed is the one that took the button
+        out of `held`, so trusting it would leave the daemon believing it
+        still holds a button nothing can ever release."""
+        vp, self._vp = self._vp, None
+        if self._btns_virtual:
+            self.btns.clear()
+            self._btns_virtual = False
+        if vp is not None:
+            vp.close()
+
+    def _pointer_sink(self, warnings=None, mode=None):
+        """(sink, is_virtual) for one pointer op -- see THE POLICY above."""
+        sink, virtual = self._pick_pointer(warnings, mode)
+        self._own_pointer(virtual, warnings)
+        return sink, virtual
+
+    def _pick_pointer(self, warnings=None, mode=None):
+        mode = self._vkbd_setting(mode)
+        if mode == "off":
+            self._need_devices()
+            return self._kernel_pointer(), False
+        if mode == "on":
+            try:
+                return self._vptr(warnings), True
+            except vptr.VptrError as e:
+                # Forced and impossible: say exactly what was asked for and
+                # what refused it, and do not quietly click through uinput.
+                raise RuntimeError(
+                    f"--vkbd on: cannot use zwlr_virtual_pointer_v1: {e}"
+                ) from None
+        # auto: the kernel devices unless they cannot be used at all.
+        if self._vp is not None and self.btns and self._btns_virtual:
+            # Never change sinks under a held button, for the same reason as
+            # under a held key: a button held on the virtual pointer can only
+            # be released there. Asking _vptr() rather than using the object
+            # directly is what makes this safe when the compositor restarted
+            # in between -- it notices, drops the hold it can no longer
+            # honour, and says so, after which there is no hold left to stay
+            # for and the choice is made again from scratch.
+            try:
+                vp = self._vptr(warnings)
+            except vptr.VptrError:
+                vp = None
+            if vp is not None and self.btns and self._btns_virtual:
+                return vp, True
+        try:
+            self._need_devices()
+            return self._kernel_pointer(), False
+        except RuntimeError as e:
+            why = str(e)
+        try:
+            vp = self._vptr(warnings)
+        except vptr.VptrError as e:
+            # No kernel device and no protocol: the error the user gets is
+            # the kernel device's, unchanged -- that is still the thing they
+            # have to fix. The protocol's reason goes to the daemon log.
+            self._xkb_say("vptr-none",
+                          f"no virtual-pointer protocol either: {e}")
+            raise RuntimeError(why) from None
+        self._xkb_say("vptr", VPTR_CHOSE_WARNING % why, warnings)
+        return vp, True
+
+    def _own_pointer(self, virtual: bool, warnings=None):
+        """Make `self.btns` describe the pointer that is about to inject.
+
+        The exact shape of _own_sink(), and it exists for the exact defect
+        that one was written for: `self.btns` is one set and there are two
+        devices behind it, so letting it describe one while the other clicks
+        would leave `--vkbd on mousedown 1` followed by `--vkbd off mouseup 1`
+        with a button held down for the daemon's life -- released by nobody,
+        because only the device that pressed it can. So when the sink changes
+        with buttons still down, they are released on the device that is
+        actually holding them, and the user is told every time."""
+        if self.btns and self._btns_virtual != virtual:
+            old = self._vp if self._btns_virtual else (
+                self._kernel_pointer() if self.mouse is not None else None)
+            codes = sorted(self.btns)
+            self.btns.clear()
+            for code in codes:
+                if old is None:
+                    break
+                try:
+                    old.button(code, False)
+                except (OSError, vptr.VptrError):
+                    break     # that device is gone; so are its buttons
+            self._flush_quietly(old)
+            self._xkb_print(BTN_SWITCH_WARNING % (
+                "virtual" if self._btns_virtual else "kernel",
+                ", ".join(_BTN_LABELS.get(c, "button %d" % c) for c in codes),
+                "kernel" if self._btns_virtual else "virtual"), warnings)
+        self._btns_virtual = virtual
+
+    @contextlib.contextmanager
+    def _vp_guard(self):
+        """_vk_guard for the pointer ops, and for the virtual keyboard they
+        can still reach through --clearmodifiers: a protocol object that
+        fails mid-injection is gone, so drop it -- and with it whatever it
+        was holding, which the compositor released when we disconnected --
+        and report the reason as an ordinary error."""
+        try:
+            yield
+        except vptr.VptrError as e:
+            self._drop_vptr()
+            raise RuntimeError(str(e)) from None
+        except vkbd.VkbdError as e:
+            self._drop_vkbd()
+            raise RuntimeError(str(e)) from None
 
     # -- geometry / pointer ------------------------------------------------
 
@@ -757,31 +1055,21 @@ class _Daemon:
         span = max(span, 1)
         return min(max(-((-delta * 32768) // span), 0), 32767)
 
-    def _warp(self, x, y, gx, gy, w, h):
-        """Put the pointer at the global layout coordinate (x, y) with the
-        absolute tablet. The compositor maps the tablet's axes across the FULL
-        output layout, so scale the offset from the layout origin, not the raw
-        (possibly negative) global coordinate."""
-        ax = self._axis(x - gx, w)
-        ay = self._axis(y - gy, h)
-        # B2: the kernel drops an EV_ABS whose value equals the axis' current
-        # value, so re-sending the coordinates the tablet reported last time
-        # is a silent no-op -- and the pointer may well have moved since, via
-        # REL events, a physical mouse, or another daemon. Nudge one axis by a
-        # single unit first (1/32768 of the layout: sub-pixel on any real
-        # screen) so the second report is always a change and always lands.
-        if (ax, ay) == self._last_abs:
-            nudge = ax + 1 if ax < 32767 else ax - 1
-            self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, nudge)
-            self.tablet.syn()
-        self.tablet.emit(uinput.EV_ABS, uinput.ABS_X, ax)
-        self.tablet.emit(uinput.EV_ABS, uinput.ABS_Y, ay)
-        self.tablet.syn()
-        self._last_abs = (ax, ay)
+    def _warp(self, x, y, gx, gy, w, h, sink=None):
+        """Put the pointer at the global layout coordinate (x, y), and adopt
+        that as the model. How the coordinate reaches the compositor is the
+        sink's business: an absolute tablet report (B7's ceiling map, B2's
+        nudge) on the kernel path, `motion_absolute` over the layout bounding
+        box on the protocol path. Both land the coordinate asked for -- which
+        is the whole point of having one call here."""
+        (sink or self._kernel_pointer()).warp(x, y, gx, gy, w, h)
         self.px, self.py = x, y
         self.pos_known = True
 
-    def _rel_absolute(self) -> bool:
+    _REL_ENV = {"abs": True, "absolute": True, "warp": True,
+                "rel": False, "relative": False}
+
+    def _rel_absolute(self, virtual: bool = False) -> bool:
         """Should a relative move be emitted as an absolute warp? (B1)
 
         REL_X/REL_Y go through the compositor's pointer-acceleration curve, so
@@ -794,40 +1082,70 @@ class _Daemon:
 
         sway/i3 keep the REL path: this repo's sway rig runs `pointer_accel 0`
         (REL is already exact there) and the sway/daemon tests pin the EV_REL
-        contract. WDOTOOL_REL_MODE=rel|abs forces either, on any compositor."""
+        contract. WDOTOOL_REL_MODE=rel|abs forces either, on any compositor.
+
+        The virtual pointer never warps unless told to. It is not a libinput
+        device -- sway lists it with an empty libinput configuration -- so no
+        acceleration profile can apply to it on any wlroots compositor, and
+        `motion` was measured exact for 1, 10, 100, 500 and 1000 pixels and
+        for 500 separate one-pixel steps. B1's reason to warp does not exist
+        here, and relative motion has the property a warp cannot have: it
+        needs no position model, so it is right even on the first command of
+        a daemon that has never been told where the cursor is."""
+        forced = self._REL_ENV.get(
+            os.environ.get("WDOTOOL_REL_MODE", "").strip().lower())
+        if forced is not None:
+            return forced
+        if virtual:
+            return False
         if self._rel_abs is None:
-            mode = os.environ.get("WDOTOOL_REL_MODE", "").strip().lower()
-            if mode in ("abs", "absolute", "warp"):
-                self._rel_abs = True
-            elif mode in ("rel", "relative"):
-                self._rel_abs = False
-            else:
-                from wdotool import session
-                self._rel_abs = not bool(session.find_sway_socket())
+            from wdotool import session
+            self._rel_abs = not bool(session.find_sway_socket())
         return self._rel_abs
 
-    def op_mousemove_abs(self, x, y, warnings):
-        self._need_devices()
+    def op_mousemove_abs(self, x, y, warnings, vkbd_mode=None):
+        sink, _virtual = self._pointer_sink(warnings, vkbd_mode)
         gx, gy, w, h = self.geometry(warnings)
         x = min(max(x, gx), gx + w - 1)
         y = min(max(y, gy), gy + h - 1)
-        self._warp(x, y, gx, gy, w, h)
+        self._warp(x, y, gx, gy, w, h, sink)
+        self._flush(sink)
 
-    def op_mousemove_rel(self, dx, dy, warnings):
-        self._need_devices()
+    def op_mousemove_rel(self, dx, dy, warnings, vkbd_mode=None):
+        sink, virtual = self._pointer_sink(warnings, vkbd_mode)
         gx, gy, w, h = self.geometry(warnings)
         tx = min(max(self.px + dx, gx), gx + w - 1)
         ty = min(max(self.py + dy, gy), gy + h - 1)
-        if self._rel_absolute():
-            self._warp(tx, ty, gx, gy, w, h)
+        if self._rel_absolute(virtual):
+            self._warp(tx, ty, gx, gy, w, h, sink)
+            self._flush(sink)
             return
         self.px, self.py = tx, ty
         self.pos_known = True
-        if dx:
-            self.mouse.emit(uinput.EV_REL, uinput.REL_X, dx)
-        if dy:
-            self.mouse.emit(uinput.EV_REL, uinput.REL_Y, dy)
-        self.mouse.syn()
+        sink.move(dx, dy)
+        self._flush(sink)
+
+    def _no_pointer_yet(self):
+        """The `pointer` op with nothing to report (B6): what to say.
+
+        A daemon that could not open /dev/uinput has injected nothing and
+        knows nothing, and must fail with that reason rather than report the
+        origin with rc 0. But on the virtual-pointer path /dev/uinput is not
+        the thing the user would have to fix, and never will be: the protocol
+        delivers no events at all, so wdotool cannot ask where the cursor is
+        and must say so instead of guessing. (Where the kernel devices exist,
+        nothing changes: a fresh tablet's own axis state really is 0,0, which
+        is the model this reports, flagged `known: false`.)"""
+        try:
+            self._need_devices()
+            return
+        except RuntimeError as e:
+            why = str(e)
+        try:
+            self._vptr()
+        except vptr.VptrError:
+            raise RuntimeError(why) from None
+        raise RuntimeError(POINTER_UNKNOWN) from None
 
     def op_seed_pointer(self, x, y, warnings):
         """Adopt the compositor's real pointer position (B6). No injection:
@@ -847,26 +1165,49 @@ class _Daemon:
     _WHEEL = {4: (uinput.REL_WHEEL, 1), 5: (uinput.REL_WHEEL, -1),
               6: (uinput.REL_HWHEEL, -1), 7: (uinput.REL_HWHEEL, 1)}
 
-    def op_button(self, btn, down):
-        self._need_devices()
+    def op_button(self, btn, down, warnings=None, vkbd_mode=None):
+        sink, _virtual = self._pointer_sink(warnings, vkbd_mode)
+        self._button(sink, btn, down)
+        self._flush(sink)
+
+    def _button(self, sink, btn, down):
+        """One button or wheel detent on an already-chosen sink.
+
+        A press for a button we are already holding, and a release for one we
+        are not, are dropped rather than sent -- on BOTH paths, so that both
+        behave the same. The kernel drops such an event itself
+        (input_handle_event compares against the device's own key state), but
+        the compositor REFCOUNTS them per seat: press, press then release
+        would leave the button down, and a `click` after a `mousedown` would
+        deliver no press at all. Dropping them here is also what keeps
+        `self.btns` an honest record of what we hold."""
         if btn in self._BTN:
-            self.mouse.key(self._BTN[btn], down)
+            code = self._BTN[btn]
+            if down == (code in self.btns):
+                return
+            sink.button(code, down)
+            if down:
+                self.btns.add(code)
+            else:
+                self.btns.discard(code)
         elif btn in self._WHEEL:
             if down:  # wheel "buttons" are one detent per press; release is a no-op
-                rel, value = self._WHEEL[btn]
-                self.mouse.emit(uinput.EV_REL, rel, value)
-                self.mouse.syn()
+                sink.wheel(btn)
         else:
             raise RuntimeError(f"invalid mouse button {btn}")
 
-    def op_click(self, btn, repeat, delay_ms):
+    def op_click(self, btn, repeat, delay_ms, warnings=None, vkbd_mode=None):
         # xdo_click_window_multiple: 12ms between down/up, then `delay` after
-        # every click (including the last one).
+        # every click (including the last one). The sink is chosen once for
+        # the whole run: a --repeat 1000 must not pay a policy decision (and,
+        # on the protocol path, a round trip) per click.
+        sink, _virtual = self._pointer_sink(warnings, vkbd_mode)
         for _ in range(repeat):
-            self.op_button(btn, True)
+            self._button(sink, btn, True)
             time.sleep(0.012)
-            self.op_button(btn, False)
+            self._button(sink, btn, False)
             time.sleep(delay_ms / 1000)
+        self._flush(sink)
 
     # -- keyboard ----------------------------------------------------------
 
@@ -1173,7 +1514,8 @@ class _Daemon:
             warnings.append(msg)
 
     @contextlib.contextmanager
-    def _mods_cleared(self, on, warnings, session, dev=None, vkbd_path=False):
+    def _mods_cleared(self, on, warnings, session, dev=None, vkbd_path=False,
+                      mode=None):
         """clear -> inject -> restore without letting go of the injection
         lock. The ops that carry `clearmods` themselves (`type`, `key`) do it
         inline; this is for the ones handle() wraps. Doing it as three
@@ -1182,23 +1524,40 @@ class _Daemon:
         injection between ours and the restore.
 
         `dev` is the sink the typing ops already chose. The pointer ops pass
-        none: they inject through the kernel device whatever happens, but the
-        modifiers they have to clear are wherever *we* are holding them, and
-        a key-up on the kernel device releases nothing the virtual keyboard
-        is holding. So they clear (and restore) on that one when that is
-        where our keys are, and still say what a foreign keyboard is holding,
-        which a click rides just as a keystroke does."""
+        none and let the keyboard policy choose one, because the modifiers a
+        click has to clear are wherever *we* are holding them and a key-up on
+        one device releases nothing the other is holding. (Demanding
+        /dev/uinput here, as this used to, would have made `click
+        --clearmodifiers` the one pointer command that still needed root on a
+        session where both protocols work.) A foreign modifier is still
+        reported on that path: modifier state reaches the seat from the
+        seat's keyboards, so a shift held on a real one rides our click
+        whichever device sends it."""
         if not on:
             yield
             return
         ours = dev is None      # we chose the sink; we owe it a round trip
         if dev is None:
-            if self.down and self._down_virtual and self._vk is not None:
-                dev, vkbd_path = self._vk, True
-                self._warn_foreign_mods(warnings, session)
+            try:
+                dev, vkbd_path = self._keyboard(warnings, mode)
+            except RuntimeError as e:
+                # A pointer op on a session with a virtual pointer and no
+                # keyboard of either kind. There is nothing to clear (a
+                # modifier we held on a kernel device went with the device,
+                # and one held on a real keyboard was never ours to release),
+                # and a flag that can do nothing must not fail the command it
+                # rides on.
+                dev = None
+                self._xkb_say(
+                    "clearmods-nokbd",
+                    "--clearmodifiers has no keyboard to release anything "
+                    f"on ({e}); the pointer command goes ahead", warnings)
             else:
-                self._need_devices()
-                dev = self.kb
+                if vkbd_path:
+                    self._warn_foreign_mods(warnings, session)
+        if dev is None:
+            yield
+            return
         held = self._clear_mods(warnings, session, dev, vkbd_path)
         self._released_mods = set()
         try:
@@ -1376,35 +1735,45 @@ class _Daemon:
                 with self._vk_guard():
                     self.op_restore_modifiers(_mods(req.get("held"), "held"))
             elif op == "mousemove_abs":
-                with self._mods_cleared(req.get("clearmods", False), warnings, session):
+                mode = _vkbd_mode(req.get("vkbd_mode"))
+                with self._vp_guard(), self._mods_cleared(
+                        req.get("clearmods", False), warnings, session,
+                        mode=mode):
                     self.op_mousemove_abs(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
                                           _num(req.get("y"), "y", _I32_MIN, _I32_MAX),
-                                          warnings)
+                                          warnings, mode)
             elif op == "mousemove_rel":
-                with self._mods_cleared(req.get("clearmods", False), warnings, session):
+                mode = _vkbd_mode(req.get("vkbd_mode"))
+                with self._vp_guard(), self._mods_cleared(
+                        req.get("clearmods", False), warnings, session,
+                        mode=mode):
                     self.op_mousemove_rel(_num(req.get("dx"), "dx", _I32_MIN, _I32_MAX),
                                           _num(req.get("dy"), "dy", _I32_MIN, _I32_MAX),
-                                          warnings)
+                                          warnings, mode)
             elif op == "button":
-                with self._mods_cleared(req.get("clearmods", False), warnings, session):
+                mode = _vkbd_mode(req.get("vkbd_mode"))
+                with self._vp_guard(), self._mods_cleared(
+                        req.get("clearmods", False), warnings, session,
+                        mode=mode):
                     self.op_button(_num(req.get("btn"), "button", 0, 255),
-                                   bool(req.get("down")))
+                                   bool(req.get("down")), warnings, mode)
             elif op == "click":
-                with self._mods_cleared(req.get("clearmods", False), warnings, session):
+                mode = _vkbd_mode(req.get("vkbd_mode"))
+                with self._vp_guard(), self._mods_cleared(
+                        req.get("clearmods", False), warnings, session,
+                        mode=mode):
                     self.op_click(_num(req.get("btn"), "button", 0, 255),
                                   _num(req.get("repeat", 1), "repeat", 0, MAX_REPEAT),
-                                  _num(req.get("delay_ms", 100), "delay_ms", 0, MAX_DELAY_MS))
+                                  _num(req.get("delay_ms", 100), "delay_ms", 0, MAX_DELAY_MS),
+                                  warnings, mode)
             elif op == "seed_pointer":
                 self.op_seed_pointer(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
                                      _num(req.get("y"), "y", _I32_MIN, _I32_MAX),
                                      warnings)
             elif op == "pointer":
                 # B6: never answer "0,0" for a daemon that has no pointer.
-                # A daemon that could not open /dev/uinput has injected
-                # nothing and knows nothing; it must fail with that reason
-                # instead of reporting the origin with rc 0.
                 if not self.pos_known:
-                    self._need_devices()
+                    self._no_pointer_yet()
                 return {"ok": True, "x": self.px, "y": self.py,
                         "known": self.pos_known}
             elif op == "geometry":
@@ -1740,19 +2109,29 @@ class DaemonClient:
     # `clearmods` on these is the whole --clearmodifiers dance in one
     # request: the daemon releases the modifiers, injects and puts back what
     # it was holding without letting go of the injection lock.
-    def mousemove_abs(self, x: int, y: int, clearmods: bool = False):
-        self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods)
+    #
+    # `vkbd_mode` is --vkbd, which selects the pointer path as well as the
+    # keyboard one; sent only when the flag was given, so an absent flag
+    # leaves the request byte-identical to what an older client sent.
+    def mousemove_abs(self, x: int, y: int, clearmods: bool = False,
+                      vkbd_mode: str | None = None):
+        self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods,
+                  **self._modes(None, vkbd_mode))
 
-    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False):
-        self._rpc(op="mousemove_rel", dx=dx, dy=dy, clearmods=clearmods)
+    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False,
+                      vkbd_mode: str | None = None):
+        self._rpc(op="mousemove_rel", dx=dx, dy=dy, clearmods=clearmods,
+                  **self._modes(None, vkbd_mode))
 
-    def button(self, btn: int, down: bool, clearmods: bool = False):
-        self._rpc(op="button", btn=btn, down=down, clearmods=clearmods)
+    def button(self, btn: int, down: bool, clearmods: bool = False,
+               vkbd_mode: str | None = None):
+        self._rpc(op="button", btn=btn, down=down, clearmods=clearmods,
+                  **self._modes(None, vkbd_mode))
 
     def click(self, btn: int, repeat: int, delay_ms: int,
-              clearmods: bool = False):
+              clearmods: bool = False, vkbd_mode: str | None = None):
         self._rpc(op="click", btn=btn, repeat=repeat, delay_ms=delay_ms,
-                  clearmods=clearmods)
+                  clearmods=clearmods, **self._modes(None, vkbd_mode))
 
     def pointer(self) -> tuple[int, int]:
         resp = self._rpc(op="pointer")
