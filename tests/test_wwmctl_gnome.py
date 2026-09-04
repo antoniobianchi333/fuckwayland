@@ -110,7 +110,7 @@ class GnomeCliBase(_Base):
     CLI with the X plane faked and records what _x11_connect was asked."""
 
     def setUp(self):
-        self.bridge = MockBridge(self.mock.address, select_id=EDITOR,
+        self.bridge = MockBridge(self.mock, select_id=EDITOR,
                                  select_delay=0.05)
         self.backend = GnomeBackend(settle=0.05)
         self.x_calls = []
@@ -793,7 +793,7 @@ class ErrorPathTests(_Base):
         backend_detect.reset()
 
     def test_real_detection_over_the_mock_bus(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         try:
             rc, out, err = self._run(["-l"])
             self.assertEqual((rc, err), (0, ""))
@@ -803,7 +803,7 @@ class ErrorPathTests(_Base):
             bridge.close()
 
     def test_bridge_not_installed_is_one_clear_line(self):
-        bridge = MockBridge(self.mock.address, own_bridge=False)
+        bridge = MockBridge(self.mock, own_bridge=False)
         try:
             for argv in (["-l"], ["-d"], ["-m"], ["-a", "x"], ["-s", "1"]):
                 backend_detect.reset()
@@ -815,7 +815,7 @@ class ErrorPathTests(_Base):
             bridge.close()
 
     def test_bridge_gone_mid_session(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         b = GnomeBackend(settle=0.05)
         bridge.close()
         out, err = io.StringIO(), io.StringIO()
@@ -843,7 +843,7 @@ class EventsHookTests(_Base):
         import threading
         import time
         from wdotool.dbus_mini import Bus
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         b = GnomeBackend(settle=0.05)
         emitter = Bus(self.mock.address)
         try:
@@ -863,7 +863,7 @@ class EventsHookTests(_Base):
             bridge.close()
 
     def test_show_desktop_and_set_num_desktops(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         b = GnomeBackend(settle=0.05)
         try:
             b.show_desktop(True)
