@@ -286,10 +286,15 @@ def _wxrandr_runner(env):
     zipimport), else ``wxrandr`` on PATH.  ``(None, None)`` when there is
     neither.  ``env`` gains the PYTHONPATH that makes the first one work."""
     root = _package_root("wxrandr")
-    if root is not None:
+    # `sys.executable` is "" for an interpreter that cannot work out its own
+    # path -- which is what happens under `env -i`, with no PATH to search.
+    # Handing execve an empty argv[0] is "Permission denied: ''", so fall
+    # back to a named python3 and, failing that, to the PATH branch below.
+    exe = sys.executable or shutil.which("python3") or shutil.which("python")
+    if root is not None and exe:
         old = env.get("PYTHONPATH")
         env["PYTHONPATH"] = root + (os.pathsep + old if old else "")
-        return [sys.executable, "-m", "wxrandr"], "wxrandr package at %s" % root
+        return [exe, "-m", "wxrandr"], "wxrandr package at %s" % root
     if shutil.which("wxrandr"):
         return ["wxrandr"], "wxrandr on PATH"
     return None, None
