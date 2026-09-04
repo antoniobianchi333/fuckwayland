@@ -262,12 +262,13 @@ sudo sh gnome/install-bridge.sh --udev   # optional: /dev/uinput for the logged-
   those as VT switches on Wayland, so gsd cannot grab them and injecting them
   switches the console. `<Ctrl><Super>F7` works.
 * **Security note.** Any process on your session bus can then list, move,
-  close and kill your windows through the bridge, and anyone who can open
-  `/dev/uinput` can type as you. That is exactly what every X11 client could
-  always do, and it is the point of these tools; but it is a deliberate
-  widening of GNOME's default. The bridge never evaluates code and never
-  injects input; Flatpak/Snap apps without session-bus access cannot reach it.
-  Do not install either piece on a machine where that trade is wrong.
+  close and kill your windows through the bridge, and the user at the active
+  seat can type as you through `/dev/uinput`. That is exactly what every X11
+  client could always do, and it is the point of these tools; but it is a
+  deliberate widening of GNOME's default. The bridge never evaluates code and
+  never injects input; Flatpak/Snap apps without session-bus access cannot
+  reach it. Do not install either piece on a machine where that trade is
+  wrong — see [Threat model](#threat-model) for the full list.
 
 ### KDE Plasma
 
@@ -935,6 +936,67 @@ arandr; a layout with a gap between monitors gets Mutter's own "Logical monitors
 adjacent" in the error dialog and stays on the canvas to be fixed. One GNOME habit
 to know: an Apply that turns a monitor off or on makes Mutter move the keyboard
 focus off the window, so click it before the next Ctrl+S.
+
+## Threat model
+
+These are power tools: they exist to give a script the reach an X11 client
+always had. That reach is the product, so the honest thing is to say exactly
+what it is, who gets it, and what is not defended against.
+
+**What the tools do by design.** `wdotool` injects keystrokes and pointer
+events as a kernel-level virtual device, which every application — your
+terminal, your password prompt, the lock screen — receives as real hardware.
+`wwmctl`, `wxprop` and `wxrandr` read and change window and display state
+through the compositor. Anything you can do at the keyboard, a script running
+as you can do through these tools; that is the whole point, and it is not a
+vulnerability.
+
+**What installing the pieces grants, and to whom.**
+
+* **The GNOME bridge extension** grants **every process that can reach your
+  session bus** — including a sandboxed app allowed to talk to
+  `org.gnome.Shell`, because the object answers there too — the ability to
+  list every window with its title, class, pid, geometry and workspace (stock
+  GNOME withholds that: `org.gnome.Shell.Introspect` is sender-allowlisted);
+  to move, resize, restack, close and **SIGKILL** any window; to learn
+  `DISPLAY` and the path of Mutter's Xwayland cookie; to take the shell's
+  modal input grab for the length of one window pick; and to confirm a
+  pending display-configuration change. There is no partial mode and no
+  caller check. The bridge never evaluates code and never injects input.
+* **The udev rule** grants `/dev/uinput` — i.e. the ability to type as you —
+  to the user of the **active seat session**, through a logind ACL, and to
+  nobody else: no group, no standing channel. The grant is checked at
+  `open()`, so the daemon re-checks it before every injection and destroys
+  its devices when the seat moves to another session; a user who switches
+  away therefore stops being able to type into the session they left.
+* **KDE needs nothing installed**, which is itself the note: any client of a
+  Plasma session bus can already load a script into KWin, with or without us.
+* **Running as root** (`sudo wdotool`) is the alternative to the udev rule.
+  Then the tools find the graphical session by scanning `/run/user/*` and
+  logind, and talk to that user's compositor as root.
+
+**What is deliberately not defended against.** Anyone who can already run
+code as you: they can type through the daemon, read the same files and talk
+to the same buses — a same-uid boundary is not one we can enforce, and we do
+not pretend to. A hostile compositor (you are already inside it). The lock
+screen: injected keystrokes reach it, because the kernel does not know they
+are injected — do not install the udev rule on a machine where someone else
+has physical access to the keyboard while you are away. Scripts you saved and
+run later (`warandr`'s layout scripts are shell scripts; read one before
+running it, as with any script). And nothing here is a sandbox: the tools do
+not confine what a command they hand over to (`xdotool` on X11) then does.
+
+**What is defended against**, and stays that way: another local user. The
+daemon socket, its lock and the wxrandr state file are private to their
+owner and validated before they are believed; the daemon refuses to talk to a
+socket somebody else is listening on; a state file that is not ours is
+ignored rather than obeyed; the real-tool search never looks in the current
+directory; and a root run with no session never hands a planted X server
+another user's cookie.
+
+**If you want less exposure:** don't install the bridge extension or the
+udev rule — run the tools under `sudo` when you need them, which grants
+nothing standing to anybody.
 
 ## Fully vibed, fully awesome
 
