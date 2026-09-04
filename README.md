@@ -40,8 +40,8 @@ x:640 y:360 screen:0 window:5
 
 ## Version 0.2
 
-In progress. What has landed since 0.1, each measured on the rig the same
-way:
+Six tools now, and on sway nothing wdotool injects needs a privilege at all.
+What landed since 0.1, each measured on the rig the same way:
 
 - **On sway, nothing wdotool injects needs a privilege any more.** The
   pointer goes through `zwlr_virtual_pointer_v1` where the kernel device is
@@ -1747,7 +1747,7 @@ nothing standing to anybody.
 
 Every line of this repo was written by AI (Claude): the design contracts, the code,
 the torture rigs, the hostile fake X servers, the byte-parity oracles, the VM demo,
-this README, and yes, the meme. Fully vibed. Also fully awesome: 1884 tests and
+this README, and yes, the meme. Fully vibed. Also fully awesome: 2085 tests and
 counting, live-compositor integration suites, byte-for-byte output parity against
 the real tools (verbatim bugs included), and every "it works" claim proven inside a
 real Ubuntu 26.04 VM before it shipped. Vibe-check the code yourself — it can take it.
