@@ -204,7 +204,9 @@ Four things in those lines are not obvious:
   options; [all of them work](#other-ways-to-install), and a venv is the one
   that changes nothing outside its own directory.
 * **Why `python3-venv` and not `python3-pip`.** A stock Ubuntu desktop has
-  neither pip nor venv nor pipx, so `pip install` is `pip: not found` before
+  neither pip nor venv nor pipx (checked against the 26.04 installer's own package
+  set — `vm/reference/resolute-gnome-iso-packages.txt` is a default install), so
+  `pip install` is `pip: not found` before
   PEP 668 gets a word in. `python3-venv` is all you need — the venv brings its
   own pip along. (Run bare, `python3 -m venv` names the *versioned* package in
   its error, `python3.12-venv` on 24.04 and `python3.14-venv` on 26.04;
@@ -669,6 +671,17 @@ rig and the verbatim messages behind these cells. A tenth image, Plasma 6.7 on
 26.10, is a probe for one protocol change rather than a support target: what has
 been measured on it is `wxrandr` and nothing else, and the cells below do not
 count it.
+
+Those nine images are an Ubuntu **cloud** image plus a desktop metapackage, which is close
+to a desktop install but measurably not one: the closest of them, `resolute-gnome`, carries
+226 packages a real Ubuntu 26.04 desktop installation does not have and is missing 55 it
+does, on a different kernel, from a different install source (8 snaps against the default
+install's 13). So the rig also has **`resolute-gnome-iso`**: Ubuntu 26.04 installed from
+`ubuntu-26.04.1-desktop-amd64.iso` by the Ubuntu installer, every question left alone, with
+the first-run experience, screen lock and automatic updates still switched on — one package
+added to the default set (`openssh-server`, the only way into a VM) and nothing removed.
+The cells below are still the measurement on the nine; the default install is what they get
+re-measured on. How it is built and every deviation from stock: `vm/README.md`.
 
 The last column is a *session type*, not a desktop: what an X11 session gets is the
 real tools, whichever desktop is drawing it.
