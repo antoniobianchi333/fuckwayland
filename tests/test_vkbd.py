@@ -1164,6 +1164,58 @@ class TheFlag(unittest.TestCase):
         _, out, _ = self.run_cli("--help")
         self.assertNotIn("--vkbd", out)
 
+    def test_it_is_a_leading_option_only(self):
+        """Same rule as --layout, and for the same reason: the scan stops at
+        the first non-option, so a command's own arguments keep the words. A
+        scan that walked the whole line would eat them -- and it runs before
+        the X11 handover, so the real xdotool would be handed the hole."""
+        import tempfile
+
+        fd, path = tempfile.mkstemp(prefix="vkbd-args-")
+        os.close(fd)
+        words = ["sh", "-c", 'printf "%s\\n" "$@" > ' + path, "--"]
+        try:
+            rc, _o, err = self.run_cli("exec", "--sync", *words,
+                                       "a", "--vkbd", "on", "b")
+            self.assertEqual((rc, err), (0, ""))
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\n--vkbd\non\nb\n")
+        finally:
+            os.unlink(path)
+
+
+class TheWireValidatesIt(unittest.TestCase):
+    """The flag is screened by cli.py, but the socket is a trust boundary --
+    and the daemon lower-cases whatever it is handed."""
+
+    def test_an_unknown_mode_is_a_rejected_request(self):
+        d = daemon._Daemon()
+        with self.assertRaises(RuntimeError) as cm:
+            d.handle({"op": "type", "text": "a", "vkbd_mode": "maybe"})
+        self.assertIn("invalid vkbd_mode", str(cm.exception))
+        self.assertIn("auto, on, off", str(cm.exception))
+
+    def test_a_non_string_mode_is_refused(self):
+        d = daemon._Daemon()
+        with self.assertRaises(RuntimeError) as cm:
+            d.handle({"op": "type", "text": "a", "vkbd_mode": 7})
+        self.assertIn("expected a string", str(cm.exception))
+
+    def test_the_environment_stays_lenient(self):
+        """A typo in a shell profile must not stop the tool typing, which is
+        the opposite trade from a request: nobody can fix WDOTOOL_VKBD from
+        inside the command that is failing because of it."""
+        d = daemon._Daemon()
+        old = os.environ.get(daemon.VKBD_ENV)
+        os.environ[daemon.VKBD_ENV] = "maybe"
+        try:
+            self.assertEqual(d._vkbd_setting(), "auto")
+        finally:
+            if old is None:
+                os.environ.pop(daemon.VKBD_ENV, None)
+            else:
+                os.environ[daemon.VKBD_ENV] = old
+
 
 def _eventually(pred, tries=100):
     import time

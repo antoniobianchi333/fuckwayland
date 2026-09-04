@@ -524,6 +524,7 @@ layout. `vm/README.md` keeps the rig and the verbatim messages behind these cell
 | **wxprop** | works, X and native windows | works | hands over to `xprop` | works; from a root shell `-root` is synthesized **(e)** |
 | **wxrandr** | works (mutter) | works (kwin) **(f)** | hands over to `xrandr` **(g)** | works (sway) |
 | **warandr** | works (mutter) | works (kwin) **(f)** | works, driving the real `xrandr` **(g)** | works (sway); the stock image has no GTK 3 bindings **(h)** |
+| **`wdotool` without root** | pointer *and* keyboard need the udev rule (or root) | pointer *and* keyboard need the udev rule (or root) | nothing needs it (X11) | **keyboard needs nothing**; the pointer needs the udev rule (or root) **(i)** |
 
 All of it works **as the desktop user and as root** — `sudo`, `ssh root@box`, cron —
 because the session's compositor socket, session bus, `DISPLAY` and X cookie are
@@ -575,6 +576,14 @@ then never draws it.
 
 **(g)** X11 answers are the X server's own (`Screen 0: minimum 320 x 200 … maximum
 8192 x 8192`), and whether an output is marked `primary` is the desktop's business.
+
+**(i)** sway/wlroots is the only one of the four that implements
+`zwp_virtual_keyboard_v1`, so it is the only one where `key`, `keydown`,
+`keyup` and `type` can run with no root, no group and no udev rule — see
+[Typing with no privilege at all](#typing-with-no-privilege-at-all---vkbd).
+Mutter and KWin (6.6 and 5.27, both measured) do not implement it, so on
+GNOME and KDE every injecting command still goes through `/dev/uinput`. The
+protocol has no pointer on any of them.
 
 **(h)** `warandr` is the one tool with a dependency (`python3-gi`, `gir1.2-gtk-3.0`).
 GNOME, KDE and Xfce installs have them; a minimal sway image may not, and warandr then
@@ -714,22 +723,26 @@ our keycodes is the one we just uploaded. wdotool uploads a captured plain-US
 keymap, which is precisely the one its built-in character table was written
 for.
 
-Two things about it are measured, not assumed:
+**Who has it, and what that means for privileges.** Measured on all four
+desktops this branch is tested on, as the session user and as root:
 
-* **sway/wlroots implements it, and does not restrict it.** An ordinary
-  session client — no root, no group, no device access, no udev rule —
-  creates a virtual keyboard and types. **KWin 6.6.6 does not implement it at
-  all** (the interface appears nowhere in Plasma's libraries), and neither
-  does Mutter. So this buys nothing on GNOME or KDE, and the reverse map
-  above stays exactly where it is for both.
-* On sway that makes the whole keyboard half of wdotool — `key`, `keydown`,
-  `keyup`, `type` — need **no privilege whatsoever**, where today it needs
-  root because `/dev/uinput` there is `crw------- root root` with no `uaccess`
-  ACL. The **pointer** half does not follow: this protocol carries no pointer,
-  no buttons and no scroll, so `click`, `mousemove`, `mousemove_relative`,
-  `mousedown` and `mouseup` still go through `/dev/uinput` and still need root
-  or the udev rule. `search`, the window commands, `getdisplaygeometry` and
-  `getactivewindow` never needed either.
+| session | does it implement `zwp_virtual_keyboard_v1`? | what types | typing needs | pointer (`click`, `mousemove`, `mousedown/up`) needs |
+|---|---|---|---|---|
+| **sway 1.11 / wlroots** | **yes**, v1, advertised to every client and restricted to none | `/dev/uinput` when it can be opened, the protocol when it cannot | **nothing** — no root, no group, no udev rule | root, or the udev rule |
+| **GNOME 46 / 50 (Mutter)** | no | `/dev/uinput`, always | root, or the udev rule | root, or the udev rule |
+| **Plasma 5.27 / 6.6 (KWin)** | no — the interface is in no Plasma library, and 5.27 does not advertise it either | `/dev/uinput`, always | root, or the udev rule | root, or the udev rule |
+| X11 (Xfce, …) | not applicable — wdotool hands over to the real `xdotool` | X | nothing | nothing |
+
+So on sway the whole keyboard half of wdotool — `key`, `keydown`, `keyup`,
+`type` — needs **no privilege whatsoever**, where before it needed root
+because `/dev/uinput` there is `crw------- root root` with no `uaccess` ACL.
+The **pointer** half does not follow: this protocol has four requests (keymap,
+key, modifiers, destroy) and carries no pointer, no buttons and no scroll, so
+`click`, `mousemove`, `mousemove_relative`, `mousedown` and `mouseup` still go
+through `/dev/uinput` and still need root or the udev rule. `search`, the
+window commands, `getdisplaygeometry` and `getactivewindow` never needed
+either. On GNOME and KDE nothing changes at all, and the reverse map above
+stays exactly where it is for both.
 
 **When it is used.** Only when the kernel keyboard cannot be opened *and* the
 compositor implements the protocol. Where `/dev/uinput` works — as root, or
@@ -782,8 +795,29 @@ Keys held across commands still work (`keydown ctrl` then `type c` then
 `keyup ctrl`): the daemon holds one connection and one virtual keyboard for
 its life, which it has to — a compositor releases whatever a client was
 holding the moment that client disconnects. If the compositor restarts, the
-keyboard, the uploaded keymap and anything held go with it; the command in
-flight fails with one line and the next one reconnects.
+keyboard, the uploaded keymap and anything held go with it. The next command
+reconnects and re-uploads and *works*; the hold is the part that cannot be
+recovered, so that is the only part you are told about:
+
+```console
+$ wdotool keyup shift
+wdotool: the compositor restarted; the keys wdotool was holding on its virtual keyboard were released with it
+```
+
+A hold cannot move between the two paths either — a key can only be released
+by the device that pressed it. Forcing a different `--vkbd` while something is
+held (`--vkbd on keydown shift` then `--vkbd off type A`) releases it on the
+keyboard that has it, says so, and then types what you asked for:
+
+```console
+$ wdotool --vkbd off type A
+wdotool: the keys wdotool was holding on the virtual keyboard (shift) were released: this command types through the kernel one, and only the device that pressed a key can release it
+```
+
+Modifier state is per device in both directions, which is worth knowing before
+mixing them: a shift held on the kernel device does not reach keys sent
+through the protocol, `--clearmodifiers` on one does not clear the other's,
+and a CapsLock locked through the protocol applies to its own keys only.
 
 ### Which key was that? — `wdotool keys`
 
@@ -1167,8 +1201,9 @@ what it is, who gets it, and what is not defended against.
 events as a kernel-level virtual device, which every application — your
 terminal, your password prompt, the lock screen — receives as real hardware.
 Keystrokes have a second route on wlroots, `zwp_virtual_keyboard_v1`, which
-reaches the same places (measured: with `swaylock` holding the session, the
-keys go to the lock surface) and is not a kernel device at all.
+is not a kernel device at all and reaches the same places: measured, an
+unprivileged client typed the account password into `swaylock` through it and
+the session unlocked.
 `wwmctl`, `wxprop` and `wxrandr` read and change window and display state
 through the compositor. Anything you can do at the keyboard, a script running
 as you can do through these tools; that is the whole point, and it is not a

@@ -541,22 +541,43 @@ Daemon notes (B):
     uinput typed `Y` and the virtual keyboard typed `y`), so we release the
     keycodes we hold and send `modifiers(0,0,0,0)`, and the foreign-modifier
     warning — true and unavoidable on the kernel path — is not emitted,
-    because there is nothing foreign to clear.
+    because there is nothing foreign to clear. The LOCKED mask is deliberately
+    left alone: CapsLock and NumLock are not held modifiers on the kernel path
+    either (neither is in `keymap.MODIFIER_KEYCODES`), and one flag may not
+    mean two things.
   - **one connection, one keyboard, for the daemon's life**: the compositor
     releases whatever a client holds when it disconnects (`keydown y` from a
     process that exits gave one `y` and no repeat), so a held key across two
     commands only works inside one connection. Nothing survives a compositor
-    restart: the object, the uploaded keymap and the held keys all go, the
-    command in flight fails with one line (deterministically — every injection
-    ends with a round trip, so writes into a dead socket are still caught) and
-    the next one reconnects, re-creates and re-uploads. A hold does not
-    move between the two paths: `keydown` on one and `keyup` on the other
-    (forcing `--vkbd` differently between two commands of the same daemon)
-    releases nothing, exactly as a key-up from the wrong evdev device does.
-  - **same reach as uinput, including the lock screen**: with `swaylock`
-    holding an `ext_session_lock_v1`, create/keymap/key all still work and the
-    keys go to the lock surface. Not a new hole — uinput does the same — but
-    worth saying out loud.
+    restart: the object, the uploaded keymap and the held keys all go. The
+    connection is checked (one `wl_display.sync`) before each command uses it,
+    so a restart costs the *hold* and not the command: the daemon reconnects,
+    re-creates, re-uploads, types, and says one line about the keys it can no
+    longer claim to hold. Measured across a real `pkill -x sway` and re-login:
+    the daemon survives, `keyup shift` afterwards is that one line, and the
+    next `type A` gives `A`. It did not before — the failing key-up had
+    already taken the key out of the object's own `held`, the drop trusted
+    that, and shift stayed down in the daemon's model for good, with every
+    later `type A` arriving as `a`.
+  - **a hold does not move between the two paths**, and `self.down` is one set
+    describing two devices, which is the trap: a key can only be released by
+    the device that pressed it, so forcing `--vkbd` differently between two
+    commands of one daemon releases what the other sink holds, on that sink,
+    and says so (`_own_sink()`). Before that, `--vkbd on keydown shift` then
+    `--vkbd off type A` typed `a` on a live sway session — the kernel path
+    found shift in `self.down`, believed it held, and pressed nothing — and
+    the virtual shift was stuck for the daemon's life. Modifier state is per
+    device in both directions, measured with two daemons at once: a
+    kernel-held shift does not reach protocol keys, our `modifiers(0,0,0,0)`
+    does not clear the kernel device's shift, and a CapsLock we lock applies
+    to our own keys alone.
+  - **same reach as uinput, including the lock screen**: measured, with
+    `swaylock` holding an `ext_session_lock_v1` — an *unprivileged* client
+    typed the account password and Return through the protocol and swaylock
+    unlocked, while the terminal underneath received nothing. Root through
+    uinput does exactly the same. Not a new hole (sway advertises the protocol
+    to every client of the socket, so anything that can open it could already
+    do this) — but worth saying out loud.
   - `wdotool __keymap` (hidden, like `__daemon`) dumps the compositor's keymap,
     `--info` summarises it and says whether the bypass takes it, `--chars STR`
     prints the keystrokes each character would need. The test fixtures in
