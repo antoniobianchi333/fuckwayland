@@ -382,6 +382,37 @@ class TestWaylandMalformed(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             conn._dispatch_some()
 
+    def _conn(self):
+        from wdotool.wayland_mini import WlConn
+
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        conn = WlConn.__new__(WlConn)
+        conn.sock, conn.buf, conn.fds = b, b"", []
+        conn.handlers, conn.dead = {}, None
+        return conn, a
+
+    def test_dispatch_restores_the_callers_timeout(self):
+        """dispatch() used to clear the socket timeout on the way out.  Every
+        wxrandr backend arms a deadline before its apply loop so a compositor
+        that goes quiet cannot hang the CLI; clearing it left the next read
+        blocking in recvmsg with nothing to wake it."""
+        conn, peer = self._conn()
+        conn.sock.settimeout(10.0)
+        self.assertFalse(conn.dispatch(timeout=0.05))     # nothing to read
+        self.assertEqual(conn.sock.gettimeout(), 10.0)
+        peer.sendall(struct.pack("<II", 1, (8 << 16) | 0))
+        self.assertTrue(conn.dispatch(timeout=0.5))       # and on the way in
+        self.assertEqual(conn.sock.gettimeout(), 10.0)
+
+    def test_dispatch_keeps_a_blocking_socket_blocking(self):
+        conn, peer = self._conn()
+        conn.sock.settimeout(None)
+        peer.sendall(struct.pack("<II", 1, (8 << 16) | 0))
+        self.assertTrue(conn.dispatch(timeout=0.5))
+        self.assertIsNone(conn.sock.gettimeout())
+
 
 # ---------------------------------------------------------------------------
 # sway display_size bounding box

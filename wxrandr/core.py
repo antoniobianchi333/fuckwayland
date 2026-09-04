@@ -623,9 +623,18 @@ class WlrOutputs:
             self.conn.send(ch, 4, [("f", t.scale)])
         self.conn.send(conf, 2, [])  # apply
         deadline = time.monotonic() + 10.0
-        while not result and time.monotonic() < deadline:
-            if not self.conn.dispatch(timeout=1.0):
-                continue
+        try:
+            while not result and time.monotonic() < deadline:
+                if not self.conn.dispatch(timeout=1.0):
+                    continue
+        finally:
+            # whatever happens in here, the socket keeps a deadline: the
+            # post-apply re-read must not block forever on a compositor that
+            # has gone quiet (kwin.py carries the same guard)
+            try:
+                self.conn.sock.settimeout(10.0)
+            except OSError:
+                pass
         try:
             self.conn.send(conf, 4, [])  # destroy
         except OSError:

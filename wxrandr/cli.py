@@ -14,6 +14,7 @@ Byte-parity notes (SCRATCH/reference/xrandr-notes.md + captures):
   `--backends`.
 """
 
+import math
 import os
 import re
 import sys
@@ -931,9 +932,15 @@ class Session:
         if self.backend == "kwin":
             return self.kwin.apply(self.state, targets, self.persistent)
         core.apply_wlr(self.wlr, self.state, targets)
-        # refresh the head snapshot for the post-apply query
-        self.wlr.conn.roundtrip()
-        return self.snapshot()
+        # refresh the head snapshot for the post-apply query.  A compositor
+        # that accepted the configuration and then stopped answering gets a
+        # sentence rather than the socket's own `timed out`.
+        try:
+            self.wlr.conn.roundtrip()
+            return self.snapshot()
+        except OSError:
+            raise Fatal("the compositor applied the output configuration "
+                        "and then stopped responding\n")
 
     @property
     def compositor_name(self):
@@ -1001,6 +1008,13 @@ def _dpi_and_mm(opts: Opts, outputs, new_w, new_h):
         cur_h = y1 - y0
         mm_h = core.screen_mm(cur_h)
         dpi = 25.4 * cur_h / mm_h if mm_h else 96.0
+    if not math.isfinite(dpi) or dpi <= 0:
+        # xrandr reads --dpi with sscanf("%lf") and then divides by it, so
+        # 0, a negative one, `nan` and `inf` all get that far; none of them
+        # is a resolution a screen line can be printed at.  Fall back to the
+        # same 96 the no-physical-size paths use rather than abort -- an
+        # unusable --dpi is not worth refusing a whole layout over.
+        dpi = 96.0
     return dpi, int(25.4 * new_w / dpi), int(25.4 * new_h / dpi)
 
 
@@ -1065,7 +1079,21 @@ def _check_screen_size(opts: Opts, targets, dims, pos):
     """xrandr's set_screen_size bound (xrandr.c:2109): the resolved layout (or
     an explicit --fb) may not exceed maxWidth/maxHeight. Guards against a
     far-flung --pos/--fb being handed to the compositor (and, on the wlr
-    backend, against the out-of-range struct pack it would otherwise trip)."""
+    backend, against the out-of-range struct pack it would otherwise trip).
+
+    The other end of the same bound: the Screen line advertises a 16x16
+    minimum, so an enabled output may not be scaled below it either. A big
+    enough --scale/--scale-from truncates the logical size to 0x0 (logical
+    size is int(px / scale)), which sway and KWin both accept -- leaving an
+    output that occupies no space and cannot be clicked back."""
+    for t in targets:
+        if not t.enabled or t.name not in dims:
+            continue
+        w, h = dims[t.name]
+        if w < core.MIN_WIDTH or h < core.MIN_HEIGHT:
+            raise Fatal("output %s cannot be smaller than %dx%d (desired "
+                        "size %dx%d)\n" % (t.name, core.MIN_WIDTH,
+                                           core.MIN_HEIGHT, w, h))
     if opts.fb:
         desired_w, desired_h = opts.fb
     else:

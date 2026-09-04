@@ -429,6 +429,44 @@ class ScreenBound(unittest.TestCase):
         cli._check_screen_size(opts, [self._t("A")], {"A": (1280, 720)},
                                {"A": (0, 0)})  # no raise
 
+    def test_output_scaled_below_the_minimum_is_fatal(self):
+        # the Screen line advertises `minimum 16 x 16`; logical_size is
+        # int(px / scale), so a big enough --scale truncates an output to
+        # nothing and the compositor takes it
+        opts = cli.Opts()
+        for dims in ((0, 0), (15, 8), (1280, 15), (15, 720)):
+            with self.subTest(dims=dims):
+                with self.assertRaises(core.Fatal) as cm:
+                    cli._check_screen_size(opts, [self._t("A")], {"A": dims},
+                                           {"A": (0, 0)})
+                self.assertEqual(cm.exception.args[0],
+                                 "output A cannot be smaller than 16x16 "
+                                 "(desired size %dx%d)\n" % dims)
+
+    def test_exactly_the_minimum_is_allowed(self):
+        opts = cli.Opts()
+        cli._check_screen_size(opts, [self._t("A")], {"A": (16, 16)},
+                               {"A": (0, 0)})  # no raise
+
+    def test_a_disabled_output_is_not_measured(self):
+        opts = cli.Opts()
+        off = type("T", (), {"name": "B", "enabled": False})()
+        cli._check_screen_size(opts, [off], {"B": (0, 0)}, {})  # no raise
+
+    def test_scale_that_truncates_to_zero_is_caught(self):
+        # the same thing spelled the way a user gets there
+        out = mk_output("A", 1920, 1080)
+        st = mk_state()
+        targets = build_targets([out], [Stanza(name="A", scale=(99999.0,
+                                                                99999.0))],
+                                st, False)
+        dims = {t.name: core.predicted_dims(t, st)
+                for t in targets if t.enabled}
+        self.assertEqual(dims["A"], (0, 0))
+        with self.assertRaises(core.Fatal):
+            cli._check_screen_size(cli.Opts(), targets, dims,
+                                   resolve_positions(targets, dims))
+
 
 class Rendering(unittest.TestCase):
     """Byte checks against the oracle captures (the 3-output L-shape)."""
