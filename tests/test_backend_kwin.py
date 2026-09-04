@@ -136,15 +136,23 @@ class FakeKWin:
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
-    def close(self):
+    def close(self, mock=None):
         if self.bus.sock is None:
             return
+        unique = self.bus.unique_name
         try:
             self.bus.sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
         self.thread.join(3)
         self.bus.close()
+        # `mock` is the MockBus, not just its address: closing the socket and
+        # the bus letting go of org.kde.KWin are two events in two threads.
+        # Callers that stand a replacement up straight away pass it.
+        if mock is not None and not mock.wait_dropped(unique):
+            raise AssertionError(
+                "MockBus still holds connection %s five seconds after it "
+                "was closed" % unique)
 
     # -- state helpers
 
@@ -463,9 +471,16 @@ class _Base(unittest.TestCase):
     def backend(self, **kw):
         old = getattr(self, "kwin", None)
         if old is not None:
-            old.close()          # only one connection may own org.kde.KWin
+            # Only one connection may own org.kde.KWin -- and the bus letting
+            # go of the name happens in its own serving thread, after the
+            # socket closes (MockBus.wait_dropped). Standing the replacement
+            # up without waiting for that answers the next RequestName 3, not
+            # 1, which is what made this file fail under load.
+            old.close(self.mock)
         self.kwin = FakeKWin(self.mock.address, **kw)
-        self.addCleanup(self.kwin.close)
+        # with the mock, so the cleanup of one test cannot race the setUp of
+        # the next: a new TestCase instance has no `kwin` to close itself
+        self.addCleanup(self.kwin.close, self.mock)
         b = KwinBackend(bus=Bus(self.mock.address))
         self.addCleanup(b.bus.close)
         # never let a test reach a real X server for the XWayland ids
