@@ -235,7 +235,7 @@ class QueryTest(unittest.TestCase):
         rc, out, err, _ = run(["getwindowclassname"])
         self.assertEqual(rc, 1)
         self.assertEqual(out, "")
-        self.assertIn("no windows on the stack", err)
+        self.assertIn("There are no windows in the stack", err)
 
 
 
@@ -622,6 +622,82 @@ class SearchUsageTest(unittest.TestCase):
         rc, _o, err, _c = run(["windowsize", "--nope"])
         self.assertEqual(rc, 1)
         self.assertNotIn("Invalid usage", err)
+
+
+
+class EmptyStackMessageTest(unittest.TestCase):
+    """xdotool prints three things when the stack is empty and a window is
+    needed: the message, the reference it could not resolve, and the command's
+    own usage. Measured against xdotool 3.20160805.1, which a script grepping
+    for "There are no windows in the stack" depends on."""
+
+    def test_the_implicit_percent_1(self):
+        rc, out, err, _ = run(["getwindowname"])
+        self.assertEqual((rc, out), (1, ""))
+        self.assertEqual(err,
+                         "There are no windows in the stack\n"
+                         "Invalid window '%1'\n"
+                         "Usage: getwindowname [window=%1]\n"
+                         "If no window is given, %1 is used. "
+                         "See WINDOW STACK in xdotool(1)\n")
+
+    def test_an_explicit_reference_names_itself(self):
+        for ref in ("%1", "%2", "%@", "%-1"):
+            rc, _o, err, _ = run(["windowraise", ref])
+            self.assertEqual(rc, 1, ref)
+            self.assertEqual(err.splitlines()[:2],
+                             ["There are no windows in the stack",
+                              "Invalid window '%s'" % ref], ref)
+            self.assertTrue(err.splitlines()[2].startswith("Usage: windowraise"),
+                            err)
+
+    def test_the_usage_is_this_command_s_own_not_the_last_one_s(self):
+        rc, _o, err, _ = run(["getwindowpid"])
+        self.assertIn("Usage: getwindowpid", err)
+        self.assertNotIn("windowraise", err)
+
+
+class BehaveHelpTest(unittest.TestCase):
+    """B: help and a wrong argument count are ours to answer; only the thing
+    the compositor cannot do is refused. behave_screen_edge already did this."""
+
+    def test_help_prints_the_usage_and_succeeds(self):
+        rc, out, err, _ = run(["behave", "--help"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertTrue(out.startswith("Usage: behave window event action"))
+        self.assertIn("mouse-enter", out)
+
+    def test_too_few_arguments_is_the_count_message_plus_usage(self):
+        for argv in (["behave"], ["behave", "1"], ["behave", "1", "blur"]):
+            rc, out, err, _ = run(argv)
+            self.assertEqual((rc, out), (1, ""), argv)
+            self.assertTrue(
+                err.startswith("Invalid number of arguments (minimum is 3)\n"
+                               "Usage: behave window event action"), err)
+
+    def test_three_arguments_still_reach_the_wayland_refusal(self):
+        rc, _o, err, _ = run(["behave", "1", "blur", "getactivewindow"])
+        self.assertEqual(rc, 1)
+        self.assertIn("not supported on Wayland", err)
+
+
+class WindowreparentHelpTest(unittest.TestCase):
+    """An upstream quirk of that one command's option table: -h is help,
+    --help is an error. Measured against xdotool 3.20160805.1."""
+
+    def test_short_h_is_stdout_and_zero(self):
+        rc, out, err, _ = run(["windowreparent", "-h"])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(out, "Usage: windowreparent "
+                              "[window_source=%1] window_destination\n")
+
+    def test_long_help_is_stderr_and_one(self):
+        for flag in ("--help", "--hel", "--he"):
+            rc, out, err, _ = run(["windowreparent", flag])
+            self.assertEqual((rc, out), (1, ""), flag)
+            self.assertEqual(err, "Usage: windowreparent "
+                                  "[window_source=%1] window_destination\n",
+                             flag)
 
 if __name__ == "__main__":
     unittest.main()

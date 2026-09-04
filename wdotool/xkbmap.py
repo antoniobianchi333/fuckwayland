@@ -746,6 +746,11 @@ def reverse(km: Keymap, group: int = 1) -> ReverseMap:
         if rank < ranks.get(bit, 99):
             ranks[bit] = rank
             rmap.mod_keys[bit] = code
+    # What the *keymap* said, before the fallbacks are filled in: the guard
+    # below has to test that, not the backfilled table, or it can never fire
+    # for the case it names. Every fixture we have names all three keys, so
+    # the fallbacks are belt and braces and this changes nothing for them.
+    from_keymap = set(rmap.mod_keys)
     for bit, code in _DEFAULT_MOD_KEYS.items():
         if code and bit not in rmap.mod_keys:
             rmap.mod_keys[bit] = code
@@ -763,8 +768,14 @@ def reverse(km: Keymap, group: int = 1) -> ReverseMap:
             if mask is None:
                 continue
             # A level we cannot press (no AltGr key in this layout) is a level
-            # that does not exist for us.
-            if any(mask & b and not rmap.mod_keys.get(b) for b in MOD_BITS):
+            # that does not exist for us. Testing rmap.mod_keys here tested
+            # the fallback keycodes too, so on a layout with four-level types
+            # and no level-3 key -- lv3:none, a custom keymap -- 77 German
+            # characters still resolved to "hold keycode 100", which without
+            # ISO_Level3_Shift on it is a plain Alt_R: a menu accelerator on
+            # both GNOME and KWin, i.e. a wrong action where the promise is a
+            # warning and a skip.
+            if any(mask & b and b not in from_keymap for b in MOD_BITS):
                 continue
             entry = (code, mask)
             rank = _keypad_rank(code, ks)

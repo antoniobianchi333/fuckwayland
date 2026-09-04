@@ -100,6 +100,16 @@ t0 = time.monotonic()
 rc, out, err = run(["sleep", "--", "-1"])
 assert rc == 0 and time.monotonic() - t0 < 1, (rc, err)
 
+# nan and inf: max(x, 0.0) returns the NaN and time.sleep() rejects it, while
+# inf overflows time_t -- both used to leave a traceback where the real
+# xdotool (3.20160805.1, measured) returns 0 immediately and sleeps for no
+# time at all
+for word in ("nan", "NaN", "inf", "-inf", "infinity", "1e400"):
+    t0 = time.monotonic()
+    rc, out, err = run(["sleep", "--", word])
+    assert (rc, out, err) == (0, "", ""), (word, rc, out, err)
+    assert time.monotonic() - t0 < 1, word
+
 # chain: sleep consumes exactly one positional
 rc, out, err = run(["sleep", "0", "version"])
 assert rc == 0 and out == "xdotool version %s\n" % cli.XDO_VERSION, out
@@ -173,9 +183,10 @@ assert rc == 1 and err == "exec: unrecognized option '--badopt'\n" + EXEC_USAGE,
 rc, out, err = run(["exec", "--help", "sleep", "5"])
 assert rc == 0 and out == EXEC_USAGE and err == "", (rc, out, err)
 
-# missing binary: execvp-style message; sync aborts with errno, non-sync continues
+# missing binary: execvp-style message; --sync aborts the chain with xdotool's
+# fixed 22 (not the child's errno), non-sync continues
 rc, out, err = run(["exec", "--sync", "/no/such/bin/xyz"])
-assert rc == 2 and err == "execvp failed: No such file or directory\n", (rc, err)
+assert rc == 22 and err == "execvp failed: No such file or directory\n", (rc, err)
 rc, out, err = run(["exec", "--args", "1", "/no/such/bin/xyz", "sleep", "0"])
 assert rc == 0 and err == "execvp failed: No such file or directory\n", (rc, err)
 

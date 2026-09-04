@@ -82,26 +82,31 @@ try:
     os.environ["WD_TEST_EMPTY"] = ""
     os.environ.pop("WD_TEST_UNSET", None)
 
-    # tokenizing: comments, blank lines, quoting, mid-token $ and # are literal
+    # tokenizing: comments, blank lines, quoting, mid-token $ and # are literal.
+    # '#' comments a whole LINE (the C tool only tests it at the start of the
+    # first token), and an empty token is an argument, not something to drop:
+    # `echo A "" B` passes three arguments in xdotool.
     p = script(
         "# full-line comment\n"
         "\n"
         "   \t \n"
         'rec one "two words" \'three words\' plain$HOME x#notcomment\n'
         "rec before # trailing comment\n"
-        'rec "" empty-dropped\n'
+        'rec "" empty-kept\n'
     )
     tmpfiles.append(p)
     rc, out, err = run([p])
     assert rc == 0 and err == "", (rc, err)
     assert CALLS == [
         ("one", "two words", "three words", "plain$HOME", "x#notcomment"),
-        ("before",),
-        ("empty-dropped",),
+        ("before", "#", "trailing", "comment"),
+        ("", "empty-kept"),
     ], CALLS
 
     # $N and $ENV expansion; quoted "$1" and '$2' still expand; env value with
-    # spaces stays ONE token; empty env value is dropped; $0 is the script path.
+    # spaces stays ONE token; an empty env value is an empty argument, exactly
+    # as in the C tool (`xdotool exec --sync echo A $EMPTY B` prints "A  B" in
+    # both); $0 is the script path.
     # DELIBERATE DIVERGENCE from the C tool: xdotool's tokenizer resumes at
     # name_start + len(expanded_value) + 1, so any expansion whose value length
     # differs from its source span corrupts the rest of the line (leftover name
@@ -112,7 +117,7 @@ try:
     tmpfiles.append(p)
     rc, out, err = run([p, "AA", "BB"])
     assert rc == 0 and err == "", (rc, err)
-    assert CALLS == [("AA", "AA", "BB", "hello world", "tail"), (p,)], CALLS
+    assert CALLS == [("AA", "AA", "BB", "hello world", "", "tail"), (p,)], CALLS
 
     # length-mismatched expansions stay clean (would corrupt the line in C)
     p = script("rec $1 $2 tail\n")
@@ -120,11 +125,12 @@ try:
     rc, out, err = run([p, "AAA", "BBBB"])
     assert rc == 0 and CALLS == [("AAA", "BBBB", "tail")], CALLS
 
-    # empty quoted token is dropped, rest of line survives (C drops the rest)
+    # an empty quoted token is an argument and the rest of the line survives;
+    # measured against xdotool 3.20160805.1, which does the same
     p = script('rec "" kept\n')
     tmpfiles.append(p)
     rc, out, err = run([p])
-    assert rc == 0 and CALLS == [("kept",)], CALLS
+    assert rc == 0 and CALLS == [("", "kept")], CALLS
 
     # $1abc parses like atoi: uses $1, drops the suffix
     p = script("rec $1abc\n")

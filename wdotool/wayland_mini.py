@@ -38,7 +38,10 @@ class Cursor:
 
     def string(self) -> str:
         n = self.u32()  # length including NUL; 0 means null string
-        s = self.d[self.i : self.i + max(n - 1, 0)].decode("utf-8", "replace")
+        # A truncated event must not yield the bytes that follow -- including
+        # the NUL terminator, which is what the unclamped slice returned.
+        raw = self.d[self.i : self.i + max(n - 1, 0)]
+        s = raw.split(b"\0", 1)[0].decode("utf-8", "replace")
         self.i += (n + 3) & ~3
         return s
 
@@ -70,9 +73,17 @@ def _marshal(args) -> bytes:
 
 
 class WlConn:
-    def __init__(self, path: str):
+    #: Every read and write gets a deadline by default: a compositor that
+    #: accepts the connection and then answers nothing must not wedge the
+    #: tool forever with no message and no exit code. Callers that want a
+    #: different one still set it (most do, right after connecting); pass
+    #: timeout=None for a genuinely blocking connection.
+    DEFAULT_TIMEOUT = 10.0
+
+    def __init__(self, path: str, timeout: float | None = DEFAULT_TIMEOUT):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
+            self.sock.settimeout(timeout)
             self.sock.connect(path)
         except BaseException:
             # a missing or refused socket is routine here (kwin.probe()
@@ -168,13 +179,16 @@ class WlConn:
 
     def dispatch(self, timeout: float | None = None) -> bool:
         """Dispatch pending events; False on timeout without data."""
+        prev = self.sock.gettimeout()
         self.sock.settimeout(timeout)
         try:
             self._dispatch_some()
         except TimeoutError:
             return False
         finally:
-            self.sock.settimeout(None)
+            # the caller's own deadline, not None: restoring None left the
+            # connection blocking for every later read
+            self.sock.settimeout(prev)
         return True
 
     def _dispatch_some(self):

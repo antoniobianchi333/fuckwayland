@@ -1157,8 +1157,8 @@ def _native_event_source(backend, root: bool):
         return "sway", _sway_ipc_events(backend, payload)
     hook = _events_hook(backend)
     if hook is None:
-        raise FatalError("-spy on a native window needs the sway backend "
-                         "or the GNOME bridge")
+        raise FatalError("-spy on a native window needs the sway backend, "
+                         "the GNOME bridge or KWin")
     try:
         it = hook(None, workspaces=True) if root else hook(None)
     except TypeError:  # a hook without the workspaces flag

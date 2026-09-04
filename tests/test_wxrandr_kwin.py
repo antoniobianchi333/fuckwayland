@@ -1164,6 +1164,22 @@ class Apply(KwinCase):
         self.assertEqual(self.svc.created, 2)       # a fresh object each time
         self.assertEqual(self.svc.by_name("DP-1")["current"], 1)
 
+    def test_primary_survives_the_hotplug_retry(self):
+        """apply() restored state.primary before it re-snapshotted, and
+        snapshot() overwrites state.primary with what the compositor still
+        reports -- so the retry's plan() saw no --primary left to send, and a
+        half-applied change was reported as success."""
+        self.assertEqual(self.svc.primary, "eDP-1")
+        self.svc.invalidate_once = True
+        code, _out, err = self.run_cli("--output", "DP-1", "--primary")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(len(self.svc.applied), 2)
+        self.assertEqual([r for r in self.svc.applied[-1]
+                          if r[0] in ("priority", "primary")],
+                         [("primary", "DP-1"),
+                          ("priority", "DP-1", 1), ("priority", "eDP-1", 2)])
+        self.assertEqual(self.svc.primary, "DP-1")
+
     def _hotplug_class(self):
         """A backend that unplugs a head between create_configuration and
         apply, the way a real hotplug lands."""

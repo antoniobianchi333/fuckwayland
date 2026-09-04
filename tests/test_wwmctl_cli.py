@@ -896,9 +896,10 @@ class XStateFallbackTest(unittest.TestCase):
 class WarnAndSucceedTest(unittest.TestCase):
     def test_k(self):
         rc, _o, err, _b = run(["-k", "maybe"])
+        # `toggle` is our extension, but the sentence stays wmctrl's, to the
+        # byte: a script matching on it must not have to know which tool ran.
         self.assertEqual((rc, err), (1, 'The argument to the -k option must '
-                                        'be either "on" or "off" or '
-                                        '"toggle"\n'))
+                                        'be either "on" or "off"\n'))
         for arg in ("on", "off", "toggle"):
             rc, _o, err, _b = run(["-k", arg])
             self.assertEqual(rc, 0)

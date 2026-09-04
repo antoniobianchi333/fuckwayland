@@ -317,6 +317,13 @@ def guess_variant(v) -> Variant:
     raise ValueError(f"cannot guess a variant signature for {v!r}; wrap it in Variant(sig, value)")
 
 
+#: The specification's container limit: 32 levels of array nesting and 32 of
+#: variant nesting. A body of 1000 nested variants is only 3 KiB on the wire
+#: and is legal type nesting, so without this it reaches Python's recursion
+#: limit instead of the peer's error.
+MAX_NESTING = 64
+
+
 class _Reader:
     def __init__(self, data, endian: str = "<", fds=(), wrap_variants: bool = False,
                  pos: int = 0):
@@ -327,6 +334,12 @@ class _Reader:
         self.fds = list(fds)
         self.wrap = wrap_variants
         self.i = pos
+        self.depth = 0
+
+    def _enter(self):
+        self.depth += 1
+        if self.depth > MAX_NESTING:
+            raise ValueError("container nesting deeper than %d" % MAX_NESTING)
 
     def pad(self, n: int):
         self.i += -self.i % n
@@ -385,15 +398,27 @@ class _Reader:
         if c in "sog":
             return self.string(c)
         if c == "a":
-            return self.array(t)
+            self._enter()
+            try:
+                return self.array(t)
+            finally:
+                self.depth -= 1
         if c == "(":
             self.pad(8)
-            return tuple(self.one(ft) for ft in split_signature(t[1:-1]))
+            self._enter()
+            try:
+                return tuple(self.one(ft) for ft in split_signature(t[1:-1]))
+            finally:
+                self.depth -= 1
         if c == "v":
             sig = self.string("g")
             if not _is_single(sig):
                 raise ValueError(f"variant signature {sig!r} is not one complete type")
-            v = self.one(sig)
+            self._enter()
+            try:
+                v = self.one(sig)
+            finally:
+                self.depth -= 1
             return Variant(sig, v) if self.wrap else v
         raise ValueError(f"bad type {t!r}")
 
@@ -1032,12 +1057,27 @@ class Bus:
         self._buf += data
 
     def _parse_one(self) -> Message | None:
-        n = Message.frame_length(self._buf)
+        # A frame we cannot even measure stays in the buffer for ever, and a
+        # frame we cannot parse leaves the fds that came with it attached to
+        # the next message. Neither is recoverable -- the byte stream has no
+        # resynchronisation point -- so the connection goes, as one clear
+        # DBusError rather than a ValueError out of the marshaller.
+        try:
+            n = Message.frame_length(self._buf)
+        except (ValueError, RecursionError) as e:
+            self.close()
+            raise DBusError(ERR + "Disconnected",
+                            "malformed message from the bus: %s" % e) from None
         if n is None or len(self._buf) < n:
             return None
         frame = bytes(self._buf[:n])
         del self._buf[:n]
-        m = Message.from_bytes(frame)
+        try:
+            m = Message.from_bytes(frame)
+        except (ValueError, RecursionError, struct.error) as e:
+            self.close()
+            raise DBusError(ERR + "Disconnected",
+                            "malformed message from the bus: %s" % e) from None
         if m.unix_fds:  # SCM_RIGHTS fds arrive with the recv that carried the frame
             m.fds = self._pending_fds[:m.unix_fds]
             del self._pending_fds[:m.unix_fds]
@@ -1123,7 +1163,14 @@ class Bus:
         """Synchronous method call; returns the reply args as a tuple."""
         reply = self.call_message(Message.call(dest, path, iface, member, sig, args, flags),
                                   timeout)
-        return reply.args(wrap_variants)
+        try:
+            return reply.args(wrap_variants)
+        except (ValueError, RecursionError, struct.error) as e:
+            _close_fds(reply.fds)
+            raise DBusError(ERR + "InvalidArgs",
+                            "%s.%s replied with a body its own signature %r "
+                            "does not describe: %s"
+                            % (iface or "", member, reply.signature, e)) from None
 
     def reply(self, to: Message, sig: str = "", args=()) -> int:
         return self.send(Message.method_return(to, sig, args))

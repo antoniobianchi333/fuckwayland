@@ -5,6 +5,7 @@ not read and even the "is this plain US?" check does not run -- so these tests
 watch xkbmap for calls rather than only checking the result.
 """
 import io
+import threading
 import os
 import sys
 import unittest
@@ -193,12 +194,105 @@ class TheWireCarriesIt(unittest.TestCase):
         c.key("a", "press", 12, False, layout_mode="xkb")
         self.assertEqual(sent["layout_mode"], "xkb")
 
-    def test_the_ops_accept_it(self):
-        import inspect
+    def test_handle_hands_it_to_the_ops(self):
+        """The class is named for the flag travelling the wire, so it has to
+        watch the flag travel: an earlier version asserted only that the two
+        ops had a parameter of that name, which passed identically whether
+        handle() forwarded it or not -- and it did not."""
+        seen = []
 
-        for op in (daemon._Daemon.op_type, daemon._Daemon.op_key):
-            self.assertIn("layout_mode", inspect.signature(op).parameters,
-                          op.__name__)
+        class Spy(daemon._Daemon):
+            def __init__(self):
+                self.lock = threading.RLock()
+
+            def op_type(self, text, delay_ms, clearmods, session=None,
+                        layout_mode=None):
+                seen.append(("type", layout_mode))
+                return []
+
+            def op_key(self, spec, direction, delay_ms, clearmods,
+                       session=None, layout_mode=None):
+                seen.append(("key", layout_mode))
+                return []
+
+        d = Spy()
+        self.assertEqual(d.handle({"op": "type", "text": "z",
+                                   "layout_mode": "us"})["ok"], True)
+        self.assertEqual(d.handle({"op": "key", "spec": "a",
+                                   "layout_mode": "xkb"})["ok"], True)
+        self.assertEqual(seen, [("type", "us"), ("key", "xkb")])
+
+    def test_a_request_without_the_flag_still_means_detection(self):
+        seen = []
+
+        class Spy(daemon._Daemon):
+            def __init__(self):
+                self.lock = threading.RLock()
+
+            def op_type(self, text, delay_ms, clearmods, session=None,
+                        layout_mode=None):
+                seen.append(layout_mode)
+                return []
+
+        Spy().handle({"op": "type", "text": "z"})
+        self.assertEqual(seen, [None])
+
+
+def _slurp(path):
+    with open(path) as f:
+        return f.read()
+
+
+class ItIsALeadingOptionOnly(unittest.TestCase):
+    """The scan used to walk the whole command line, so the flag was eaten
+    wherever it appeared -- and, since the scan runs before the X11 handover,
+    the real xdotool was handed the mangled argv too."""
+
+    @staticmethod
+    def _sink():
+        """A temp file and the shell words that write this chain's arguments
+        into it, so the child's stdout is captured rather than printed."""
+        import tempfile
+
+        fd, path = tempfile.mkstemp(prefix="layout-args-")
+        os.close(fd)
+        return path, ["sh", "-c", 'printf "%s\\n" "$@" > ' + path, "--"]
+
+    def test_it_is_not_taken_from_a_commands_arguments(self):
+        path, words = self._sink()
+        try:
+            with _Spy() as spy:
+                rc, _o, err = run("exec", "--sync", *words,
+                                  "a", "--layout", "us", "b")
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(_slurp(path), "a\n--layout\nus\nb\n")
+            self.assertIsNone(spy.mode, "the child's arguments are not ours")
+        finally:
+            os.unlink(path)
+
+    def test_a_script_keeps_it_as_a_positional_parameter(self):
+        import tempfile
+
+        path, words = self._sink()
+        with tempfile.NamedTemporaryFile("w", suffix=".wdo",
+                                         delete=False) as f:
+            f.write("exec --sync %s $1\n" % " ".join(
+                w if " " not in w else "'%s'" % w for w in words))
+            script = f.name
+        try:
+            with _Spy() as spy:
+                rc, _o, err = run(script, "--layout")
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(_slurp(path), "--layout\n")
+            self.assertIsNone(spy.mode, "the script's $1 is not our flag")
+        finally:
+            os.unlink(script)
+            os.unlink(path)
+
+    def test_the_flag_still_works_before_the_command(self):
+        with _Spy() as spy:
+            rc, _o, _e = run("--layout", "us", "sleep", "0")
+        self.assertEqual((rc, spy.mode), (0, "us"))
 
 
 class ParityIsUntouched(unittest.TestCase):

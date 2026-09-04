@@ -13,6 +13,7 @@ every entry point into the machinery raise.
 import contextlib
 import io
 import os
+import re
 import unittest
 
 from wdotool import cli, daemon, xkbmap
@@ -328,6 +329,47 @@ class TestDeadKeys(unittest.TestCase):
         self.assertEqual(de.lookup_char("ẃ"), [(13, 0), (17, 0)])
         # A three-codepoint decomposition (ế) is not a two-keystroke sequence.
         self.assertIsNone(de.lookup_char("ế"))
+        # The case the name is actually about, which neither line above
+        # reaches: two codepoints, both typable, that do NOT recompose. Both
+        # assertions above are satisfied by the `len(decomposed) != 2` check
+        # one line earlier, so deleting the NFC test left the suite green.
+        # U+0958 is a composition exclusion: NFD is U+0915 U+093C and NFC
+        # leaves the pair as it is, so typing the two would produce a
+        # different string from the one asked for.
+        de.chars["\u0915"] = (99, 0)
+        de.dead[0x93C] = (98, 0)
+        self.assertIsNone(de.lookup_char("\u0958"))
+        # the control: both entries really are reachable, so the None above
+        # comes from the NFC test and from nothing else
+        self.assertEqual(de.lookup_char("\u0915\u093c"), [(98, 0), (99, 0)])
+
+
+class TestALevelWeCannotPress(unittest.TestCase):
+    """A layout with four-level types whose level-3 key has been removed
+    (lv3:none, a custom keymap): the levels behind AltGr do not exist for us
+    and must not be offered. The guard used to test the backfilled fallback
+    table rather than what the keymap said, so it could never fire for the
+    case its own comment names."""
+
+    @staticmethod
+    def _no_level3():
+        src = text("de")
+        src = re.sub(r"0xfe03|0xff7e", "0xffea", src)      # -> Alt_R
+        return src.replace("ISO_Level3_Shift", "Alt_R").replace(
+            "Mode_switch", "Alt_R")
+
+    def test_level_3_characters_are_dropped_not_mistyped(self):
+        r = xkbmap.reverse(xkbmap.parse(self._no_level3()))
+        offered = [c for c, e in r.chars.items() if e[1] & xkbmap.MOD_LEVEL3]
+        self.assertEqual(offered, [], "AltGr levels on a layout with no AltGr")
+        # '@' is AltGr+q on a German layout: with no level-3 key it is simply
+        # not typable, which the caller reports rather than pressing Alt_R.
+        self.assertIsNone(r.lookup_char("@"))
+
+    def test_the_real_layout_is_untouched(self):
+        r = rmap("de")
+        self.assertEqual(r.lookup_char("@"), [(16, xkbmap.MOD_LEVEL3)])
+        self.assertEqual(r.modifier_keycodes(xkbmap.MOD_LEVEL3), [100])
 
 
 class TestGroups(unittest.TestCase):

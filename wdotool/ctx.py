@@ -58,11 +58,21 @@ class Context:
             self._daemon = DaemonClient.connect_or_spawn()
         return self._daemon
 
+    def _no_stack(self, ref: str) -> CmdError:
+        """xdotool's empty-stack refusal, all three lines of it: the message,
+        the reference that could not be resolved, and the command's own usage
+        (window_get_arg() records it in `cmd_usage`). Scripts grep for this."""
+        msg = "There are no windows in the stack\nInvalid window '%s'" % ref
+        usage = getattr(self, "cmd_usage", None)
+        if usage:
+            msg += "\n" + usage.rstrip("\n")
+        return CmdError(msg)
+
     def _resolve_one(self, arg: str) -> int:
         if arg.startswith("%"):
             ref = arg[1:]
             if not self.stack:
-                raise CmdError("There are no windows on the stack")
+                raise self._no_stack(arg)
             if ref == "@":
                 return self.stack[0]
             try:
@@ -98,12 +108,12 @@ class Context:
             return self._resolve_one(arg)
         if self.stack:
             return self.stack[0]
-        raise CmdError("There are no windows on the stack")
+        raise self._no_stack("%1")
 
     def resolve_windows(self, arg: str | None = None) -> list[int]:
         """Like resolve_window, but %@ expands to the entire stack."""
         if arg == "%@":
             if not self.stack:
-                raise CmdError("There are no windows on the stack")
+                raise self._no_stack("%@")
             return list(self.stack)
         return [self.resolve_window(arg)]

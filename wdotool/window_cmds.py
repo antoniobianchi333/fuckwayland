@@ -69,6 +69,9 @@ def _opts(ctx, args, shortopts, longopts, usage, shortmap=None,
 def _window_arg(ctx, rest, min_args, usage):
     """C window_get_arg(): decide whether rest[0] is an optional window
     argument. Returns (window_arg_or_None, tokens_consumed 0/1)."""
+    # The empty-stack refusal ends with this command's usage; the C code has
+    # it in scope there, and this is the one place every such command passes.
+    ctx.cmd_usage = usage
     if len(rest) < min_args:
         raise CmdError(
             "Too few arguments (got %d, minimum is %d)\n%s"
@@ -602,10 +605,19 @@ def cmd_windowkill(ctx, args):
 def cmd_windowreparent(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowreparent")
     usage = "Usage: %s [window_source=%%1] window_destination\n" % cmd
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
-    if parsed is None:
+    # Alone among the window commands, xdotool's windowreparent answers the
+    # long --help (and every abbreviation of it) on stderr with rc 1, and
+    # only the short -h on stdout with rc 0. Measured against 3.20160805.1.
+    try:
+        raw, nopts = getopt_long_only(cmd, args, "h", [("help", False)])
+    except GetoptError as e:
+        raise CmdError("%s\n%s" % (e, usage.rstrip("\n"))) from None
+    if any(n == "h" for n, _ in raw):
+        sys.stdout.write(usage)
+        sys.stdout.flush()
         return len(args)
-    _o, nopts = parsed
+    if any(n == "help" for n, _ in raw):
+        raise CmdError(usage.rstrip("\n"))
     rest = args[nopts:]
     warg, used = _window_arg(ctx, rest, 1, usage)
     dest_arg = rest[used]
@@ -854,7 +866,33 @@ def cmd_set_window(ctx, args):
     return nopts + used
 
 
+_USAGE_BEHAVE = (
+    "Usage: %s window event action [args...]\n"
+    "The event is a window event, such as mouse-enter, resize, etc.\n"
+    "The action is any valid xdotool command (chains OK here)\n"
+    "\n"
+    "Events: \n"
+    "  mouse-enter      - When the mouse moves into the window\n"
+    "  mouse-leave      - When the mouse leaves a window\n"
+    "  mouse-click      - Fired when the mouse button is released\n"
+    "  focus            - When the window gets focus\n"
+    "  blur             - When the window loses focus\n"
+)
+
+
 def cmd_behave(ctx, args):
+    # Help and a wrong argument count are answered before the refusal: they
+    # are ours to get right, not something the compositor declines
+    # (behave_screen_edge has done it this way all along).
+    cmd = getattr(ctx, "cmd_name", "behave")
+    usage = _USAGE_BEHAVE % cmd
+    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    if parsed is None:
+        return len(args)
+    _o, nopts = parsed
+    if len(args) - nopts < 3:
+        raise CmdError("Invalid number of arguments (minimum is 3)\n"
+                       + usage.rstrip("\n"))
     raise CmdError(
         "behave is not supported on Wayland: compositors do not expose "
         "per-window enter/leave/focus event taps to clients"
