@@ -34,7 +34,13 @@ from wxrandr.core import Mode, Stanza, State                    # noqa: E402
 
 #: every refusal reaches the user in Mutter's name: we pass overlapping and
 #: gapped layouts on unchanged, so a "no" is always GNOME's, not ours
-REFUSED = "xrandr: GNOME's Mutter refused this layout: %s\n"
+# Mutter's own sentence, plus the hint wxrandr adds to a geometry refusal
+# (the usual cause -- `--output MIDDLE --off` -- has one obvious answer, and
+# "Logical monitors not adjacent" does not say what it is)
+HINT = (" (GNOME allows neither a gap nor an overlap between outputs; "
+        "re-place the neighbours in the same command)")
+REFUSED = "xrandr: GNOME's Mutter refused this layout: %s" + HINT + "\n"
+PLAIN_REFUSED = "xrandr: GNOME's Mutter refused this layout: %s\n"
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -1141,7 +1147,7 @@ class Apply(MutterCase):
         code, out, err = self.run_cli("--output", "eDP-1", "--off", "--output", "DP-1",
                                       "--off", "--output", "HDMI-1", "--off")
         self.assertEqual((code, err),
-                         (1, REFUSED % "Monitors config incomplete"))
+                         (1, PLAIN_REFUSED % "Monitors config incomplete"))
 
     def test_pos_overlap_is_mutters_error(self):
         code, out, err = self.run_cli("--output", "DP-1", "--pos", "100x0")
@@ -1184,7 +1190,7 @@ class Apply(MutterCase):
     def test_apply_disabled_by_policy(self):
         self.svc.allowed = False
         code, out, err = self.run_cli("--output", "HDMI-1", "--off")
-        self.assertEqual((code, err), (1, REFUSED % "Monitor configuration "
+        self.assertEqual((code, err), (1, PLAIN_REFUSED % "Monitor configuration "
                                             "via D-Bus is disabled"))
 
     def test_primary_moves_and_query_shows_it(self):

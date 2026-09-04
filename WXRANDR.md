@@ -421,6 +421,43 @@ mid-apply and the query bytes.
 - Errors byte-styled like xrandr ("cannot find output", "cannot find mode") with its
   exit codes.
 
+## Known limitations
+
+Measured, understood, and left as they are. Each says why.
+
+- **`--reflect y` and `--reflect xy` are not idempotent.** Wayland has eight
+  transforms where RandR has sixteen (rotation × reflection) pairs, so
+  `core.RANDR_VIEW` has to read every flipped transform back as a reflection in
+  *x* — the compositor cannot tell us which axis the user meant. Repeating
+  `--reflect y` therefore composes with what is already there instead of being a
+  no-op: `normal → y → (x, rotated 180) → ...`. `--reflect x` and
+  `--reflect normal` are unaffected. Spell **both** `--rotate` and `--reflect` in
+  the same command and the result is exact whatever the current state (which is
+  what the saved layout lines and the `--restore` path already do).
+- **sway's two-phase apply can be interrupted.** The sway backend applies modes,
+  scales and transforms in one IPC batch, re-reads the logical sizes the
+  compositor really produced, and pins the positions in a second batch — the
+  re-read is what makes relative placement exact there. A signal in the 0.04–0.06 s
+  between the two leaves the modes applied and the positions stale, exactly as
+  killing xrandr between two CRTC calls does on X11. Mutter (one
+  `ApplyMonitorsConfig`) and KWin (one configuration) are atomic and have no such
+  window; the wlr backend is one atomic call as well. Re-running the same command
+  converges.
+- **`--primary` on a disabled output does different things per backend.** On
+  Mutter and KWin it is a silent no-op — neither compositor will hold a primary
+  flag on an output that is not in the configuration — while sway and the wlr
+  backend keep it in the state file and show it again when the output comes back.
+  xrandr on X11 keeps the flag and prints `connected primary` for a disabled
+  output, so no behaviour here is "the" right one, and wxrandr warns about none of
+  them.
+- **The warn-and-ignore options do not validate their argument.** `--panning`,
+  `--setmonitor`, `--transform`, `--set` and a `--scale-from 0x0` warn that they
+  do nothing on Wayland and succeed, without looking at what they were given —
+  so four argv forms that real xrandr rejects are accepted here. This is
+  deliberate: refusing an argument to an option that has no effect would fail
+  scripts that the tool otherwise runs unchanged, which is the whole point of the
+  warn-and-ignore set.
+
 ## Crazy-config requirements (torture will check these)
 
 Headless sway grows outputs on demand (`swaymsg create_output`, `output X unplug`) —

@@ -176,8 +176,17 @@ def _refused(e: DBusError) -> str:
     all take -- so when one comes back refused the limit is GNOME's, and
     the line has to say so before quoting Mutter's own words (a two-monitor
     overlap gets "Logical monitors not adjacent", the same sentence a gap
-    gets)."""
-    return "GNOME's Mutter refused this layout: " + _text(e)
+    gets).
+
+    Mutter's own sentence does not say what to do about it, and the usual
+    cause -- `--output MIDDLE --off`, which leaves the row with a hole -- has
+    one obvious answer, so adjacency refusals carry it."""
+    line = "GNOME's Mutter refused this layout: " + _text(e)
+    if "adjacent" in (e.message or "") or "overlap" in (e.message or ""):
+        line = line.rstrip("\n") + (
+            " (GNOME allows neither a gap nor an overlap between outputs; "
+            "re-place the neighbours in the same command)\n")
+    return line
 
 
 def _is_stale(e: DBusError) -> bool:

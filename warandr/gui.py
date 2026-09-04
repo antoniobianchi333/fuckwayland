@@ -1202,6 +1202,22 @@ class Application:
         if r == Gtk.ResponseType.ACCEPT and fn:
             self.load_file(fn)
 
+    def _confirm_sh_overwrite(self, filename):
+        """The overwrite prompt the file chooser cannot give.
+
+        The chooser confirms replacing the name it was handed; write_script
+        appends `.sh` to it afterwards.  So typing `desk` replaced desk.sh
+        with no prompt at all -- silent data loss over exactly the scripts
+        warandr exists to write.  (arandr 0.1.11 does the same thing; that is
+        not a reason to keep it.)"""
+        if filename.endswith(".sh") or not os.path.exists(filename + ".sh"):
+            return True                  # the chooser already asked, or new
+        return _msg(self.window, Gtk.MessageType.QUESTION,
+                    "A file named \u201c%s\u201d already exists.\n"
+                    "Do you want to replace it?"
+                    % os.path.basename(filename + ".sh"),
+                    Gtk.ButtonsType.YES_NO) == Gtk.ResponseType.YES
+
     def do_save_as(self):
         if self.layout is None:
             return
@@ -1214,6 +1230,8 @@ class Application:
             fn = d.get_filename()
             d.destroy()
             if r != Gtk.ResponseType.ACCEPT or not fn:
+                return
+            if not self._confirm_sh_overwrite(fn):
                 return
         try:
             path = cli.write_script(self.layout, fn, self.backend.word,

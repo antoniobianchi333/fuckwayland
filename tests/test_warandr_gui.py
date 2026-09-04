@@ -796,6 +796,16 @@ class GuiProbe(XvfbCase):
         self.assertEqual(res["save_hint"], "saved %s - note: wxrandr is not "
                          "on PATH, the script needs it" % res["saved_path"])
         self.assertEqual(res["save_nohint"], "saved " + res["saved_path"])
+        # Save As appends `.sh` after the chooser's overwrite check, so the
+        # chooser never asks about the file that really gets replaced
+        self.assertTrue(res["sh_overwrite_asks"], res)
+        self.assertEqual(res["sh_overwrite_prompt"],
+                         "A file named \u201cdesk.sh\u201d already exists.\n"
+                         "Do you want to replace it?")
+        self.assertTrue(res["sh_overwrite_quiet_when_new"], res)
+        self.assertTrue(res["sh_overwrite_quiet_when_typed"], res)
+        self.assertEqual(res["sh_overwrite_kept"],
+                         "#!/bin/sh\n# an earlier layout\n")
         # popup menus do not accumulate
         self.assertTrue(res["popup_released"], res)
         self.assertLessEqual(res["popups_alive"], 1, res)

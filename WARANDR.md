@@ -267,6 +267,13 @@ and says so in a dialog; when there is no layout at all — the first read of
 all — warandr prints the same one `warandr:` line the command line would and
 exits 1.
 
+**Save As and the `.sh` suffix.** A layout script is saved with `.sh`, appended
+when the typed name has none — *after* the file chooser has confirmed
+overwriting the name it was given, so the chooser never asks about the file
+that really gets replaced. arandr 0.1.11 does the same, and silently: typing
+`desk` over an existing `desk.sh` loses it. warandr asks for that case itself,
+in the chooser's words, before writing anything.
+
 ## Layout scripts
 
 ```

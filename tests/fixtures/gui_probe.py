@@ -269,6 +269,21 @@ def main():
     res["save_nohint"] = wapp.status_text()
     res["saved_path"] = os.path.join(tmp, "layout.sh")
     os.environ["PATH"] = old_path
+    # -- Save As asks about the `.sh` the chooser never saw ------------------
+    with open(os.path.join(tmp, "desk.sh"), "w") as f:
+        f.write("#!/bin/sh\n# an earlier layout\n")
+    dialogs.clear()
+    # the stub answers anything but YES, so a prompt means "do not save"
+    res["sh_overwrite_asks"] = not wapp._confirm_sh_overwrite(
+        os.path.join(tmp, "desk"))
+    res["sh_overwrite_prompt"] = dialogs[-1] if dialogs else None
+    res["sh_overwrite_quiet_when_new"] = wapp._confirm_sh_overwrite(
+        os.path.join(tmp, "brandnew"))
+    res["sh_overwrite_quiet_when_typed"] = wapp._confirm_sh_overwrite(
+        os.path.join(tmp, "desk.sh"))
+    with open(os.path.join(tmp, "desk.sh")) as f:
+        res["sh_overwrite_kept"] = f.read()
+
     wapp.window.destroy()
     print(json.dumps(res))
     return 0
