@@ -321,16 +321,30 @@ repo can fix; the bugs that *were* fixable have been.
   active: `wl_keyboard.modifiers` carries the group and Mutter sends it only
   to the window with keyboard focus (`focus_resource_list`), which an
   injector never is. With one input source configured there is nothing to
-  guess. With several, wdotool uses the first one and says so once; when the
-  first one is plain `us` it keeps the old US-table behaviour rather than
-  guessing. `WDOTOOL_XKB_GROUP=<n>` pins the group for a script that switches
-  layouts. (`gsettings get org.gnome.desktop.input-sources current` is the
-  index of the active source, `n - 1`.)
+  guess: GNOME appends its own `us` fallback group *after* your sources, so a
+  single `de` source compiles as "de,us" and the first group is the one you
+  picked. With several, wdotool uses the **first** and says so once per
+  layout state — on both paths, the US bypass included, so a session
+  configured `us, de` and switched to German tells you it is assuming
+  `English (US)` while it types US characters. Pin it with
+  `WDOTOOL_XKB_GROUP=2`; the daemon reads that when it is spawned, so a
+  script that changes the pin mid-run has to stop the daemon first
+  (`pkill -f 'wdotool __daemon'`). Three rig facts worth having:
+  `gsettings set org.gnome.desktop.input-sources current 1` does **not** move
+  Mutter's active group (the keyboard shortcut does — `Super+Space` by
+  default); `gsettings get org.gnome.desktop.input-sources current` is the
+  index of the active source, `n - 1`; and `xkb-options` is re-read only when
+  the `sources` setting itself changes, so an option set on its own leaves
+  the compiled keymap byte-identical.
 * **L2 — `type` skips characters the active layout cannot produce**, with one
   warning per character ("Can't type character 'ß' (not on the French
-  layout). Skipping."), and types the rest of the string. On a layout that
-  reaches a character only through a Compose sequence that is not a dead-key
-  pair (`ø` on German, say) that is what happens.
+  layout). Skipping."), and types the rest of the string. Dead-key pairs are
+  *not* in that bucket: `ô` on French is dead_circumflex then `o`, and a bare
+  `´` is dead_acute twice, both composed by the application exactly as they
+  would be for a physical keyboard. What stays unreachable is a character the
+  layout only reaches through a Compose sequence that is not a dead-key pair
+  (`ø` on German, say), and one the layout simply does not have (`ñ` on
+  `fr(basic)`, which has neither `dead_tilde` nor `ntilde`).
 * **L7 — `--clearmodifiers` releases but does not restore.** X11 lets
   xdotool read the modifier state, clear it and put it back; Wayland has no
   way to read it, so wdotool releases all eight modifier keys and leaves

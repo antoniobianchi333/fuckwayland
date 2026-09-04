@@ -281,38 +281,67 @@ $ wdotool type 'Grüße, ça va?'      # de, fr, es, dvorak … all fine
   the keymap, not from a guess.
 * A character that needs a **dead key** becomes two keystrokes (`é` on German
   is `´` then `e`) and the application composes them, exactly as it does when
-  you type it by hand.
-* Characters the active layout genuinely cannot produce still warn and skip,
-  one line each, and the rest of the string is typed.
+  you type it by hand. Which two keystrokes follows the Compose table every
+  toolkit ships: an accent on its own is the dead key *twice* (`´` is
+  dead_acute dead_acute), and dead key + space is what that table says it is
+  (`'`, not `´`).
+* Characters the active layout genuinely cannot produce warn and skip, one
+  line each, and the rest of the string is typed — `ñ` is not on a French
+  keyboard (`fr(basic)` has no `dead_tilde` and no `ntilde`), so
+  `type 'ñ'` says so and types nothing.
 * **When the active layout is plain US, none of this runs.** wdotool checks
   the keymap key by key against its built-in US table and, when they agree,
   uses the built-in table — the most common setup keeps the code path it
-  always had. The same fixed table is the fallback whenever the keymap cannot
-  be read at all (no compositor, a locked screen, an unparsable keymap): a
-  warning in the daemon log, never a failure.
+  always had, byte for byte. Keyboard *options* do not spoil that: swapping
+  Caps and Escape, or putting the layout switcher on Super+Space, still
+  bypasses, because what is compared is the keys the fixed table actually
+  presses. The same fixed table is the fallback whenever the keymap cannot be
+  read at all (no compositor, a locked screen, an unparsable keymap): a
+  warning on every command that types through it, never a failure.
 
-The one thing the compositor will not tell an injector is **which** layout is
-active when you have several configured: `wl_keyboard.modifiers` carries that
-and it is only ever sent to the focused window. With one layout configured
-there is nothing to guess; with several, wdotool uses the first, says so once,
-and `WDOTOOL_XKB_GROUP` overrides it.
+Two things are still on the honest list:
+
+* **Compose-only characters.** A character the layout reaches only through a
+  Compose *sequence* that is not a dead-key pair (`ø` on German, say) is
+  skipped with the warning above. wdotool composes nothing itself — it
+  presses keys, and the application does the composing.
+* **Which of several configured layouts is active.** `wl_keyboard.modifiers`
+  carries that and every compositor sends it only to the window with keyboard
+  focus, which an injector never is. With one layout configured there is
+  nothing to guess. With several, wdotool uses the **first** one and says so
+  — including when the first one is `us`, where it is the built-in table that
+  gets used. So a `us, de` session that has switched to German types US
+  characters until you pin the group:
+
+```console
+$ WDOTOOL_XKB_GROUP=2 wdotool type 'Grüße'   # the second configured layout
+```
 
 | variable | effect |
 |---|---|
+| `WDOTOOL_LAYOUT=auto` | the default: the compositor's keymap, unless it is plain US |
 | `WDOTOOL_LAYOUT=us` | never read the keymap; use the built-in US table |
 | `WDOTOOL_LAYOUT=xkb` | use the compositor's keymap even if it looks like US |
 | `WDOTOOL_XKB_GROUP=<n>` | pin the active layout group (1 = the first one) |
 | `WDOTOOL_XKB_KEYMAP=<file>` | read the keymap from a file instead of the compositor |
 
-These are read by the *daemon*, which keeps the environment it was started
-with, so set them before the first wdotool command of a session (or stop the
-running daemon — `pkill -f 'wdotool __daemon'`) — changing your **layout**
-needs no such thing, it is re-read on every command.
+These four are read by the *daemon*, which keeps the environment it was
+started with, so set them before the first wdotool command of a session — or
+stop the running daemon first (`pkill -f 'wdotool __daemon'`), which is what
+a script that changes the pin mid-run has to do. Changing your **layout**
+needs none of that: the keymap and the active group are re-read on every
+single command, so a long-running daemon follows a layout switch by itself.
 
 `wdotool __keymap` is a hidden diagnostic that prints what the compositor
 actually sent; `--info` summarises it (groups, active group, whether the US
 bypass takes it), and `--chars STRING` shows the keystrokes each character
-would need.
+would need — from the built-in table when the bypass applies, since that is
+what wdotool will send.
+
+sway and KWin implement `zwp_virtual_keyboard_v1`, which would let wdotool
+upload a keymap of its own and skip the reverse lookup entirely on those two.
+That is a separate change and deliberately not part of this one: it needs a
+second injection path beside uinput, and it does nothing for GNOME.
 
 ### Session readiness and exit codes
 

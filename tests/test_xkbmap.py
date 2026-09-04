@@ -26,7 +26,7 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 KEYMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "keymaps")
 FIXTURES = ("us", "de", "fr", "es", "gb", "dvorak", "us_de", "de_fr",
-            "noble_de", "sway_de")
+            "noble_de", "sway_de", "us_swapescape", "us_grptoggle")
 
 
 def text(name: str) -> str:
@@ -307,9 +307,12 @@ class TestDeadKeys(unittest.TestCase):
                          [(39, xkbmap.MOD_LEVEL3), (18, 0)])
 
     def test_bare_accent_is_dead_key_then_space(self):
+        # <dead_grave> <space> is "`" in the Compose table, so this one is
+        # still a space; the accents Compose spells differently are in
+        # TestDeadKeyPlusSpace below (B3).
         de = rmap("de")
-        self.assertEqual(de.lookup_char("´"), [(13, 0), (57, 0)])
         self.assertEqual(de.lookup_char("`"), [(13, xkbmap.MOD_SHIFT), (57, 0)])
+        self.assertEqual(de.lookup_char("^"), [(41, 0), (57, 0)])
 
     def test_dead_key_is_not_a_character(self):
         # dead_acute must never be handed out as a way to type something
@@ -613,8 +616,8 @@ class TestFallbacks(unittest.TestCase):
                                    WDOTOOL_LAYOUT=None)
         self.assertEqual(taps(d.kb),
                          [(30, 1), (30, 0), (42, 1), (30, 1), (30, 0), (42, 0)])
-        self.assertEqual(warns, [])          # the client is not spammed ...
-        self.assertIn("read", d._xkb_said)   # ... the daemon log says it once
+        self.assertIn("cannot read the compositor's keymap", warns[0])
+        self.assertIn("read", d._xkb_said)   # the daemon log says it once
 
     def test_unparsable_keymap(self):
         import tempfile
@@ -744,9 +747,13 @@ class TestUsLayoutNeverReachesTheNewCode(unittest.TestCase):
 
     def test_a_two_layout_session_on_its_us_group_is_also_bypassed(self):
         d = self.us_daemon("us_de")
-        d.op_type("zZ", 0, False)
+        warns = d.op_type("zZ", 0, False)
         self.assertEqual(taps(d.kb),
                          [(44, 1), (44, 0), (42, 1), (44, 1), (44, 0), (42, 0)])
+        # ... and says which group that was (B1). Naming it is a regex scan
+        # of the keymap text -- still not the parser, which is mined.
+        self.assertEqual(len(warns), 1, warns)
+        self.assertIn("assuming 'English (US)'", warns[0])
 
     def test_the_mines_are_live(self):
         """This class only proves something if the mines would go off."""
@@ -755,12 +762,12 @@ class TestUsLayoutNeverReachesTheNewCode(unittest.TestCase):
 
 
 class TestDiagnosticSubcommand(unittest.TestCase):
-    def run_it(self, *args):
+    def run_it(self, *args, mode=None):
         """`__keymap` is a CLI: it sets WDOTOOL_XKB_* for its own process.
         Keep that inside the test."""
         out, err = io.StringIO(), io.StringIO()
         with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=None,
-                 WDOTOOL_LAYOUT=None):
+                 WDOTOOL_LAYOUT=mode):
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 rc = cli.main(["wdotool", "__keymap", *args])
         return rc, out.getvalue(), err.getvalue()
@@ -793,6 +800,27 @@ class TestDiagnosticSubcommand(unittest.TestCase):
         self.assertIn("'€': key 18+level3", out)
         self.assertIn("'漢': unreachable", out)
 
+    def test_chars_on_a_bypassed_session_answers_from_the_fixed_table(self):
+        """The diagnostic must not contradict the line above it: on a
+        bypassed session wdotool sends the fixed table's keystrokes, so that
+        is what --chars has to show (it used to print the reverse map's, and
+        `(` came out as the keypad key)."""
+        rc, out, _ = self.run_it("--keymap", os.path.join(KEYMAPS, "us.xkb"),
+                                 "--info", "--chars", "(a")
+        self.assertEqual(rc, 0)
+        self.assertIn("us bypass:     yes", out)
+        self.assertIn("US bypass is in effect", out)
+        self.assertIn("'(': key 10+shift", out)
+        self.assertIn("'a': key 30", out)
+
+    def test_forcing_the_reverse_map_is_shown_and_used(self):
+        rc, out, _ = self.run_it("--keymap", os.path.join(KEYMAPS, "us.xkb"),
+                                 "--info", "--chars", "(", mode="xkb")
+        self.assertEqual(rc, 0)
+        self.assertIn("us bypass:     no -- WDOTOOL_LAYOUT=xkb overrides it", out)
+        self.assertNotIn("US bypass is in effect", out)
+        self.assertIn("'(': key 10+shift", out)   # the same key, the long way
+
     def test_group_option(self):
         rc, out, _ = self.run_it("--keymap", os.path.join(KEYMAPS, "us_de.xkb"),
                                  "--group", "2", "--chars", "z")
@@ -820,6 +848,323 @@ class TestDiagnosticSubcommand(unittest.TestCase):
 
         self.assertFalse(commands.is_command("__keymap"))
         self.assertIsNone(commands.lookup("__keymap"))
+
+
+# ---------------------------------------------------------------------------
+# the review's findings, one regression test each
+
+
+class TestTheAssumedGroupIsAnnounced(unittest.TestCase):
+    """B1: the "which layout is active?" notice lived on the reverse-map
+    path only, so a `us,de` session -- the one case where the bypass is taken
+    *and* the group is a guess -- typed US characters and said nothing."""
+
+    def type_on(self, name, group=None, s="z"):
+        d = make_daemon()
+        with env(WDOTOOL_XKB_KEYMAP=os.path.join(KEYMAPS, name + ".xkb"),
+                 WDOTOOL_XKB_GROUP=group, WDOTOOL_LAYOUT=None):
+            return d, d.op_type(s, 0, False)
+
+    def test_the_bypass_path_says_which_group_it_assumed(self):
+        d, warns = self.type_on("us_de")
+        self.assertIsNone(d._layout_cache[1])              # bypassed, as before
+        self.assertEqual(taps(d.kb), [(44, 1), (44, 0)])   # US z, as before
+        self.assertEqual(len(warns), 1, warns)
+        self.assertIn("assuming 'English (US)'", warns[0])
+        self.assertIn("WDOTOOL_XKB_GROUP", warns[0])
+
+    def test_a_pinned_group_says_nothing(self):
+        for group in ("1", "2"):
+            _, warns = self.type_on("us_de", group=group)
+            self.assertEqual(warns, [], group)
+
+    def test_a_session_with_nothing_to_guess_says_nothing(self):
+        for name in ("us", "sway_de", "us_swapescape"):
+            _, warns = self.type_on(name, s="a")
+            self.assertEqual([w for w in warns if "assuming" in w], [], name)
+
+    def test_it_is_said_again_when_the_layout_changes(self):
+        d = make_daemon()
+        said = []
+        for name in ("de", "fr", "de"):
+            with env(WDOTOOL_XKB_KEYMAP=os.path.join(KEYMAPS, name + ".xkb"),
+                     WDOTOOL_LAYOUT=None, WDOTOOL_XKB_GROUP=None):
+                w = []
+                d._layout(w)
+                d._layout(w)      # same state twice: still one notice
+                said.append([x for x in w if "assuming" in x])
+        self.assertEqual([len(s) for s in said], [1, 1, 1])
+        self.assertIn("French", said[1][0])
+
+    def test_group_name_needs_no_parse(self):
+        """The notice runs on the bypass path, so it must not drag the
+        parser in with it."""
+        self.addCleanup(setattr, xkbmap, "parse", xkbmap.parse)
+        xkbmap.parse = lambda *a, **k: self.fail("parse() was reached")
+        self.assertEqual(xkbmap.group_name(text("us_de"), 2), "German")
+        self.assertEqual(xkbmap.group_name(text("de"), 1), "German")
+        self.assertEqual(xkbmap.group_name(text("us_de"), 9), "group 9")
+
+
+class TestUsLayoutsWithOptions(unittest.TestCase):
+    """B2: a plain `us` session with keyboard *options* set is still a plain
+    US session. Refusing to bypass `caps:swapescape` ran the whole reverse
+    map on exactly the setup the safety requirement is about."""
+
+    def test_they_are_bypassed(self):
+        for name in ("us_swapescape", "us_grptoggle"):
+            self.assertTrue(xkbmap.active_group_is_plain_us(text(name), 1), name)
+
+    def test_they_type_through_the_fixed_table(self):
+        for name in ("us_swapescape", "us_grptoggle"):
+            d = make_daemon()
+            with env(WDOTOOL_XKB_KEYMAP=os.path.join(KEYMAPS, name + ".xkb"),
+                     WDOTOOL_LAYOUT=None, WDOTOOL_XKB_GROUP=None):
+                warns = d.op_type("aA!", 0, False)
+            self.assertIsNone(d._layout_cache[1], name)
+            self.assertEqual(warns, [], name)
+            self.assertEqual(taps(d.kb), [
+                (30, 1), (30, 0),
+                (42, 1), (30, 1), (30, 0), (42, 0),
+                (42, 1), (2, 1), (2, 0), (42, 0)], name)
+
+    def test_the_position_keys_are_not_part_of_the_check(self):
+        """<CAPS> carrying Escape is what used to fail it. Escape, Return,
+        Tab, BackSpace and Delete are in the same place on every layout and
+        go through KEYSYM_KEYS, not through any layout table."""
+        want = xkbmap._expected_us()
+        for code in (1, 14, 15, 28, 111):   # Esc BackSpace Tab Return Delete
+            self.assertNotIn(code, want)
+        self.assertEqual(want[30], {1: ord("a"), 2: ord("A")})
+
+    def test_a_type_is_still_checked_where_the_table_shifts_the_key(self):
+        us = text("us")
+        odd = us.replace('''\tkey <AD01> {
+\t\tsymbols[1]= [ 0x71, 0x51 ],''', '''\tkey <AD01> {
+\t\ttype= "PC_ALT_LEVEL2",
+\t\tsymbols[1]= [ 0x71, 0x51 ],''', 1)
+        self.assertNotEqual(odd, us)
+        self.assertFalse(xkbmap.active_group_is_plain_us(odd, 1))
+
+    def test_but_not_on_a_key_it_only_ever_presses_unshifted(self):
+        """`grp:win_space_toggle` gives <SPCE> the type PC_SUPER_LEVEL2.
+        The fixed table presses that key at level 1 and never shifts it, so
+        its type is none of our business."""
+        us = text("us")
+        spce = us.replace("\tkey <SPCE> {\t[ 0x20 ] };",
+                          '\tkey <SPCE> {\n\t\ttype= "PC_SUPER_LEVEL2",'
+                          "\n\t\tsymbols[1]= [ 0x20 ]\n\t};", 1)
+        self.assertNotEqual(spce, us)
+        self.assertTrue(xkbmap.active_group_is_plain_us(spce, 1))
+
+    def test_the_macintosh_group_name_is_accepted_but_still_verified(self):
+        """A Macintosh keyboard model calls the same layout "USA"."""
+        us = text("us").replace('name[1]="English (US)"', 'name[1]="USA"', 1)
+        self.assertTrue(xkbmap.active_group_is_plain_us(us, 1))
+        de = text("de").replace('name[1]="German"', 'name[1]="USA"', 1)
+        self.assertNotEqual(de, text("de"))
+        self.assertFalse(xkbmap.active_group_is_plain_us(de, 1))
+
+
+class TestDeadKeyPlusSpace(unittest.TestCase):
+    """B3: <dead_x> <space> types what the Compose table says it types, not
+    the spacing accent that shares the dead key's name. `type ´` on a German
+    layout used to land an apostrophe, silently."""
+
+    # /usr/share/X11/locale/en_US.UTF-8/Compose, the table every toolkit
+    # implements. These are the two rules it gives for a dead key that is
+    # not followed by a letter.
+    COMPOSE_SPACE = {
+        0xFE50: "`", 0xFE51: "\u0027", 0xFE52: "^", 0xFE53: "~", 0xFE54: "\u00af",
+        0xFE55: "\u02d8", 0xFE56: "\u02d9", 0xFE57: '"', 0xFE58: "\u00b0",
+        0xFE59: "\u02dd", 0xFE5A: "\u02c7", 0xFE5B: "\u00b8", 0xFE5C: "\u02db",
+    }
+    COMPOSE_DOUBLE = {0xFE50: "`", 0xFE51: "\u00b4", 0xFE52: "^", 0xFE53: "~",
+                      0xFE57: "\u00a8", 0xFE58: "\u00b0"}
+
+    def test_the_tables_agree_with_compose(self):
+        for ks, ch in self.COMPOSE_SPACE.items():
+            self.assertEqual(chr(xkbmap.DEAD_KEYSYMS[ks][1]), ch, hex(ks))
+        self.assertEqual({k: chr(v) for k, v in xkbmap.DEAD_DOUBLE.items()},
+                         self.COMPOSE_DOUBLE)
+
+    def test_a_spacing_accent_is_the_dead_key_twice(self):
+        de = rmap("de")
+        self.assertEqual(de.lookup_char("\u00b4"), [(13, 0), (13, 0)])
+        self.assertEqual(de.lookup_char("\u00a8"),
+                         [(26, xkbmap.MOD_LEVEL3)] * 2)
+
+    def test_and_a_dead_key_plus_space_where_compose_says_space(self):
+        self.assertEqual(rmap("de").lookup_char("^"), [(41, 0), (57, 0)])
+
+    def test_a_character_that_is_on_a_key_is_still_one_keystroke(self):
+        de = rmap("de")
+        self.assertEqual(de.lookup_char("\u00b0"), [(41, xkbmap.MOD_SHIFT)])
+        self.assertEqual(de.lookup_char("~"), [(27, xkbmap.MOD_LEVEL3)])
+        self.assertEqual(de.lookup_char("'"), [(43, xkbmap.MOD_SHIFT)])
+
+
+class TestCommentsInAKeymap(unittest.TestCase):
+    """B4: comments are keymap syntax. A `}` inside one closed a block early
+    and `build()` then *succeeded*, with a quarter of the characters."""
+
+    def with_stray_brace(self, name, comment):
+        t = text(name)
+        marked = t.replace("\tkey <AD01> {", comment + "\n\tkey <AD01> {", 1)
+        self.assertNotEqual(marked, t)
+        return marked
+
+    def test_a_brace_in_a_line_comment_no_longer_halves_the_keymap(self):
+        clean = xkbmap.build(text("de"), 1)
+        marked = xkbmap.build(self.with_stray_brace("de", "\t// stray } brace"), 1)
+        self.assertEqual(len(marked.chars), len(clean.chars))
+        self.assertEqual(marked.lookup_char("\u00e4"), [(40, 0)])
+        self.assertEqual(marked.lookup_char("@"), [(16, xkbmap.MOD_LEVEL3)])
+
+    def test_a_block_comment_too(self):
+        marked = self.with_stray_brace("de", "\t/* } and\n\t   } again */")
+        self.assertEqual(xkbmap.build(marked, 1).lookup_char("\u00e4"), [(40, 0)])
+
+    def test_the_bypass_reads_them_as_comments_too(self):
+        self.assertTrue(xkbmap.active_group_is_plain_us(
+            self.with_stray_brace("us", "\t// } "), 1))
+
+    def test_a_string_is_not_a_comment(self):
+        kept = xkbmap.strip_comments('name[1]="a//b"; // dropped')
+        self.assertIn('"a//b"', kept)
+        self.assertNotIn("dropped", kept)
+        untouched = "no comment characters here"
+        self.assertIs(xkbmap.strip_comments(untouched), untouched)
+
+
+class TestTheModifiersWait(unittest.TestCase):
+    """B5: the 80 ms wait for a wl_keyboard.modifiers event Mutter never
+    sends an unfocused client was paid on every command of a plain US GNOME
+    session, because it was switched off by the wrong condition -- GNOME
+    compiles a lone `us` source as two identical groups, which makes the
+    group *known* and left the wait switched on for ever."""
+
+    def waits(self, mods_seen, name="us"):
+        d = make_daemon()
+        seen = []
+        body = text(name)
+
+        def fake_fetch(timeout=2.0, mods_wait=0.08):
+            seen.append(mods_wait)
+            return xkbmap.Snapshot(body, 1, "test", True, mods_seen)
+
+        self.addCleanup(setattr, xkbmap, "fetch", xkbmap.fetch)
+        xkbmap.fetch = fake_fetch
+        with env(WDOTOOL_LAYOUT=None, WDOTOOL_XKB_KEYMAP=None,
+                 WDOTOOL_XKB_GROUP=None):
+            d._layout()
+            d._layout()
+        return seen
+
+    def test_a_compositor_that_sends_no_modifiers_event_is_waited_for_once(self):
+        self.assertEqual(self.waits(False), [0.08, 0.0])
+
+    def test_the_regression_itself(self):
+        # us.xkb is two identical groups, so the group is "known" ...
+        self.assertEqual(xkbmap.choose_group(text("us")), (1, True))
+        # ... and the wait must be switched off all the same.
+        self.assertEqual(self.waits(False, "us")[1], 0.0)
+
+    def test_the_wait_stays_while_the_event_does_arrive(self):
+        self.assertEqual(self.waits(True), [0.08, 0.08])
+
+    def test_a_pinned_group_never_waits(self):
+        seen = []
+
+        def fake_wayland(timeout, mods_wait):
+            seen.append(mods_wait)
+            return text("us_de"), None, False
+
+        self.addCleanup(setattr, xkbmap, "_fetch_wayland", xkbmap._fetch_wayland)
+        xkbmap._fetch_wayland = fake_wayland
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP="2"):
+            snap = xkbmap.fetch()
+        self.assertEqual((snap.group, snap.group_known, seen), (2, True, [0.0]))
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=None):
+            xkbmap.fetch()
+        self.assertEqual(seen[-1], 0.08)   # not pinned: the wait is paid
+
+
+class TestTheKeypadIsNeverTheAnswer(unittest.TestCase):
+    """B6: excluding the keypad by key *name* leaked. Mutter puts KP_Decimal
+    on <I129> and the keypad parentheses on <I187>/<I188>, so `(` resolved to
+    evdev 179 on every non-US layout and French `.` to 121 -- keys the layout
+    does not intend for those characters."""
+
+    KEYPAD_CODES = frozenset(
+        {55, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 96, 98,
+         117, 121, 179, 180})
+
+    def test_no_character_of_any_fixture_resolves_to_a_keypad_key(self):
+        for name in FIXTURES:
+            body = text(name)
+            for group in range(1, xkbmap.group_count(body) + 1):
+                for ch, (code, _) in xkbmap.build(body, group).chars.items():
+                    self.assertNotIn(code, self.KEYPAD_CODES,
+                                     f"{name} group {group}: {ch!r}")
+                    self.assertLess(code, 128, f"{name} group {group}: {ch!r}")
+
+    def test_the_characters_the_leak_produced(self):
+        S = xkbmap.MOD_SHIFT
+        self.assertEqual(rmap("de").lookup_char("("), [(9, S)])
+        self.assertEqual(rmap("de").lookup_char(")"), [(10, S)])
+        self.assertEqual(rmap("es").lookup_char("("), [(9, S)])
+        self.assertEqual(rmap("fr").lookup_char("("), [(6, 0)])
+        self.assertEqual(rmap("fr").lookup_char("."), [(51, S)])
+        self.assertEqual(rmap("de").lookup_char("."), [(52, 0)])
+
+    def test_the_keypad_is_demoted_not_deleted(self):
+        """`key KP_Add` must still find the keypad key."""
+        self.assertEqual(rmap("de").keysym_entry("KP_Add"), (78, 0))
+        self.assertEqual(rmap("fr").keysym_entry("KP_Decimal"), (121, 0))
+
+    def test_the_rank_covers_both_shapes(self):
+        self.assertEqual(xkbmap._keypad_rank(78, 0xFFAB), 1)   # KP_Add
+        self.assertEqual(xkbmap._keypad_rank(121, 0xFFAE), 1)  # KP_Decimal
+        self.assertEqual(xkbmap._keypad_rank(179, 0x28), 1)    # <I187>, parenleft
+        self.assertEqual(xkbmap._keypad_rank(9, 0x28), 0)      # the 8 key
+
+
+class TestADegradedSessionKeepsSayingSo(unittest.TestCase):
+    """Falling back to the fixed US table under a non-US layout types the
+    wrong characters. Telling only whichever client happened to ask first
+    tells nobody: every command that types through the fallback says so."""
+
+    def test_every_client_is_warned_while_the_keymap_cannot_be_read(self):
+        d = make_daemon()
+        with env(WDOTOOL_XKB_KEYMAP="/nonexistent/x.xkb", WDOTOOL_LAYOUT=None):
+            first = d.op_type("a", 0, False)
+            second = d.op_type("a", 0, False)   # inside the 5 s backoff
+        self.assertEqual(len(first), 1, first)
+        self.assertIn("cannot read the compositor's keymap", first[0])
+        self.assertEqual(first, second)
+
+    def test_an_unusable_keymap_warns_every_client_too(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".xkb", delete=False) as f:
+            f.write("this is not a keymap\n")
+        self.addCleanup(os.unlink, f.name)
+        d = make_daemon()
+        with env(WDOTOOL_XKB_KEYMAP=f.name, WDOTOOL_LAYOUT=None):
+            first = d.op_type("a", 0, False)
+            second = d.op_type("a", 0, False)   # served from the cache
+        self.assertIn("cannot use the compositor's keymap", first[0])
+        self.assertEqual(first, second)
+
+    def test_and_stops_when_the_keymap_can_be_read_again(self):
+        d = make_daemon()
+        with env(WDOTOOL_XKB_KEYMAP="/nonexistent/x.xkb", WDOTOOL_LAYOUT=None):
+            self.assertTrue(d.op_type("a", 0, False))
+        d._xkb_backoff = 0.0                     # the compositor came back
+        with env(WDOTOOL_XKB_KEYMAP=os.path.join(KEYMAPS, "us.xkb"),
+                 WDOTOOL_LAYOUT=None, WDOTOOL_XKB_GROUP=None):
+            self.assertEqual(d.op_type("a", 0, False), [])
 
 
 if __name__ == "__main__":

@@ -275,6 +275,8 @@ class _Daemon:
         self._xkb_backoff = 0.0    # monotonic: don't re-try a failing read
         self._xkb_mods_wait = 0.08  # seconds to wait for a modifiers event
         self._xkb_said: set = set()  # one-shot diagnostics already emitted
+        self._xkb_degraded = None  # set while the keymap cannot be used
+        self._xkb_group_said = None  # layout state the group notice was for
 
     def _key_gap(self, delay: float):
         """Inter-keystroke pause. Sleeps `delay` seconds but never lets the
@@ -487,9 +489,35 @@ class _Daemon:
         if tag in self._xkb_said:
             return
         self._xkb_said.add(tag)
+        self._xkb_print(msg, warnings)
+
+    def _xkb_print(self, msg: str, warnings):
         print("wdotool: " + msg, file=sys.stderr, flush=True)
         if warnings is not None:
             warnings.append("wdotool: " + msg)
+
+    def _xkb_say_group(self, state, msg: str, warnings):
+        """The "which layout is active?" notice: once per layout state, and
+        again whenever the state changes -- a layout switch is exactly when
+        the guess is worth repeating."""
+        if self._xkb_group_said == state:
+            return
+        self._xkb_group_said = state
+        self._xkb_print(msg, warnings)
+
+    def _xkb_warn_degraded(self, warnings):
+        """Tell *this* client that the keymap could not be used, whether or
+        not an earlier client was told. A session typing US characters
+        because the read failed is typing the wrong thing on every command,
+        and a single line to whoever happened to ask first tells nobody."""
+        if self._xkb_degraded and warnings is not None:
+            warnings.append(self._xkb_degraded)
+
+    def _xkb_fell_back(self, why: str, tag: str, warnings):
+        msg = why + "; typing with the built-in US layout table"
+        self._xkb_degraded = "wdotool: " + msg
+        self._xkb_say(tag, msg)          # the log says it once ...
+        self._xkb_warn_degraded(warnings)  # ... the client, every time
 
     def _layout(self, warnings=None):
         """The reverse map for the compositor's ACTIVE layout, or None when
@@ -505,48 +533,64 @@ class _Daemon:
         force = mode == "xkb"
         now = time.monotonic()
         if now < self._xkb_backoff:
+            self._xkb_warn_degraded(warnings)
             return None
         try:
             snap = xkbmap.fetch(mods_wait=self._xkb_mods_wait)
         except xkbmap.XkbError as e:
             self._xkb_backoff = now + 5.0
-            self._xkb_say("read", f"cannot read the compositor's keymap ({e}); "
-                                  "typing with the built-in US layout table")
+            self._xkb_fell_back(f"cannot read the compositor's keymap ({e})",
+                                "read", warnings)
             return None
         except Exception as e:  # a bug in the new code must not break typing
             self._xkb_backoff = now + 60.0
-            self._xkb_say("read", f"keymap read failed ({e!r}); "
-                                  "typing with the built-in US layout table")
+            self._xkb_fell_back(f"keymap read failed ({e!r})", "read", warnings)
             return None
-        if not snap.group_known:
+        if not snap.mods_seen:
             # This compositor does not send wl_keyboard.modifiers to an
             # unfocused client, and never will: stop paying for the wait.
+            # (Keying this off `group_known` instead left the wait switched
+            # on for ever on the commonest GNOME session there is, whose two
+            # groups are the same `us` twice -- +87 ms on every command, B5.)
             self._xkb_mods_wait = 0.0
         key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(),
                snap.group)
         if self._layout_cache is not None and self._layout_cache[0] == key:
+            self._xkb_warn_degraded(warnings)
             return self._layout_cache[1]
+        self._xkb_degraded = None
         rmap = None
+        bypassed = False
         try:
             if not force and xkbmap.active_group_is_plain_us(snap.text, snap.group):
-                pass  # THE BYPASS: nothing below this line runs on a US layout
+                bypassed = True  # THE BYPASS: nothing below this line runs
             else:
                 rmap = xkbmap.build(snap.text, snap.group)
-                if not snap.group_known:
-                    self._xkb_say(
-                        "group",
-                        "the compositor does not say which keyboard layout is "
-                        "active (it sends that only to the focused window); "
-                        f"assuming '{rmap.name}'. Set WDOTOOL_XKB_GROUP=<n> to "
-                        "pin one.", warnings)
         except xkbmap.XkbError as e:
             rmap = None
-            self._xkb_say("build", f"cannot use the compositor's keymap ({e}); "
-                                   "typing with the built-in US layout table")
+            self._xkb_fell_back(f"cannot use the compositor's keymap ({e})",
+                                "build", warnings)
         except Exception as e:
             rmap = None
-            self._xkb_say("build", f"keymap conversion failed ({e!r}); "
-                                   "typing with the built-in US layout table")
+            self._xkb_fell_back(f"keymap conversion failed ({e!r})",
+                                "build", warnings)
+        try:
+            if not snap.group_known and (bypassed or rmap is not None):
+                # Which layout is active was a guess. Say so on the bypass
+                # path too: a `us,de` session sitting on its German group is
+                # precisely the one that types the wrong characters, and it
+                # is the bypass that takes it (B1). Once per layout state,
+                # so a switch is announced again.
+                name = (rmap.name if rmap is not None
+                        else xkbmap.group_name(snap.text, snap.group))
+                self._xkb_say_group(
+                    key,
+                    "the compositor does not say which keyboard layout is "
+                    "active (it sends that only to the focused window); "
+                    f"assuming '{name}'. Set WDOTOOL_XKB_GROUP=<n> to "
+                    "pin one.", warnings)
+        except Exception:
+            pass  # a notice must never be the thing that breaks typing
         self._layout_cache = (key, rmap)
         return rmap
 

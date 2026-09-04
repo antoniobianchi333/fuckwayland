@@ -377,17 +377,31 @@ Daemon notes (B):
   (`<RALT>` on German, the synthetic `<LVL3>` where the layout leaves `<RALT>`
   as Alt_R). A character that needs a dead key becomes two keystrokes (the mark
   from NFD, then the base letter) and the application composes them, exactly as
-  it does for a physical French keyboard. Unreachable characters warn and skip,
-  as before.
+  it does for a physical French keyboard; a bare spacing accent is the dead key
+  *twice* and dead-key-plus-space types what the Compose table every toolkit
+  ships says it types (`'`, not `´` — claiming otherwise silently typed the
+  wrong character). Keypad keys are ranked below the main block rather than
+  excluded by key *name*, which used to leak `(` to `KP_Left_Parenthesis` and
+  French `.` to `KP_Decimal`. Comments are stripped before parsing: a `}`
+  inside one would otherwise close a block early. Unreachable characters warn
+  and skip, as before.
   - **the US bypass** is the whole safety story: `xkbmap.active_group_is_plain_us()`
     verifies, key by key, that every keycode the fixed table would emit carries
     exactly the keysyms the fixed table assumes at levels 1 and 2 *in the active
     group* (plus the group name and a type whose level 2 really is Shift). If it
     holds, the old path runs and nothing else in `xkbmap` is even called — the
     check shares no code with the parser or the reverse map, and choosing a
-    group is regex-only for the same reason. Any failure — no compositor, an
-    unparsable keymap, a crash in the new code — also lands on the fixed table,
-    with one diagnostic per daemon.
+    group is regex-only for the same reason. What it does *not* check is as
+    load-bearing: only the printable characters (Escape, Return, Tab,
+    BackSpace and Delete are position keys, the same everywhere, and go
+    through `KEYSYM_KEYS`), and a key's type only where the fixed table
+    actually presses level 2. Checking those made a plain `us` session with
+    `caps:swapescape` or `grp:win_space_toggle` fail the check and drag the
+    whole reverse map in — a fail-*open*, and the one thing the bypass exists
+    to prevent. Any failure — no compositor, an unparsable keymap, a crash in
+    the new code — also lands on the fixed table, with one diagnostic per
+    daemon in the log and a warning to *every* client that types through the
+    fallback.
   - **the group**: `wl_keyboard.modifiers` carries the active group but every
     compositor sends it only to the *focused* client, which an injector never
     is (measured on Mutter 46/50, and the same is true of wlroots and KWin). So
@@ -397,12 +411,19 @@ Daemon notes (B):
     its own `us` fallback group *after* the user's sources, so a single German
     source is "de,us" and group 1 is right; a session with several sources whose
     first one is `us` verifies as plain US and keeps the old behaviour instead
-    of guessing. `WDOTOOL_XKB_GROUP=<n>` pins it.
+    of guessing — and says so, on that path too, because that is the session
+    that types the wrong characters after a switch to its second layout. The
+    notice is made once per layout state and again on every change.
+    `WDOTOOL_XKB_GROUP=<n>` pins it.
   - **cache**: keyed on (sha256 of the keymap text, group), re-read on *every*
     `type`/`key` — the user can switch layout between two commands, and a
     long-lived daemon has to notice. A rebuild costs ~15ms; a hit is a Wayland
     roundtrip and a hash. A failed read backs off 5s so a wedged compositor
-    cannot stall every keystroke.
+    cannot stall every keystroke. The read waits up to 80ms for a `modifiers`
+    event the first time and then, if none came, never again — a compositor
+    that does not send one to an unfocused client never will, and paying that
+    wait per command cost a plain US GNOME session +87ms on every keystroke
+    until the condition was keyed off the event instead of off the group.
   - **overrides** (all read by the *daemon*, which keeps the environment it was
     spawned with): `WDOTOOL_LAYOUT=us` never reads a keymap at all,
     `WDOTOOL_LAYOUT=xkb` forces the reverse map even on a US layout,

@@ -65,13 +65,18 @@ class XkbError(Exception):
 class Snapshot:
     """One reading of the compositor's keyboard state."""
 
-    __slots__ = ("text", "group", "source", "group_known")
+    __slots__ = ("text", "group", "source", "group_known", "mods_seen")
 
-    def __init__(self, text: str, group: int, source: str, group_known: bool):
+    def __init__(self, text: str, group: int, source: str, group_known: bool,
+                 mods_seen: bool = False):
         self.text = text
         self.group = group          # 1-based, as in the keymap's name[N]
         self.source = source        # for diagnostics
         self.group_known = group_known  # False: assumed, not read back
+        # Did a wl_keyboard.modifiers event actually arrive? A compositor
+        # that does not send one to an unfocused client never will, so the
+        # caller can stop paying `mods_wait` for it (B5).
+        self.mods_seen = mods_seen
 
 
 # ---------------------------------------------------------------------------
@@ -99,13 +104,15 @@ def fetch(timeout: float = 2.0, mods_wait: float = 0.08) -> Snapshot:
         if group is None:
             group, known = choose_group(text, None)
         return Snapshot(text, group, f"file:{path}", known)
-    text, group = _fetch_wayland(timeout, mods_wait)
+    # A pinned group answers the only question the wait exists for, so skip
+    # the wait entirely rather than paying it and throwing the answer away.
+    text, group, mods_seen = _fetch_wayland(timeout, 0.0 if forced else mods_wait)
     if forced:
-        return Snapshot(text, forced, "wayland (group pinned)", True)
+        return Snapshot(text, forced, "wayland (group pinned)", True, mods_seen)
     if group is None:
         group, known = choose_group(text, None)
-        return Snapshot(text, group, "wayland", known)
-    return Snapshot(text, group, "wayland", True)
+        return Snapshot(text, group, "wayland", known, mods_seen)
+    return Snapshot(text, group, "wayland", True, mods_seen)
 
 
 def _env_group():
@@ -117,7 +124,7 @@ def _env_group():
 
 
 def _fetch_wayland(timeout: float, mods_wait: float):
-    """(keymap text, active group or None) straight off wl_keyboard."""
+    """(keymap text, active group or None, modifiers event seen?)."""
     from wdotool import session
     from wdotool.wayland_mini import WlConn
 
@@ -130,7 +137,7 @@ def _fetch_wayland(timeout: float, mods_wait: float):
         raise XkbError(f"cannot connect to the compositor: {e}") from None
     # A wedged compositor must not hang the daemon while it holds the lock.
     conn.sock.settimeout(timeout)
-    state = {"caps": 0, "text": None, "group": None}
+    state = {"caps": 0, "text": None, "group": None, "mods": False}
     try:
         found = conn.find_global("wl_seat")
         if found is None:
@@ -162,6 +169,7 @@ def _fetch_wayland(timeout: float, mods_wait: float):
                     os.close(fd)
             elif op == 4:  # modifiers(serial, depressed, latched, locked, group)
                 cur.u32(), cur.u32(), cur.u32(), cur.u32()
+                state["mods"] = True
                 state["group"] = cur.u32() + 1  # wire is 0-based, keymap 1-based
 
         conn.on(kb, kb_handler)
@@ -174,7 +182,7 @@ def _fetch_wayland(timeout: float, mods_wait: float):
                 conn.dispatch(mods_wait)
             except (OSError, RuntimeError):
                 pass
-        return state["text"], state["group"]
+        return state["text"], state["group"], state["mods"]
     except (OSError, RuntimeError, ValueError, IndexError, struct.error) as e:
         raise XkbError(f"wayland keymap read failed: {e}") from None
     finally:
@@ -298,6 +306,35 @@ class Keymap:
     @property
     def group_names(self) -> list:
         return [g.name for g in self.groups]
+
+
+# A string literal, or a comment. Matching the literal first is what keeps a
+# `//` inside a group name from being taken for a comment.
+_COMMENT_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"|//[^\n]*|/\*.*?\*/', re.S)
+
+
+def strip_comments(text: str) -> str:
+    """XKB comments (`// ...`, `/* ... */`) removed, string literals kept.
+
+    Pure text handling with no keymap knowledge, which is why the parser and
+    the US bypass may share it: a `}` inside a comment would otherwise close
+    a block early and silently halve the keymap (B4). No compositor emits
+    comments, but `WDOTOOL_XKB_KEYMAP=<file>` is a documented input and
+    hand-written keymaps are full of them.
+    """
+    if "//" not in text and "/*" not in text:
+        return text  # the common case: not one byte copied
+    return _COMMENT_RE.sub(
+        lambda m: m.group(0) if m.group(0)[:1] == '"' else " ", text)
+
+
+def group_name(text: str, n: int) -> str:
+    """The name of group `n`, by regex: no parse, so the US bypass path can
+    say which group it assumed without building anything (B1)."""
+    for m in _GROUPNAME_RE.finditer(strip_comments(text)):
+        if int(m.group(1)) == n:
+            return m.group(2) or f"group {n}"
+    return f"group {n}"
 
 
 def group_count(text: str) -> int:
@@ -444,6 +481,7 @@ def _type_level_masks(body: str) -> dict:
 def parse(text: str) -> Keymap:
     """Parse a keymap in XKB_KEYMAP_FORMAT_TEXT_V1 (what every compositor
     hands out). Raises XkbError on anything it cannot make sense of."""
+    text = strip_comments(text)
     if "xkb_symbols" not in text:
         raise XkbError("not an xkb keymap (no xkb_symbols section)")
     sec = _sections(text)
@@ -518,16 +556,22 @@ def _add_symbols(km: Keymap, key: str, group: int, listtext: str):
 # dead keysym -> (combining codepoint, the character the dead key + space
 # produces). NFD-decomposing a character gives the combining mark, which is
 # how "é" becomes dead_acute + e without shipping a Compose table.
+#
+# The second element is not the spacing accent that shares the dead key's
+# name: it is whatever <dead_x> <space> yields in the Compose table every
+# toolkit implements (/usr/share/X11/locale/*/Compose), which for acute,
+# diaeresis and abovering is ASCII ' " and °. Claiming U+00B4 there made
+# `type ´` send dead_acute + space and land an apostrophe instead (B3).
 DEAD_KEYSYMS = {
     0xFE50: (0x0300, 0x0060),  # dead_grave
-    0xFE51: (0x0301, 0x00B4),  # dead_acute
+    0xFE51: (0x0301, 0x0027),  # dead_acute      -> apostrophe, not U+00B4
     0xFE52: (0x0302, 0x005E),  # dead_circumflex
     0xFE53: (0x0303, 0x007E),  # dead_tilde
     0xFE54: (0x0304, 0x00AF),  # dead_macron
     0xFE55: (0x0306, 0x02D8),  # dead_breve
     0xFE56: (0x0307, 0x02D9),  # dead_abovedot
-    0xFE57: (0x0308, 0x00A8),  # dead_diaeresis
-    0xFE58: (0x030A, 0x02DA),  # dead_abovering
+    0xFE57: (0x0308, 0x0022),  # dead_diaeresis  -> quotedbl, not U+00A8
+    0xFE58: (0x030A, 0x00B0),  # dead_abovering  -> degree, not U+02DA
     0xFE59: (0x030B, 0x02DD),  # dead_doubleacute
     0xFE5A: (0x030C, 0x02C7),  # dead_caron
     0xFE5B: (0x0327, 0x00B8),  # dead_cedilla
@@ -552,6 +596,18 @@ DEAD_KEYSYMS = {
     0xFE6E: (0x0326, None),    # dead_belowcomma
 }
 
+# <dead_x> <dead_x> types the spacing accent itself -- the only way to type
+# one on a layout that has it *only* as a dead key, now that <dead_x> <space>
+# is known to type something else. The six the Compose table lists, no more.
+DEAD_DOUBLE = {
+    0xFE50: 0x0060,  # dead_grave      -> `
+    0xFE51: 0x00B4,  # dead_acute      -> ´
+    0xFE52: 0x005E,  # dead_circumflex -> ^
+    0xFE53: 0x007E,  # dead_tilde      -> ~
+    0xFE57: 0x00A8,  # dead_diaeresis  -> ¨
+    0xFE58: 0x00B0,  # dead_abovering  -> °
+}
+
 # Characters that are keys, not text. xdotool's `type` sends these through the
 # named key, exactly as the fixed US table does.
 _CONTROL_KEYSYMS = {
@@ -569,8 +625,10 @@ class ReverseMap:
         self.chars: dict[str, tuple] = {}      # char -> (keycode, mask)
         self.keysyms: dict[int, tuple] = {}    # keysym -> (keycode, mask)
         self.dead: dict[int, tuple] = {}       # combining cp -> (keycode, mask)
-        self.dead_space: dict[int, tuple] = {}  # dead+space char -> entry
+        self.dead_space: dict[str, tuple] = {}  # dead+space char -> entry
+        self.dead_double: dict[str, tuple] = {}  # dead+dead char -> entry
         self.mod_keys: dict[int, int] = {}     # MOD_* bit -> evdev keycode
+        self._best: dict = {}                  # (table, key) -> cost so far
 
     # -- lookups ----------------------------------------------------------
 
@@ -594,10 +652,13 @@ class ReverseMap:
 
     def _dead_sequence(self, ch: str):
         dead = self.dead_space.get(ch)
-        if dead:  # a bare accent: dead key, then space
+        if dead:  # dead key, then space
             space = self.chars.get(" ")
             if space:
                 return [dead, space]
+        dead = self.dead_double.get(ch)
+        if dead:  # a spacing accent: the dead key twice
+            return [dead, dead]
         decomposed = unicodedata.normalize("NFD", ch)
         if len(decomposed) != 2:
             return None
@@ -622,15 +683,33 @@ class ReverseMap:
 
     # -- building ---------------------------------------------------------
 
-    def _better(self, table, key, entry):
-        old = table.get(key)
-        if old is None or _cost(entry) < _cost(old):
+    def _better(self, tag: str, key, entry, rank: int = 0):
+        """Keep the cheapest keystroke for `key` in the table named `tag`:
+        fewest modifiers first, and a main-block key over a keypad one."""
+        table = getattr(self, tag)
+        cost = (rank,) + _cost(entry)
+        old = self._best.get((tag, key))
+        if old is None or cost < old:
+            self._best[(tag, key)] = cost
             table[key] = entry
 
 
 def _cost(entry) -> tuple:
     code, mask = entry
     return (bin(mask).count("1"), mask, code)
+
+
+def _keypad_rank(code: int, ks) -> int:
+    """0 for a key in the main block, 1 for one on the keypad (B6).
+
+    Excluding the keypad by key *name* (`<KP...>`) leaks: Mutter's keymaps
+    put KP_Decimal on <I129> and the keypad parentheses on <I187>/<I188>, so
+    `.` on a French layout and `(` on every non-US one used to resolve to a
+    keypad keycode. A keypad entry is still recorded -- it really does
+    produce the character -- but it can never beat a main-block key."""
+    if ks is not None and 0xFF80 <= ks <= 0xFFBD:  # KP_Space .. KP_Equal
+        return 1
+    return 1 if code >= 128 else 0
 
 
 def build(text: str, group: int = 1) -> ReverseMap:
@@ -667,7 +746,6 @@ def reverse(km: Keymap, group: int = 1) -> ReverseMap:
         if code is None or not 0 < code < 256:
             continue
         masks = km.types.get(g.types.get(key, ""), None)
-        keypad = key.startswith("KP")
         for i, ks in enumerate(levels):
             if ks is None:
                 continue
@@ -680,18 +758,20 @@ def reverse(km: Keymap, group: int = 1) -> ReverseMap:
             if any(mask & b and not rmap.mod_keys.get(b) for b in MOD_BITS):
                 continue
             entry = (code, mask)
-            rmap._better(rmap.keysyms, ks, entry)
+            rank = _keypad_rank(code, ks)
+            rmap._better("keysyms", ks, entry, rank)
             dead = DEAD_KEYSYMS.get(ks)
             if dead is not None:
-                rmap._better(rmap.dead, dead[0], entry)
+                rmap._better("dead", dead[0], entry, rank)
                 if dead[1] is not None:
-                    rmap._better(rmap.dead_space, chr(dead[1]), entry)
-                continue
-            if keypad:  # KP_1 types "1" only with NumLock: never our first choice
+                    rmap._better("dead_space", chr(dead[1]), entry, rank)
+                twice = DEAD_DOUBLE.get(ks)
+                if twice is not None:
+                    rmap._better("dead_double", chr(twice), entry, rank)
                 continue
             ch = keysym_char(ks)
             if ch is not None:
-                rmap._better(rmap.chars, ch, entry)
+                rmap._better("chars", ch, entry, rank)
     if not rmap.chars:
         raise XkbError("no typable character in group %d" % group)
     return rmap
@@ -752,8 +832,11 @@ _US_CODE_RE = re.compile(r"<([^<>\s]+)>\s*=\s*(\d+)\s*;")
 _US_BARE_RE = re.compile(r"^\s*\[([^\]]*)\]\s*$")
 _US_TYPE_RE = re.compile(r'\btype\s*(?:\[\s*(?:Group)?(\d+)\s*\])?\s*=\s*"([^"]*)"')
 
-# The name xkeyboard-config gives the plain `us` layout, and nothing else.
+# The names xkeyboard-config gives the plain `us` layout, and nothing else.
+# `USA` is what the same layout is called when the session picks a Macintosh
+# keyboard model; the key-by-key check below is what actually decides.
 US_GROUP_NAME = "English (US)"
+US_GROUP_NAMES = (US_GROUP_NAME, "USA")
 
 # Types whose level 2 is reached with Shift and level 1 with no modifier --
 # the only shapes under which the fixed table's (keycode, shifted) pair is
@@ -771,15 +854,21 @@ _US_OK_TYPES = frozenset({
 
 
 def _expected_us() -> dict:
-    """{evdev keycode: {level: keysym}} that the fixed US table assumes."""
+    """{evdev keycode: {level: keysym}} that the fixed US table assumes.
+
+    Only the *printable* characters: Return, Tab, BackSpace, Escape and
+    Delete are position keys, in the same place on every layout, and they go
+    through `KEYSYM_KEYS` rather than through any layout table. Demanding
+    them here made `us` + `caps:swapescape` -- a plain US session by any
+    honest reading -- fail the check and drag the whole reverse map in (B2).
+    """
     from wdotool import keymap as _keymap
 
-    named = {"\n": 0xFF0D, "\r": 0xFF0D, "\t": 0xFF09, "\b": 0xFF08,
-             "\x1b": 0xFF1B, "\x7f": 0xFFFF}
     out: dict = {}
     for ch, (code, shifted) in _keymap.CHAR_TO_KEY.items():
-        ks = named.get(ch) or ord(ch)
-        out.setdefault(code, {})[2 if shifted else 1] = ks
+        if len(ch) != 1 or ch < " " or ch == "\x7f":
+            continue
+        out.setdefault(code, {})[2 if shifted else 1] = ord(ch)
     return out
 
 
@@ -802,8 +891,10 @@ def active_group_is_plain_us(text: str, group: int = 1) -> bool:
 
 
 def _plain_us(text: str, group: int) -> bool:
-    if not re.search(r'\bname\s*\[\s*(?:Group)?%d\s*\]\s*=\s*"%s"'
-                     % (group, re.escape(US_GROUP_NAME)), text):
+    text = strip_comments(text)
+    if not re.search(r'\bname\s*\[\s*(?:Group)?%d\s*\]\s*=\s*"(?:%s)"'
+                     % (group, "|".join(re.escape(n) for n in US_GROUP_NAMES)),
+                     text):
         return False
     codes = {}
     for m in _US_CODE_RE.finditer(text):
@@ -817,10 +908,16 @@ def _plain_us(text: str, group: int) -> bool:
         if code is None or code not in want:
             continue
         body = m.group(2)
-        for tm in _US_TYPE_RE.finditer(body):
-            if tm.group(1) in (None, str(group)):
-                if tm.group(2) not in _US_OK_TYPES:
-                    return False
+        # A stated type only matters where the fixed table uses level 2: it
+        # is the "level 2 is Shift" assumption that is being checked. On a
+        # key the table only ever presses unshifted (<SPCE>, which
+        # `grp:win_space_toggle` gives the type PC_SUPER_LEVEL2) the type is
+        # none of our business (B2).
+        if 2 in want[code]:
+            for tm in _US_TYPE_RE.finditer(body):
+                if tm.group(1) in (None, str(group)):
+                    if tm.group(2) not in _US_OK_TYPES:
+                        return False
         # XKB group wrapping: a key that binds fewer groups than the keymap
         # has repeats its own. <SPCE> binds group 1 only and is still the
         # space bar in group 2.
@@ -912,7 +1009,8 @@ def diagnostic_main(argv) -> int:
     except XkbError as e:
         sys.stderr.write(f"wdotool: {e}\n")
         return 1
-    bypass = active_group_is_plain_us(snap.text, snap.group)
+    forced = (os.environ.get("WDOTOOL_LAYOUT") or "").strip().lower() == "xkb"
+    bypass = not forced and active_group_is_plain_us(snap.text, snap.group)
     if want_info:
         print(f"source:        {snap.source}")
         print(f"keymap:        {len(snap.text)} bytes, {len(km.keycodes)} keycodes, "
@@ -921,7 +1019,12 @@ def diagnostic_main(argv) -> int:
             mark = " <- active" + ("" if snap.group_known else " (assumed)")
             print(f"group {g.index}:      {g.name!r}"
                   + (mark if g.index == snap.group else ""))
-        print(f"us bypass:     {'yes -- the fixed US table is used' if bypass else 'no'}")
+        if bypass:
+            print("us bypass:     yes -- the fixed US table is used")
+        elif forced and active_group_is_plain_us(snap.text, snap.group):
+            print("us bypass:     no -- WDOTOOL_LAYOUT=xkb overrides it")
+        else:
+            print("us bypass:     no")
         if not bypass:
             rmap = reverse(km, snap.group)
             names = {MOD_SHIFT: "shift", MOD_LEVEL3: "level3", MOD_LEVEL5: "level5"}
@@ -931,9 +1034,21 @@ def diagnostic_main(argv) -> int:
             print(f"reachable:     {len(rmap.chars)} characters, "
                   f"{len(rmap.dead)} dead keys")
     if want_chars:
-        rmap = reverse(km, snap.group)
+        if bypass:
+            # Answer from the table wdotool would actually use, or the
+            # diagnostic contradicts the "us bypass: yes" line above it.
+            from wdotool import keymap as _keymap
+
+            print("(the US bypass is in effect: these are the built-in US "
+                  "table's keystrokes, which is what wdotool sends)")
+
+            def lookup(ch):
+                hit = _keymap.char_to_key(ch)
+                return None if hit is None else [(hit[0], MOD_SHIFT if hit[1] else 0)]
+        else:
+            lookup = reverse(km, snap.group).lookup_char
         for ch in want_chars:
-            seq = rmap.lookup_char(ch)
+            seq = lookup(ch)
             if seq is None:
                 print(f"{ch!r}: unreachable")
             else:

@@ -17,6 +17,14 @@ point of them.
 | `de_fr.xkb` | `de`, `fr` | `German`, `French`, `English (US)` |
 | `noble_de.xkb` | `de` | `German`, `English (US)` |
 | `sway_de.xkb` | `de` | `German` |
+| `us_swapescape.xkb` | `us` + `caps:swapescape` | `English (US)`, `English (US)` |
+| `us_grptoggle.xkb` | `us` + `grp:win_space_toggle` | `English (US)`, `English (US)` |
+
+The last two are plain `us` sessions with a keyboard *option* set, which is
+the shape that made the US bypass refuse: `caps:swapescape` moves Escape onto
+`<CAPS>` and `grp:win_space_toggle` gives `<SPCE>` the type `PC_SUPER_LEVEL2`.
+Neither changes a single character the built-in US table types, so both have
+to bypass.
 
 Everything but `noble_de.xkb` and `sway_de.xkb` comes from GNOME 50 / Mutter
 on Ubuntu 26.04 (libxkbcommon 1.11, which writes every keysym as a hex number).
@@ -36,4 +44,8 @@ Two facts these files record, both load-bearing for `wdotool/xkbmap.py`:
   default `groupsWrap`. Group 2 of `us.xkb` is a full US layout even though
   most keys never mention group 2.
 
-To capture more, in a session: `wdotool __keymap > new.xkb`.
+To capture more, in a session: `wdotool __keymap > new.xkb`. Mutter
+re-reads `xkb-options` only when the *sources* setting changes, so set the
+options first and then poke `org.gnome.desktop.input-sources sources`
+through another value and back, or the keymap you capture will be the old
+one, byte for byte.
