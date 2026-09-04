@@ -48,7 +48,10 @@ There is no X server to lie to, so wdotool goes underneath instead:
   needs root — or, if you'd rather not: one udev rule (`sudo sh
   gnome/install-bridge.sh --udev` installs `gnome/60-fuckwayland-uinput.rules`,
   which tags `/dev/uinput` for the logged-in user's ACL — no group, nobody
-  else) and it runs as a plain user, no relogin needed. Media keys work too
+  else) and it runs as a plain user, no relogin needed. The rule lives under
+  `gnome/` for want of a better home and has nothing to do with GNOME: it is
+  the same rule on KDE, sway and Xfce, and `--udev` installs it there too
+  without touching the bridge extension. Media keys work too
   (`key XF86AudioMute` and friends map straight to their evdev codes).
 - The first invocation forks a small daemon that owns the devices (creating them
   costs ~600ms of hotplug; you pay it once) and tracks the injected pointer.
@@ -286,11 +289,13 @@ What differs from X, and why:
 |---|---|
 | `windowraise` on 5.27 | KWin 5.27 has no per-window raise; the window is activated instead (which focuses it), and says so on stderr. Plasma 6 raises properly |
 | `windowlower` | neither release has a per-window lower: the active window is lowered for real, any other is marked keep-below, with a warning |
-| `windowstate SHADED` | works on 5.27; Plasma 6 removed window shading, so it is a clean "not supported" there |
-| `windowstate MAXIMIZED_*` on 5.27 | KWin 5.27 exposes no `maximizeMode` to scripts, so a window is read as maximized when its frame is exactly the maximize area. A window you sized to fill the work area yourself therefore reads as maximized |
-| `set_num_desktops` | KWin caps virtual desktops (20 on 5.27, 25 on 6) and keeps at least one; asking for more fails with that as the reason instead of hanging |
-| window ids | KWin's only window handle is a UUID, so the printed ids are minted from it (`0x4…`, out of the range Xwayland gives its clients). They are stable while the window lives, and an X id is not accepted in their place |
-| `wwmctl -l -G` positions | `wmctrl` doubles the frame offset under a non-reparenting WM; ours are the real ones (same on GNOME and sway) |
+| `windowstate SHADED` | works on 5.27, **for X11 windows only** — KWin shades nothing else, and says so; Plasma 6 removed window shading, so it is a clean "not supported" there |
+| `windowstate MAXIMIZED_*` on 5.27 | KWin 5.27 exposes no `maximizeMode` to scripts, so a window is read as maximized when its frame fills the maximize area to within one size increment (at least 32px per axis). A merely large window therefore reads as maximized, and `--remove MAXIMIZED_*` cannot clear that reading |
+| `set_num_desktops` | KWin caps virtual desktops (20 on 5.27, 25 on 6) and keeps at least one; asking for more is capped at that with a warning, not an error |
+| window ids | KWin's only window handle is a UUID, so the printed ids are minted from it (30 bits of it: `0x40000000`–`0x7FFFFFFF`, out of the range Xwayland gives its clients). They are stable while the window lives, and an X id is not accepted in their place — on sway either, where the ids are sway node ids |
+| `wwmctl -l -G` positions | on Plasma 6.6 (and sway) `wmctrl` doubles the frame offset under a non-reparenting WM and ours are the real ones; KWin 5.27's xwm *does* reparent, so both agree there |
+| a state KWin ignores | KWin accepts a state a window rule or the client's size hints forbid and does nothing with it. `wwmctl` then sends the EWMH `_NET_WM_STATE` ClientMessage instead, which reaches an XWayland window through KWin's X-plane window manager, and checks that one landed too; `wdotool` has no second route and says what happened |
+| `selectwindow` | KWin has one reply slot for its window picker, so a second picker started while the first is up takes the click. The first call then waits until `WDOTOOL_SELECT_TIMEOUT` (2 minutes) and says so |
 | XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list (pid + `WM_CLASS`, then title and geometry). A client that publishes neither `_NET_WM_PID` nor `WM_CLASS` keeps id 0 rather than being guessed at |
 | `wxprop -root` | `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW` and `_NET_DESKTOP_NAMES` are ours (native windows included), not KWin's stale X copies |
 | `getmouselocation` | KWin's scripting API has no pointer query, so the answer is the position wdotool itself last moved to (GNOME's bridge does answer). Move the mouse by hand and the reading goes stale until the next `mousemove` |
@@ -511,7 +516,7 @@ layout. `vm/README.md` keeps the rig and the verbatim messages behind these cell
 
 | | GNOME 46 / 50 | Plasma 5.27 / 6.6 | Xfce 4.18 / 4.20 (X11) | sway 1.11 (wlroots) |
 |---|---|---|---|---|
-| **wdotool** | all 48 commands; the window ones need the [bridge extension](#gnome) | all 48, nothing to install **(a)** | hands over to the installed `xdotool` **(b)** | all 48; two differences **(c)** |
+| **wdotool** | all 48 commands; the window ones need the [bridge extension](#gnome) | all 48, nothing to install **(a)** | hands over to the installed `xdotool` **(b)** | all 48; four differences **(c)** |
 | **wwmctl** | works; the window list needs the bridge | works **(d)** | hands over to `wmctrl` | works |
 | **wxprop** | works, X and native windows | works | hands over to `xprop` | works; from a root shell `-root` is synthesized **(e)** |
 | **wxrandr** | works (mutter) | works (kwin) **(f)** | hands over to `xrandr` **(g)** | works (sway) |
@@ -532,9 +537,14 @@ what our own Wayland code implements. `getdisplaygeometry` likewise answers per 
 (`1920 1080`) where the Wayland backends report the whole layout span (`3840 1080`):
 that is xdotool's own behaviour, faithfully.
 
-**(c)** `windowmove` on a *tiled* window warns and succeeds without moving it (float
-it first: `swaymsg floating enable`, and then the move and resize land exactly);
-`windowstate MAXIMIZED_VERT`/`_HORZ` has no equivalent in sway and fails cleanly.
+**(c)** Four, all about sway's tiling. `windowmove` and `windowsize` on a *tiled*
+window warn and succeed without changing it (float it first: `swaymsg floating
+enable`, and then the move and the resize land exactly — `resize set` on a tiled
+container moves the split ratio, which is not the size you asked for);
+`windowraise` on a tiled window likewise warns and does nothing, because a tiled
+container has no stacking position to change (and `windowlower` warns on every
+window: sway has no lower at all); and `windowstate
+MAXIMIZED_VERT`/`_HORZ` has no equivalent in sway and fails cleanly.
 
 **(d)** On Plasma 6.6 plasmashell's own desktop windows carry an empty caption, so
 those `wwmctl -l` rows have a blank title where 5.27 prints `Desktop @ QRect(…)`.

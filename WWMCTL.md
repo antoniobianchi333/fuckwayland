@@ -118,6 +118,11 @@ target of this clone.
   `wmctrl -l` prints `N/A` for a window whose `WM_NAME` is Latin-1 rather than
   the title.
 
+`-d` rows are sorted by that desktop id — ascending and positionally indexed,
+as real `wmctrl -d` always is. sway answers `GET_WORKSPACES` in *creation*
+order, which is what wwmctl used to print, so "the third line is desktop 2"
+was not true after a workspace was made out of order.
+
 **Known desktop-id mapping hole**: sway workspace *number* N prints as desktop
 N-1, but a workspace literally numbered 0 and *named* (numberless) workspaces
 both print as desktop `-1` — colliding with wmctrl's `-1` = sticky/all-desktops
@@ -345,12 +350,18 @@ nothing installed. wwmctl consumes the same typed hooks as on GNOME
 
 * **Ids.** XWayland rows print the real X id (`w.windowId` on 5.27; matched
   through the X server's client list on 6, where KWin exports none), native
-  rows print the backend id KWin's uuid is minted into (`0x4…`). `-i` takes
-  either.
+  rows print the backend id KWin's uuid is minted into — 30 bits of the uuid,
+  so `0x40000000`–`0x7FFFFFFF`. `-i` takes either.
 * **`-l -G`.** Real `wmctrl` doubles the frame offset under a non-reparenting
   window manager; our positions are the true ones (the same divergence as on
-  GNOME, documented at `wwmctl/x11_mini.py:get_geometry`). Sizes, classes,
-  pids and the row set are identical to real `wmctrl -lpxG`.
+  GNOME, documented at `wwmctl/x11_mini.py:get_geometry`). That is Plasma 6.6
+  and sway: KWin 5.27's xwm *does* reparent, so on 5.27 both tools print the
+  same positions. Sizes, classes, pids and the row set are identical to real
+  `wmctrl -lpxG` everywhere.
+* **`-e` on 5.27.** KWin runs `frameGeometry` writes through its placement
+  constraints, so a resize larger than the work area is clamped to it; its
+  own EWMH path is not, which is why real `wmctrl -e` grows the window and
+  ours stops at the work area. Plasma 6 does not clamp.
 * **`-d`.** The VP column is `_NET_DESKTOP_VIEWPORT` read from the X server
   when one is already up, exactly as wmctrl reads it — KWin publishes one
   pair per desktop, so every row prints `VP: 0,0`; a WM that publishes a
@@ -362,6 +373,14 @@ nothing installed. wwmctl consumes the same typed hooks as on GNOME
   `VP: N/A`; on 5.27 the two are byte-identical.
 * **`-b`.** Both axes of `add,maximized_vert,maximized_horz` land: the
   backend waits for each state to be applied before the next one reads it
-  back. `shaded` works on 5.27 and warns on 6 (shading removed).
+  back. `shaded` works on 5.27 for **X11 windows only** — KWin shades
+  nothing else — and warns on 6 (shading removed). When KWin accepts a state
+  and does not apply it (a window rule, or size hints a fullscreen cannot
+  satisfy), wwmctl falls back to the EWMH `_NET_WM_STATE` ClientMessage real
+  wmctrl sends, which reaches an XWayland window through KWin's X-plane
+  window manager; the fallback reads `_NET_WM_STATE` back rather than
+  calling a sent message a success, so a compositor that drops the message
+  is reported instead of being silently accepted.
 * **`-n`.** KWin caps virtual desktops (20 on 5.27, 25 on 6) and keeps at
-  least one; past that the command fails with the cap as the reason.
+  least one; past that the count is capped at the limit and a warning names
+  it — the command succeeds (rc 0), it does not fail.

@@ -291,7 +291,7 @@ image. Neither may claim what the other denies: change them together.
 | `noble-gnome`, `resolute-gnome` | works | works | needs the bridge extension | `getdisplaygeometry` works; window/input commands need the bridge extension | works | works |
 | `noble-kde`, `resolute-kde` | works | works | works | works | works | works |
 | `noble-xfce`, `resolute-xfce` | works (hands over to `xrandr`) | works (`wmctrl`) | works (`wmctrl`) | works (`xdotool` — but see the version note below) | works (`xprop`) | works (runs the real `xrandr`) |
-| `resolute-sway` | works | works | works | works, bar `windowstate MAXIMIZED_*` and moving a *tiled* window | works in the session; **synthesized** from a root shell | works, once the image has the GTK 3 bindings |
+| `resolute-sway` | works | works | works | works, bar `windowstate MAXIMIZED_*` and moving, resizing, raising or lowering a *tiled* window | works in the session; **synthesized** from a root shell | works, once the image has the GTK 3 bindings |
 
 Install the bridge extension on the GNOME flavors (`gnome/install-bridge.sh`, then log the
 session out and in) and both of them pass every cell of this table, on 46 and on 50 —
@@ -321,7 +321,9 @@ x axis y axis) 480mm x 270mm`), and the window side is KWin scripting over the s
 **nothing installed** in the guest (`loadScript` is unprivileged on 5.27 and 6 alike).
 `wwmctl -m` prints `Name: KWin` (`Class: N/A`, `PID: N/A`); `wwmctl -l` lists KWin's windows —
 XWayland rows with their real X ids and native rows with the backend id KWin's uuid is minted
-into (`0x4…`) — and `-lpxG` agrees with real `wmctrl` on id, class, pid and size for the X rows.
+into (30 bits of it: `0x40000000`–`0x7FFFFFFF`) — and `-lpxG` agrees with real `wmctrl` on
+id, class, pid and size for the X rows; on 5.27 the *positions* agree too (KWin 5's xwm
+reparents), while on 6.6 real `wmctrl` doubles the frame offset and ours are the true ones.
 `wdotool getactivewindow` returns such an id, `getdisplaygeometry` returns `5760 1080`, and
 `wxprop -id` on an XWayland window is a byte-identical dump of real `xprop`'s.
 
@@ -388,7 +390,11 @@ without `python3-gi`/`gir1.2-gtk-3.0`, so `warandr`'s GUI there says which packa
 and exits 1 until they are installed (`--print-backend`, `--command` and `--save` need none of
 it and work as shipped). `wdotool windowstate MAXIMIZED_VERT|MAXIMIZED_HORZ` is unsupported by
 the sway backend and says so, rc 1; `wwmctl -r … -b add,maximized_vert` is the same non-answer,
-rc 0.
+rc 0. `windowmove` and `windowsize` on a *tiled* window warn and exit 0 without changing it
+(`swaymsg floating enable` first, and both land exactly); `windowraise` on a tiled window and
+`windowlower` on any window warn and do nothing. `/dev/uinput` on this golden is root-only —
+the udev rule that hands the seat user an ACL lives under `gnome/` but is not GNOME-specific
+(`sudo sh gnome/install-bridge.sh --udev` installs it on any of the seven).
 
 ## The QEMU / D-Bus facts this rig relies on
 
