@@ -148,7 +148,16 @@ socket scan, the display manager's cookie), so `sudo xdotool key a`,
 alone fails — the Wayland trick of `session.py`, applied to X. Values that
 already work are never touched, and a `$XAUTHORITY` that points at nothing is
 *removed* rather than forwarded (left in place it suppresses the original's
-own `~/.Xauthority` default).
+own `~/.Xauthority` default). The repair is `repair_x_env()` and the handover
+is only its first caller: warandr's X11 runner is a *child*, so it never
+reaches `child_env()`, and until it took the repair for itself it was the one
+tool in the repo that still answered `Can't open display` from a root shell
+while the other four worked in the same one. A repair is not a guarantee:
+where the X server has no cookie file at all — wlroots starts Xwayland with no
+`-auth`, so only the session user's own processes may open it — there is
+nothing to find, and the real `xprop` fails from that shell too (`wxprop` falls
+back to the compositor's synthesized properties; see the repo README, *Desktop
+support*).
 
 Whose session, though: as root with no `SUDO_UID` (`ssh root@box`, root cron)
 the uid is in neither the environment nor `getuid()`, and `session_uid()` then

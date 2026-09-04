@@ -62,6 +62,13 @@ class Backend:
         self.argv = list(argv)
         self.wayland = wayland
         self.env = dict(env if env is not None else os.environ)
+        if not self.wayland:
+            # The X11 runner is a child, not a handover, so it does not go
+            # through passthrough.child_env() -- and without the same repair
+            # `warandr --command` / `--save` from a root shell or cron ran a
+            # bare xrandr with no $DISPLAY and died with "Can't open display",
+            # alone among the five tools.  set_display() still overrides it.
+            passthrough.repair_x_env(self.env)
         self.source = source
         #: the backend token: ``x11``, one of wxrandr's, or ``wayland``
         #: until ``identify()`` has asked which one wxrandr picked

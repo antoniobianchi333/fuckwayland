@@ -741,15 +741,19 @@ def _argv0(tool):
     return base if base == tool else tool
 
 
-def child_env(tool, real, env=None):
-    """The environment the original is exec'd with: ours, plus the repair.
+def repair_x_env(e):
+    """Fill the session's `$DISPLAY`/`$XAUTHORITY` into the dict `e`, in place;
+    returns `e`.
 
-    Under `sudo`, `ssh root@box` and cron, `$DISPLAY`/`$XAUTHORITY` are absent
-    or point at a dead display, and the original then fails where it has no
-    business failing. We already know how to find the session's X plane, so we
-    inject it -- which is what makes `sudo xdotool key a` work *through* us.
-    Values that already work are never touched."""
-    e = dict(os.environ if env is None else env)
+    Under `sudo`, `ssh root@box` and cron, both are absent or point at a dead
+    display, and an X11 program then fails where it has no business failing.
+    We already know how to find the session's X plane, so we inject it -- which
+    is what makes `sudo xdotool key a` work *through* us. Values that already
+    work are never touched.
+
+    Used for every X11 child we start, not only the handover: `warandr` runs
+    the real `xrandr` as a child rather than exec'ing it, and without this it
+    was the one tool that still said `Can't open display` from a root shell."""
     # session_uid(), not target_uid(): as root with no SUDO_UID (an `ssh
     # root@box`, a root cron job) the uid is not ours and not in the
     # environment, and only logind knows it -- without it we would pick the
@@ -768,6 +772,13 @@ def child_env(tool, real, env=None):
             # a dead $XAUTHORITY is worse than no $XAUTHORITY: it suppresses
             # the original's own ~/.Xauthority default
             e.pop("XAUTHORITY", None)
+    return e
+
+
+def child_env(tool, real, env=None):
+    """The environment the original is exec'd with: ours, plus the X-plane
+    repair (`repair_x_env`) and the handover guard."""
+    e = repair_x_env(dict(os.environ if env is None else env))
     seen = _guard_list(e)
     try:
         seen.append(os.path.realpath(real))
