@@ -1,6 +1,7 @@
 """Misc commands: exec, sleep, getdisplaygeometry (cmd_exec.c, cmd_sleep.c,
 cmd_get_display_geometry.c)."""
 
+import math
 import re
 import subprocess
 import sys
@@ -107,7 +108,8 @@ def cmd_exec(ctx, args):
     except OSError as e:
         sys.stderr.write("execvp failed: %s\n" % e.strerror)
         if opsync:
-            raise ChainAbort(e.errno or 1) from None
+            # xdotool returns a fixed 22 here, not the child's errno.
+            raise ChainAbort(22) from None
         return consumed
 
     if opsync:
@@ -137,7 +139,10 @@ def cmd_sleep(ctx, args):
     rest = args[nopts:]
     if not rest:
         raise CmdError("No arguments given.\n%s" % usage)
-    time.sleep(max(_atof(rest[0]), 0.0))
+    # NaN passes straight through max() and inf overflows time_t: both used
+    # to leave a traceback where the real tool sleeps for no time at all.
+    secs = _atof(rest[0])
+    time.sleep(secs if math.isfinite(secs) and secs > 0.0 else 0.0)
     return nopts + 1
 
 

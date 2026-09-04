@@ -85,7 +85,7 @@ class EmptyStackDefaultTest(unittest.TestCase):
         backend = make_backend()
         rc, _out, err, _ = run(["windowclose"], backend=backend)
         self.assertEqual(rc, 1)
-        self.assertIn("no windows on the stack", err)
+        self.assertIn("There are no windows in the stack", err)
         # Nothing was closed.
         self.assertNotIn(("close", 11), backend.calls)
 
@@ -100,7 +100,7 @@ class EmptyStackDefaultTest(unittest.TestCase):
     def test_windowactivate_without_stack_errors(self):
         rc, _out, err, _ = run(["windowactivate"])
         self.assertEqual(rc, 1)
-        self.assertIn("no windows on the stack", err)
+        self.assertIn("There are no windows in the stack", err)
 
     def test_resolve_window_explicit_id_still_works(self):
         ctx = Context()

@@ -933,8 +933,10 @@ class Core:
 
     def showing_desktop(self, param: str) -> int:  # -k
         if param not in ("on", "off", "toggle"):
+            # `toggle` is our extension, but the sentence is wmctrl's and
+            # is parity-checked: keep the extension, keep the message.
             sys.stderr.write('The argument to the -k option must be either '
-                             '"on" or "off" or "toggle"\n')
+                             '"on" or "off"\n')
             return 1
         if param == "toggle":
             param = "off" if self._showing_desktop() == 1 else "on"
