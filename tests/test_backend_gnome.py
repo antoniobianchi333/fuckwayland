@@ -88,11 +88,15 @@ class MockBridge:
     connection does. State lives in `windows` (bridge JSON shape) and is
     mutated by the actions; `calls` records (member, args)."""
 
-    def __init__(self, address, own_shell=True, own_bridge=True,
+    def __init__(self, mock, own_shell=True, own_bridge=True,
                  eval_unsafe=False, select_delay=0.2, select_id=EDITOR,
                  shell_mode="user", ext_info=None, screensaver_active=False,
                  shell_version="46.0"):
-        self.bus = Bus(address)
+        #: the MockBus itself, not just its address: close() has to wait for
+        #: the bus to let go of the names this connection owns before the
+        #: next bridge asks for them (MockBus.wait_dropped)
+        self.mock = mock
+        self.bus = Bus(mock.address)
         self.bus.serve_calls = True
         self.windows = fixture_windows()
         self.calls = []
@@ -119,12 +123,23 @@ class MockBridge:
     def close(self):
         if self.bus.sock is None:
             return
+        unique = self.bus.unique_name
         try:
             self.bus.sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
         self.thread.join(3)
         self.bus.close()
+        # Closing the socket is not the same event as the bus letting go of
+        # org.gnome.Shell and org.fuckwayland.Bridge: that happens in the
+        # bus's own thread when this connection's recv() returns nothing.
+        # Return before it and the next bridge's RequestName is answered 3,
+        # not 1 -- which is what made this file fail about one run in ten
+        # under load. Wait for the drop instead of hoping to win the race.
+        if not self.mock.wait_dropped(unique):
+            raise AssertionError(
+                "MockBus still holds connection %s five seconds after it "
+                "was closed" % unique)
 
     # -- state helpers
 
@@ -429,7 +444,7 @@ class _Base(unittest.TestCase):
 
 class BackendTests(_Base):
     def setUp(self):
-        self.bridge = MockBridge(self.mock.address)
+        self.bridge = MockBridge(self.mock)
         self.b = GnomeBackend(settle=0.3)
 
     def tearDown(self):
@@ -755,7 +770,7 @@ class SessionReadinessTests(_Base):
             dict(own_shell=False, own_bridge=False),                   # no shell
         ]
         for kw in cases:
-            bridge = MockBridge(self.mock.address, **kw)
+            bridge = MockBridge(self.mock, **kw)
             try:
                 with self.assertRaises(NoSessionError) as cm:
                     GnomeBackend()
@@ -764,7 +779,7 @@ class SessionReadinessTests(_Base):
                 bridge.close()
 
     def test_a_missing_window_stays_rc_1(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         try:
             b = GnomeBackend()
             self.addCleanup(b.bus.close)
@@ -780,7 +795,7 @@ class ConstructorTests(_Base):
     def test_no_bridge_gives_the_install_hint_without_touching_eval(self):
         # review finding 4: the common "installed, needs a re-login" path
         # must not probe org.gnome.Shell.Eval
-        bridge = MockBridge(self.mock.address, own_bridge=False)
+        bridge = MockBridge(self.mock, own_bridge=False)
         try:
             with self.assertRaises(CmdError) as cm:
                 GnomeBackend()
@@ -793,7 +808,7 @@ class ConstructorTests(_Base):
 
     def test_eval_autoload_is_opt_in(self):
         # unsafe mode on, but nobody asked: still no Eval, still the hint
-        bridge = MockBridge(self.mock.address, own_bridge=False, eval_unsafe=True)
+        bridge = MockBridge(self.mock, own_bridge=False, eval_unsafe=True)
         try:
             for value in (None, "", "0", "no"):
                 with env(WDOTOOL_GNOME_AUTOLOAD=value):
@@ -824,7 +839,7 @@ class ConstructorTests(_Base):
             (dict(shell_mode="user", screensaver_active=True), "screen is locked"),
         ]
         for kw, expect in cases:
-            bridge = MockBridge(self.mock.address, own_bridge=False, **kw)
+            bridge = MockBridge(self.mock, own_bridge=False, **kw)
             try:
                 with self.assertRaises(CmdError) as cm:
                     GnomeBackend()
@@ -836,7 +851,7 @@ class ConstructorTests(_Base):
                 bridge.close()
 
     def test_no_shell_at_all(self):
-        bridge = MockBridge(self.mock.address, own_shell=False, own_bridge=False)
+        bridge = MockBridge(self.mock, own_shell=False, own_bridge=False)
         try:
             with self.assertRaises(CmdError) as cm:
                 GnomeBackend()
@@ -845,7 +860,7 @@ class ConstructorTests(_Base):
             bridge.close()
 
     def test_eval_autoload_in_unsafe_mode_when_asked(self):
-        bridge = MockBridge(self.mock.address, own_bridge=False, eval_unsafe=True)
+        bridge = MockBridge(self.mock, own_bridge=False, eval_unsafe=True)
         try:
             with env(WDOTOOL_GNOME_AUTOLOAD="1"):
                 b = GnomeBackend()
@@ -857,7 +872,7 @@ class ConstructorTests(_Base):
             bridge.close()
 
     def test_eval_autoload_asked_but_shell_not_unsafe(self):
-        bridge = MockBridge(self.mock.address, own_bridge=False)
+        bridge = MockBridge(self.mock, own_bridge=False)
         try:
             with env(WDOTOOL_GNOME_AUTOLOAD="1"):
                 with self.assertRaises(CmdError) as cm:
@@ -875,7 +890,7 @@ class ConstructorTests(_Base):
         self.assertIn("no session D-Bus found", str(cm.exception))
 
     def test_reuses_detects_bus_and_names(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         try:
             bus = Bus(self.mock.address)
             b = GnomeBackend(bus=bus, names=bus.list_names())
@@ -905,7 +920,7 @@ class DetectTests(_Base):
         backend_detect.reset()
 
     def test_gnome_with_bridge(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         try:
             b = backend_detect.detect()
             self.assertEqual(b.name, "gnome")
@@ -918,7 +933,7 @@ class DetectTests(_Base):
         self.assertEqual(self._wlr_calls, [])
 
     def test_gnome_without_bridge_is_not_swallowed(self):
-        bridge = MockBridge(self.mock.address, own_bridge=False)
+        bridge = MockBridge(self.mock, own_bridge=False)
         try:
             with self.assertRaises(CmdError) as cm:
                 backend_detect.detect()
@@ -928,18 +943,24 @@ class DetectTests(_Base):
         self.assertEqual(self._wlr_calls, [])
 
     def test_kwin_name_wins_over_gnome(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         kwin = Bus(self.mock.address)
         try:
             self.assertEqual(kwin.request_name(backend_detect.KWIN_NAME), 1)
             b = backend_detect.detect()
             self.assertEqual(b.name, "kwin")
         finally:
+            # the same two-event race MockBridge.close() waits out: the next
+            # test asks whether anything at all is on the bus, and org.kde.KWin
+            # has to be gone from the table before it does, not merely have had
+            # its socket closed
+            unique = kwin.unique_name
             kwin.close()
+            self.assertTrue(self.mock.wait_dropped(unique))
             bridge.close()
 
     def test_sway_socket_wins_over_dbus(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         path = os.path.join(self.rtdir, "sway-ipc.1000.7.sock")
         srv.bind(path)
@@ -954,7 +975,7 @@ class DetectTests(_Base):
             bridge.close()
 
     def test_env_override(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         try:
             with env(WDOTOOL_BACKEND="gnome"):
                 self.assertEqual(backend_detect.detect().name, "gnome")

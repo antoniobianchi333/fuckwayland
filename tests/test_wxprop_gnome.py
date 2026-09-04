@@ -173,7 +173,7 @@ class FakeXConn:
 
 class GnomeXpropBase(_Base):
     def setUp(self):
-        self.bridge = MockBridge(self.mock.address, select_id=EDITOR,
+        self.bridge = MockBridge(self.mock, select_id=EDITOR,
                                  select_delay=0.05)
         self.backend = GnomeBackend(settle=0.05)
         self.x_calls = []
@@ -684,7 +684,7 @@ class ErrorPathTests(_Base):
         return code, out.buffer.getvalue(), err.getvalue()
 
     def test_real_detection_over_the_mock_bus(self):
-        bridge = MockBridge(self.mock.address)
+        bridge = MockBridge(self.mock)
         try:
             code, out, err = self._run("-id", "%d" % CALC, "WM_CLASS")
             self.assertEqual((code, err), (0, ""))
@@ -694,7 +694,7 @@ class ErrorPathTests(_Base):
             bridge.close()
 
     def test_bridge_not_installed_is_one_clear_line(self):
-        bridge = MockBridge(self.mock.address, own_bridge=False)
+        bridge = MockBridge(self.mock, own_bridge=False)
         try:
             for args in (("WM_CLASS",), ("-id", "4194307", "WM_CLASS"),
                          ("-root",)):
@@ -708,7 +708,7 @@ class ErrorPathTests(_Base):
             bridge.close()
 
     def test_name_without_bridge_keeps_xprop_wording(self):
-        bridge = MockBridge(self.mock.address, own_bridge=False)
+        bridge = MockBridge(self.mock, own_bridge=False)
         try:
             code, _o, err = self._run("-name", "Calculator")
             self.assertEqual((code, err),

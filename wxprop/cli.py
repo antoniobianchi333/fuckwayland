@@ -116,13 +116,35 @@ def print_grammar(prog: str):
 
 
 def _setup_locale():
-    """setlocale(LC_CTYPE, "") + nl_langinfo(CODESET) == "UTF-8"."""
+    """setlocale(LC_CTYPE, "") + nl_langinfo(CODESET) == "UTF-8" -- asked as a
+    question, and left the way it was found.
+
+    Only the answer is ever used: every byte we print goes out of
+    `sys.stdout.buffer`, so nothing downstream reads the C locale. Leaving
+    LC_CTYPE switched is a change to global process state, and since 3.12 it
+    is state `open()` reads -- so a caller that runs `main()` in-process (the
+    suite does, and with LC_ALL=C in the environment) would find its own
+    default text encoding quietly become ASCII for the rest of the run.
+    """
     try:
         import locale
+    except Exception:
+        return False
+    try:
+        prev = locale.setlocale(locale.LC_CTYPE)
+    except Exception:
+        prev = None
+    try:
         locale.setlocale(locale.LC_CTYPE, "")
         return locale.nl_langinfo(locale.CODESET) == "UTF-8"
     except Exception:
         return False
+    finally:
+        if prev is not None:
+            try:
+                locale.setlocale(locale.LC_CTYPE, prev)
+            except Exception:
+                pass
 
 
 def _term_width() -> int:

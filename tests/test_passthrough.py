@@ -16,6 +16,7 @@ import gc
 import io
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import unittest
@@ -118,6 +119,22 @@ class Base(unittest.TestCase):
         return os.pathsep.join([local, real_dir])
 
     def stub_execve(self):
+        """Stand in for the process replacement, and undo what it leaves.
+
+        `exec_real()` resets SIGPIPE and SIGXFSZ to SIG_DFL immediately before
+        `execve`, because an *ignored* disposition survives the exec and the
+        original has to die of the signal the way it always did. The real call
+        never comes back, so nothing there needs to put them back -- but this
+        stub does come back, into a runner that keeps going with SIGPIPE now
+        fatal. The next test anywhere in the process that writes down a closed
+        pipe then kills the run outright (status 141, no summary). One process
+        per file hides that; `python3 -m unittest discover -s tests` does not.
+        """
+        for name in ("SIGPIPE", "SIGXFSZ"):
+            sig = getattr(signal, name, None)
+            if sig is not None:
+                self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+
         def fake_execve(path, argv, env):
             raise ExecCalled(path, argv, env)
         p = mock.patch.object(passthrough.os, "execve", fake_execve)
@@ -869,6 +886,57 @@ class WarandrBackend(Base):
                               "FUCKWAYLAND_PASSTHROUGH": value})
             self.assertTrue(b.wayland, value)
             self.assertEqual(b.word, "wxrandr", value)
+
+    def test_the_x11_runner_gets_the_sessions_display_and_cookie(self):
+        """`warandr --command` / `--save` from `ssh root@box`, `sudo` or cron.
+
+        The X11 runner is a *child*, not a handover, so it never went through
+        child_env(): warandr ran a bare `xrandr` with the environment as
+        found, which on a root shell has no $DISPLAY -- exit 1, `xrandr
+        failed (1): Can't open display`, in the very shell where wdotool,
+        wwmctl, wxprop and wxrandr all worked. Now it gets the same repair."""
+        from warandr import randr
+        self.xsock(0)
+        rd = self.runtime_dir()
+        cookie = self.touch(os.path.join(rd, "xauth_abc"), "cookie")
+        self.logind_file("2", TYPE="x11", DISPLAY=":0")
+        for forced in (None, "x11"):
+            passthrough.reset_cache()
+            b = randr.choose({"PATH": "/nonexistent", "XDG_SESSION_TYPE": "x11"},
+                             forced=forced)
+            self.assertFalse(b.wayland, forced)
+            self.assertEqual(b.argv, ["xrandr"], forced)
+            self.assertEqual(b.env["DISPLAY"], ":0", forced)
+            self.assertEqual(b.env["XAUTHORITY"], cookie, forced)
+
+    def test_the_wayland_runner_is_left_alone(self):
+        """wxrandr finds the session for itself and talks to no X server:
+        a DISPLAY injected there would only be a lie in its environment."""
+        from warandr import randr
+        self.xsock(0)
+        rd = self.runtime_dir()
+        self.touch(os.path.join(rd, "xauth_abc"), "cookie")
+        self.wsock(name="wayland-1")
+        passthrough.reset_cache()
+        b = randr.choose({"XDG_RUNTIME_DIR": rd, "WAYLAND_DISPLAY": "wayland-1",
+                          "PATH": "/nonexistent"})
+        self.assertTrue(b.wayland)
+        self.assertNotIn("DISPLAY", b.env)
+        self.assertNotIn("XAUTHORITY", b.env)
+
+    def test_the_repair_never_overrules_a_working_display(self):
+        """A $DISPLAY that opens, and arandr's own --randr-display, are
+        answers -- the repair only fills in what is missing or dead."""
+        from warandr import randr
+        self.xsock(0)
+        self.xsock(7)
+        self.logind_file("2", TYPE="x11", DISPLAY=":0")
+        passthrough.reset_cache()
+        b = randr.choose({"DISPLAY": ":7", "PATH": "/nonexistent",
+                          "XDG_SESSION_TYPE": "x11"})
+        self.assertEqual(b.env["DISPLAY"], ":7")
+        b.set_display("localhost:10.0")
+        self.assertEqual(b.env["DISPLAY"], "localhost:10.0")
 
 
 if __name__ == "__main__":

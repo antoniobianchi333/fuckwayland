@@ -49,6 +49,19 @@ warandr **never hands its own process over** to the real tool (no `execve`,
 unlike the four clones): it chooses which one to *run*, as a child — which is
 what makes the choice switchable while the window is open.
 
+Being a child rather than a handover, the X11 runner does not pass through
+`passthrough.child_env()` — but it takes the same **X-plane repair**,
+`passthrough.repair_x_env()`: a missing or dead `$DISPLAY`/`$XAUTHORITY` is
+filled in from the session (logind's record of it, the owner of the X socket,
+the compositor's own cookie file) before the child starts. Without it
+`--command` and `--save` were the one thing in this repo that still failed with
+`warandr: xrandr failed (1): Can't open display` under `sudo`, over `ssh
+root@box` or from cron, in the very shell where the four clones worked.
+`--randr-display` is applied afterwards and still wins; the Wayland runner is
+left alone (wxrandr finds the session for itself and opens no X server); and a
+*saved* layout script is unaffected — it calls the bare command word, exactly
+as arandr's does, so it still wants a session of its own to run in.
+
 Which backend it turned out to be is asked, once, off the main loop:
 `wxrandr --print-backend --verbose` gives the token (`mutter`, `sway`, ...)
 and the fuller explanation, `wxrandr --backends` the availability table the

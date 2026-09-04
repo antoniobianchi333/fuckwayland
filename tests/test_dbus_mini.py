@@ -435,6 +435,9 @@ class MockBus:
             self.address = "unix:path=" + self.path
         self.srv.listen(8)
         self.lock = threading.Lock()
+        #: notified by drop(), so a test that has just closed a client can
+        #: wait for the bus to finish letting go of it -- see wait_dropped()
+        self.gone = threading.Condition(self.lock)
         self.conns = []
         self.names = {}
         self.next_id = 0
@@ -516,14 +519,35 @@ class MockBus:
             c.signal("NameOwnerChanged", "sss", (name, conn.unique, ""))
         return 1
 
+    def wait_dropped(self, unique, timeout=5.0):
+        """Block until the connection called `unique` is off the bus -- and
+        with it every name it owned. True, or False on timeout.
+
+        A client closing its socket and the bus noticing are two events in two
+        threads: drop() runs in that connection's own serving thread, once its
+        recv() finally returns nothing. A test that tears one mock service
+        down and stands its replacement up races between the two, and loses
+        under load -- the new RequestName is answered 3 (the name has an
+        owner) because the owner in the table is the connection that just
+        went away."""
+        deadline = time.monotonic() + timeout
+        with self.gone:
+            while any(c.unique == unique for c in self.conns):
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self.gone.wait(left)
+        return True
+
     def drop(self, conn):
-        with self.lock:
+        with self.gone:
             if conn in self.conns:
                 self.conns.remove(conn)
             gone = [n for n, c in self.names.items() if c is conn]
             for n in gone:
                 del self.names[n]
             others = [c for c in self.conns if c.unique]
+            self.gone.notify_all()
         for n in gone:
             for c in others:
                 c.signal("NameOwnerChanged", "sss", (n, conn.unique, ""))

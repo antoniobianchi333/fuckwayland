@@ -88,7 +88,8 @@ $ WDOTOOL_REAL_XDOTOOL=/opt/bin/xdotool ...     # where the original is
 `WDOTOOL_PASSTHROUGH`, `WWMCTL_PASSTHROUGH`, `WXPROP_PASSTHROUGH` and
 `WXRANDR_PASSTHROUGH` do the same per tool (`warandr` ignores all of them: it
 never hands over, it only picks between the `xrandr` and `wxrandr` command
-words, and it keeps doing that by session); the `*_REAL_*` variables are
+words, and it keeps doing that by session — it does take the `DISPLAY`/
+`XAUTHORITY` repair below for the `xrandr` it runs); the `*_REAL_*` variables are
 `WDOTOOL_REAL_XDOTOOL`, `WWMCTL_REAL_WMCTRL`, `WXPROP_REAL_XPROP`,
 `WXRANDR_REAL_XRANDR`. With no original installed you get exit **127** and a
 line saying which package to install — except for `--help`/`--version`, which
@@ -100,7 +101,11 @@ own record of your session — counts.
 Bonus, on X11 as on Wayland: run under `sudo`, over `ssh root@box` or from
 cron and we find the session's `DISPLAY` and `XAUTHORITY` and hand them to
 the original, so `sudo xdotool key a` works *through* us where
-`sudo /usr/bin/xdotool key a` says `Can't open display`.
+`sudo /usr/bin/xdotool key a` says `Can't open display`. `warandr` gets the
+same repair for the `xrandr` it runs, so `--command` and `--save` answer from
+a root shell too — but a *saved* layout script calls the bare command word,
+exactly as arandr's does, so running the script itself still wants a session
+(on Wayland that word is `wxrandr`, which finds one for itself).
 
 ### GNOME
 
@@ -172,11 +177,71 @@ on a Wayland client, applied when it acks the configure) is waited for before
 the command returns, so `windowstate` never reports a state it merely has not
 seen land yet, and the next command sees a settled window.
 
+## Desktop support
+
+What each tool does on each desktop, measured rather than assumed: the branch is run
+on seven golden VM images — GNOME 46 and 50, Plasma 5.27 and 6.6, Xfce 4.18 and 4.20,
+sway 1.11 on wlroots — twice per image, once **inside the session** and once as
+**root over ssh with an empty environment**, against real windows on a two-head
+layout. `vm/README.md` keeps the rig and the verbatim messages behind these cells.
+
+| | GNOME 46 / 50 | Plasma 5.27 / 6.6 | Xfce 4.18 / 4.20 (X11) | sway 1.11 (wlroots) |
+|---|---|---|---|---|
+| **wdotool** | all 48 commands; the window ones need the [bridge extension](#gnome) | all 48, nothing to install **(a)** | hands over to the installed `xdotool` **(b)** | all 48; two differences **(c)** |
+| **wwmctl** | works; the window list needs the bridge | works **(d)** | hands over to `wmctrl` | works |
+| **wxprop** | works, X and native windows | works | hands over to `xprop` | works; from a root shell `-root` is synthesized **(e)** |
+| **wxrandr** | works (mutter) | works (kwin) **(f)** | hands over to `xrandr` **(g)** | works (sway) |
+| **warandr** | works (mutter) | works (kwin) **(f)** | works, driving the real `xrandr` **(g)** | works (sway); the stock image has no GTK 3 bindings **(h)** |
+
+All of it works **as the desktop user and as root** — `sudo`, `ssh root@box`, cron —
+because the session's compositor socket, session bus, `DISPLAY` and X cookie are
+found for you. **(e)** is the one exception, and it is not one we can fix.
+
+**(a)** With the differences in the [KDE Plasma](#kde-plasma) table above (raise,
+lower, shading, maximize on 5.27, minted window ids).
+
+**(b)** On a plain X11 session the tools *are* the originals, so the command set is
+whatever is installed there. Both Ubuntu images this branch tests on carry **xdotool
+3.20160805.1**, which has no `windowstate` — `xdotool: Unknown command: windowstate`,
+rc 1 — while parity is claimed against xdotool 4.20260303.1, whose full command set is
+what our own Wayland code implements. `getdisplaygeometry` likewise answers per screen
+(`1920 1080`) where the Wayland backends report the whole layout span (`3840 1080`):
+that is xdotool's own behaviour, faithfully.
+
+**(c)** `windowmove` on a *tiled* window warns and succeeds without moving it (float
+it first: `swaymsg floating enable`, and then the move and resize land exactly);
+`windowstate MAXIMIZED_VERT`/`_HORZ` has no equivalent in sway and fails cleanly.
+
+**(d)** On Plasma 6.6 plasmashell's own desktop windows carry an empty caption, so
+those `wwmctl -l` rows have a blank title where 5.27 prints `Desktop @ QRect(…)`.
+KWin's caption is what we print; ids, pid, class and geometry are right on both.
+
+**(e)** sway's Xwayland runs with no authority file, so **only the session user's own
+processes can open it**: the real `xprop` from a root shell gets `Authorization
+required, but no authorization protocol specified` there too. Rather than fail,
+`wxprop -root` answers from sway's IPC — a synthesized `_NET_CLIENT_LIST` of
+compositor ids and `_NET_SUPPORTING_WM_CHECK … 0x0`. Inside the session it is
+Xwayland's real root window, and every other desktop gives root the real X root.
+
+**(f)** KWin applies a layout immediately and permanently — no temporary mode, no
+confirmation dialog — and says so on stderr, together with the line that puts the
+previous layout back.
+
+**(g)** X11 answers are the X server's own (`Screen 0: minimum 320 x 200 … maximum
+8192 x 8192`), and whether an output is marked `primary` is the desktop's business.
+
+**(h)** `warandr` is the one tool with a dependency (`python3-gi`, `gir1.2-gtk-3.0`).
+GNOME, KDE and Xfce installs have them; a minimal sway image may not, and warandr then
+names the package and exits 1. The other four are stdlib-only.
+
 ## Compatibility
 
 All 48 xdotool commands are implemented, with output byte-compatible against
 xdotool 4.20260303.1 (including `--help` text, error strings, and several verbatim
-C bugs, e.g. `windowmove`'s percent-y quirk).
+C bugs, e.g. `windowmove`'s percent-y quirk). That is our own code, i.e. every
+Wayland session; on an X11 session we hand over, so what you get there is the
+command set of the `xdotool` that is installed — see **(b)** under
+[Desktop support](#desktop-support).
 
 Wayland forces a few honest approximations:
 
@@ -441,7 +506,7 @@ focus off the window, so click it before the next Ctrl+S.
 
 Every line of this repo was written by AI (Claude): the design contracts, the code,
 the torture rigs, the hostile fake X servers, the byte-parity oracles, the VM demo,
-this README, and yes, the meme. Fully vibed. Also fully awesome: 646 tests and
+this README, and yes, the meme. Fully vibed. Also fully awesome: 1371 tests and
 counting, live-compositor integration suites, byte-for-byte output parity against
 the real tools (verbatim bugs included), and every "it works" claim proven inside a
 real Ubuntu 26.04 VM before it shipped. Vibe-check the code yourself — it can take it.

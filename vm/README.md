@@ -8,9 +8,10 @@ Two rigs live here:
   plugged, unplugged and resized from the host at runtime, plus host-side screenshots of
   every head. This is the rig for testing `wxrandr`/`wwmctl`/`wdotool`/`wxprop` against
   real Wayland *and* X11 sessions, and for the X-parity oracles (every golden image also
-  carries the real `xdotool`, `wmctrl`, `x11-utils`, `x11-xserver-utils`). What the four
+  carries the real `xdotool`, `wmctrl`, `x11-utils`, `x11-xserver-utils`). What the five
   tools currently manage on each desktop — including where they have no backend at all —
-  is written down per flavor under *What the four tools do on each flavor*.
+  is written down per flavor under *What the five tools do on each flavor*, which is the
+  measurement behind the *Desktop support* matrix in the repo README.
 * **`mkvm.sh` / `run.sh` / `compositor.sh` / `ssh.sh` / `scp.sh` / `stop.sh`**:
   the original headless-sway rig (single VM in this directory, root runs sway).
   Unchanged; the two rigs do not share state or ports (sway rig: 2222,
@@ -269,24 +270,34 @@ order, using that desktop's own tools:
 Roughly 40 s for GNOME; a desktop that starts more slowly takes correspondingly longer. The VM
 is left running so a failure can be inspected — `vmctl stop <flavor>-t` when done.
 
-## What the four tools do on each flavor
+## What the five tools do on each flavor
 
-The point of the extra flavors is to see where `wxrandr`, `wwmctl`, `wdotool` and `wxprop`
-stand outside GNOME. This is the measured state, honest gaps included: the branch's own
-checkout copied into each guest and run as `python3 -m <tool>` **inside the session**
-(`vmctl user`) on a 3-head instance, plus a second round as root over plain `vmctl ssh`
-(no session environment). Every message below is verbatim. None of it is a rig defect —
+The point of the extra flavors is to see where `wxrandr`, `wwmctl`, `wdotool`, `wxprop`
+and `warandr` stand outside GNOME. This is the measured state, honest gaps included: the
+branch's own checkout copied into each guest and run as `python3 -m <tool>` **inside the
+session** (`vmctl user`), plus a second round as root over plain `vmctl ssh` with an empty
+environment (`env -i`). Every message below is verbatim. None of it is a rig defect —
 `selftest.sh` passes on all seven flavors. On the **X11 flavors** what is measured is the
 passthrough: on a plain X11 session the tools hand over to the real `xdotool`/`wmctrl`/`xprop`/
 `xrandr` (repo README, *X11*), all four of which the goldens carry, so there they behave as the
 originals do.
 
-| flavor | `wxrandr` | `wwmctl -m` | `wwmctl -l` | `wdotool` | `wxprop -root` |
-|---|---|---|---|---|---|
-| `noble-gnome`, `resolute-gnome` | works | works | needs the bridge extension | `getdisplaygeometry` works; window/input commands need the bridge extension | works |
-| `noble-kde`, `resolute-kde` | works | works | works | works | works |
-| `noble-xfce`, `resolute-xfce` | works (hands over to `xrandr`) | works (`wmctrl`) | works (`wmctrl`) | works (`xdotool`) | works (`xprop`) |
-| `resolute-sway` | works | works | works | works | works |
+**This table and the repo README's *Desktop support* matrix are one measurement.** That one
+is grouped by desktop and is what a user reads; this one is grouped by flavor and names the
+image. Neither may claim what the other denies: change them together.
+
+| flavor | `wxrandr` | `wwmctl -m` | `wwmctl -l` | `wdotool` | `wxprop -root` | `warandr` |
+|---|---|---|---|---|---|---|
+| `noble-gnome`, `resolute-gnome` | works | works | needs the bridge extension | `getdisplaygeometry` works; window/input commands need the bridge extension | works | works |
+| `noble-kde`, `resolute-kde` | works | works | works | works | works | works |
+| `noble-xfce`, `resolute-xfce` | works (hands over to `xrandr`) | works (`wmctrl`) | works (`wmctrl`) | works (`xdotool` — but see the version note below) | works (`xprop`) | works (runs the real `xrandr`) |
+| `resolute-sway` | works | works | works | works, bar `windowstate MAXIMIZED_*` and moving a *tiled* window | works in the session; **synthesized** from a root shell | works, once the image has the GTK 3 bindings |
+
+Install the bridge extension on the GNOME flavors (`gnome/install-bridge.sh`, then log the
+session out and in) and both of them pass every cell of this table, on 46 and on 50 —
+`wwmctl -l/-d/-m`, every `wdotool` window command and `wxprop -id` on native windows, as
+`test` and as root. `sudo gnome/install-bridge.sh --udev` is what lets the desktop user
+open `/dev/uinput`; without it every injection command has to run as root, on all seven.
 
 **GNOME** — `wxrandr` prints the real listing through mutter's DisplayConfig
 (`Screen 0: minimum 16 x 16, current 5760 x 1080, maximum 32767 x 32767`,
@@ -341,7 +352,16 @@ that `test` gets — the one flavor where `vmctl ssh` is as good as `vmctl user`
 their other job: they are the X-parity oracles (`xrandr`, `wmctrl`, `xdotool`, `xprop` are
 installed), so the same command can be run through us and through the original and compared.
 
-**sway** — all four work, in the session and as root. `wxrandr` prints the full listing
+**Version note.** Both releases carry **xdotool 3.20160805.1**, not the 4.20260303.1 the repo
+claims parity against, so a 4.x-only verb is simply absent on an X11 session: `windowstate
+--add MAXIMIZED_VERT <id>` there answers `xdotool: Unknown command: windowstate` / `Run
+'xdotool help' if you want a command list`, rc 1. That is the handover working, not a defect —
+but nothing may claim `windowstate` works on X11. The listings above come from one 3-head run
+each: how many `Desktop` rows xfdesktop publishes, and whether `xrandr` marks `Virtual-1`
+`primary`, is the desktop's own state and differs between 4.18 and 4.20.
+
+**sway** — all five work, in the session and as root, with the two exceptions at the end of
+this paragraph. `wxrandr` prints the full listing
 (`Screen 0: minimum 16 x 16, current 5760 x 1080, maximum 32767 x 32767`,
 `Virtual-3 connected 1920x1080+3840+0 (normal left inverted right x axis y axis) 480mm x 270mm`),
 `wwmctl -m` prints `Name: wlroots wm` in the session (`Name: sway` from a root shell), and with a
@@ -354,6 +374,21 @@ On an **empty** session `getactivewindow` exits 1 with
 
 which is xdotool's own wording for "nothing is focused", not a backend failure —
 `getdisplaygeometry` (`5760 1080`) and the window commands answer normally on the same session.
+
+Two things are **not** the same from a root shell here, and only here. wlroots starts Xwayland
+with no `-auth` file (`Xwayland :0 -rootless -core -terminate 10 -listenfd … -wm …`), so only
+the session user's own processes may open that display: real `xprop` over `vmctl ssh` answers
+`Authorization required, but no authorization protocol specified` / `xprop: unable to open
+display ':0'`, and there is no cookie anywhere for us to find and hand it. `wxprop -root` then
+falls back to sway's IPC and prints a *synthesized* set — `_NET_SUPPORTING_WM_CHECK(WINDOW):
+window id # 0x0`, a `_NET_CLIENT_LIST` of compositor ids, no `_XKB_RULES_NAMES` — where inside
+the session it prints Xwayland's real root. GNOME, KDE and Xfce all give root the real X root,
+because their Xwayland/Xorg does have a cookie file. Second: `resolute-sway` is the only golden
+without `python3-gi`/`gir1.2-gtk-3.0`, so `warandr`'s GUI there says which package to install
+and exits 1 until they are installed (`--print-backend`, `--command` and `--save` need none of
+it and work as shipped). `wdotool windowstate MAXIMIZED_VERT|MAXIMIZED_HORZ` is unsupported by
+the sway backend and says so, rc 1; `wwmctl -r … -b add,maximized_vert` is the same non-answer,
+rc 0.
 
 ## The QEMU / D-Bus facts this rig relies on
 

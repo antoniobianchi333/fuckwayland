@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
@@ -19,10 +20,25 @@ sys.path.insert(0, REPO)
 # with itself and pass tautologically, so keep our own code in the loop.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
+
+def skip(reason):
+    """Bow out of a comparison this box cannot make.
+
+    Standalone (`python3 tests/test_cli_parity.py`) that is a message and a
+    zero exit, the way it has always been. Under an importing runner --
+    `python3 -m unittest discover -s tests` -- a SystemExit raised while the
+    module is being imported is caught by the loader and reported as a
+    *failed import*, so raise the skip that loader understands instead.
+    """
+    print("test_cli_parity: SKIP (%s)" % reason)
+    if __name__ == "__main__":
+        sys.exit(0)
+    raise unittest.SkipTest(reason)
+
+
 REAL = shutil.which("xdotool")
 if not REAL:
-    print("test_cli_parity: SKIP (no real xdotool on PATH; run under nix develop)")
-    sys.exit(0)
+    skip("no real xdotool on PATH; run under nix develop")
 
 # Shim named "xdotool" so prog-name-bearing messages compare byte-for-byte.
 SHIMDIR = tempfile.mkdtemp(prefix="wdo_parity_")
@@ -51,9 +67,14 @@ def compare(argv, stdin=None, cwd=None, label=None):
     assert real == ours, "MISMATCH %s\n real=%r\n ours=%r" % (label or argv, real, ours)
 
 
-# The real xdotool needs an X display for anything past help/version/usage
-# (xdo_new runs before dispatch); restrict chain/script cases to that.
+# xdo_new() runs before the command dispatch, so without a display the real
+# xdotool answers "Can't open display" to `version` and `help` as well --
+# 3.20160805.1 does, measured -- and there is nothing left here to compare.
+# (The option spellings `--version`/`-h` are handled before that and would
+# still work; a half-oracle is not worth the special case.)
 have_display = run(REAL, ["sleep", "0"])[0] == 0
+if not have_display:
+    skip("no X display; the real xdotool opens one before it dispatches")
 
 compare(["version"])
 compare(["-v"])
@@ -72,10 +93,6 @@ compare(["-x"])
 compare(["--badopt"])
 compare(["help", "extra", "args"])
 compare(["version", "extra"])
-
-if not have_display:
-    print("test_cli_parity: OK (usage/help/version only; no X display for chain cases)")
-    sys.exit(0)
 
 compare(["badcommand"])
 compare(["sleep", "0.01", "badcmd"])

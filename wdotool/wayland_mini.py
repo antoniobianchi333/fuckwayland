@@ -72,7 +72,17 @@ def _marshal(args) -> bytes:
 class WlConn:
     def __init__(self, path: str):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(path)
+        try:
+            self.sock.connect(path)
+        except BaseException:
+            # a missing or refused socket is routine here (kwin.probe()
+            # asks a path that may have no compositor behind it); without
+            # this the fd lives on until the collector reaches it, which is
+            # a leak in a long-running process and, in a shared test runner,
+            # a stray ResourceWarning printed into whatever stderr some
+            # later test happens to be capturing
+            self.sock.close()
+            raise
         self.next_id = 2  # 1 is wl_display
         self.buf = b""
         self.fds: list[int] = []
