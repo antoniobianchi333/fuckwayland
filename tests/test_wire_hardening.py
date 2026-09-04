@@ -303,5 +303,110 @@ class SwayWireGuards(unittest.TestCase):
         self.assertIn("sway backend: lost the connection", str(cm.exception))
 
 
+# -- D-Bus -----------------------------------------------------------------
+
+from wdotool import dbus_mini as D                      # noqa: E402
+
+
+def _raw_bus():
+    """A Bus over a socketpair, built past authentication: the other end is
+    a raw peer that can put any bytes on the wire."""
+    ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    b = D.Bus.__new__(D.Bus)
+    b.address = "unix:path=/dev/null"
+    b.timeout = 5.0
+    b.unique_name = ":1.99"
+    b.guid = ""
+    b.fds_ok = False
+    b.auth_path = "direct"
+    b.serve_calls = False
+    b._serial = 0
+    b._buf = bytearray()
+    b._pending_fds = []
+    b._waiting = set()
+    b._replies = {}
+    b._queue = __import__("collections").deque()
+    b.sock = ours
+    return b, theirs
+
+
+def _reply_frame(to_serial, body_sig, body, endian=b"l"):
+    m = D.Message(D.METHOD_RETURN, reply_serial=to_serial,
+                  signature=body_sig, body=b"")
+    out = bytearray(m.to_bytes(7)) + bytearray(body)
+    struct.pack_into("<I", out, 4, len(body))
+    if endian != b"l":
+        out[0:1] = endian
+    return bytes(out)
+
+
+class DBusMalformedFrames(unittest.TestCase):
+    """A peer that puts something impossible on the wire is a broken or
+    hostile peer, not a bug in the caller: every consumer catches DBusError
+    and nothing else, so a ValueError or a RecursionError out of the
+    marshaller reached the user as a traceback."""
+
+    def _peer_answers(self, make_body):
+        bus, peer = _raw_bus()
+        self.addCleanup(bus.close)
+        self.addCleanup(peer.close)
+
+        def serve():
+            buf = b""
+            while True:
+                try:
+                    d = peer.recv(65536)
+                except OSError:
+                    return
+                if not d:
+                    return
+                buf += d
+                while True:
+                    n = D.Message.frame_length(buf)
+                    if n is None or len(buf) < n:
+                        break
+                    m = D.Message.from_bytes(buf[:n])
+                    buf = buf[n:]
+                    try:
+                        peer.sendall(make_body(m.serial))
+                    except OSError:
+                        return
+
+        threading.Thread(target=serve, daemon=True).start()
+        return bus
+
+    def test_a_body_that_contradicts_its_signature_is_a_dbus_error(self):
+        bus = self._peer_answers(
+            lambda serial: _reply_frame(serial, "s", b"\x10\x00"))
+        with self.assertRaises(D.DBusError) as cm:
+            bus.call("org.example", "/", "org.example", "Thing", timeout=5.0)
+        self.assertIn("signature", str(cm.exception))
+
+    def test_an_impossible_endianness_byte_closes_the_connection(self):
+        """frame_length() raised before the frame was consumed, so the bad
+        frame stayed in the buffer and the parse loop spun on it."""
+        bus = self._peer_answers(
+            lambda serial: _reply_frame(serial, "y", b"\x01", endian=b"Z"))
+        with self.assertRaises(D.DBusError) as cm:
+            bus.call("org.example", "/", "org.example", "Thing", timeout=5.0)
+        self.assertIn("malformed message", str(cm.exception))
+        self.assertIsNone(bus.sock, "a stream we cannot resynchronise stays shut")
+
+    def test_absurd_type_nesting_is_refused_not_a_stack_overflow(self):
+        """1000 nested variants is 3 KiB on the wire and legal type nesting;
+        the specification's limit is 32 arrays and 32 variants deep."""
+        body = b"\x01v\x00" * 2000 + b"\x01y\x00" + b"\x2a"
+        with self.assertRaises(ValueError) as cm:
+            D.unmarshal("v", body, "<", (), False)
+        self.assertIn("nesting", str(cm.exception))
+        bus = self._peer_answers(lambda serial: _reply_frame(serial, "v", body))
+        with self.assertRaises(D.DBusError):
+            bus.call("org.example", "/", "org.example", "Thing", timeout=5.0)
+
+    def test_a_body_within_the_limit_still_parses(self):
+        body = b"\x01v\x00" * 40 + b"\x01y\x00" + b"\x2a"
+        self.assertEqual(D.unmarshal("v", body, "<", (), False), (42,))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
