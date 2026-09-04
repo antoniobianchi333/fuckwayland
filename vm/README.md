@@ -3,8 +3,11 @@
 Two rigs live here:
 
 * **`vmctl`** (this document): full, default-configured Ubuntu desktops in QEMU/KVM —
-  **nine flavors** over four desktops (GNOME, KDE Plasma, Xfce, sway) and two releases,
-  each with autologin of user `test` — on a **multi-head virtio-vga** whose monitors are
+  **ten flavors**: nine over four desktops (GNOME, KDE Plasma, Xfce, sway) and two releases,
+  built from an Ubuntu *cloud* image plus a desktop metapackage, and one
+  (**`resolute-gnome-iso`**) installed from the Ubuntu 26.04 desktop **ISO by the Ubuntu
+  installer itself** — the image a claim about "a default Ubuntu desktop install" has to rest
+  on. Each with autologin of user `test` — on a **multi-head virtio-vga** whose monitors are
   plugged, unplugged and resized from the host at runtime, plus host-side screenshots of
   every head. This is the rig for testing `wxrandr`/`wwmctl`/`wdotool`/`wxprop` against
   real Wayland *and* X11 sessions, and for the X-parity oracles (every golden image also
@@ -21,7 +24,8 @@ Two rigs live here:
 
 ```console
 $ vm/vmctl build noble-gnome            # ~7 min, once; golden image -> ~/vm-data/golden/
-$ vm/vmctl build resolute-kde           # any of the nine flavors (see Flavors below)
+$ vm/vmctl build resolute-kde           # any of the nine cloud-image flavors (see Flavors below)
+$ vm/build-iso-golden.sh resolute-gnome-iso   # ~14 min: the real installer, off the desktop ISO
 $ vm/vmctl start gnome1 --flavor noble-gnome --heads 3
 vmctl: gnome1: QEMU pid 1234, flavor noble-gnome, 3 vCPU/4G, ssh port 2400, bus ...
 vmctl: gnome1: heads: 0=1920x1080, 1=1920x1080, 2=1920x1080  (guest connectors Virtual-1, Virtual-2, Virtual-3; set before the guest boots)
@@ -45,6 +49,7 @@ $ vm/vmctl user gnome1 -- python3 /home/test/wxrandr.pyz --query
 $ vm/vmctl stop gnome1                       # or: destroy (also deletes the overlay)
 $ vm/selftest.sh noble-gnome                 # the whole thing end to end, ~40 s (see below)
 $ vm/selftest.sh resolute-kde                # same check, Plasma's own tools (see below)
+$ vm/selftest.sh resolute-gnome-iso          # ...and on the installer-built default install
 ```
 
 Host requirements: `qemu-system-x86_64` (8.2+, with the **dbus** display
@@ -53,6 +58,10 @@ backend and PNG screendump), `qemu-img`, `cloud-localds` (cloud-image-utils),
 KVM access, and the Ubuntu cloud images in `~/images/`
 (`noble-server-cloudimg-amd64.img`, `ubuntu-26.04-server-cloudimg-amd64.img`;
 override the directory with `VMIMAGES=`). `vmctl` is stdlib-only Python.
+The ISO flavor additionally needs `isoinfo` (genisoimage) and the desktop ISO its yaml
+names, in the same `~/images/`: `ubuntu-26.04.1-desktop-amd64.iso`, 6.1 GB, from
+<https://releases.ubuntu.com/26.04/> — `vm/build-iso-golden.sh` checks its sha256 against the
+one in the flavor before it boots anything.
 `selftest.sh` additionally wants ImageMagick's `identify` (to prove a screenshot is not a flat colour).
 
 ## Fresh host setup
@@ -62,12 +71,14 @@ so that `/dev/kvm` exists inside it) works. On Ubuntu 24.04:
 
 ```console
 $ sudo apt-get install -y qemu-system-x86 qemu-system-gui qemu-utils cloud-image-utils \
-      dbus libglib2.0-bin socat imagemagick openssh-client
+      dbus libglib2.0-bin socat imagemagick openssh-client genisoimage
 $ sudo usermod -aG kvm "$USER"          # re-login afterwards
 $ mkdir -p ~/images && cd ~/images
 $ curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 $ curl -LO https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img
+$ curl -LO https://releases.ubuntu.com/26.04/ubuntu-26.04.1-desktop-amd64.iso   # ISO flavor only
 $ vm/vmctl build noble-gnome && vm/vmctl build resolute-gnome   # ~7 min each on 4 vCPU
+$ vm/build-iso-golden.sh resolute-gnome-iso                     # ~14 min on 2 vCPU
 $ vm/selftest.sh noble-gnome && vm/selftest.sh resolute-gnome
 ```
 
@@ -84,8 +95,10 @@ time comfortably; 8 vCPU / 32 GB runs four.
 |---|---|
 | `vm/vmctl` | the CLI (host side) |
 | `vm/build-image.sh` | guest-side build script; embedded into the flavor's cloud-init user-data by `vmctl build`, runs once as root inside the build VM |
-| `vm/flavors/<flavor>.yaml` | cloud-init user-data template per flavor (`@@ROOT_PUBKEY@@`, `@@BUILD_SCRIPT@@` placeholders; `# vmctl-base:` names the base cloud image, `# vmctl-desktop:` the desktop **and its session type** — `gnome`, `kde`, `kde-x11`, `xfce` or `sway`) |
-| `vm/reference/<flavor>-packages.txt` | `dpkg-query -W -f='${binary:Package}\n'` of the finished golden image: **what a default install of that flavor contains**. Multi-arch names carry their `:amd64` suffix (`libei1:amd64`), so grep for exact names with `^name(:amd64)?$`. |
+| `vm/build-iso-golden.sh` | host-side builder for the **ISO flavors** (`# vmctl-iso:` in the yaml): runs the real Ubuntu desktop installer off the release ISO, unattended and headless, then configures the result. `vmctl build` cannot make these and says so. |
+| `vm/build-iso-image.sh` | guest-side stage 2 of that build; copied into the freshly installed system and run once as root over ssh (the installer switches cloud-init off in the target, so nothing else can run it). Deliberately tiny: an ISO flavor may not be tidied up. |
+| `vm/flavors/<flavor>.yaml` | cloud-init user-data template per flavor (`@@ROOT_PUBKEY@@`, `@@BUILD_SCRIPT@@` placeholders; `# vmctl-base:` names the base cloud image, `# vmctl-desktop:` the desktop **and its session type** — `gnome`, `kde`, `kde-x11`, `xfce` or `sway`). An **ISO flavor** has `# vmctl-iso:`/`# vmctl-iso-sha256:` instead of `# vmctl-base:`, and its body is not user-data for a build VM but the **autoinstall description the live installer reads**. |
+| `vm/reference/<flavor>-packages.txt` | `dpkg-query -W -f='${binary:Package}\n'` of the finished golden image: **exactly what that image contains**, nothing more. For `resolute-gnome-iso` that is also what a default Ubuntu 26.04 desktop install contains (one package added: `openssh-server`); for the cloud-image flavors it is *not* — those are an Ubuntu cloud image plus a desktop metapackage, which is close to but measurably not the same thing (226 packages a default install does not have, 55 it has and the cloud image has not, a different kernel with no firmware at all, and 8 snaps against the default 13 — see *The default install* below). Multi-arch names carry their `:amd64` suffix (`libei1:amd64`), so grep for exact names with `^name(:amd64)?$`. |
 | `vm/selftest.sh <flavor> [name]` | end-to-end check of any flavor's golden image: boot 3 heads, autologin, monitors/primary in that desktop's own display tool, no stray first-run window, real screenshots, hotplug (details below) |
 
 State (never in the repo) lives under `$VMDATA` (default `~/vm-data`):
@@ -107,7 +120,7 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 
 | command | what |
 |---|---|
-| `vmctl build <flavor> [--cpus 4] [--mem 6G] [--size 30G] [--force] [--keep]` | boot a fresh overlay of the base image with the flavor's cloud-init; wait for it to power itself off; keep it as the golden image. Refuses to overwrite an existing golden without `--force` (a rebuilt golden invalidates every instance overlay on it: restart those with `--fresh`). Progress lines from the guest are echoed; the full log is `golden/<flavor>.build.log`. |
+| `vmctl build <flavor> [--cpus 4] [--mem 6G] [--size 30G] [--force] [--keep]` | boot a fresh overlay of the base image with the flavor's cloud-init; an **ISO flavor** is refused here with a pointer to `vm/build-iso-golden.sh <flavor>`, which is what builds those; wait for it to power itself off; keep it as the golden image. Refuses to overwrite an existing golden without `--force` (a rebuilt golden invalidates every instance overlay on it: restart those with `--fresh`). Progress lines from the guest are echoed; the full log is `golden/<flavor>.build.log`. |
 | `vmctl start <name> --flavor <flavor> [--heads N] [--head-size WxH] [--mem 4G] [--cpus 3] [--fresh] [--no-wait]` | create (or reuse) the instance, start its private D-Bus, start QEMU daemonized, **size/plug heads `0..N-1` (default 1920x1080 each) before the guest boots**, wait for ssh, print the ssh port. Refuses a double start; stale pidfiles are detected. `--fresh` recreates the overlay disk and seed. Without `--flavor`/`--heads`/`--head-size` a reused instance keeps its previous values (including per-head sizes set with `vmctl head`). |
 | `vmctl stop <name> [--timeout 60]` | `systemctl poweroff` over ssh (GNOME inhibits logind's power-key handling, so a bare ACPI button would only pop a dialog), falls back to QMP `system_powerdown`, then QMP `quit`/kill after the timeout; stops the dbus-daemon. |
 | `vmctl destroy <name>` | stop + delete `instances/<name>`. |
@@ -122,10 +135,20 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 
 ## Flavors
 
-Ten golden images: four desktops over three Ubuntu releases, and Plasma twice on each
-LTS — once on Wayland and once on Xorg. A flavor is one
-`vm/flavors/<flavor>.yaml` (cloud-init user-data). Its `# vmctl-base:` header names the base
-cloud image and its `# vmctl-desktop:` header (`gnome`, `kde`, `kde-x11`, `xfce`, `sway`) is what `vmctl`
+Eleven golden images. **Ten** are four desktops over three Ubuntu releases — Plasma twice on
+each LTS, once on Wayland and once on Xorg — each an Ubuntu *cloud* image plus that desktop's
+metapackage; the **eleventh**, `resolute-gnome-iso`, is a real Ubuntu 26.04 desktop
+**installation**, done by the Ubuntu installer off the release ISO with every question left
+alone. The ten exist because one script gets four desktops out of them; the eleventh exists
+because "it works out of the box on a default Ubuntu 26.04 desktop" is a claim about an
+*installed* system, and a cloud image plus `ubuntu-desktop` is not one (it differs by 226
+packages a default install does not have, 55 it has and the cloud image has not, a different
+kernel with no firmware at all, and 8 snaps against the default 13 — *The default install*,
+below).
+
+A flavor is one `vm/flavors/<flavor>.yaml` (cloud-init user-data). Its `# vmctl-base:` header
+names the base cloud image — or, for an ISO flavor, `# vmctl-iso:` names the ISO — and its
+`# vmctl-desktop:` header (`gnome`, `kde`, `kde-x11`, `xfce`, `sway`) is what `vmctl`
 and `selftest.sh` key off: which display manager owns the session, what `loginctl` calls its
 `Type`, which sockets `vmctl user` must export, which process paints the first frame, and which
 native tool reports monitors.
@@ -142,8 +165,10 @@ native tool reports monitors.
 | `resolute-xfce` | 26.04 LTS | Xfce 4.20 (`xubuntu-desktop`) | LightDM | **X11** | `xrandr` |
 | `resolute-sway` | 26.04 LTS | sway 1.11 / wlroots, Xwayland, `foot`, `grim` | greetd | Wayland | `swaymsg -t get_outputs` |
 | `stonking-kde` | 26.10 | Plasma 6.7 / KWin 6.7 (`kde-plasma-desktop`) | SDDM | Wayland | `kscreen-doctor -o` |
+| **`resolute-gnome-iso`** | 26.04 LTS | **GNOME Shell 50.1 / mutter 50.1 — installed from `ubuntu-26.04.1-desktop-amd64.iso` by the Ubuntu installer, default source `ubuntu-desktop-minimal`** | GDM | Wayland | the same |
 
-Every flavor:
+The ten cloud-image flavors (`resolute-gnome-iso` keeps its installer's defaults instead —
+see below for what that changes):
 
 * user `test` (uid 1000, password `test`, groups `adm,sudo`, bash, `NOPASSWD` sudo); root ssh by key
   (`~/vm-data/keys/id_ed25519`); hostname = flavor name (instances re-set it to the instance name).
@@ -278,6 +303,188 @@ nine are what the desktop-support matrix is measured on.
   is head 0 = `Virtual-1` = (0,0). Nothing is watched afterwards: a test that moves outputs, or a
   head hot-plugged later (wlroots appends it on the right), is left alone.
 
+**The default install** (`resolute-gnome-iso`)
+
+The other ten flavors answer "does this work on GNOME 50 / Plasma 6 / Xfce / sway?". This one
+answers a different question — "does this work on **a default Ubuntu 26.04 desktop**, freshly
+installed and updated?" — and it can only answer it by being one. Same ISO a person downloads,
+same installer, same default install source, nothing added and, more importantly, **nothing
+taken away**: the first-run experience, screen lock, blanking, DPMS, idle sleep, the
+`apt-daily` timers, `unattended-upgrades` and snap auto-refresh are all left running, because
+an image that has been tidied up cannot answer a question about an untidy one.
+
+*How it is built* — `vm/build-iso-golden.sh resolute-gnome-iso`, 14 minutes on
+2 vCPU/4 GB, no display, no keyboard, nothing to click:
+
+1. **Install** (12.6 min). The ISO's own kernel and initrd are read straight out of the
+   image (`isoinfo -R -x /casper/vmlinuz`, no remastering, no root) and booted with the ISO
+   attached as a CD-ROM, the flavor yaml as a NoCloud seed drive, and `autoinstall` on the
+   kernel command line. subiquity picks the description up from cloud-config — source 4 of the
+   5 its `select_autoinstall()` looks at — and installs; the installer powers the VM off.
+2. **Configure** (1.5 min). The installed disk is booted once and `vm/build-iso-image.sh`
+   runs in it over ssh: update, GDM autologin, cloud-init re-enabled. Then power off, and the
+   disk *is* the golden image — a plain qcow2 with no backing file, unlike the other ten.
+
+**Why the kernel argument.** The config alone is not enough on the *desktop* installer. With
+the seed and no `autoinstall` on the command line the live session comes up, the installer
+reads the description, renders it — and stops on **"Ready to install / Review your choices"**,
+waiting for a human to confirm, on a VM that has no keyboard. With the argument it runs
+non-interactively (`interactive = False`, `/run/casper-no-prompt`) and never draws that page.
+The argument also buys a serial console for the whole install, which the ISO's own `quiet
+splash` entry does not.
+
+*Every deviation from an untouched install, and why.* There are eight, four in the flavor
+yaml and four in the stage-2 script, each marked `DEVIATION` in place:
+
+| # | deviation | why |
+|---|---|---|
+| 1 | `refresh-installer: {update: false}` | reproducibility: the installer snap on the ISO is the one that runs, so the same ISO always installs the same way. The GUI would offer to update itself first. |
+| 2 | **`openssh-server`** (`ssh: install-server: true`) | a default Ubuntu *desktop* install has no ssh server, and ssh is the rig's only way in — `vmctl ssh`, `user`, `session`, `scp` and all of `selftest.sh`. **This is the only package added to the default set** (with `openssh-sftp-server`, `ssh-import-id` and `ncurses-term`, which it pulls in, that is the whole difference from the ISO's own package manifest). |
+| 3 | the rig's root ssh key in `ssh: authorized-keys:` | so stage 2 can log in without a password prompt. It lands in `/home/test/.ssh/authorized_keys`; from the next boot vmctl's per-instance seed installs it for `root` as on every flavor. |
+| 4 | `shutdown: poweroff` | so the host can tell stage 1 finished. A human clicks *Restart now*; what is on disk is the same. |
+| 5 | `apt-get full-upgrade` + `snap refresh` in stage 2 | "tested on a fresh, **updated** installation". The installer already applies security updates while it runs (its default); this is the rest, the way Software Updater would on day one. It upgrades what is installed and adds nothing by hand (on the day this image was built: 6 packages upgraded, 0 installed, 0 removed, and 2 snaps refreshed). |
+| 6 | **GDM autologin of `test`** | the VM has no keyboard: nothing can type a password into the greeter (QEMU's D-Bus display is output only). Two keys added to the *shipped* `/etc/gdm3/custom.conf`, everything else in it untouched, and the file as the package wrote it is kept beside it as `custom.conf.stock`. |
+| 7 | cloud-init re-enabled (`cloud-init clean`, plus `network: {config: disabled}`) | the installer switches cloud-init off in the target (`/etc/cloud/cloud.cfg.d/99-installer.cfg`, `/etc/cloud/cloud-init.disabled`); vmctl's per-instance seed — hostname, root key — needs it back. Undone by the installer's *own* golden-image path: `/etc/cloud/clean.d/99-installer` deletes exactly those two files and `cloud-init clean` runs it. The `network: disabled` line keeps cloud-init from taking the NIC off NetworkManager, i.e. keeps the network exactly as installed. No package is added: `cloud-init` is part of a default desktop install. |
+| 8 | the first-run experience **completed**, not removed | a default install runs `gnome-initial-setup --existing-user` at the first login (measured: it did), and a VM with no keyboard cannot click through it, so every screenshot would have that window in it. The two markers a completed run leaves are written — the exact paths the two units' own `ConditionPathExists` lines name, read out of the units — and nothing else: the package, both units, `update-notifier`, `ubuntu-report` and `ubuntu-advantage-notification` all stay as installed. Writing only the first marker is not enough and the image proves it: it then came up running `gnome-initial-setup --upgrade-user` (the "Welcome to Ubuntu 26.04 LTS!" dialog) at every login instead. |
+
+*What it does **not** do*, and this is the point — measured on the finished image:
+
+* `apt-daily.timer`, `apt-daily-upgrade.timer`, `unattended-upgrades.service` and
+  `motd-news.timer` are **enabled and active**, and snap auto-refresh is on (`timer:
+  00:00~24:00/4`). The cloud-image flavors disable, mask or hold every one of them.
+* screen lock `true`, screensaver idle activation `true`, `idle-delay` `300`,
+  `sleep-inactive-ac-type` `'suspend'`: this desktop *will* blank, lock and suspend under a
+  long test. On the cloud-image flavors those are `false`/`false`/`0`/`'nothing'` through a gschema
+  override. A test that needs a desktop awake for ten minutes now has to say so itself —
+  which is the honest place for it, because a user's machine will not have been told either.
+* the first-run machinery is all still there: `gnome-initial-setup` installed with **both**
+  its units enabled, and `update-notifier`, `ubuntu-report-on-upgrade` and
+  `ubuntu-advantage-notification` autostarting (the cloud-image flavors hide all three with `Hidden=true`
+  overrides). `update-notifier` really is running in the session here.
+* the 13 snaps of a default install, `snap-store`, `snapd-desktop-integration` (running in
+  the session), `firmware-updater`, `hwctl` and 26.04's `prompting-client` /
+  `desktop-security-center` among them — AppArmor prompting, which is exactly what a tool
+  that opens `/dev/uinput` and compositor sockets should be tested against. The others have
+  8 snaps and none of those.
+* `NetworkManager` owns the NIC through the installer's own
+  `/etc/netplan/01-network-manager-all.yaml`, `systemd-networkd` disabled — the cloud-image flavors are
+  the other way round (`50-cloud-init.yaml`, networkd enabled, `networkd-wait-online`
+  disabled by hand to stop it holding up every boot).
+* user `test` in the installer's groups (`adm cdrom sudo dip plugdev users lpadmin lxd`),
+  sudo by password. (In a running *instance* vmctl's own per-instance seed then adds a
+  `NOPASSWD` rule, as it does on every flavor — that is the rig, not the image.)
+
+Everything else about the flavor is the rig as usual: `vmctl start`, `session`, `user`, `head`,
+`heads`, `shot` and `vm/selftest.sh resolute-gnome-iso` work on it exactly as on the other
+ten, and `vmctl build` refuses it with a pointer to `vm/build-iso-golden.sh`.
+
+*How far a cloud-image flavor is from it.* `vm/reference/resolute-gnome-iso-packages.txt` against
+`vm/reference/resolute-gnome-packages.txt` — same release, same desktop, built the two ways:
+
+| | `resolute-gnome` | `resolute-gnome-iso` |
+|---|---|---|
+| built from | `ubuntu-26.04-server-cloudimg-amd64.img` + `ubuntu-desktop` | `ubuntu-26.04.1-desktop-amd64.iso`, installer, default source `ubuntu-desktop-minimal` |
+| release / kernel | Ubuntu 26.04, `7.0.0-30-generic` (`linux-image-virtual`), **no firmware at all** | Ubuntu 26.04.1, `7.0.0-31-generic` (`linux-image-generic-hwe-26.04`), all 19 `linux-firmware-*` |
+| packages | **1677** | **1506** |
+| snaps | 8 (`bare core24 firefox gnome-46-2404 gtk-common-themes mesa-2404 snapd thunderbird`) | **13** — exactly the ISO's default source, byte for byte: the 8 minus `thunderbird`, plus `snap-store`, `snapd-desktop-integration`, `firmware-updater`, `hwctl`, `prompting-client`, `desktop-security-center` |
+| session | GNOME Shell 50.1 / mutter 50.1 on Wayland, GDM 50.1, `Service=gdm-autologin`, logind `Type=wayland`, seat0/tty2 | **identical in every one of those** |
+| X server | no Xorg (`xserver-xorg-core` absent); Xwayland 2:24.1.10-1 | the same — **but see below** |
+| Xwayland at login | **not running**: mutter starts it on the first X client | **running from login**, `-enable-ei-portal`, with `gsd-xsettings`, `ibus-x11` and `mutter-x11-frames` alongside it |
+| `/dev/uinput` | `crw------- root root`, module forced by `/etc/modules-load.d/uinput.conf` | `crw------- root root`, **no module line needed** (26.04 has it built in) |
+| `/dev/input/event0` | `crw-rw---- root input`; `test` is not in `input` | identical |
+| python3 / python3-gi | 3.14.3-0ubuntu2 (binary 3.14.4) / 3.56.2-1 | identical |
+| GTK 3 / GTK 4 (and their typelibs) | 3.24.52 / 4.22.4 | identical |
+| `libei1`, glib | 1.5.0-3, 2.88.0-1 | identical |
+| X tools | `xdotool` 1:3.20160805.1, `wmctrl` 1.07, `x11-utils`, `x11-xserver-utils` | `x11-utils` and `x11-xserver-utils` only — **a default install has no `xdotool` and no `wmctrl`**, so the X11 hand-over path has nothing to hand over to until the user installs them, which is what the repo README tells them to do |
+| pip / venv | absent | absent (so the install guide's `sudo apt install git python3-venv` is right — `git` and `curl` are not there either) |
+| first run, lock, updates | all removed or switched off | all left on (list above) |
+
+**226 packages the cloud-image flavor has that a default install does not**: 29 from the
+server cloud image (`ubuntu-server`, `cloud-initramfs-*`, `overlayroot`, `landscape-common`,
+`sos`, `open-iscsi`, `lxd-*`, `open-vm-tools`, `needrestart`, `multipath-tools`, `mdadm`,
+`lvm2`, `cryptsetup`, `xfsprogs`, `btrfs-progs`, `dracut-network`, `zerofree`, `xorriso`, …),
+3 for the virtual kernel, 41 because the *full* `ubuntu-desktop` metapackage is not the
+default install source (24 `libreoffice-*`, `thunderbird`, `rhythmbox*`, `shotwell*`,
+`remmina*`, `deja-dup`, `simple-scan`, `gnome-calendar`, `gnome-terminal`, `showtime`,
+`usb-creator-*`), 2 on purpose (`xdotool`, `wmctrl`), and 151 more that are those four
+groups' dependencies plus the cloud image's own toolbox (`curl`, `git`, `vim`, `htop`,
+`tmux`, `restic`, `gawk`, `python3-boto3`/`twisted`, `grub-efi-*`, `shim-signed`).
+
+**55 a default install has that the cloud-image flavor does not**: the whole `linux-firmware`
+set (19 packages — the cloud image has none at all), the HWE kernel with headers and tools
+(11), `amd64-microcode`, `intel-microcode`, `iucode-tool`, `thermald`, the English language
+packs and input-method data (`language-pack-en*`, `language-pack-gnome-en*`, `m17n-db`,
+`libm17n-0`, `libpinyin*`, `libchewing*`, `ibus-table-cangjie*`, `wbritish`), `grub-common`,
+`firmware-sof-signed`.
+
+**And against the ISO's own manifest** (`casper/minimal.en.manifest.full`, 1494 debs + 13
+snaps — what the installer would put on disk), the golden is that set plus exactly:
+`openssh-server`, `openssh-sftp-server`, `ssh-import-id`, `ncurses-term` (deviation 2 and
+what it pulls), `wbritish` (the installer's own language-support step, not ours), and the
+8 packages of the `7.0.0-30` → `7.0.0-31` kernel that the update brought in (deviation 5;
+the `-30` files stay because nothing runs `autoremove`). The 13 snaps match the manifest
+exactly. Nothing is missing from it.
+
+*What a run on it actually found.* The repo README's install guide was followed on this image
+verbatim — `sudo apt install git python3-venv`, `git clone`, `python3 -m venv
+--system-site-packages`, `pip install -e .`, the five `/usr/local/bin` symlinks,
+`warandr.desktop`, `sh gnome/install-bridge.sh`, one session restart, `sudo sh
+gnome/install-bridge.sh --udev` — and then all five tools were exercised against a real
+Ptyxis window on the three-head layout, as the desktop user and as root over ssh with `env
+-i`. **Nothing had to be adapted.** Every stock fact the guide asserts holds here: no `pip`,
+no `venv`, no `pipx`, no `git`, no `curl`; `python3-setuptools`, `python3-gi`,
+`gir1.2-gtk-3.0`, `acl`, `x11-utils`, `x11-xserver-utils` present. `install-bridge.sh`
+printed exactly the documented "log out and back in" text and exit 1; after the relogin
+`--check` said `loaded in shell: yes` / `org.fuckwayland.Bridge owned: yes` / `uinput usable
+by test: yes (logind ACL)`; `wdotool --version` … `warandr --version` printed the five
+documented strings; `wxrandr --print-backend --verbose` said `mutter`; typing landed in the
+terminal; the `warandr` GUI opened with `backend: mutter (Wayland)`, a monitor dragged in it
+and applied with a click changed the real layout, `warandr --save` wrote an
+arandr-compatible script, and that script bound to `<Ctrl><Super>F7` and pressed with
+`wdotool key ctrl+super+F7` restored its layout.
+
+The same script was then run on `resolute-gnome`. Out of 220 lines of output the two images
+differ in **21**, and every one of them is the environment rather than a tool:
+
+| what differs | `resolute-gnome-iso` | `resolute-gnome` |
+|---|---|---|
+| `command -v xdotool` | nothing — a default install has neither `xdotool` nor `wmctrl` | `/usr/bin/xdotool` |
+| screen lock / idle / suspend | `lock-enabled true`, `idle-delay 300`, `sleep-inactive-ac-type 'suspend'` | `false`, `0`, `'nothing'` (gschema override) |
+| `_NET_SUPPORTING_WM_CHECK` | `0x400001` | `0x200001` — Xwayland is already running at login here, so it hands out different ids |
+| window ids, timestamps | differ per boot | differ per boot |
+
+Everything else — the five version strings, the backend line, `wwmctl -l/-lx/-lG`,
+`getdisplaygeometry` `5760 1080`, every `windowmove`/`windowsize`/`windowstate` result,
+`getmouselocation`, all of `wxprop`, the dynamic-workspaces warning, all nine `wxrandr`
+layout operations, `warandr --command`/`--save`, the hotkey, and the locked-screen messages
+— is byte-identical. **A claim measured on `resolute-gnome` has, for these five tools, been
+true of a default install.**
+
+Two behaviours the run turned up. Both reproduce **identically on both images**, so neither is
+about the default install; both are in tool code this branch deliberately does not touch, and
+both want scheduling:
+
+1. **`wwmctl -b remove,maximized_vert,maximized_horz` removes only the horizontal half, and
+   corrupts the window's saved size.** Single-axis add and remove are both correct, and
+   `-b add,maximized_vert,maximized_horz` correctly maximizes both. But removing both in one
+   command leaves a window that was `200 150 900 600` at `200 32 900 1048` — full height —
+   and from there `-b remove,maximized_vert`, `wdotool windowstate --remove MAXIMIZED_VERT`
+   and even `--toggle MAXIMIZED_VERT` twice all do nothing: Mutter now reports the window
+   unmaximized while its saved rectangle has kept the maximized height, so only an explicit
+   `windowsize` gets it back. `wmctrl -b remove,maximized_vert,maximized_horz` is the
+   documented way to unmaximize a window, so this is on a path people use. The two axes go
+   out as two separate `SetState` calls (`extension.js` `setMaximized()` →
+   `set_unmaximize_flags()`); the add path survives that and the remove path does not.
+2. **`wdotool windowstate` honours only the last `--add`/`--remove`/`--toggle` on the line.**
+   `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` maximizes horizontally only, and
+   `--add MAXIMIZED_VERT --remove SHADED` attempts the `SHADED` remove alone. The cause is
+   plain in `wdotool/window_cmds.py` `cmd_windowstate()`, whose option loop overwrites
+   `action`/`prop` on every iteration. Whether that is a *defect* or faithful parity is the
+   open question and it cannot be settled on this rig: both goldens carry `xdotool
+   3.20160805.1`, which has no `windowstate` at all, and parity is claimed against
+   4.20260303.1. Settle it against a 4.x binary first; if upstream applies each option, fix
+   the loop, and either way say which in the README, because the current text says nothing.
+
 Adding a flavor: copy a yaml, change `hostname`, `# vmctl-base:`, `# vmctl-desktop:` and
 `/etc/vmctl-build.env` (`DESKTOP`, `DESKTOP_PKG`, `EXTRA_PKGS`). A new *desktop* additionally
 needs a branch in `build-image.sh`, an entry in `vmctl`'s `DESKTOPS` table (session kind, logind
@@ -297,7 +504,10 @@ order, using that desktop's own tools:
    Plasma's `priority 1` are required; sway has no primary, so its focused output stands in, and
    Xorg only marks one if something asked it to.
 3. no first-run window in the session: `gnome-initial-setup`, `plasma-welcome`, or a window whose
-   title looks like Xfce's "new display" dialog.
+   title looks like Xfce's "new display" dialog. On `resolute-gnome-iso` this is the one assertion that needed a deviation
+   to hold (number 8): a default install *does* run `gnome-initial-setup` at the first login,
+   and with the first-login marker alone it then runs it again as `--upgrade-user` at every
+   login after that. Both were seen on this image before the markers were written.
 4. `vmctl user` gives a working session environment: `XDG_SESSION_ID` whose logind `Type` is the
    flavor's (`wayland`, `x11`, or `wayland`/`tty` for sway), `XDG_SESSION_TYPE` exactly `wayland`
    or `x11`, the display sockets (`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`, `$SWAYSOCK`) and an X
@@ -640,6 +850,32 @@ A cron-started tool must therefore wait for the session and set them itself:
   `selftest.sh` checks for it. Logging out/in or a reboot clears it.
 * `vmctl user` runs under `sudo -u test`; anything needing `/dev/uinput` still needs root
   (`vmctl ssh`) or `sudo` from inside (`test` has NOPASSWD sudo).
+* **An ISO flavor's golden has no backing file.** `vmctl build`'s goldens are overlays on a
+  cloud image in `~/images/` by absolute path; `vm/build-iso-golden.sh`'s is the installed disk
+  itself, so it can be copied anywhere on its own — but it is 8.7 GB, not a few hundred MB.
+* **Logging out of a GNOME flavor parks it at the greeter, for good.** GDM performs an
+  automatic login **once per boot** — deliberately, so that a user who logs out can reach the
+  greeter — and these VMs have no keyboard to type a password into one (QEMU's D-Bus display
+  is output only). So `gnome-session-quit --logout`, or anything else that ends the session,
+  leaves `loginctl` showing only `gdm-greeter` on seat0 and `vmctl session` timing out with
+  `no active wayland session for user test`. When a test needs the "log out and back in" that
+  installing the GNOME Shell extension asks for, **reboot the instance** (`vmctl ssh <name> --
+  systemctl reboot`, then `vmctl session <name>`); autologin fires again on the fresh boot.
+  Measured identically on `resolute-gnome-iso` and `resolute-gnome`, so it is the rig, not the
+  image — and not something a person at a real keyboard ever sees.
+* **`resolute-gnome-iso` is the flavor that is allowed to be untidy.** Anything that makes a
+  test on it pass by turning a default off belongs in the *test*, not in the image: quietly
+  patching the image is how the cloud-image flavors came to differ from a real install by 226 packages, 55
+  missing ones, a different kernel and 5 snaps without anyone noticing. Every one of its eight
+  deviations is written down twice, in the flavor yaml and in the table above; keep it that way.
+* **A build VM that is killed mid-boot stops at the GRUB menu on the next one.** Ubuntu's GRUB
+  sets `recordfail` when a boot does not finish and then waits for a keypress — forever, on a VM
+  with no keyboard, with nothing on the serial console to say so. `vm/build-iso-golden.sh`
+  therefore powers its VM down over QMP rather than killing it on a failure, and while it waits
+  for ssh it presses Return over QMP (`send-key`) if nothing has reached the console; QMP is also
+  the reason stage 2 has a `-qmp` socket where stage 1 does not need one. The same kill also
+  costs the target its ssh host keys if it happens on the first boot, before they are on disk —
+  after which sshd resets every connection and the only cure is to install again.
 * A build that fails leaves `~/vm-data/build/<flavor>/` (serial.log, and root ssh on the
   printed port while the VM is alive) for inspection; `vmctl list` shows it as `(build)`.
 * Instances re-run cloud-init once (new instance-id) — it only sets the hostname, re-applies

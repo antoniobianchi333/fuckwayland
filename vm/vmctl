@@ -14,7 +14,9 @@ State lives under $VMDATA (default ~/vm-data):
   golden/<flavor>.qcow2                golden image (qcow2 overlay on the
                                        base cloud image in $VMIMAGES, by
                                        absolute path -- the golden does NOT
-                                       depend on any build/instance dir)
+                                       depend on any build/instance dir; an
+                                       ISO flavor's golden has no backing
+                                       file at all, see build-iso-golden.sh)
   golden/<flavor>-packages.txt         dpkg list of the finished image
   golden/<flavor>.build.log            serial log of the build VM
   instances/<name>/{disk.qcow2,seed.img,qmp.sock,bus,dbus.pid,
@@ -501,10 +503,22 @@ def flavor_file(flavor):
     return f
 
 
+def flavor_iso(flavor):
+    """The flavor's `# vmctl-iso: <image.iso>` header, or None for a cloud-image flavor."""
+    m = re.search(r"^#\s*vmctl-iso:\s*(\S+)", flavor_file(flavor).read_text(), re.M)
+    return m[1] if m else None
+
+
 def flavor_base(flavor):
     text = flavor_file(flavor).read_text()
     m = re.search(r"^#\s*vmctl-base:\s*(\S+)", text, re.M)
     if not m:
+        if flavor_iso(flavor):
+            # An ISO flavor is not built from a cloud image at all: the real Ubuntu
+            # desktop installer installs it off the release ISO (see vm/README.md).
+            raise Fail(f"{flavor} is an ISO flavor (installed from {flavor_iso(flavor)} by the "
+                       f"Ubuntu installer itself, not from a cloud image): build it with "
+                       f"vm/build-iso-golden.sh {flavor}")
         raise Fail(f"{flavor_file(flavor)}: missing '# vmctl-base: <image>' header")
     base = Path(m[1]).expanduser()
     if not base.is_absolute():
@@ -555,7 +569,7 @@ def tail_file(path, n=25):
 def cmd_build(a):
     need_tools("qemu-system-x86_64", "qemu-img", "cloud-localds")
     flavor = a.flavor
-    base = flavor_base(flavor)
+    base = flavor_base(flavor)   # raises and points at build-iso-golden.sh for an ISO flavor
     golden = golden_path(flavor)
     if golden.exists() and not a.force:
         raise Fail(f"{golden} exists; use --force to rebuild (instances based on it would break)")
