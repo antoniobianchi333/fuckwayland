@@ -122,7 +122,7 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 
 ## Flavors
 
-Seven golden images: four desktops over two Ubuntu releases. A flavor is one
+Eight golden images: four desktops over three Ubuntu releases. A flavor is one
 `vm/flavors/<flavor>.yaml` (cloud-init user-data). Its `# vmctl-base:` header names the base
 cloud image and its `# vmctl-desktop:` header (`gnome`, `kde`, `xfce`, `sway`) is what `vmctl`
 and `selftest.sh` key off: which display manager owns the session, what `loginctl` calls its
@@ -138,6 +138,7 @@ native tool reports monitors.
 | `noble-xfce` | 24.04 LTS | Xfce 4.18 (`xubuntu-desktop`) | LightDM | **X11** | `xrandr` |
 | `resolute-xfce` | 26.04 LTS | Xfce 4.20 (`xubuntu-desktop`) | LightDM | **X11** | `xrandr` |
 | `resolute-sway` | 26.04 LTS | sway 1.11 / wlroots, Xwayland, `foot`, `grim` | greetd | Wayland | `swaymsg -t get_outputs` |
+| `stonking-kde` | 26.10 | Plasma 6.7 / KWin 6.7 (`kde-plasma-desktop`) | SDDM | Wayland | `kscreen-doctor -o` |
 
 Every flavor:
 
@@ -175,7 +176,36 @@ Every flavor:
   existing and the second one *not* existing — so the first marker alone switches that dialog on).
   The `update-notifier` / `ubuntu-report` autostarts are hidden for `test`.
 
-**KDE Plasma** (`noble-kde`, `resolute-kde`)
+`stonking-kde` exists for one reason: **Plasma 6.7 is the first release that
+stopped advertising `kde_output_device_v2` as a wl_registry global** and hands
+the device objects out through `kde_output_device_registry_v2` instead (kwin
+commit `7e32e00c`, released in v6.7.0 and never backported — v6.6.6 still
+publishes the globals). It is therefore the only image on which `wxrandr`'s
+second output-discovery path runs at all — and on it, `wl_registry` carries no
+`kde_output_device_v2` whatsoever, only `kde_output_device_registry_v2` v23,
+`kde_output_management_v2` v21 and `kde_output_order_v1` v1. Ubuntu 26.10 (`stonking`) is the
+first Ubuntu carrying it: `kwin-wayland 4:6.7.4-0ubuntu2`, against 6.6.4 in
+26.04.
+
+It is the one flavor that does **not** install its distro's desktop
+metapackage, and 26.10 being a development release is why. `kubuntu-desktop`
+pulls the `firefox` deb, whose postinst installs the firefox *snap* — and
+snapd does not work in the 26.10 cloud image (`snapd.service` fails to start),
+so that postinst parks in `Unable to contact the store, trying every minute
+for the next 30 minutes` and the build never finishes. The flavor installs
+`kde-plasma-desktop` instead — `kwin-wayland` + `plasma-workspace` +
+`plasma-desktop`, i.e. the whole Plasma session and every display protocol
+this image exists for — and pins `firefox`/`thunderbird` to −1 so no
+Recommends chain can drag one back in. Everything else (SDDM autologin, the
+screen-lock and power-management overrides) is the shared `kde` path in
+`build-image.sh`, unchanged.
+
+For the same reason — a development release whose cloud image
+(`stonking-server-cloudimg-amd64.img`) and packages move under you — this
+flavor is a probe for one protocol change, not a support target: the other
+seven are what the desktop-support matrix is measured on.
+
+**KDE Plasma** (`noble-kde`, `resolute-kde`, `stonking-kde`)
 
 * SDDM: `/etc/sddm.conf.d/` autologin of `test` into the **Plasma Wayland** session —
   `plasmawayland.desktop` on 5.27, `plasma.desktop` on 6 (the build picks whichever

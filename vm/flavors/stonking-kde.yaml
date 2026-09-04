@@ -1,0 +1,70 @@
+#cloud-config
+# vmctl flavor stonking-kde: Ubuntu 26.10 (stonking) + KDE Plasma 6.7 on Wayland,
+# SDDM autologin of user test (uid 1000, password test, NOPASSWD sudo) into plasma.desktop.
+# The reason this flavor exists: Plasma 6.7 is the first release that stopped
+# advertising kde_output_device_v2 as a wl_registry global and hands the device
+# objects out through kde_output_device_registry_v2 instead (kwin commit
+# 7e32e00c, "wayland: Don't advertise kde-output-device-v2 globals anymore"),
+# so it is the only image on which wxrandr's second discovery path runs at all.
+#
+# Two ways this differs from noble-kde / resolute-kde, both forced by 26.10
+# being a development release:
+#  * kde-plasma-desktop, not kubuntu-desktop. kubuntu-desktop pulls the
+#    `firefox` deb, which is a wrapper whose postinst installs the firefox
+#    SNAP -- and snapd does not work in this cloud image (snapd.service fails
+#    to start), so that postinst sits in "Unable to contact the store, trying
+#    every minute for the next 30 minutes" and the build never finishes.
+#    kde-plasma-desktop depends on kwin-wayland + plasma-workspace +
+#    plasma-desktop, which is the whole Plasma session and every display
+#    protocol this flavor is for.
+#  * an apt pin that keeps the snap wrapper packages out for good, so a
+#    Recommends chain cannot drag one back in.
+# Native display tool: kscreen-doctor (libkscreen-bin).
+# vmctl fills in the two @@...@@ placeholders at build time (root ssh public
+# key; the contents of vm/build-image.sh). The base image lives in $VMIMAGES:
+# vmctl-base: stonking-server-cloudimg-amd64.img
+# vmctl-desktop: kde
+hostname: stonking-kde
+manage_etc_hosts: true
+disable_root: false
+ssh_pwauth: false
+ssh_authorized_keys:
+  - @@ROOT_PUBKEY@@
+users:
+  - name: test
+    uid: 1000
+    gecos: Test User
+    groups: [adm, sudo]
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: test
+    sudo: ALL=(ALL) NOPASSWD:ALL
+write_files:
+  - path: /etc/ssh/sshd_config.d/60-vmctl.conf
+    content: "PermitRootLogin prohibit-password\n"
+  - path: /etc/modules-load.d/uinput.conf
+    content: "uinput\n"
+  - path: /etc/apt/preferences.d/vmctl-no-snap-wrappers
+    content: |
+      # vmctl (stonking-kde): snapd does not work in the 26.10 cloud image, so
+      # any deb whose postinst installs a snap blocks the build for half an
+      # hour and then fails. None of them is a display protocol.
+      Package: firefox thunderbird
+      Pin: release *
+      Pin-Priority: -1
+  - path: /etc/vmctl-build.env
+    content: |
+      FLAVOR=stonking-kde
+      DESKTOP=kde
+      DESKTOP_PKG="kde-plasma-desktop sddm libkscreen-bin libkf6config-bin"
+      EXTRA_PKGS="xdotool wmctrl x11-utils x11-xserver-utils"
+  - path: /usr/local/sbin/vmctl-build
+    permissions: '0755'
+    content: |
+      @@BUILD_SCRIPT@@
+runcmd:
+  - [/usr/local/sbin/vmctl-build]
+power_state:
+  mode: poweroff
+  message: vmctl golden build finished
+  timeout: 120
