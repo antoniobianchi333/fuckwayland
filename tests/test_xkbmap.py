@@ -1167,5 +1167,24 @@ class TestADegradedSessionKeepsSayingSo(unittest.TestCase):
             self.assertEqual(d.op_type("a", 0, False), [])
 
 
+
+class GroupCountIsBounded(unittest.TestCase):
+    """The group index is a number in the keymap, not a length we measured:
+    `symbols[Group2000000000]` is eight bytes of text that used to become two
+    billion Group objects (3.2 GB at five million). The compositor is not
+    always ours -- a root daemon can be pointed at a planted Wayland socket."""
+
+    def test_a_huge_group_index_is_clamped(self):
+        base = "xkb_symbols { key <AE01> { [ a ] }; };"
+        for n in (5, 1000, 5_000_000, 2_000_000_000):
+            text = base.replace("[ a ]", "symbols[Group%d] = [ a ]" % n)
+            self.assertEqual(xkbmap.group_count(text), xkbmap.MAX_GROUPS)
+        self.assertEqual(xkbmap.MAX_GROUPS, 4)      # libxkbcommon's maximum
+
+    def test_a_real_keymap_is_unchanged(self):
+        self.assertEqual(xkbmap.group_count(text("sway_de")), 1)
+        self.assertEqual(xkbmap.group_count(text("de")), 2)
+        self.assertEqual(len(xkbmap.parse(text("us_de")).groups), 3)
+
 if __name__ == "__main__":
     unittest.main()

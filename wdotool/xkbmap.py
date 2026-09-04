@@ -337,14 +337,23 @@ def group_name(text: str, n: int) -> str:
     return f"group {n}"
 
 
+# libxkbcommon's XKB_MAX_GROUPS: no keymap can legitimately declare more.
+# The group index is a number the compositor chose, not a length we measured,
+# so `symbols[Group2000000000]` is eight bytes of keymap text that parse()
+# would otherwise turn into two billion Group objects (a root daemon can be
+# pointed at a planted Wayland socket, so the compositor is not always ours).
+MAX_GROUPS = 4
+
+
 def group_count(text: str) -> int:
-    """How many groups the keymap declares. Cheap: no full parse."""
+    """How many groups the keymap declares, capped at MAX_GROUPS. Cheap: no
+    full parse."""
     n = 0
     for m in _GROUPNAME_RE.finditer(text):
         n = max(n, int(m.group(1)))
     for m in re.finditer(r"\bsymbols\s*\[\s*(?:Group)?(\d+)\s*\]", text):
         n = max(n, int(m.group(1)))
-    return n or 1
+    return min(n, MAX_GROUPS) or 1
 
 
 def _brace_body(text: str, open_idx: int) -> str:
