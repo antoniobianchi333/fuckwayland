@@ -1200,7 +1200,7 @@ class BuildScript(unittest.TestCase):
         import shutil
         with tempfile.TemporaryDirectory(prefix="warandr-build-") as tmp:
             for d in ("wdotool", "wwmctl", "wxprop", "wxrandr", "warandr",
-                      "scripts"):
+                      "wmirror", "scripts"):
                 shutil.copytree(os.path.join(ROOT, d), os.path.join(tmp, d),
                                 ignore=shutil.ignore_patterns("__pycache__"))
             p = subprocess.run(["sh", os.path.join(tmp, "scripts",

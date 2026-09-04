@@ -17,6 +17,7 @@ In the box:
 - **wxprop** — xprop, real X properties for XWayland windows and synthesized ones for native windows
 - **wxrandr** — xrandr, with first-class multimonitor: reshape crazy layouts in one atomic call
 - **warandr** — arandr, the drag-your-monitors GUI, on Wayland (via wxrandr) and X11 (via xrandr)
+- **wmirror** — the one that clones nothing: mirror a *region*, or an odd-shaped output, on wlroots
 
 ## wdotool
 
@@ -36,6 +37,52 @@ this repo tests in)*
 # wdotool mousemove 640 360 click 1 getmouselocation
 x:640 y:360 screen:0 window:5
 ```
+
+## Version 0.2
+
+In progress. What has landed since 0.1, each measured on the rig the same
+way:
+
+- **On sway, nothing wdotool injects needs a privilege any more.** The
+  pointer goes through `zwlr_virtual_pointer_v1` where the kernel device is
+  closed to us, as the keyboard already went through the virtual-keyboard
+  protocol — so `click`, `mousemove` and the rest join `type` and `key` in
+  needing no root, no group and no udev rule there. See **(i)** in the
+  [support matrix](#desktop-support).
+- **What each desktop does with a layout after you set it**, measured
+  through a hotplug and a reboot on all four, with where each one keeps it
+  and what that means for a layout script: [Keeping a
+  layout](#keeping-a-layout). KDE saves whether you want it to or not; GNOME
+  writes nothing unless you confirm it.
+- **Plasma over Xorg** is an X11 session like any other and is handled like
+  one, on both generations, with the two things that look like they should
+  change the answer named and measured — **(j)** in the matrix. On the
+  Wayland side, KWin 6.7 stopped publishing outputs the way `wxrandr` found
+  them, and the registry path it needs instead is pinned to the protocol.
+- **wmirror**, a sixth tool and the only one here that clones nothing.
+  On wlroots it mirrors a **region** of an output, or a whole output onto a
+  **differently shaped** one, by running the packaged
+  [`wl-mirror`](https://github.com/Ferdi265/wl-mirror) and owning its
+  lifetime — the two pictures output geometry alone cannot produce, and
+  nothing else. Two outputs of the same size at the same position already
+  mirror byte for byte on wlroots, so `wxrandr --output B --same-as A` stays
+  the answer there and wmirror sends you to it rather than starting
+  anything. It refuses by name what the measurements showed goes wrong,
+  chief among them two outputs that **share pixels**, where a fullscreen
+  mirror window is drawn on its own source: run that deliberately and both
+  heads go **entirely black**, every pixel. Nothing it starts is left
+  running that `wmirror --list` cannot find and `wmirror --stop` cannot
+  end — not when its own supervisor is killed, not when a start is
+  interrupted, not when two of them race — and a mirror ends itself when the
+  layout moves out from under it. **GNOME and KDE have no unprivileged
+  capture protocol at all**, and `wmirror --check` names what is missing
+  instead of half-working (**(k)** in the matrix); on X11 the answer is
+  `xrandr --same-as`, and it says so rather than naming a package that does
+  not exist there.
+
+Everything above was measured on 0.1's rig — the same seven desktop images,
+the same heads plugged, resized and unplugged from outside the guest — and
+the suite is 2085 tests.
 
 ## Version 0.1
 
@@ -119,7 +166,7 @@ Three routes:
 1. **[pip, from a clone](#from-a-clone-with-pip)** — the normal one: one apt
    package, one venv, one pip line.
 2. **[the single-file builds](#without-installing-the-single-file-builds)** — no
-   install at all, five self-contained executables.
+   install at all, six self-contained executables.
 3. **[nix](#nix)** — `nix build`, if that is your world.
 
 Whichever you pick, your desktop wants a piece of its own — a GNOME Shell
@@ -139,11 +186,11 @@ python3 -m venv --system-site-packages ~/.venvs/fuckwayland
 ~/.venvs/fuckwayland/bin/pip install -e .
 ```
 
-That is the whole install: `wdotool`, `wwmctl`, `wxprop`, `wxrandr` and
-`warandr` in `~/.venvs/fuckwayland/bin`. Put them on `PATH`:
+That is the whole install: `wdotool`, `wwmctl`, `wxprop`, `wxrandr`,
+`warandr` and `wmirror` in `~/.venvs/fuckwayland/bin`. Put them on `PATH`:
 
 ```sh
-for t in wdotool wwmctl wxprop wxrandr warandr; do
+for t in wdotool wwmctl wxprop wxrandr warandr wmirror; do
     sudo ln -sfn ~/.venvs/fuckwayland/bin/$t /usr/local/bin/$t
 done
 ```
@@ -173,7 +220,7 @@ Four things in those lines are not obvious:
   `(Namespace Gtk not available)` in the parentheses, is what a machine that
   has `python3-gi` but not the GTK 3 typelib says — see
   [sway](#sway-and-other-wlroots-compositors).
-* **Why `-e`, and keep the clone.** pip installs the five commands and nothing
+* **Why `-e`, and keep the clone.** pip installs the six commands and nothing
   else — not `gnome/install-bridge.sh`, not the udev rule, not
   `warandr.desktop`. Those are used from the clone, so keep it where it is and
   let the editable install point at it.
@@ -521,12 +568,13 @@ directory` — remove the links when you remove the install.
 sh scripts/build-pyz.sh
 ```
 
-builds `dist/wdotool`, `dist/wwmctl`, `dist/wxprop`, `dist/wxrandr` and
-`dist/warandr`: five self-contained executables, 0.5–0.9 MB each, needing
-nothing but the `python3` that is already on the machine — no pip, no venv, no
-apt, not even a package to add. (`warandr` still imports the system GTK
-bindings at run time, so the GUI wants `python3-gi` and `gir1.2-gtk-3.0` like
-everywhere else; the other four are stdlib-only.)
+builds `dist/wdotool`, `dist/wwmctl`, `dist/wxprop`, `dist/wxrandr`,
+`dist/warandr` and `dist/wmirror`: six self-contained executables, 0.8–1.1 MB
+each, needing nothing but the `python3` that is already on the machine — no
+pip, no venv, no apt, not even a package to add. (`warandr` still imports the
+system GTK bindings at run time, so the GUI wants `python3-gi` and
+`gir1.2-gtk-3.0` like everywhere else; the other five are stdlib-only —
+`wmirror` runs `wl-mirror` as a program, it does not import anything of it.)
 
 Prefer this when you would rather not touch apt at all, when you want no venv,
 when you are on a machine you do not administer, or when you want one file to
@@ -537,13 +585,14 @@ and any notion of an upgrade: you rebuild and copy again.
 
 ### Nix
 
-`nix build` → `result/bin/` with all five tools, plus `xdotool`, `wmctrl`,
-`xprop`, `xrandr` and `arandr` symlinks next to them. The flake wraps the GTK
+`nix build` → `result/bin/` with all six tools, plus `xdotool`, `wmctrl`,
+`xprop`, `xrandr` and `arandr` symlinks next to them (`wmirror` gets none:
+there is no X11 original to shadow). The flake wraps the GTK
 typelibs into `warandr`, so the GUI works without a system PyGObject.
 
 ### Check it worked
 
-The five answer everywhere, whatever install path you took (from a single-file
+They all answer everywhere, whatever install path you took (from a single-file
 build, prefix them with `dist/`). Note that `wxprop` takes xprop's single-dash
 `-version`:
 
@@ -559,6 +608,8 @@ xrandr program version       1.5.4
 Server reports RandR version 1.6
 $ warandr --version
 warandr 0.1.0
+$ wmirror --version
+wmirror 0.2.0
 ```
 
 On a **Wayland** session (GNOME, KDE, sway) the version strings are ours, and
@@ -629,6 +680,7 @@ real tools, whichever desktop is drawing it.
 | **wxprop** | works, X and native windows | works | hands over to `xprop` | works; from a root shell `-root` is synthesized **(e)** |
 | **wxrandr** | works (mutter) | works (kwin) **(f)** | hands over to `xrandr` **(g)** | works (sway) |
 | **warandr** | works (mutter) | works (kwin) **(f)** | works, driving the real `xrandr` **(g)** | works (sway); the stock image has no GTK 3 bindings **(h)** |
+| **wmirror** | no — no capture protocol, the portal prompts **(k)** | no — same **(k)** | no — X11 mirrors outputs with `xrandr --same-as` | region / odd-shape mirroring, via `wl-mirror` **(k)** |
 | **`wdotool` without root** | pointer *and* keyboard need the udev rule (or root) | pointer *and* keyboard need the udev rule (or root) | nothing needs it (X11) | **nothing needs it**: keyboard and pointer both **(i)** |
 
 All of it works **as the desktop user and as root** — `sudo`, `ssh root@box`, cron —
@@ -724,6 +776,13 @@ where every window has an X id. The recovery that fills those in on a Wayland
 session cannot help here: it is gated on an `Xwayland` process being alive, on the
 sound principle that connecting to the X plane must not *start* one — and a Plasma
 X11 session has Xorg, not Xwayland.
+
+**(k)** `wmirror` drives the external `wl-mirror`, which needs wlroots'
+`zwlr_screencopy_manager_v1` or the standard `ext-image-copy-capture-v1`.
+Neither KWin nor Mutter implements either (on KWin the latter is an open
+feature request), so on GNOME and KDE the only capture route is the desktop
+portal, which asks the user for permission once per session — useless from a
+hotkey. wmirror says exactly that and exits 1, rather than half-working.
 
 ## Compatibility
 
@@ -1403,8 +1462,8 @@ output replication for exactly those, and only those (never onto an output that
 is itself replicating, which KWin takes and leaves blank). The status bar says which of
 the four you are getting at the moment of the drop, and the saved script keeps it
 in its comment header; `WARANDR.md` and `WXRANDR.md` have the table, the evidence,
-and why true region mirroring (a resident capture-and-paint helper, `wl-mirror` on
-wlroots) is deliberately out of scope. The layout is kept anchored at 0,0, Apply
+and why true region mirroring is nothing the GUI can save — it is a resident
+process, not a layout, and it lives in its own command ([wmirror](#wmirror)). The layout is kept anchored at 0,0, Apply
 runs off the main loop and a failed Apply keeps your edits. It needs the GTK 3 bindings every stock Ubuntu
 desktop already has (`python3-gi`, `gir1.2-gtk-3.0`) and nothing else — no cairo:
 the canvas is plain widgets. `warandr.desktop` puts it in the Settings menu.
@@ -1549,6 +1608,58 @@ after a reboot is silently lost on GNOME and on Xfce (about 24 s from `reboot` o
 the test rig), while sway ran the script on the first press. And the script itself
 is quick — 0.13–0.76 s for three heads across the four desktops, 0.7 s to 2 s
 end to end from the key press.
+
+## wmirror
+
+The one tool here that clones nothing — there is no X11 `wmirror`, because
+there is no `xrandr` syntax for what it does. On wlroots it mirrors **a
+region** of an output, or a whole output onto a **differently shaped** one,
+by running the existing [`wl-mirror`](https://github.com/Ferdi265/wl-mirror)
+(Ubuntu universe: `sudo apt install wl-mirror`) and owning its lifetime.
+
+```console
+$ wmirror DP-1 --to HDMI-A-1                      # whole output, any shape
+$ wmirror DP-1 --to HDMI-A-1 --region 800x600+300+200   # just that rectangle
+$ wmirror --list
+HDMI-A-1 <- DP-1  region 800x600+300+200  scaling fit  wl-mirror pid 40021
+$ wmirror --stop HDMI-A-1
+```
+
+**It runs only where the layout cannot do the job.** Two outputs of the same
+size at the same position already mirror on wlroots — byte-identical, whole
+frame, measured — so that stays the answer and wmirror sends you there:
+
+```console
+$ wmirror DP-1 --to DP-2
+wmirror: DP-1 and DP-2 are both 1920x1080: the layout mirrors them byte for byte, with no helper and no cost
+  wxrandr --output DP-2 --same-as DP-1
+  --keep-layout runs wl-mirror anyway, so DP-2 keeps its own place in the layout
+```
+
+It also refuses, by name, what the measurements showed goes wrong: two
+outputs that share pixels (a fullscreen mirror window on the target is drawn
+on the source too, so the helper captures itself — run on purpose, both
+heads went entirely black), a region that runs off the source (wl-mirror
+silently clamps it), a target that is already mirroring, and two mirrors
+pointing at each other. A running mirror also ends itself if the layout
+moves out from under it: either output unplugged or switched off, the two
+brought on top of each other, or — for a region — its source moved or
+resized, which would leave the same rectangle naming different pixels.
+
+**What it costs**, and it says so up front: a resident process and a frame of
+latency (median ~63 ms measured, at the rig's floor). An idle sway desktop
+repaints only on damage; a mirror asks for a frame every frame, so the
+desktop never idles again while it lives — 88% of a software-rendered core in
+the test VM. `wl-mirror` is invisible to output management, so `--query`
+cannot show it: `wmirror --list` verifies every pid it prints, and
+`wmirror --stop`/`--stop-all` ends them. If the source or target goes away,
+is switched off, or the layout moves them on top of each other, the mirror
+ends itself. Nothing is left running that you cannot find and stop, including
+when wmirror's own supervisor is killed.
+
+**wlroots only** (`wmirror --check` says whether this session qualifies and
+what is missing if it does not) — see **(k)** in the support matrix for why
+GNOME and KDE cannot have it. Contract, measurements and costs: `WMIRROR.md`.
 
 ## Threat model
 

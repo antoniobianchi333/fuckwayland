@@ -220,17 +220,19 @@ Verified live, end to end, on all four rows, each in its own VM:
   opened on the focused output's workspace, which is the only thing that
   stayed per-output.
 
-**Out of scope: true region mirroring.** Making a region show the same pixels
-on a compositor that does not already do it is a different and much larger
-thing — a resident helper capturing one output and painting it onto another
-every frame. It is not part of warandr or wxrandr and is not planned as one.
-If someone wants it on wlroots, the route is the existing
-[wl-mirror](https://github.com/Ferdi265/wl-mirror) as an optional helper, not
-a reimplementation. Two reasons it stays outside: no `xrandr` syntax
-expresses "mirror this rectangle onto that one", so it could not be spelled
-in a layout script or a saved hotkey; and on GNOME and KDE the only capture
-route is the desktop portal, which prompts the user for every session —
-useless from the hotkey that is the whole point of a layout script.
+**Out of scope here: region mirroring, which now has its own command.**
+Making a region show the same pixels on a compositor that does not already do
+it is a resident helper capturing one output and painting it onto another
+every frame. It is not part of warandr, and deliberately not saveable from
+it: a `~/.screenlayout/*.sh` file has to keep running on a plain X11 box with
+the real `xrandr`, and no `xrandr` syntax expresses "mirror this rectangle
+onto that one". On wlroots the route is the existing
+[wl-mirror](https://github.com/Ferdi265/wl-mirror), which since 0.2 the
+`wmirror` command drives and supervises (`WMIRROR.md`) — a mirror there is a
+resident process, not a layout, so nothing the GUI could save would describe
+it. On GNOME and KDE the only capture route is the desktop portal, which
+prompts the user for every session — useless from the hotkey that is the
+whole point of a layout script.
 
 ## Command line (`Layout.args()`)
 
