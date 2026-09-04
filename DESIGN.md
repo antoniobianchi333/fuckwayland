@@ -510,8 +510,10 @@ Daemon notes (B):
     dedicated `<LVL3>` elsewhere), and the header separately reports the key
     wdotool itself would press, which is often a different one.
   - **Privilege.** `watch` reads `/dev/input/event*`, which is `root:input`
-    with no ACL on every session measured (`keystate.py`), so it needs root and
-    says so in one line and exits 1 rather than failing obscurely. It never
+    with no ACL on every session measured (`keystate.py`) and which no udev
+    rule tags — this repo's rule tags `/dev/uinput`, the injecting half — so it
+    needs root, and says which case the machine is in (unreadable nodes, no
+    nodes, only ours) and exits 1 rather than failing obscurely. It never
     `EVIOCGRAB`s: the compositor keeps every key and stopping leaves nothing
     behind. `explain` needs **no** privilege and opens no device — the keymap
     comes off `wl_keyboard.keymap` — and it obeys the typing path's layout
@@ -522,6 +524,18 @@ Daemon notes (B):
     process, so its fd-based `UI_GET_SYSNAME` exclusion is not available here
     and the name is the reliable cross-process test. A concurrent injection is
     therefore never recorded.
+  - **A live stream is not a recorded one.** Three shapes only a real session
+    produces, each of which used to print something wrong: a release with no
+    press (the Enter that started the command — it ended the session with an
+    `IndexError`, and is now a line of its own); several keyboards, whose
+    rounds are merged by the kernel timestamp so the seat's shared modifier
+    state renders as one chord instead of two runs in the wrong order; and a
+    keyboard unplugged holding a key, whose keys are released as the kernel
+    releases them, or the run never closes again and every later line carries
+    a modifier nobody holds. `EV_KEY` from `BTN_MISC` up is a button, not a
+    key, and has no X keycode to replay; the table skips it and `--raw` keeps
+    it. A keycode token is zero-padded when the number is also a keysym name
+    (`key 9` is the digit nine, `key 09` is Escape).
   - Devices appearing and disappearing are handled on a 1 s rescan; a read that
     answers `EAGAIN` is a spurious wakeup, not a lost keyboard. Ctrl-C exits 0.
     `--count N` stops after N key events (scripting), `--raw` prints unfiltered

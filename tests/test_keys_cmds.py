@@ -28,7 +28,8 @@ sys.path.insert(0, REPO)
 # Never hand this process over to the real X11 tools (see tests/conftest.py).
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-from wdotool import cli, commands, daemon, keys_cmds, keystate  # noqa: E402
+from wdotool import (cli, commands, daemon, keymap, keys_cmds,  # noqa: E402
+                     keystate, xkbmap)
 
 KEYMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "keymaps")
@@ -133,16 +134,25 @@ class RecordedDevices:
         self.path = path
         self.fds = {3: (path, "Recorded keyboard")}
         self.notices = []
-        self.denied = self.ours = 0
+        self.denied = self.ours = self.nodes = 0
         self.closed = False
+        self.clock = 0.0
 
     def scan(self):
         return []
+
+    def take_gone(self):
+        return []
+
+    def now(self):
+        return self.clock
 
     def poll(self, timeout=0.5):
         if not self.queue:
             raise KeyboardInterrupt
         out, self.queue = self.queue, []
+        if out:
+            self.clock = max(self.clock, out[-1][0])
         return [(self.path, t, ty, c, v) for t, ty, c, v in out]
 
     def close_all(self):
@@ -630,8 +640,8 @@ class TestTheReproductionsRoundTrip(unittest.TestCase):
         """The two reproductions out of one line. Summary lines are
         pipe-separated; event lines are column-aligned, so two spaces end a
         field there."""
-        if "|" in line:
-            fields = [f.strip() for f in line.split("|")]
+        if line.startswith("= "):
+            fields = [f.strip() for f in line.split(" | ")]
             return [f for f in fields if f.startswith("wdotool ")]
         return ["wdotool " + p.split("  ")[0].strip()
                 for p in line.split("wdotool ")[1:]]
@@ -763,6 +773,391 @@ class TestTheCommandItself(unittest.TestCase):
                                          "--chars", "@")
         self.assertEqual(rc, 0)
         self.assertIn("'@': key 16+level3", out)
+
+
+# ---------------------------------------------------------------------------
+# what a live session does that a recorded one does not
+
+
+def packed(evs):
+    """(t, type, code, value) tuples -> the bytes the kernel would hand out."""
+    import struct
+    return b"".join(struct.pack(keys_cmds._EV_FMT, int(t),
+                                int(round((t % 1) * 1e6)), ty, c, v)
+                    for t, ty, c, v in evs)
+
+
+class ScriptedDevices(PollableDevices):
+    """The real Devices over a fake evdev whose nodes change between rounds.
+
+    `rounds` is one callable (or None) per poll: that is where a keyboard is
+    unplugged at a known point in the stream. Running out ends the session,
+    which is what Ctrl-C does."""
+
+    def __init__(self, evdev, rounds=(), clock=0.0):
+        super().__init__(evdev=evdev)
+        self.rounds = list(rounds)
+        self.clock = clock
+
+    def now(self):
+        return self.clock
+
+    def poll(self, timeout=0.5):
+        if not self.rounds:
+            raise KeyboardInterrupt
+        step = self.rounds.pop(0)
+        if step is not None:
+            step(self)
+        return super().poll(0)
+
+
+def watch_devices(dev, *args):
+    out, err = io.StringIO(), io.StringIO()
+    with env(WDOTOOL_LAYOUT=None, WDOTOOL_XKB_GROUP=None):
+        rc = keys_cmds.watch_main(list(args), devices=dev, out=out, err=err)
+    return rc, out.getvalue(), err.getvalue()
+
+
+class TestWatchSurvivesALiveSession(unittest.TestCase):
+    def test_a_release_with_no_press_is_not_the_end_of_the_session(self):
+        """The Enter that started `sudo wdotool keys watch` is still down when
+        the device is opened, so the first event of a real session is a release
+        with no press. It used to end the session with an IndexError."""
+        rc, out, err = watch(keys((0.0, 28, 0), (0.5, 30, 1), (0.6, 30, 0)),
+                             "--keymap", km("de"))
+        self.assertEqual(rc, 0)
+        self.assertNotIn("IndexError", err)
+        self.assertNotIn("Traceback", err)
+        first = table(out)[0]
+        self.assertIn("up      28", first)
+        self.assertIn("wdotool keyup 36", first)
+        self.assertIn("released without a press", summaries(out)[0])
+        # and the key pressed afterwards is summarised as usual
+        self.assertIn("= chord     | wdotool key 38 | wdotool type 'a'",
+                      summaries(out)[1])
+
+    def test_it_never_leaves_the_command_through_the_error_path(self):
+        dev = RecordedDevices(keys((0.0, 28, 0)))
+        with contextlib.redirect_stdout(io.StringIO()) as o, \
+                contextlib.redirect_stderr(io.StringIO()) as e:
+            with env(WDOTOOL_XKB_KEYMAP=km("de"), WDOTOOL_LAYOUT=None,
+                     WDOTOOL_XKB_GROUP=None):
+                rc = keys_cmds.keys_main(["watch"], devices=dev)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("wdotool keys: ", e.getvalue())
+        self.assertIn("keyup 36", o.getvalue())
+
+    def test_a_mouse_button_is_not_a_key(self):
+        """A combined keyboard+mouse (one node, KEY_A and BTN_LEFT both) used
+        to print `wdotool key 280` for a click -- a replay that injects
+        nothing, because X keycodes stop at 255."""
+        rc, out, _err = watch(keys((0.0, 272, 1), (0.1, 272, 0),
+                                   (0.3, 30, 1), (0.4, 30, 0)),
+                              "--keymap", km("us"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(table(out)), 2)
+        self.assertNotIn("272", out)
+        self.assertNotIn("280", out)
+        self.assertEqual(summaries(out),
+                         ["= chord     | wdotool key 38 | wdotool type 'a'"])
+
+    def test_a_button_is_still_there_in_raw(self):
+        evs = [(0.0, keys_cmds.EV_KEY, 272, 1), (0.1, keys_cmds.EV_KEY, 325, 1)]
+        _rc, out, _err = watch(evs, "--keymap", km("us"), "--raw")
+        self.assertEqual(len(out.splitlines()), 2)
+        self.assertIn(" 272 1", out)
+
+    def test_escape_replays_as_a_keycode_and_not_as_the_digit_nine(self):
+        """X keycode 9 is Escape, but "9" is also the *name* of the digit, and
+        a keysequence token is looked up as a name first. `wdotool key 9`
+        types a nine; `wdotool key 09` presses Escape."""
+        _rc, out, _err = watch(keys((0.0, 1, 1), (0.05, 1, 0)),
+                               "--keymap", km("de"))
+        self.assertIn("wdotool key 09", table(out)[0])
+        self.assertEqual(summaries(out),
+                         ["= chord     | wdotool key 09 | wdotool key Escape"])
+        self.assertEqual(inject("wdotool key 09", km("de")), [(1, 1), (1, 0)])
+        self.assertEqual(inject("wdotool key 9", km("de")), [(10, 1), (10, 0)])
+
+    def test_a_reproduction_that_contains_a_pipe_is_still_one_field(self):
+        """`wdotool type '|'` sits in a pipe-separated summary line: the
+        separator is " | ", and both reproductions survive it."""
+        _rc, out, _err = watch(keys((0.0, 42, 1), (0.05, 43, 1),
+                                    (0.1, 43, 0), (0.15, 42, 0)),
+                               "--keymap", km("us"))
+        line = summaries(out)[0]
+        cmds = [f.strip() for f in line.split(" | ")
+                if f.strip().startswith("wdotool ")]
+        self.assertEqual(len(cmds), 2)
+        for cmd in cmds:
+            shlex.split(cmd)             # a copy-pasteable command, or a raise
+        self.assertEqual(inject(cmds[1], km("us")), [(42, 1), (43, 1),
+                                                     (43, 0), (42, 0)])
+
+
+class TestWatchWithMoreThanOneKeyboard(unittest.TestCase):
+    """Two keyboards is not an exotic case: a laptop with an external board,
+    and plenty of single keyboards that present two event nodes."""
+
+    def two(self, a_events, b_events, rounds=2):
+        fake = FakeEvdev({
+            "/dev/input/event0": {"name": "Keyboard A", "data": packed(a_events)},
+            "/dev/input/event1": {"name": "Keyboard B", "data": packed(b_events)},
+        })
+        return ScriptedDevices(fake, [None] * rounds, clock=9.0)
+
+    def test_the_batch_is_merged_in_time_order(self):
+        """One round drains the devices one at a time, so without a merge the
+        time column runs backwards -- and a key held on one board across a
+        press on the other is rendered as two separate runs."""
+        dev = self.two(keys((1.0, 42, 1), (1.4, 42, 0)),
+                       keys((1.1, 48, 1), (1.2, 48, 0)))
+        rc, out, _err = watch_devices(dev, "--keymap", km("us"))
+        self.assertEqual(rc, 0)
+        times = [float(ln.split()[0]) for ln in table(out)]
+        self.assertEqual(times, sorted(times))
+        self.assertEqual([ln.split()[1:3] for ln in table(out)],
+                         [["down", "42"], ["down", "48"],
+                          ["up", "48"], ["up", "42"]])
+
+    def test_a_modifier_held_on_the_other_keyboard_is_part_of_the_chord(self):
+        """The compositor merges modifier state across a seat's keyboards, so
+        shift on one board really does shift the other board's key."""
+        dev = self.two(keys((1.0, 42, 1), (1.4, 42, 0)),
+                       keys((1.1, 48, 1), (1.2, 48, 0)))
+        _rc, out, _err = watch_devices(dev, "--keymap", km("us"))
+        self.assertIn("'B'", table(out)[1])
+        self.assertEqual(summaries(out),
+                         ["= chord     | wdotool key 50+56 | wdotool type 'B'"])
+
+    def test_a_keyboard_that_goes_away_releases_what_it_was_holding(self):
+        """Unplugged with a key down: the kernel releases a removed device's
+        keys for everyone else, and so must we, or the run never closes and
+        every later line is reported under a modifier nobody holds."""
+        fake = FakeEvdev({
+            "/dev/input/event0": {"name": "Keyboard A",
+                                  "data": packed(keys((1.0, 42, 1)))},
+            "/dev/input/event1": {"name": "Keyboard B", "data": b""},
+        })
+
+        def unplug(dev):
+            del dev.evdev.nodes["/dev/input/event0"]
+            dev.evdev.nodes["/dev/input/event1"]["data"] = packed(
+                keys((2.0, 30, 1), (2.1, 30, 0)))
+            dev._next_scan = 0.0
+
+        dev = ScriptedDevices(fake, [None, unplug, None], clock=9.0)
+        rc, out, err = watch_devices(dev, "--keymap", km("us"))
+        self.assertEqual(rc, 0)
+        rows = [ln.split()[1:3] for ln in table(out)]
+        self.assertEqual(rows, [["down", "42"], ["up", "42"],
+                                ["down", "30"], ["up", "30"]])
+        self.assertIn("went away holding 50", err)
+        # the ghost modifier is gone: a plain 'a', and both runs summarised
+        self.assertIn("'a'", table(out)[2])
+        self.assertEqual(summaries(out),
+                         ["= chord     | wdotool key 50 | wdotool key Shift_L",
+                          "= chord     | wdotool key 38 | wdotool type 'a'"])
+
+    def test_the_invented_release_keeps_the_time_column_in_order(self):
+        fake = FakeEvdev({
+            "/dev/input/event0": {"name": "Keyboard A",
+                                  "data": packed(keys((1.0, 42, 1)))},
+            "/dev/input/event1": {"name": "Keyboard B", "data": b""},
+        })
+
+        def unplug(dev):
+            del dev.evdev.nodes["/dev/input/event0"]
+            dev.evdev.nodes["/dev/input/event1"]["data"] = packed(
+                keys((2.0, 30, 1), (2.1, 30, 0)))
+            dev._next_scan = 0.0
+
+        dev = ScriptedDevices(fake, [None, unplug, None], clock=9.0)
+        _rc, out, _err = watch_devices(dev, "--keymap", km("us"))
+        times = [float(ln.split()[0]) for ln in table(out)]
+        self.assertEqual(times, sorted(times))
+        self.assertLess(times[-1], 60.0)      # not a unix timestamp
+
+    def test_raw_invents_nothing(self):
+        fake = FakeEvdev({
+            "/dev/input/event0": {"name": "Keyboard A",
+                                  "data": packed(keys((1.0, 42, 1)))},
+        })
+
+        def unplug(dev):
+            del dev.evdev.nodes["/dev/input/event0"]
+            dev._next_scan = 0.0
+
+        dev = ScriptedDevices(fake, [None, unplug, None], clock=9.0)
+        rc, out, _err = watch_devices(dev, "--keymap", km("us"), "--raw")
+        self.assertEqual(len(out.splitlines()), 1)
+        self.assertEqual(rc, 1)               # every keyboard went away
+
+
+class TestNothingToWatch(unittest.TestCase):
+    """Why there is no keyboard is the whole content of the message."""
+
+    def message(self, nodes):
+        dev = PollableDevices(evdev=FakeEvdev(nodes))
+        out, err = io.StringIO(), io.StringIO()
+        rc = keys_cmds.watch_main([], devices=dev, out=out, err=err)
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.getvalue(), "")
+        self.assertNotIn("Traceback", err.getvalue())
+        return err.getvalue()
+
+    def test_unreadable_nodes_say_root_and_say_why(self):
+        err = self.message({"/dev/input/event0": {"name": "kbd", "denied": True}})
+        self.assertIn("does need root", err)
+        self.assertIn("sudo wdotool keys watch", err)
+        self.assertIn("root:input with no ACL", err)
+
+    def test_it_does_not_claim_the_keyboards_are_tagged_by_logind(self):
+        """The uaccess tag on /dev/uinput comes from this project's own udev
+        rule, not from a stock desktop -- saying otherwise is a falsehood in
+        the same breath as (correct) advice to use sudo."""
+        err = self.message({"/dev/input/event0": {"name": "kbd", "denied": True}})
+        self.assertIn("this project's udev rule tags /dev/uinput", err)
+        self.assertNotIn("which is why injecting needs no", err)
+
+    def test_no_input_nodes_at_all_does_not_ask_for_root(self):
+        err = self.message({})
+        self.assertIn("nothing under /dev/input at all", err)
+        self.assertNotIn("sudo", err)
+
+    def test_only_our_own_devices_says_so(self):
+        err = self.message({"/dev/input/event0": {"name": "wdotool virtual keyboard"},
+                            "/dev/input/event1": {"name": "wdotool virtual mouse"}})
+        self.assertIn("wdotool's own", err)
+        self.assertNotIn("sudo", err)
+
+    def test_a_mouse_is_not_a_keyboard_and_neither_is_root(self):
+        err = self.message({"/dev/input/event0": {"name": "Mouse", "caps": MOUSE_CAPS}})
+        self.assertIn("none of them", err)
+        self.assertNotIn("sudo", err)
+
+    def test_explain_is_offered_every_time(self):
+        for nodes in ({}, {"/dev/input/event0": {"name": "k", "denied": True}}):
+            self.assertIn("wdotool keys explain", self.message(nodes))
+
+
+class TestExplainAgreesWithTypeEverywhere(unittest.TestCase):
+    """Mechanically, over every recorded layout: what explain prints for a
+    character has to be what `type` sends for it, and what `key` would press
+    for the keycode line. 4500-odd characters, no exceptions."""
+
+    def keys_of(self, layout, cmd):
+        """The keys `wdotool key ...` would press, per press group."""
+        out = []
+        for group in cmd.split(" key ")[1:]:
+            keyseq, warns = keymap.parse_keyseq(group, layout.rmap)
+            self.assertEqual(warns, [], cmd)
+            out.append([code for code, _shifted in keyseq])
+        return out
+
+    def typed_by(self, layout, ch):
+        """The keys op_type presses for `ch`, per keystroke (daemon.op_type)."""
+        seq = layout.lookup_char(ch)
+        if seq is None:
+            return None
+        out = []
+        for code, mask in seq:
+            if layout.rmap is not None:
+                mods = layout.rmap.modifier_keycodes(mask)
+            else:
+                mods = ([keymap.KEY_LEFTSHIFT] if mask & xkbmap.MOD_SHIFT else [])
+            out.append(mods + [code])
+        return out
+
+    def test_every_reachable_character_of_every_recorded_layout(self):
+        checked = 0
+        for name in sorted(f[:-4] for f in os.listdir(KEYMAPS)
+                           if f.endswith(".xkb")):
+            path = km(name)
+            with env(WDOTOOL_XKB_KEYMAP=path, WDOTOOL_XKB_GROUP=None,
+                     WDOTOOL_LAYOUT=None):
+                layout = keys_cmds.Layout.load()
+            reach = (set(layout.rmap.chars) if layout.rmap is not None
+                     else set(keymap.CHAR_TO_KEY))
+            if layout.rmap is not None:
+                # the two-press half as well: a dead key and then a base
+                # letter is the shape explain exists to get right
+                reach |= set(layout.rmap.dead_space) | set(layout.rmap.dead_double)
+                reach |= {chr(cp) for cp in range(0xC0, 0x200)
+                          if layout.rmap.lookup_char(chr(cp))}
+            chars = sorted(c for c in reach if c.isprintable() and c != " ")
+            rc, out, _err = explain("--keymap", path, "--chars", "".join(chars))
+            self.assertEqual(rc, 0, name)
+            blocks, cur = [], None
+            for line in out.splitlines():
+                if line.startswith(("layout:", "level keys:", "note:")):
+                    continue
+                if not line.startswith(" "):
+                    cur = []
+                    blocks.append(cur)
+                elif cur is not None:
+                    cur.append(line.strip())
+            self.assertEqual(len(blocks), len(chars), name)
+            for ch, block in zip(chars, blocks):
+                want = self.typed_by(layout, ch)
+                self.assertIsNotNone(want, (name, ch))
+                printed = [ln.split("  ")[0].strip() for ln in block
+                           if ln.startswith("wdotool ")]
+                self.assertEqual(len(printed), 2, (name, ch, block))
+                self.assertEqual(self.keys_of(layout, printed[0]), want,
+                                 (name, ch, printed[0]))
+                self.assertEqual(printed[1], "wdotool type " + keys_cmds._q(ch),
+                                 (name, ch))
+                checked += 1
+        self.assertGreater(checked, 3000)   # 3800-odd, in a second
+
+
+class TestWatchReplaysExactlyWhatWasPressed(unittest.TestCase):
+    """Mechanically, over every recorded layout: for every key at every level
+    it has, the keycode column of the chord has to press exactly the keys that
+    were pressed -- no more, no fewer, in that order. (This is what caught
+    Escape replaying as the digit nine: X keycode 9 is also the *name* of a
+    keysym, and a name beats a number.)"""
+
+    def run_chord(self, layout, codes):
+        w = keys_cmds.Watcher(layout)
+        t, out = 0.0, []
+        for code in codes:
+            out += w.key_event(t, code, 1, "/dev/input/event0")
+            t += 0.05
+        for code in reversed(codes):
+            out += w.key_event(t, code, 0, "/dev/input/event0")
+            t += 0.05
+        return [ln for ln in out if ln.startswith("= chord")]
+
+    def test_every_key_at_every_level(self):
+        checked = 0
+        for name in sorted(f[:-4] for f in os.listdir(KEYMAPS)
+                           if f.endswith(".xkb")):
+            path = km(name)
+            with env(WDOTOOL_XKB_KEYMAP=path, WDOTOOL_XKB_GROUP=None,
+                     WDOTOOL_LAYOUT=None):
+                layout = keys_cmds.Layout.load()
+            for code in sorted(layout.fwd):
+                if layout.modtag(code):
+                    continue
+                for mask in sorted(layout.fwd[code]):
+                    mods = [layout.mod_key(b) for b in xkbmap.MOD_BITS
+                            if mask & b]
+                    if any(m is None for m in mods):
+                        continue
+                    lines = self.run_chord(layout, mods + [code])
+                    self.assertEqual(len(lines), 1, (name, code, mask))
+                    replay = lines[0].split(" | ")[1]
+                    keyseq, warns = keymap.parse_keyseq(
+                        replay[len("wdotool key "):], layout.rmap)
+                    self.assertEqual(warns, [], (name, code, mask, replay))
+                    self.assertEqual([c for c, _s in keyseq], mods + [code],
+                                     (name, code, mask, replay))
+                    self.assertFalse(any(s for _c, s in keyseq),
+                                     (name, replay))   # never an extra shift
+                    checked += 1
+        self.assertGreater(checked, 4000)
 
 
 if __name__ == "__main__":

@@ -741,11 +741,12 @@ layout cannot produce says so, names the layout, and makes the exit status 1.
 
 `watch` is the same question asked by pressing the key. It reads
 `/dev/input/event*`, which is `root:input` with no ACL on every desktop
-measured — logind's `uaccess` tag reaches `/dev/uinput`, which is why
-*injecting* needs no root, but it does not reach the keyboards. Without
-permission it says exactly that and exits 1; it never grabs a device
-(`EVIOCGRAB`), so the compositor keeps seeing every key and stopping leaves
-nothing behind.
+measured, and nothing tags it: the `uaccess` tag is one *this project's* udev
+rule puts on `/dev/uinput` (the injecting half, above), and no rule anywhere
+grants read on a keyboard. So watch mode needs root. Without it, it says which
+case this machine is in — nodes it may not read, no nodes at all, or only
+wdotool's own — and exits 1; it never grabs a device (`EVIOCGRAB`), so the
+compositor keeps seeing every key and stopping leaves nothing behind.
 
 ```console
 # wdotool keys watch
@@ -778,7 +779,8 @@ plainly two presses, because the `´` key is released before `c` is touched.
   would press, which is not always the same one.
 * **Both reproductions on every line.** `REPLAY` is keycodes, exact and
   meaningless under a different layout (and it is X keycodes, evdev + 8, which
-  is what `wdotool key` takes). `CHARACTER` is characters and keysym names,
+  is what `wdotool key` takes — zero-padded when the number would also read as
+  a keysym name, since `key 9` is the *digit* and `key 09` is Escape). `CHARACTER` is characters and keysym names,
   which travel. A *release* line names its key by what it produces with no
   modifier at all (`keyup dead_acute` for the key that gave `dead_cedilla`
   while AltGr was down), because that is the plain way to say "let go of
@@ -790,6 +792,18 @@ plainly two presses, because the `´` key is released before `c` is touched.
   pair` when two runs composed into one character.
 * **Our own devices are skipped**, by the `wdotool ` device-name prefix, so a
   recording session does not capture a concurrent `wdotool type`.
+* **Several keyboards are one timeline.** Every keyboard on the seat is read
+  at once and each round is merged by the kernel's timestamps, because the
+  seat merges modifier state too: Shift held on the laptop's board really does
+  shift the key struck on the external one, and it is printed as the one chord
+  it is. A board unplugged while it still holds a key has that key released —
+  the kernel does the same for everyone else — so the run closes and nothing
+  afterwards is reported under a modifier nobody is holding.
+* **A release with no press** (the Enter that started the command is still
+  down when the device is opened) is printed as itself and labelled, not
+  guessed at.
+* **Buttons are not keys.** A combined keyboard+mouse sends both down one
+  node; the table is keys, and `--raw` is everything.
 
 Keyboards that appear or disappear while watching are picked up and dropped;
 Ctrl-C exits 0. The table goes to **stdout** and everything else to stderr, so

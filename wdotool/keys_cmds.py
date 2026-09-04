@@ -27,11 +27,12 @@ Two things every line carries, deliberately:
     layout, and it is what you want in a script.
 
 `watch` needs to read `/dev/input/event*`, which on every desktop measured is
-`root:input` with no ACL (logind's `uaccess` tag reaches `/dev/uinput`, which
-is how injection works unprivileged, but not the keyboards). So watch mode
-needs root, and says so in one line instead of failing obscurely. `explain`
-needs no privilege at all: the keymap arrives on `wl_keyboard.keymap`, which
-every Wayland client is handed.
+`root:input` with no ACL. Nothing grants it: this project's udev rule tags
+`/dev/uinput` `uaccess` (which is what lets *injection* run unprivileged, and
+only once that rule is installed), and no rule anywhere tags the keyboards. So
+watch mode needs root, and says so in one line instead of failing obscurely.
+`explain` needs no privilege at all: the keymap arrives on
+`wl_keyboard.keymap`, which every Wayland client is handed.
 
 Not a chainable command: like `__daemon` and `__keymap` this is ours, routed
 in `cli.main()` before the passthrough, and deliberately absent from the
@@ -56,6 +57,12 @@ EV_KEY = 0x01
 EV_MSC = 0x04
 KEY_ESC = 1
 KEY_A = 30
+# input-event-codes.h: EV_KEY below BTN_MISC is a key, from BTN_MISC up it is
+# a button (mouse, touchpad tool, joystick) -- a combined keyboard+mouse
+# device sends both down one node. Buttons are not this command's business and
+# have no X keycode to replay (X stops at 255), so the table skips them;
+# `--raw` still shows every event.
+BTN_MISC = 0x100
 
 _EV_FMT = "llHHi"                      # struct input_event
 _EV_SIZE = struct.calcsize(_EV_FMT)
@@ -100,6 +107,19 @@ def keysym_name(ks):
 def xk(code: int) -> int:
     """evdev keycode -> the X keycode `wdotool key` takes."""
     return code + 8
+
+
+def kc(code: int) -> str:
+    """evdev keycode -> the `wdotool key` TOKEN for it.
+
+    Not just `str(xk(code))`: a keysequence token is looked up as a keysym
+    *name* first (both here and in the real xdotool, which calls
+    XStringToKeysym before it considers a number), and "9" is the name of the
+    digit nine. Escape is X keycode 9, so `wdotool key 9` types a nine --
+    a replay line that does not replay. A leading zero is not the name of
+    anything and parses as the same number, so pad the tokens that collide."""
+    tok = str(xk(code))
+    return "0" + tok if tok in NAME_TO_KEYSYM else tok
 
 
 def _q(ch: str) -> str:
@@ -318,13 +338,14 @@ class Watcher:
         self.t0 = None
         self.order = []        # keycodes held, in press order
         self.press = {}        # keycode -> (mask, keysym, mods held before it)
+        self.owner = {}        # keycode -> the device node holding it down
         self.run = []          # this run's events, in order
         self.caps = False
         self.dead = None       # (combining mark, replay, chars) of the last run
 
     # -- one event ---------------------------------------------------------
 
-    def key_event(self, t, code, value):
+    def key_event(self, t, code, value, path=None):
         if self.t0 is None:
             self.t0 = t
         rel = t - self.t0
@@ -337,10 +358,12 @@ class Watcher:
             ks = self.layout.keysym(code, mask)
             self.order.append(code)
             self.press[code] = (mask, ks, mods)
+            self.owner[code] = path
             self.run.append(["down", code, mask, ks, mods])
             out.append(self._line(rel, "down", code, mask, ks, mods))
         else:
             mask, ks, _held = self.press.pop(code, (0, self.layout.keysym(code, 0), []))
+            self.owner.pop(code, None)
             if code in self.order:
                 self.order.remove(code)
             self.run.append(["up", code, mask, ks, list(self.order)])
@@ -349,6 +372,21 @@ class Watcher:
                 out.extend(self._summary())
                 self.run = []
         return out
+
+    def holding(self, path):
+        """The keys that device is holding down, in press order."""
+        return [c for c in self.order if self.owner.get(c) == path]
+
+    def device_gone(self, t, path):
+        """A keyboard that was holding keys was unplugged.
+
+        The kernel releases a removed device's keys for everybody else
+        (`input_dev_release_keys`), so watching has to do the same. Otherwise
+        the run never closes -- no summary is printed again for the rest of
+        the session -- and every later line reports a modifier that nobody is
+        holding any more, which is a reproduction that does not reproduce."""
+        return [line for code in self.holding(path)
+                for line in self.key_event(t, code, 0, path)]
 
     def finish(self):
         """Flush a run that is still open (a key held when watching stops)."""
@@ -382,14 +420,14 @@ class Watcher:
         if ev == "down" and self.layout.modtag(code):
             # A modifier going down is held, not struck: `keydown` is what
             # actually happened, and `key` would let go of it again.
-            replay = "wdotool keydown %d" % xk(code)
+            replay = "wdotool keydown %s" % kc(code)
             name = keysym_name(ks)
             portable = "wdotool keydown %s" % name if name else "-"
         elif ev == "down":
-            replay = "wdotool key " + "+".join(str(xk(c)) for c in list(mods) + [code])
+            replay = "wdotool key " + "+".join(kc(c) for c in list(mods) + [code])
             portable = self._portable_press(code, mask, ks, tags)
         else:
-            replay = "wdotool keyup %d" % xk(code)
+            replay = "wdotool keyup %s" % kc(code)
             name = keysym_name(self.layout.keysym(code, 0))
             portable = "wdotool keyup %s" % name if name else "-"
         return ("%8.3f %-4s %5d %-8s %-15s %-16s %-26s %s"
@@ -423,6 +461,11 @@ class Watcher:
         why = None
         if open_run:
             why = "still held when watching stopped"
+        elif not downs:
+            # The key was already down when watching started (the Enter that
+            # ran the command is the usual one), so its press is not ours to
+            # show. There is a release to reproduce and no chord to infer.
+            why = "released without a press: held down before watching started"
         elif ups and downs and max(downs) > min(ups):
             why = "released out of order"
         elif len(mains) > 1:
@@ -431,11 +474,11 @@ class Watcher:
             why = "a modifier was pressed after the key"
         if why is None:
             return self._chord(downs, mains)
-        seq = " ".join(("keydown %d" if e[0] == "down" else "keyup %d") % xk(e[1])
+        seq = " ".join(("keydown %s" if e[0] == "down" else "keyup %s") % kc(e[1])
                        for e in self.run)
         names = []
         for e in self.run:
-            name = keysym_name(self.layout.keysym(e[1], 0)) or str(xk(e[1]))
+            name = keysym_name(self.layout.keysym(e[1], 0)) or kc(e[1])
             names.append(("keydown %s" if e[0] == "down" else "keyup %s") % name)
         self.dead = None
         return [_summary_line("= sequence", "wdotool " + seq,
@@ -443,7 +486,7 @@ class Watcher:
 
     def _chord(self, downs, mains):
         codes = [self.run[i][1] for i in downs]
-        replay = "wdotool key " + "+".join(str(xk(c)) for c in codes)
+        replay = "wdotool key " + "+".join(kc(c) for c in codes)
         i = mains[0] if mains else downs[-1]
         _kind, code, mask, ks, mods = self.run[i]
         tags = self._tags(mods)
@@ -505,7 +548,9 @@ class Devices:
         self.judged = set()    # paths already looked at
         self.denied = 0        # nodes we may not read
         self.ours = 0          # nodes that are our own virtual devices
+        self.nodes = 0         # /dev/input/event* nodes seen at all
         self.notices = []
+        self.gone = []         # paths dropped since the caller last looked
         self._poll = select.poll()
         self._next_scan = 0.0
 
@@ -513,6 +558,7 @@ class Devices:
 
     def scan(self):
         paths = self.evdev.paths()
+        self.nodes = max(self.nodes, len(paths))
         live = set(paths)
         added = []
         for path in paths:
@@ -562,6 +608,7 @@ class Devices:
         except OSError:
             pass
         self.judged.discard(path)
+        self.gone.append(path)
         self.notices.append("- %s %r (%s)" % (path, name, why))
 
     def close_all(self):
@@ -577,6 +624,18 @@ class Devices:
         self.fds.clear()
 
     # -- reading -----------------------------------------------------------
+
+    def take_gone(self):
+        """The devices dropped since the last call, and forget them."""
+        out, self.gone = self.gone, []
+        return out
+
+    def now(self) -> float:
+        """The clock the event timestamps are on, for the releases we have to
+        invent when a device is unplugged. evdev stamps every event
+        CLOCK_REALTIME, which is what time.time() reads, so a synthesised
+        release lands on the same timeline as the real ones."""
+        return time.time()
 
     def _wait(self, timeout):
         """Readable fds. Overridden by the test double, which has no real
@@ -614,16 +673,62 @@ class Devices:
                 sec, usec, etype, code, value = struct.unpack(
                     _EV_FMT, data[off:off + _EV_SIZE])
                 out.append((info[0], sec + usec / 1e6, etype, code, value))
+        # One round drains each device in fd order, so two keyboards come out
+        # of it in blocks: the time column would run backwards and a key held
+        # on one board across a press on the other would be rendered as two
+        # separate runs. The kernel timestamps every event (CLOCK_REALTIME, so
+        # they are comparable between devices); sort by them and the batch is
+        # the order things actually happened in. Stable: same-timestamp events
+        # keep the order the device reported them.
+        out.sort(key=lambda e: e[1])
         return out
 
 
-_NO_DEVICES = """wdotool keys watch: no keyboard to read.
-  Every /dev/input/event* is root:input with no ACL on a normal session --
-  logind's uaccess tag reaches /dev/uinput (which is why injecting needs no
-  root) but not the keyboards -- so watching does need root:
-      sudo wdotool keys watch
-  `wdotool keys explain` needs no privilege and answers the same question
-  backwards."""
+_EXPLAIN_INSTEAD = ("  `wdotool keys explain` needs no privilege and answers "
+                    "the same question\n  backwards.")
+
+
+def _no_devices(dev) -> str:
+    """Why there is nothing to watch, in the terms of this machine.
+
+    "Needs root" is the usual answer and it is worth being exact about: the
+    keyboards are root:input with no ACL and nothing tags them -- this
+    project's udev rule tags /dev/uinput only, which is the injecting half.
+    But it is the wrong answer when there are no input devices at all (a
+    container) or when the only ones here are our own, and saying `sudo` to
+    someone who is already root helps nobody."""
+    lines = ["wdotool keys watch: no keyboard to read."]
+    if dev.denied:
+        lines += [
+            "  %d /dev/input/event* node%s there, and this user may not read"
+            % (dev.denied, " is" if dev.denied == 1 else "s are"),
+            "  %s: they are root:input with no ACL, and nothing tags them --"
+            % ("it" if dev.denied == 1 else "them"),
+            "  this project's udev rule tags /dev/uinput (the injecting half)",
+            "  and no keyboard. So watching does need root:",
+            "      sudo wdotool keys watch",
+        ]
+    elif dev.ours:
+        lines += [
+            "  The only input device%s here %s wdotool's own (%d virtual"
+            % ("" if dev.ours == 1 else "s", "is" if dev.ours == 1 else "are",
+               dev.ours),
+            "  device%s), and a recording of our own injection is not a recording"
+            % ("" if dev.ours == 1 else "s"),
+            "  of you typing. Plug in a keyboard, or watch where one is.",
+        ]
+    elif dev.nodes:
+        lines += [
+            "  %d /dev/input/event* node%s readable here, and none of them"
+            % (dev.nodes, " is" if dev.nodes == 1 else "s are"),
+            "  is a keyboard (no Esc, no A). A mouse is not a keyboard.",
+        ]
+    else:
+        lines += [
+            "  There is nothing under /dev/input at all -- no keyboard is",
+            "  attached, or this is a container without the device nodes.",
+        ]
+    return "\n".join(lines + [_EXPLAIN_INSTEAD])
 
 
 # ---------------------------------------------------------------------------
@@ -637,7 +742,8 @@ literal down/up sequence is printed instead.
 
 --count N       stop after N key events (for scripting); default: until Ctrl-C
 --raw           print unfiltered evdev event lines instead of the table
-                (every event of every device, autorepeat and EV_SYN included)
+                (every event of every device, autorepeat, EV_SYN and the
+                mouse buttons a combined keyboard sends, all included)
 --group N       read group N of the keymap (1-based) instead of the active one
 --keymap PATH   read the keymap from a file instead of the compositor
 -h, --help      this text
@@ -765,7 +871,7 @@ def watch_main(argv, devices=None, out=None, err=None) -> int:
     dev.scan()
     if not dev.fds:
         dev.close_all()
-        err.write(_NO_DEVICES + "\n")
+        err.write(_no_devices(dev) + "\n")
         return 1
     for line in layout.describe():
         err.write(line + "\n")
@@ -783,18 +889,40 @@ def watch_main(argv, devices=None, out=None, err=None) -> int:
     seen = 0
     rc = 0
     t0 = None      # every time column is seconds since the first event
+    raw = bool(args.opts.get("raw"))
     try:
         while True:
-            for path, t, etype, code, value in dev.poll(0.5):
+            batch = dev.poll(0.5)
+            # A keyboard that went away before this round was read is holding
+            # nothing any more, and its keys have to be let go of *before* the
+            # events that arrived after it left -- otherwise every one of them
+            # is reported under a modifier nobody is holding. --raw is the
+            # unfiltered device stream and gets no invented events.
+            gone = dev.take_gone()
+            if gone and not raw:
+                when = batch[0][1] if batch else dev.now()
+                for path in gone:
+                    held = watcher.holding(path)
+                    if held:
+                        err.write("wdotool keys watch: %s went away holding %s;"
+                                  " released, as the kernel does\n"
+                                  % (path, "+".join(kc(c) for c in held)))
+                        err.flush()
+                    if t0 is None:
+                        t0 = when
+                    for line in watcher.device_gone(when, path):
+                        out.write(line + "\n")
+                out.flush()
+            for path, t, etype, code, value in batch:
                 if t0 is None:
                     t0 = t
-                if args.opts.get("raw"):
+                if raw:
                     out.write("%8.3f %-12s %-7s %5d %d\n"
                               % (t - t0, os.path.basename(path),
                                  _EV_TYPES.get(etype, "0x%02x" % etype), code, value))
                     seen += 1
-                elif etype == EV_KEY and value in (0, 1):
-                    for line in watcher.key_event(t, code, value):
+                elif etype == EV_KEY and value in (0, 1) and 0 < code < BTN_MISC:
+                    for line in watcher.key_event(t, code, value, path):
                         out.write(line + "\n")
                     seen += 1
                 else:
@@ -862,8 +990,8 @@ def explain_one(layout, label, seq, portable, kind="char"):
                     layout.name, kind))
     lines.extend(_steps(layout, seq))
     replay = "wdotool " + " ".join(
-        "key %s" % "+".join([str(xk(layout.mod_key(b))) for b in xkbmap.MOD_BITS
-                             if mask & b and layout.mod_key(b)] + [str(xk(code))])
+        "key %s" % "+".join([kc(layout.mod_key(b)) for b in xkbmap.MOD_BITS
+                             if mask & b and layout.mod_key(b)] + [kc(code)])
         for code, mask in seq)
     lines.append("    %-42s (keycodes)" % replay)
     if portable:
