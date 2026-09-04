@@ -1724,6 +1724,162 @@ class Mirroring(KwinCase):
         code, out, _err = self.run_cli()
         self.assertIn("eDP-1 connected primary ", out)
 
+    # -- the rectangle a replica occupies -----------------------------------
+
+    def test_a_relation_measures_a_replica_by_its_source(self):
+        """A replicated output has no rectangle of its own on the desktop, so
+        `--right-of` it has to start where its SOURCE ends -- the rectangle
+        --query prints for the pair. Measured on KWin 6.6 with the replica's
+        own panel instead: a 1280x1024 replica of a 1920x1080 output put the
+        neighbour at x=1280, 640 px inside its source, two panels overlapping
+        on a desktop meant to be a row."""
+        self.svc.close()
+        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
+                             HDMI(x=4480)])
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "HDMI-1", "--right-of",
+                                       "DP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        # eDP-1 is 1920 wide; DP-1's own 2560x1600 panel is not a rectangle
+        # anybody can be to the right of
+        self.assertEqual(self.svc.applied[-1],
+                         [("position", "HDMI-1", (1920, 0))])
+        code, out, _err = self.run_cli()
+        self.assertIn("HDMI-1 connected 1280x1024+1920+0 ", out)
+
+    def test_a_relation_measures_a_mirror_made_in_the_same_call(self):
+        """Same rule for a mirror this invocation is setting up: the pair is
+        one rectangle from the moment it is planned."""
+        self.svc.close()
+        self.svc = three_heads(hdmi_on=True)
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "DP-1", "--same-as",
+                                       "eDP-1", "--output", "HDMI-1",
+                                       "--right-of", "DP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertIn(("position", "HDMI-1", (1920, 0)),
+                      self.svc.applied[-1])
+        self.assertEqual(self.svc.mirrors(), {"DP-1": "eDP-1"})
+
+    # -- a copy of a copy ---------------------------------------------------
+
+    def test_same_as_a_replica_replicates_what_it_shows(self):
+        """`--same-as` a replicated output mirrors the output whose scene it
+        shows, not the replica: measured on KWin 6.6, a source that is itself
+        replicating is accepted, stored, and then painted never -- the panel
+        kept its last frame across a window move that repainted every other
+        head."""
+        self.svc.close()
+        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
+                             HDMI(x=4480)])
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "HDMI-1", "--same-as",
+                                       "DP-1")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertIn(("repl", "HDMI-1", "d0a1b-eDP-1-uuid"),
+                      self.svc.applied[-1])
+        self.assertEqual(self.svc.mirrors(), {"DP-1": "eDP-1",
+                                              "HDMI-1": "eDP-1"})
+
+    def test_same_as_the_output_that_mirrors_you_is_a_shared_position(self):
+        """The other way round closes the chain on the output itself: eDP-1
+        already IS the scene DP-1 shows, so there is nothing to replicate --
+        and sending it would be the loop KWin accepts and leaves blank."""
+        self.svc.close()
+        self.svc = self.mirrored()
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "eDP-1", "--same-as",
+                                       "DP-1")
+        self.assertEqual((code, err), (0, ""))
+        # and nothing to send either: eDP-1 is already where DP-1 shows it
+        self.assertEqual((self.svc.created, self.svc.applied), (0, []))
+        self.assertEqual(self.svc.mirrors(), {"DP-1": "eDP-1"})
+
+    def test_a_loop_of_mirrors_somebody_else_left_is_refused(self):
+        """Two outputs replicating each other is a state KWin takes (measured:
+        both leave kde_output_order_v1 and neither is painted again). We never
+        build one, and we do not mirror onto one either."""
+        self.svc.close()
+        self.svc = FakeKWin([EDP(repl="del-dp1-uuid"),
+                             DP(repl="d0a1b-eDP-1-uuid"),
+                             HDMI(enabled=True, x=4480)])
+        self.addCleanup(self.svc.close)
+        code, out, err = self.run_cli("--output", "HDMI-1", "--same-as",
+                                      "DP-1")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("xrandr: cannot mirror HDMI-1 onto DP-1: DP-1 mirrors"
+                      " eDP-1 mirrors DP-1, a loop KWin accepts and leaves"
+                      " blank\n", err)
+        self.assertEqual(self.svc.created, 0)
+
+    def test_query_says_which_output_kwin_leaves_blank(self):
+        """A copy of a copy is out of the layout AND unpainted, so it is not
+        showing its source's rectangle: it keeps the geometry KWin stores for
+        it, and the state is said out loud rather than listed as a mirror."""
+        self.svc.close()
+        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
+                             HDMI(x=4480, repl="del-dp1-uuid")])
+        self.addCleanup(self.svc.close)
+        code, out, err = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "xrandr: HDMI-1 replicates DP-1, which"
+                              " replicates eDP-1; KWin leaves an output that"
+                              " copies a copy blank\n")
+        self.assertIn("DP-1 connected 1920x1080+0+0 ", out)
+        self.assertIn("HDMI-1 connected 1280x1024+4480+0 ", out)
+
+    # -- the source going away ----------------------------------------------
+
+    def test_disabling_the_source_hands_the_replica_its_position_back(self):
+        """Measured: KWin gives a replica straight back to itself the moment
+        its source is disabled -- layout, position, scale and all. The
+        position it comes back at is the one --query was reporting for it,
+        not whatever it had stored before the mirror."""
+        self.svc.close()
+        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=900, y=400),
+                             HDMI(x=4480)])
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "eDP-1", "--off")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertIn(("position", "DP-1", (0, 0)), self.svc.applied[-1])
+        self.assertEqual(self.svc.mirrors(), {})
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected primary 2560x1600+0+0 ", out)
+
+    def test_the_primary_that_becomes_a_replica_says_so(self):
+        """A replica leaves kde_output_order_v1, so KWin's primary moves on
+        its own when the primary is the output being mirrored away."""
+        self.svc.close()
+        self.svc = two_heads()
+        self.addCleanup(self.svc.close)
+        code, _out, err = self.run_cli("--output", "eDP-1", "--same-as",
+                                       "DP-1")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.strip_save(err),
+                         "xrandr: eDP-1 mirrors DP-1 and is no longer the"
+                         " primary output on KWin\n")
+        self.assertEqual(self.svc.mirrors(), {"eDP-1": "DP-1"})
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected primary ", out)
+
+    def test_replication_needs_the_device_event_too(self):
+        """Management 13 can send a mirror; without device 13 nothing can read
+        one back, and a mirror that cannot be read can never be cleared -- the
+        delta against a source we cannot see is always empty, so `--right-of`
+        on a replica would be the silently inert thing this policy exists to
+        avoid."""
+        self.svc.close()
+        self.svc = two_heads(dev_version=12, mgmt_version=13)
+        self.addCleanup(self.svc.close)
+        code, out, err = self.run_cli("--output", "DP-1", "--same-as", "eDP-1")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, (
+            "xrandr: cannot mirror DP-1 onto eDP-1: at the same position DP-1"
+            " would show a 2560x1600 crop of eDP-1's 1920x1080, and cloning"
+            " it needs kde_output_device_v2 version 13 (this KWin offers"
+            " 12)\n"))
+        self.assertEqual(self.svc.created, 0)
+
     def test_the_restore_command_puts_the_mirror_back(self):
         """The undo line spells a mirror as `--same-as`, not as the position
         the replica happens to have stored: replaying a `--pos` would restore

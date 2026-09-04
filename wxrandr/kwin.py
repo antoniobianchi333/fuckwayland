@@ -87,16 +87,34 @@ kde_output_*).
   -- and the requested scale is overridden outright, so the clone comes out
   byte-identical where the sizes allow it. So the rectangles differing is the
   whole trigger and nothing else is: not the refresh rate, not `--same-as`
-  itself.
+  itself. The rectangle compared against is the one the SCENE comes from,
+  which is not always the output `--same-as` named -- see the chain below.
 - A replicated output stops being a layout member: its `wl_output` global goes
   away, it leaves `kde_output_order_v1` (so it can never be the primary --
   set_priority on it is accepted and changes nothing), and it contributes
-  nothing to the desktop bounding box. Its own mode and transform still count
+  nothing to the desktop bounding box. What the pair occupies is the SOURCE's
+  rectangle, so that is what --query reports for the replica and what every
+  relation measures from: measured with the replica's own panel size instead,
+  `--right-of` a 1280x1024 replica of a 1920x1080 output landed the neighbour
+  at x=1280, 640 px inside its source. Its own mode and transform still count
   (they are the panel the copy is fitted onto); its own position and scale are
   inert but still stored, and come back the moment the mirror ends. Clearing
   the source (the empty string) restores it completely, and so does disabling
-  the source. Mirroring an output onto itself is KWin's own `failed` ("An
-  output cannot mirror itself"); a uuid naming no enabled output is accepted
+  the source -- which is why the position we send for a replica is the one the
+  query reports, the rectangle it comes back to.
+- KWin will not copy a copy. A source that is itself replicating is accepted,
+  stored and persisted, takes the output out of the layout like any other
+  replication -- and is then painted never: measured, the panel kept its last
+  frame byte-for-byte across a window move that repainted every other head,
+  and two outputs replicating each other left `kde_output_order_v1` with
+  neither of them in it. So `--same-as` resolves the source through the chain
+  to the output whose scene it really shows and replicates that (a second
+  replica letterboxes the same picture, which is the answer the user asked
+  for); a chain that comes back to the output itself is nothing to replicate
+  (`--same-as` the output that mirrors you is a shared position, and cannot
+  build a loop); and a loop somebody else left is refused by name.
+- Mirroring an output onto itself is KWin's own `failed` ("An output cannot
+  mirror itself"); a uuid naming no enabled output is accepted
   and silently does nothing, so the source uuid always comes from a fresh
   snapshot. The replication source is persisted like everything else, as
   `replicationSource` in ~/.config/kwinoutputconfig.json.
@@ -122,7 +140,8 @@ Mapping to the wxrandr model (core.OutputState / core.Target):
                          is the primary, on 5.27 as on 6.6), else the device
                          `priority` event, else the state file
     --same-as            the same position while that is a clone, else
-                         set_replication_source (management v13) -- see below
+                         set_replication_source (management v13 to send it,
+                         device v13 to read it back) -- see below
     --brightness/--gamma no LUT here: zwlr_gamma_control_manager_v1 is probed
                          and, when absent as under KWin, warn + succeed
     --newmode/--addmode  applying one needs a real mode of the same size (and
@@ -312,7 +331,12 @@ def mirror_needs_replication(replica: tuple, source: tuple) -> bool:
     A mode of a different size, a different scale and an axis-swapping
     transform all reach here as one fact, the pending logical size, because
     that is the fact the pixels follow: 2560x1440 at scale 2 next to 1280x720
-    at scale 1 is a clone with no replication at all."""
+    at scale 1 is a clone with no replication at all.
+
+    `source` is the rectangle of the output whose scene is being shown, which
+    is not always the one `--same-as` named: an output that is itself
+    mirroring shows somebody else's scene, and KWin will not copy a copy (see
+    KwinOutputs._root_of)."""
     return tuple(replica) != tuple(source)
 
 
@@ -448,7 +472,9 @@ class KwinOutputs:
         self.edid = {}                # name -> base64 EDID
         self.uuid = {}                # name -> KWin's stable uuid
         self.mirror = {}              # name -> the output it replicates
+        self.replica_of = {}          # the same, the ones KWin blanks too
         self.previous_mirrors = {}    # the same, pre-apply
+        self._warned_blank = set()    # outputs whose mirror KWin never paints
         self.primary = None           # the primary we believe KWin has
         self._primary_seen = False
         self._current = []            # the OutputStates of the last snapshot
@@ -463,6 +489,17 @@ class KwinOutputs:
                 self.conn.close()
             except OSError:
                 pass
+
+    @property
+    def can_replicate(self) -> bool:
+        """Both halves of mirroring, on the versions they need:
+        `set_replication_source` (management v13) to send one, and
+        `replication_source` (device v13) to read one back. Without the
+        read-back a mirror could never be cleared again -- the delta against
+        a source we cannot see is always empty, so `--right-of` on a replica
+        would be silently inert, which is the one thing this policy is for."""
+        return (self.mgmt_version >= REPL_MGMT
+                and self.dev_version >= REPL_DEV)
 
     # -- discovery -----------------------------------------------------------
 
@@ -664,7 +701,7 @@ class KwinOutputs:
             raise Fatal("%s is advertised but the compositor announced no "
                         "outputs\n" % MGMT)
         self.by_name, self.edid, self.uuid = {}, {}, {}
-        self.mirror = {}
+        self.mirror, self.replica_of = {}, {}
         outs = []
         for i, d in enumerate(self.live()):
             p = d["pub"]
@@ -708,16 +745,33 @@ class KwinOutputs:
         # mirror (one geometry, one position, each output keeping its own mode
         # table and its own starred current mode), and the Screen line agrees
         # with the desktop the compositor actually has.
+        #
+        # A source has to be a layout output itself for any of that to hold.
+        # Measured on KWin 6.6: a source that is itself replicating is
+        # accepted and stored, takes the output out of the layout like any
+        # other replication -- and then paints nothing at all, so the panel
+        # keeps its last frame for ever (byte-identical screendumps across a
+        # window move that repainted every other head). We refuse to create
+        # one; one somebody else left behind is reported with the geometry
+        # KWin stores for it and said out loud, rather than dressed up as a
+        # mirror of a rectangle it is not showing.
         by_uuid = {u: n for n, u in self.uuid.items() if u}
         active = {o.name: o for o in outs if o.active}
+        src_of = {}
         for o in outs:
             src = by_uuid.get(self.by_name[o.name]["pub"]["repl"] or None)
-            if src is None or src == o.name or o.name not in active:
+            # KWin ignores a source that is not enabled, and its own uuid is
+            # `failed` ("An output cannot mirror itself") in the first place
+            if src is not None and src != o.name and o.name in active \
+                    and src in active:
+                src_of[o.name] = src
+        self.replica_of = src_of      # blank ones included: they are still
+        for name, src in src_of.items():   # out of the layout, and still a
+            if src in src_of:              # loop nothing may be mirrored onto
+                self._warn_blank(name, src, src_of[src])
                 continue
-            source = active.get(src)
-            if source is None:      # KWin ignores a source that is not enabled
-                continue
-            self.mirror[o.name] = src
+            self.mirror[name] = src
+            o, source = active[name], active[src]
             o.x, o.y, o.w, o.h = source.x, source.y, source.w, source.h
         # The primary comes from the compositor whenever it can be read
         # (kde_output_order_v1, advertised on 5.27 as on 6.6) -- the state
@@ -734,6 +788,17 @@ class KwinOutputs:
         elif not self._primary_seen:
             self.primary, self._primary_seen = state.primary, True
         return outs
+
+    def _warn_blank(self, name: str, src: str, root: str):
+        """A replication KWin accepts, stores and never paints. Said once per
+        output per run: --query is where somebody meets the state their
+        System Settings or an older wxrandr left, and a silent listing would
+        show a rectangle for a panel that is frozen on its last frame."""
+        if name in self._warned_blank:
+            return
+        self._warned_blank.add(name)
+        warn("%s replicates %s, which replicates %s; KWin leaves an output "
+             "that copies a copy blank\n" % (name, src, root))
 
     # -- planning ------------------------------------------------------------
 
@@ -808,13 +873,39 @@ class KwinOutputs:
                        key=lambda m: abs(m["refresh"] - mode.refresh_mhz))["id"]
         return cands[0]["id"]
 
+    @staticmethod
+    def _root_of(graph: dict, name: str) -> str | None:
+        """The output whose scene `name` ends up showing: itself, or the far
+        end of the chain of mirrors it is in. `name` back again means the
+        chain closes on the output itself -- it is already showing its own
+        scene, so there is nothing to replicate -- and None means it closes
+        on somebody else, a loop KWin takes and leaves blank."""
+        seen, cur = {name}, name
+        while cur in graph:
+            cur = graph[cur]
+            if cur in seen:
+                return name if cur == name else None
+            seen.add(cur)
+        return cur
+
     def _mirror_plan(self, known: list, dims: dict) -> tuple:
-        """(outputs to replicate -> their source, outputs to stop replicating).
+        """(outputs to replicate -> their source, outputs to stop replicating,
+        every output that will be showing another one's scene).
 
         The narrow rule, straight off the measurement: `--same-as` is a shared
         position while a shared position IS the clone -- which it is exactly
         when the two pending logical rectangles coincide -- and
         set_replication_source only when it is not.
+
+        The rectangle compared against is the one the *scene* comes from. An
+        output that is itself mirroring shows somebody else's scene, and KWin
+        will not copy a copy: naming one as a source is accepted, stored, and
+        then painted never (measured on KWin 6.6 -- the panel keeps its last
+        frame). So `--same-as` follows the chain to its root and replicates
+        that, which is also what makes a mirror of a mirror come out right,
+        and it can never build a loop: a chain that comes back to the output
+        itself means the output already shows that scene, so a shared
+        position is all it takes.
 
         The replication source is touched only for an output this invocation
         *positions* (a relation or a `--pos`): that is what sets one, and it is
@@ -822,7 +913,7 @@ class KwinOutputs:
         output would otherwise be silently inert. Every other output keeps the
         mirroring it has, so an unrelated invocation never dismantles a mirror
         somebody else set up."""
-        want, drop = {}, set()
+        want, drop, asked = {}, set(), {}
         by_name = {t.name: t for t in known}
         for t in known:
             s = t.stanza
@@ -830,26 +921,71 @@ class KwinOutputs:
                 continue
             if s.relation is None and s.pos is None:
                 continue
+            drop.add(t.name)
             if s.relation is not None and s.relation[0] == "same-as":
                 src = by_name.get(s.relation[1])
                 # a `--same-as` onto a disabled output is xrandr's 0,0 landing,
                 # and KWin ignores a source that is not enabled anyway
-                if (src is not None and src.enabled and src.name != t.name
-                        and mirror_needs_replication(dims[t.name],
-                                                     dims[src.name])):
-                    want[t.name] = src.name
-                    continue
-            drop.add(t.name)
-        return want, drop
+                if src is not None and src.enabled and src.name != t.name:
+                    asked[t.name] = src.name
+        # what each output will be showing after this apply: the `--same-as`
+        # of this invocation (a shared position shows the source's scene just
+        # as much as a replication does), plus the mirrors this invocation
+        # leaves alone -- minus the ones whose source it switches off, which
+        # KWin hands straight back to themselves.
+        graph = dict(asked)
+        for name, src in self.replica_of.items():
+            replica, source = by_name.get(name), by_name.get(src)
+            if name in graph or name in drop:
+                continue
+            if replica is not None and source is not None \
+                    and replica.enabled and source.enabled:
+                graph[name] = src
+        for name in sorted(asked):
+            root = self._root_of(graph, name)
+            if root is None:
+                self._refuse_loop(name, asked[name], graph)
+            if root == name:
+                continue     # already showing that scene; the position is all
+            if mirror_needs_replication(dims[name], dims[root]):
+                want[name] = root
+                drop.discard(name)
+        # everything that will be out of the layout when this is applied --
+        # what we are setting, plus what we are leaving alone. A `--same-as`
+        # that stayed a shared position is NOT in it: it keeps a rectangle of
+        # its own and is a layout output like any other.
+        pending = {n: src for n, src in graph.items()
+                   if n not in drop and n in self.replica_of}
+        pending.update(want)
+        return want, drop, pending
+
+    def _refuse_loop(self, name: str, src: str, graph: dict):
+        chain, cur, seen = [src], src, {name, src}
+        while cur in graph:
+            cur = graph[cur]
+            chain.append(cur)
+            if cur in seen:
+                break
+            seen.add(cur)
+        raise Fatal("cannot mirror %s onto %s: %s, a loop KWin accepts and "
+                    "leaves blank\n" % (name, src, " mirrors ".join(chain)))
 
     def _refuse_replication(self, name: str, src: str, dims: dict):
+        """The one case a KWin without replication cannot do, by name. The
+        management request is what sends a mirror and the device event is what
+        reads one back, and without the read-back a mirror could never be
+        cleared again (the delta against a source we cannot see is always
+        empty), so both have to be there and whichever is missing is the one
+        named."""
+        iface, need, has = MGMT, REPL_MGMT, self.mgmt_advertised
+        if self.mgmt_version >= REPL_MGMT:
+            iface, need, has = DEV, REPL_DEV, self.dev_version
         raise Fatal(
             "cannot mirror %s onto %s: at the same position %s would show a "
             "%dx%d crop of %s's %dx%d, and cloning it needs %s version %d "
             "(this KWin offers %d)\n"
             % (name, src, name, dims[name][0], dims[name][1], src,
-               dims[src][0], dims[src][1], MGMT, REPL_MGMT,
-               self.mgmt_advertised))
+               dims[src][0], dims[src][1], iface, need, has))
 
     def plan(self, state: core.State, targets: list) -> tuple:
         """(per-output delta records, primary device id or None).
@@ -872,11 +1008,24 @@ class KwinOutputs:
         by_target = {t.name: t for t in known}
         dims = {n: logical_size(modes[n].w, modes[n].h, by_target[n].sway_tf,
                                 scales[n], self.ceil_logical) for n in modes}
-        pos = normalise(core.resolve_positions(known, dims))
-        mirrors, unmirror = self._mirror_plan(known, dims)
-        if mirrors and self.mgmt_version < REPL_MGMT:
+        mirrors, unmirror, pending = self._mirror_plan(known, dims)
+        if mirrors and not self.can_replicate:
             name, src = sorted(mirrors.items())[0]
             self._refuse_replication(name, src, dims)
+        # A replicating output has no rectangle of its own on the desktop --
+        # no wl_output, nothing in the bounding box -- so what a relation has
+        # to measure from is the rectangle the pair occupies, which is the
+        # source's and is what --query prints for it. Measured on KWin 6.6
+        # with the panel's own size instead: `--right-of` a 1280x1024 replica
+        # of a 1920x1080 output landed the neighbour at x=1280, 640 px INSIDE
+        # its source, two overlapping panels on a desktop meant to be a row.
+        # A copy of a copy is the exception: KWin paints it never, so it is
+        # not showing its source's rectangle either and keeps its own.
+        layout = dict(dims)
+        for name, src in pending.items():
+            if src not in pending and name in dims and src in dims:
+                layout[name] = dims[src]
+        pos = normalise(core.resolve_positions(known, layout))
         records = []
         for t in known:
             d = self.by_name[t.name]
@@ -915,7 +1064,11 @@ class KwinOutputs:
                 repl = None            # leave the mirroring it has alone
             if repl is not None and repl != p["repl"]:
                 rec["repl"] = repl
-            mirroring = bool(repl if repl is not None else p["repl"])
+            # "will KWin ignore this output's position?" -- which is not the
+            # same question as "does it carry a replication source": a source
+            # that this invocation disables, or that never was enabled, hands
+            # the output back to itself, position and all (measured).
+            mirroring = t.name in pending
             xy = pos.get(t.name)
             # An output that goes on mirroring ignores its position, so one is
             # sent only when the invocation asked for it: the query reports a
@@ -931,6 +1084,12 @@ class KwinOutputs:
             if any(rec[k] is not None for k in ("enable", "mode", "transform",
                                                 "position", "scale", "repl")):
                 records.append(rec)
+        if self.primary in mirrors and state.primary in (None, self.primary):
+            # measured: the replica leaves kde_output_order_v1, so KWin's
+            # primary moves on its own. Say which output is losing it rather
+            # than let --query answer a different name next time.
+            warn("%s mirrors %s and is no longer the primary output on "
+                 "KWin\n" % (self.primary, mirrors[self.primary]))
         primary = None
         want = state.primary
         if want and want != self.primary:
