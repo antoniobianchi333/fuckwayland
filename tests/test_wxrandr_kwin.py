@@ -756,7 +756,7 @@ class Helpers(unittest.TestCase):
         # old value was the default one would not undo the new one
         self.assertEqual(
             kwin.restore_command([a, b, c], primary="DP-1"),
-            "xrandr --output eDP-1 --mode 1920x1080 --rate 60.02 --pos 0x0"
+            "wxrandr --output eDP-1 --mode 1920x1080 --rate 60.02 --pos 0x0"
             " --rotate normal --reflect normal --scale 1"
             " --output DP-1 --mode 2560x1600 --rate 59.97 --pos 1920x0"
             " --rotate left --reflect normal --scale 1.5 --primary"
@@ -1322,7 +1322,7 @@ class Apply(KwinCase):
         self.assertEqual(lines[0], "xrandr: " + kwin.SAVE_WARNING.rstrip())
         self.assertEqual(
             self.restore_line(err),
-            "xrandr --output eDP-1 --mode 1920x1080 --rate 60.02 --pos 0x0"
+            "wxrandr --output eDP-1 --mode 1920x1080 --rate 60.02 --pos 0x0"
             " --rotate normal --reflect normal --scale 1 --primary"
             " --output DP-1 --mode 2560x1600 --rate 59.97 --pos 1920x0"
             " --rotate normal --reflect normal --scale 1")
@@ -1344,7 +1344,7 @@ class Apply(KwinCase):
         self.assertEqual(code, 0)
         self.assertNotEqual((self.svc.layout(), self.svc.primary), before)
         line = self.restore_line(err).split()
-        self.assertEqual(line[0], "xrandr")
+        self.assertEqual(line[0], "wxrandr")   # the word that can run it: see _undo_word
         code, _out, err = self.run_cli(*line[1:])
         self.assertEqual((code, self.strip_save(err)), (0, ""))
         self.assertEqual((self.svc.layout(), self.svc.primary), before)
@@ -2060,6 +2060,34 @@ class Detection(unittest.TestCase):
         code, out, err = self.main("--listproviders")
         self.assertEqual(code, 0)
         self.assertIn("name:kwin", out)
+
+
+
+class UndoLineNamesSomethingRunnable(unittest.TestCase):
+    """KWin saves a layout the moment it applies one, so the printed undo line
+    is the only way back -- and on a KDE image /usr/bin/xrandr exists, so a
+    line beginning `xrandr` is pasted into the real one, which answers
+    BadMatch and changes nothing (measured on Plasma 6.6)."""
+
+    def setUp(self):
+        self._argv = list(sys.argv)
+
+    def tearDown(self):
+        sys.argv[:] = self._argv
+
+    def test_never_the_word_xrandr(self):
+        for argv0 in ("/usr/local/bin/xrandr", "xrandr", "", "/usr/bin/python3"):
+            sys.argv = [argv0]
+            self.assertEqual(kwin._undo_word(), "wxrandr", argv0)
+
+    def test_it_does_not_depend_on_how_we_were_invoked(self):
+        for argv0 in ("/usr/local/bin/wxrandr", "python3", "/opt/x/thing", ""):
+            sys.argv = [argv0]
+            self.assertEqual(kwin._undo_word(), "wxrandr", argv0)
+
+    def test_it_is_the_word_regardless_of_argv(self):
+        sys.argv = ["xrandr"]
+        self.assertEqual(kwin._undo_word(), "wxrandr")
 
 
 if __name__ == "__main__":

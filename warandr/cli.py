@@ -119,6 +119,13 @@ def main(argv=None):
             if args.command:
                 print(layout.command_line(backend.run_word))
             if args.save:
+                # ~/.screenlayout is where arandr puts these and where the
+                # GUI's Save As already creates on demand; --save is the same
+                # recipe without a window, so it should not fail on a fresh
+                # account for want of one directory.
+                parent = os.path.dirname(os.path.abspath(args.save))
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
                 write_script(layout, args.save, backend.word,
                              script_notes(layout, backend))
             return 0
