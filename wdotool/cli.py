@@ -322,6 +322,13 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write("%s\n" % e)
             return 1
 
+    # Hidden diagnostic (B13): dump the compositor's keymap and what wdotool
+    # makes of it. Ours, like __daemon: never a passthrough, never in `help`.
+    if len(argv) > 1 and argv[1] == "__keymap":
+        from wdotool import xkbmap
+
+        return xkbmap.diagnostic_main(argv[2:])
+
     # X11 session: this is the real xdotool's job. Before option parsing and
     # before --help/--version -- installed as `xdotool`, even the version
     # string has to be theirs (ours pins one upstream version and will drift).

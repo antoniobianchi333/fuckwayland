@@ -24,3 +24,9 @@ Two independent belts, both proven by `tests/test_passthrough.py`:
 import os
 
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
+
+# B13: the injection tests pin the *fixed US table* as the source of
+# keycodes. Without this a developer running the suite inside a German or
+# Dvorak session would have the daemon read that session's real keymap and
+# type through it, and every keycode assertion here would be wrong.
+os.environ.setdefault("WDOTOOL_LAYOUT", "us")

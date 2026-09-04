@@ -250,7 +250,7 @@ Wayland forces a few honest approximations:
 | `key`/`type` `--window` | activates the target first, then injects (no XSendEvent) |
 | `getmouselocation` | asks the compositor where the pointer is (GNOME); falls back to the injected position where it cannot (sway) |
 | `--clearmodifiers` | releases all modifier keys; can't read or restore prior state |
-| `type` non-US chars | US layout table; unreachable characters warn and skip |
+| `type` non-US chars | typed through the session's active layout (see below); characters it cannot produce warn and skip |
 | `search --role` | roles don't exist on Wayland; matches against empty string |
 | `windowraise`/`lower` | floating windows only (tiling has no z-order) |
 | `set_window`, `windowreparent`, viewport/desktop-count setters | warn and succeed (cosmetic on Wayland; scripts keep running) |
@@ -259,9 +259,60 @@ Wayland forces a few honest approximations:
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
 scratchpad on sway.
 
-GNOME has a longer list of honest differences (keyboard layouts, shell grabs,
-the lock screen, `selectwindow`): see **Known limitations on GNOME** in
+GNOME has a longer list of honest differences (shell grabs, the lock screen,
+`selectwindow`): see **Known limitations on GNOME** in
 [gnome/README.md](gnome/README.md).
+
+### Keyboard layouts
+
+`key` and `type` inject keycodes through a virtual keyboard, and the
+compositor reads those keycodes through whatever XKB layout your session has
+active — so a fixed US table would type `z` for `y` on a German layout and
+skip every accented character. wdotool reads the compositor's *own* keymap
+instead (every Wayland client is handed it on `wl_keyboard.keymap`) and looks
+the character up backwards: which key, with which modifiers, produces it here.
+
+```console
+$ wdotool type 'Grüße, ça va?'      # de, fr, es, dvorak … all fine
+```
+
+* AltGr (level three) and level five are pressed when the layout needs them —
+  `@` on German is AltGr+Q, and wdotool finds out *which key* is AltGr from
+  the keymap, not from a guess.
+* A character that needs a **dead key** becomes two keystrokes (`é` on German
+  is `´` then `e`) and the application composes them, exactly as it does when
+  you type it by hand.
+* Characters the active layout genuinely cannot produce still warn and skip,
+  one line each, and the rest of the string is typed.
+* **When the active layout is plain US, none of this runs.** wdotool checks
+  the keymap key by key against its built-in US table and, when they agree,
+  uses the built-in table — the most common setup keeps the code path it
+  always had. The same fixed table is the fallback whenever the keymap cannot
+  be read at all (no compositor, a locked screen, an unparsable keymap): a
+  warning in the daemon log, never a failure.
+
+The one thing the compositor will not tell an injector is **which** layout is
+active when you have several configured: `wl_keyboard.modifiers` carries that
+and it is only ever sent to the focused window. With one layout configured
+there is nothing to guess; with several, wdotool uses the first, says so once,
+and `WDOTOOL_XKB_GROUP` overrides it.
+
+| variable | effect |
+|---|---|
+| `WDOTOOL_LAYOUT=us` | never read the keymap; use the built-in US table |
+| `WDOTOOL_LAYOUT=xkb` | use the compositor's keymap even if it looks like US |
+| `WDOTOOL_XKB_GROUP=<n>` | pin the active layout group (1 = the first one) |
+| `WDOTOOL_XKB_KEYMAP=<file>` | read the keymap from a file instead of the compositor |
+
+These are read by the *daemon*, which keeps the environment it was started
+with, so set them before the first wdotool command of a session (or stop the
+running daemon — `pkill -f 'wdotool __daemon'`) — changing your **layout**
+needs no such thing, it is re-read on every command.
+
+`wdotool __keymap` is a hidden diagnostic that prints what the compositor
+actually sent; `--info` summarises it (groups, active group, whether the US
+bypass takes it), and `--chars STRING` shows the keystrokes each character
+would need.
 
 ### Session readiness and exit codes
 

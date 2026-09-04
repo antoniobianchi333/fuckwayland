@@ -249,7 +249,8 @@ normally. `Context` (frozen, `ctx.py`) provides `stack`, `resolve_window(arg|Non
 ## File ownership (do not edit files you don't own)
 
 - **Agent A (cli core)**: `cli.py`, `commands.py`, `misc_cmds.py`
-- **Agent B (input)**: `daemon.py`, `uinput.py`, `keymap.py`, `keysyms.py`, `input_cmds.py`
+- **Agent B (input)**: `daemon.py`, `uinput.py`, `keymap.py`, `keysyms.py`, `xkbmap.py`,
+  `input_cmds.py`
 - **Agent C (windows)**: `backend_detect.py`, `backend_sway.py`, `backend_wlr.py`,
   `backend_kwin.py`, `kwin_js.py`, `backend_gnome.py`, `window_cmds.py`,
   `desktop_cmds.py`
@@ -320,8 +321,10 @@ Daemon notes (B):
   no network at build). XF86 keysyms resolve through a hand-curated XF86→evdev
   table in `keymap.py` (they have no unicode); `_EVDEVK`-range keysyms
   (0x10081000+code) carry their own evdev code.
-- char → keycode: static US-QWERTY table (char → keycode, shifted?). Unreachable chars:
-  stderr warning, skip. `clearmods`: inject key-up for all 8 modifier keys first.
+- char → keycode: static US-QWERTY table (char → keycode, shifted?) whenever the
+  session's active layout *is* plain US, and the reverse of the compositor's own
+  keymap otherwise (B13). Unreachable chars: stderr warning, skip. `clearmods`:
+  inject key-up for all 8 modifier keys first.
 - geometry: Wayland client via `wayland_mini` (wl_output geometry+mode; prefer
   zxdg_output logical size/position when advertised), with a 3s socket timeout so a
   wedged compositor falls back instead of hanging the daemon. Cache is the full
@@ -359,6 +362,60 @@ Daemon notes (B):
   relative move counts from it. sway's IPC has no pointer query, so the model
   stands there. A daemon that never opened `/dev/uinput` refuses the `pointer`
   op with that reason rather than answering `0,0` with rc 0.
+- **the active layout (B13, `xkbmap.py`)**: we inject *keycodes*, and the
+  compositor reads them through whatever XKB layout the session has active, so
+  the fixed US table is wrong for everyone else: `type y` gives `z` on German,
+  `key ctrl+z` arrives as `ctrl+y`. X11's trick (rebind a spare keycode to the
+  wanted keysym) has no Wayland equivalent and Mutter does not implement
+  zwp_virtual_keyboard_v1, so the lookup is reversed instead: every Wayland
+  client is handed the full keymap on `wl_keyboard.keymap` as an fd, and
+  `xkbmap.fetch()` binds the seat, takes the keyboard, reads it, and
+  `xkbmap.build()` turns the active group into char → (keycode, modifier mask).
+  Levels come from the key's type when the keymap states one and from the
+  xkeyboard-config convention otherwise (2 = Shift, 3 = level three, 5 = level
+  five); which *key* carries level three is read out of the same group
+  (`<RALT>` on German, the synthetic `<LVL3>` where the layout leaves `<RALT>`
+  as Alt_R). A character that needs a dead key becomes two keystrokes (the mark
+  from NFD, then the base letter) and the application composes them, exactly as
+  it does for a physical French keyboard. Unreachable characters warn and skip,
+  as before.
+  - **the US bypass** is the whole safety story: `xkbmap.active_group_is_plain_us()`
+    verifies, key by key, that every keycode the fixed table would emit carries
+    exactly the keysyms the fixed table assumes at levels 1 and 2 *in the active
+    group* (plus the group name and a type whose level 2 really is Shift). If it
+    holds, the old path runs and nothing else in `xkbmap` is even called — the
+    check shares no code with the parser or the reverse map, and choosing a
+    group is regex-only for the same reason. Any failure — no compositor, an
+    unparsable keymap, a crash in the new code — also lands on the fixed table,
+    with one diagnostic per daemon.
+  - **the group**: `wl_keyboard.modifiers` carries the active group but every
+    compositor sends it only to the *focused* client, which an injector never
+    is (measured on Mutter 46/50, and the same is true of wlroots and KWin). So
+    the group is taken from that event if it ever arrives, else group 1 —
+    definitively when every group binds the same symbols (GNOME compiles a lone
+    `us` source as "us,us"), otherwise as a flagged assumption. GNOME appends
+    its own `us` fallback group *after* the user's sources, so a single German
+    source is "de,us" and group 1 is right; a session with several sources whose
+    first one is `us` verifies as plain US and keeps the old behaviour instead
+    of guessing. `WDOTOOL_XKB_GROUP=<n>` pins it.
+  - **cache**: keyed on (sha256 of the keymap text, group), re-read on *every*
+    `type`/`key` — the user can switch layout between two commands, and a
+    long-lived daemon has to notice. A rebuild costs ~15ms; a hit is a Wayland
+    roundtrip and a hash. A failed read backs off 5s so a wedged compositor
+    cannot stall every keystroke.
+  - **overrides** (all read by the *daemon*, which keeps the environment it was
+    spawned with): `WDOTOOL_LAYOUT=us` never reads a keymap at all,
+    `WDOTOOL_LAYOUT=xkb` forces the reverse map even on a US layout,
+    `WDOTOOL_XKB_KEYMAP=<file>` reads a keymap from a file (what the tests use),
+    `WDOTOOL_XKB_GROUP=<n>` pins the group.
+  - **not adopted here**: sway and KWin *do* implement zwp_virtual_keyboard_v1,
+    which would let us upload our own keymap and skip all of this on those two.
+    It is a separate change: it needs a second injection path next to uinput,
+    and it does nothing for GNOME.
+  - `wdotool __keymap` (hidden, like `__daemon`) dumps the compositor's keymap,
+    `--info` summarises it and says whether the bypass takes it, `--chars STR`
+    prints the keystrokes each character would need. The test fixtures in
+    `tests/fixtures/keymaps/` were captured with it.
 - **spawn hygiene (B10/B11)**: the double-forked grandchild closes every fd
   above stdio (it used to keep the client's session-D-Bus socket ESTABLISHED
   for its whole life), `chdir("/")`, keeps only the environment it needs
