@@ -434,8 +434,24 @@ class Application:
         if submenu is None:            # menubar not built yet: nothing to open
             return False
         submenu.show_all()
+        # Where the popup went, for the position model: GDK cannot read a
+        # popup's position back on Wayland, so a menu popped at the pointer
+        # is recorded as pointer + (1, 1) -- what _popup_menu does for the
+        # canvas menus.  Without it the indicator's popup modelled nothing at
+        # all, and a Wayland driver had no coordinates to click.
+        submenu._anchor = (int(event.x_root) + 1, int(event.y_root) + 1)
+        if not getattr(submenu, "_anchor_cleared_on_close", False):
+            submenu._anchor_cleared_on_close = True
+            # this is the menubar's own Backend menu as well: its next drop
+            # from Layout ▸ Backend is modelled from the item, not from
+            # wherever the pointer was the last time it was opened here
+            submenu.connect("deactivate", self._clear_anchor)
         submenu.popup_at_pointer(event)
         return True
+
+    @staticmethod
+    def _clear_anchor(menu):
+        menu._anchor = None
 
     def _indicator_cursor(self, widget, _event, entering):
         """Point the cursor at the indicator so it reads as clickable."""
@@ -1061,11 +1077,19 @@ class Application:
         menu = Gtk.Menu()
         self._track_menu(menu, "output:" + name)
 
+        def live():
+            """The layout as it is when the item is *used*.  The menu is
+            built from the one that is current now, but an Apply landing
+            while it is open replaces self.layout wholesale, and a setter
+            still holding the old object would edit a layout nothing draws
+            and nothing will apply."""
+            return self.layout
+
         active = Gtk.CheckMenuItem.new_with_mnemonic("_Active")
         active.set_active(o.active)
         active.connect("toggled", lambda it: self._edit(
             "Activating %s" % name,
-            lambda: lay.set_active(name, it.get_active())))
+            lambda: live().set_active(name, it.get_active())))
         menu.append(active)
         if not o.connected and not o.active:
             active.set_sensitive(False)
@@ -1075,7 +1099,7 @@ class Application:
         primary = Gtk.CheckMenuItem.new_with_mnemonic("_Primary")
         primary.set_active(o.primary)
         primary.connect("toggled", lambda it: self._edit(
-            "Primary", lambda: lay.set_primary(name, it.get_active())))
+            "Primary", lambda: live().set_primary(name, it.get_active())))
         menu.append(primary)
 
         def radio_submenu(label, entries, current, setter, sensitive=True):
@@ -1097,26 +1121,26 @@ class Application:
 
         radio_submenu("_Resolution", [(m.label, m.name) for m in o.modes],
                       o.mode.name if o.mode else None,
-                      lambda v: lay.set_mode(name, v))
+                      lambda v: live().set_mode(name, v))
         radio_submenu("_Orientation",
                       [(r, r) for r in ROTATIONS if r in o.rotations
                        or r == o.rotation],
-                      o.rotation, lambda v: lay.set_rotation(name, v))
+                      o.rotation, lambda v: live().set_rotation(name, v))
         menu.append(Gtk.SeparatorMenuItem())
         rates = o.mode.rates if o.mode else []
         radio_submenu("Refresh ra_te",
                       [("%s Hz" % fmt_rate(r), r) for r in rates],
                       o.mode.nearest_rate(o.rate) if o.mode else None,
-                      lambda v: lay.set_rate(name, v), bool(rates))
+                      lambda v: live().set_rate(name, v), bool(rates))
         radio_submenu("Re_flection",
                       [({"normal": "none", "x": "X axis", "y": "Y axis",
                          "xy": "X and Y axis"}[r], r) for r in REFLECTIONS],
-                      o.reflection, lambda v: lay.set_reflection(name, v))
+                      o.reflection, lambda v: live().set_reflection(name, v))
         others = [p for p in lay.active_outputs()
                   if p is not o and not p.mirror_of]
         radio_submenu("_Mirror of",
                       [("none", None)] + [(p.name, p.name) for p in others],
-                      o.mirror_of, lambda v: lay.set_mirror(name, v),
+                      o.mirror_of, lambda v: live().set_mirror(name, v),
                       sensitive=bool(others) or bool(o.mirror_of))
         if self.backend.wayland:       # X11 has no per-output HiDPI scale
             scales = list(SCALES)
@@ -1124,7 +1148,7 @@ class Application:
                 scales.append(o.scale)
                 scales.sort()
             radio_submenu("_Scale", [("%g" % s, s) for s in scales], o.scale,
-                          lambda v: lay.set_scale(name, v))
+                          lambda v: live().set_scale(name, v))
         return menu
 
     # -- actions --------------------------------------------------------------

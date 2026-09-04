@@ -492,6 +492,19 @@ class GuiDrive(GuiSession):
             {"Automatic": True, "X11 (xrandr)": True, "sway": False,
              "wlroots (wlr)": False, "GNOME (mutter)": True,
              "KDE (kwin)": False})
+        # a Wayland driver only gets the model, so the indicator's popup has
+        # to report one: it is popped at the pointer, like the canvas menus
+        self.assert_modelled(menu)
+        # ...and this is the menubar's own Backend menu, so its next drop
+        # from Layout ▸ Backend is modelled from the item again
+        self.xdo("key", "Escape")
+        menu2, _n3 = self.open_backend_menu(len(self.dumps()))
+        self.assert_modelled(menu2)
+        self.xdo("key", "Escape", "key", "Escape")
+        n = len(self.dumps())
+        self.click(rect)
+        menu, n2 = self.wait_dump("menu", lambda d: d["name"] == "backend"
+                                  and "Automatic" in d["items"], after=n)
 
         # and it drives: pick GNOME from the menu the indicator opened
         self.click(menu["items"]["GNOME (mutter)"])
@@ -815,6 +828,11 @@ class GuiProbe(XvfbCase):
                          "Cannot read the screen configuration:\n"
                          "stub: cannot open display")
         self.assertTrue(res["reload_fail_keeps_layout"], res)
+        # a menu that was open when an Apply landed edits the layout that
+        # replaced the one it was built from, not the discarded one
+        self.assertTrue(res["stale_menu_is_not_live"], res)
+        self.assertEqual(res["stale_menu_edits_live"], "left", res)
+        self.assertEqual(res["stale_layout_untouched"], "normal", res)
         # per-output menu shape
         self.assertEqual(res["menu_x11"],
                          ["Active", "Primary", "Resolution", "Orientation",

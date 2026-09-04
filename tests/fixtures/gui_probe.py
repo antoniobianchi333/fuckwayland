@@ -228,6 +228,24 @@ def main():
     res["reload_fail_keeps_layout"] = app.layout is not None
     app.backend = backend
 
+    # -- a menu built before an Apply edits the layout that is live now -----
+    # (an Apply's re-read replaces app.layout wholesale; a menu still holding
+    # the old object edited a layout nothing draws and nothing will apply)
+    menu = app.output_menu("HDMI-1")
+    orientation = [it for it in menu.get_children()
+                   if (it.get_label() or "").replace("_", "") ==
+                   "Orientation"][0]
+    stale = app.layout
+    app.set_layout(backend.snapshot())        # what _applied installs
+    left = [r for r in orientation.get_submenu().get_children()
+            if (r.get_label() or "") == "left"][0]
+    left.set_active(True)                     # what clicking it does
+    pump(lambda: False, timeout=0.3)
+    res["stale_menu_edits_live"] = app.layout.get("HDMI-1").rotation
+    res["stale_layout_untouched"] = stale.get("HDMI-1").rotation
+    res["stale_menu_is_not_live"] = stale is not app.layout
+    app.set_layout(backend.snapshot())
+
     # -- per-output menu: arandr's order; Scale only on Wayland ---------------
     res["menu_x11"] = menu_labels(app.output_menu("DP-1"))
     app.window.destroy()
