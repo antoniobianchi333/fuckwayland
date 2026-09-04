@@ -63,13 +63,122 @@ There is no X server to lie to, so wdotool goes underneath instead:
 
 ## Install
 
-Nix: `nix build` → `result/bin/wdotool` (with an `xdotool` symlink next to it).
+Three routes:
 
-No nix: `scripts/build-pyz.sh` → `dist/wdotool`, a single self-contained file.
-Python ≥ 3.10 stdlib only, no dependencies. Copy it to `/usr/local/bin/wdotool`,
-`ln -s wdotool /usr/local/bin/xdotool`, done.
+1. **[pip, from a clone](#from-a-clone-with-pip)** — the normal one: one apt
+   package, one venv, one pip line.
+2. **[the single-file builds](#without-installing-the-single-file-builds)** — no
+   install at all, five self-contained executables.
+3. **[nix](#nix)** — `nix build`, if that is your world.
+
+Whichever you pick, your desktop wants a piece of its own — a GNOME Shell
+extension on [GNOME](#gnome), the real X11 tools on an [X11](#x11) session,
+nothing at all on [KDE Plasma](#kde-plasma) — and injecting input needs
+[access to `/dev/uinput`](#input-access). Then
+[check it worked](#check-it-worked).
+
+### From a clone, with pip
+
+```sh
+sudo apt install git python3-venv
+git clone https://github.com/antoniobianchi333/fuckwayland.git
+cd fuckwayland
+python3 -m venv --system-site-packages ~/.venvs/fuckwayland
+~/.venvs/fuckwayland/bin/pip install -e .
+```
+
+That is the whole install: `wdotool`, `wwmctl`, `wxprop`, `wxrandr` and
+`warandr` in `~/.venvs/fuckwayland/bin`. Put them on `PATH`:
+
+```sh
+for t in wdotool wwmctl wxprop wxrandr warandr; do
+    sudo ln -sfn ~/.venvs/fuckwayland/bin/$t /usr/local/bin/$t
+done
+```
+
+Four things in those lines are not obvious:
+
+* **Why a virtual environment.** Ubuntu 24.04 and newer mark the system Python
+  as externally managed, so a plain `pip install -e .` — with or without
+  `--user` — refuses with `error: externally-managed-environment` and points at
+  a venv, at pipx, or at `--break-system-packages`. Those are the honest
+  options; [all of them work](#other-ways-to-install), and a venv is the one
+  that changes nothing outside its own directory.
+* **Why `python3-venv` and not `python3-pip`.** A stock Ubuntu desktop has
+  neither pip nor venv nor pipx, so `pip install` is `pip: not found` before
+  PEP 668 gets a word in. `python3-venv` is all you need — the venv brings its
+  own pip along. (Run bare, `python3 -m venv` names the *versioned* package in
+  its error, `python3.12-venv` on 24.04 and `python3.14-venv` on 26.04;
+  `python3-venv` pulls the right one on both.)
+* **Why `--system-site-packages`.** `warandr` is the one tool with a
+  dependency: the Python GTK 3 bindings, which are the apt packages
+  `python3-gi` and `gir1.2-gtk-3.0` rather than something pip should build.
+  Every GNOME, KDE and Xfce install already has them — but a venv hides system
+  packages unless it is told not to, and then `warandr` exits 1 with
+  `warandr: GTK 3 for Python is not available (No module named 'gi') - on
+  Ubuntu/Debian: sudo apt install python3-gi gir1.2-gtk-3.0`. The other four
+  tools are stdlib-only and never notice. (A minimal sway install has
+  `python3-gi` but not `gir1.2-gtk-3.0`; install both.)
+* **Why `-e`, and keep the clone.** pip installs the five commands and nothing
+  else — not `gnome/install-bridge.sh`, not the udev rule, not
+  `warandr.desktop`. Those are used from the clone, so keep it where it is and
+  let the editable install point at it.
+
+`pip install -e .` fetches setuptools, so it wants network. On a desktop image,
+which ships `python3-setuptools`, a `--system-site-packages` venv can use that
+copy instead: `~/.venvs/fuckwayland/bin/pip install --no-build-isolation -e .`
+
+Optional, for the GUI: an application-menu entry for `warandr`. Its `Exec=` is
+the bare name, so this wants `warandr` on the session's `PATH` — which the
+`/usr/local/bin` symlink above gives it.
+
+```sh
+mkdir -p ~/.local/share/applications
+cp warandr.desktop ~/.local/share/applications/
+```
+
+To undo all of it:
+
+```sh
+sudo rm -f /usr/local/bin/wdotool /usr/local/bin/wwmctl /usr/local/bin/wxprop \
+           /usr/local/bin/wxrandr /usr/local/bin/warandr
+rm -rf ~/.venvs/fuckwayland ~/.local/share/applications/warandr.desktop
+```
+
+### Other ways to install
+
+All of these were run on a stock desktop and all of them work; pick by what
+you want, not by what is possible.
+
+* **pipx** — `sudo apt install pipx`, then `pipx install
+  --system-site-packages -e .` and `pipx ensurepath` once. Prefer it if pipx is
+  already how you keep your tools. `--system-site-packages` is not optional
+  here either: without it `warandr` fails exactly as above. Lands in
+  `~/.local/bin`; undo with `pipx uninstall fuckwayland`.
+* **The user site, overriding the rule** — `sudo apt install python3-pip`, then
+  `pip install --user --break-system-packages -e .`. Prefer it when you want no
+  venv at all and you accept the risk that flag names. Also `~/.local/bin`,
+  which pip warns is not on `PATH`: a *login* shell adds it from `~/.profile`,
+  but only if the directory existed at login, so log out and back in once.
+  Undo with `pip uninstall --break-system-packages fuckwayland`.
+* **One venv for the whole machine** — `sudo python3 -m venv
+  --system-site-packages /opt/fuckwayland`, then `sudo /opt/fuckwayland/bin/pip
+  install /path/to/the/clone`, and symlink out of `/opt/fuckwayland/bin`.
+  Prefer it when other accounts (or `sudo` as another user) must run the tools:
+  Ubuntu home directories are `0750`, so a venv under your `$HOME` is
+  unreadable to them. Note the missing `-e`: an editable install keeps reading
+  the source tree at run time and hits the same wall, from a readable copy it
+  does not.
+* **No install at all** — [the single-file
+  builds](#without-installing-the-single-file-builds), below.
 
 ### X11
+
+**What to install:** the real tools, if they are not already there —
+`sudo apt install xdotool wmctrl`. (`xprop` and `xrandr` come with every X11
+desktop, in `x11-utils` and `x11-xserver-utils`.) Nothing else: no extension,
+no udev rule, no `/dev/uinput`. Without them you get exit **127** and a line
+naming the package to install.
 
 The tools are meant to be installed **over** the originals, so they also have
 to behave when the session is a plain X11 one (Xfce, i3, GNOME-on-Xorg,
@@ -113,7 +222,16 @@ Stock GNOME Wayland sessions — Ubuntu 24.04 (GNOME 46) and 26.04 (GNOME 50) as
 installed — are supported, with one extra step: GNOME has no window-management
 protocol, so the window side needs a small GNOME Shell extension that exports
 Mutter over the session bus. Input injection needs nothing extra beyond
-`/dev/uinput` access.
+[`/dev/uinput` access](#input-access).
+
+Run the installer from the clone — pip does not install it — and expect one
+session restart: the first install exits 1 asking you to log out and back in,
+because gnome-shell only scans extension directories at login. `wxrandr` and
+`warandr` never need it (monitors go through Mutter's own DisplayConfig), so
+until you have logged back in those two work and the window commands say
+`gnome backend: the fuckwayland bridge extension is not running in GNOME
+Shell; run gnome/install-bridge.sh and restart the session (log out and back
+in)`.
 
 ```sh
 sh gnome/install-bridge.sh          # copies the extension, enables it; log out/in once
@@ -176,6 +294,172 @@ A window state that a client applies asynchronously (fullscreen and maximize
 on a Wayland client, applied when it acks the configure) is waited for before
 the command returns, so `windowstate` never reports a state it merely has not
 seen land yet, and the next command sees a settled window.
+
+### Input access
+
+Injecting input goes through the kernel's `/dev/uinput`, which is
+`root:root 0600` on a stock Ubuntu — so `wdotool`'s **input** commands (`key`,
+`type`, `click`, `mousemove`, `mousedown`/`mouseup`, `behave`, and any chain
+containing one) need either root or the rule below. Without it they stop with
+
+```
+cannot create uinput devices: [Errno 13] Permission denied: '/dev/uinput'
+(wdotool injects input via /dev/uinput; run it as root)
+```
+
+Everything else needs nothing: the window commands (`search`,
+`windowactivate`, `windowmove`, `windowstate`, `getactivewindow`,
+`selectwindow`, the desktop ones), all of `wwmctl`, `wxprop`, `wxrandr` and
+`warandr` reach the compositor over your own session bus and run as you.
+
+Two ways to get it, then:
+
+* **Run as root.** `sudo wdotool key a` works with no rule installed at all —
+  the session's sockets are found by scanning `/run/user/*`.
+* **Install the udev rule this repo ships**, once, from the clone:
+
+  ```sh
+  sudo sh gnome/install-bridge.sh --udev            # install it
+  sudo sh gnome/install-bridge.sh --udev --check    # what is the node now?
+  sudo sh gnome/install-bridge.sh --udev --uninstall # put it back
+  ```
+
+  It tags the node `uaccess`, so systemd-logind gives the user of the *active
+  seat* an ACL on it: applied immediately (no relogin needed) and again at
+  every login. The node itself stays `root:root 0600` — no `input` group is
+  involved — and `--uninstall` restores exactly that. Despite living under
+  `gnome/`, none of this is GNOME's business: the same command installs the
+  same rule on a Plasma session, and the tools there use it the same way.
+
+  Read the security note at the end of the [GNOME](#gnome) section first:
+  anyone who can open `/dev/uinput` can type as you.
+
+One gotcha while you are experimenting: `wdotool` keeps the virtual devices
+alive in a small `__daemon` process, and one started while access existed keeps
+injecting after the rule is removed. Log out, or kill it, to see the change.
+
+### Installing over the originals
+
+These are drop-in clones, so the last step is usually to put them where your
+scripts already look. `/usr/local/bin` comes before `/usr/bin` on Ubuntu's
+default `PATH`, so symlinking there wins without touching a single file the
+package manager owns — and the originals stay exactly where they are, which is
+what makes the [X11](#x11) handover work at all.
+
+From a venv install:
+
+```sh
+sudo ln -sfn ~/.venvs/fuckwayland/bin/wdotool /usr/local/bin/xdotool
+sudo ln -sfn ~/.venvs/fuckwayland/bin/wwmctl  /usr/local/bin/wmctrl
+sudo ln -sfn ~/.venvs/fuckwayland/bin/wxprop  /usr/local/bin/xprop
+sudo ln -sfn ~/.venvs/fuckwayland/bin/wxrandr /usr/local/bin/xrandr
+```
+
+From pipx or a `--user` install the source is `~/.local/bin/wdotool` instead;
+from a single-file build, copy rather than link:
+`sudo install -m 755 dist/wdotool /usr/local/bin/xdotool`. A clone that finds
+itself under an original's name recognises itself and skips to the real binary,
+so none of these loop.
+
+Undo is `sudo rm` of the four names — nothing else was touched:
+
+```sh
+sudo rm -f /usr/local/bin/xdotool /usr/local/bin/wmctrl \
+           /usr/local/bin/xprop /usr/local/bin/xrandr
+```
+
+Two cautions. A venv under `$HOME` is only readable by you and root (Ubuntu
+homes are `0750`), so symlinks into `/usr/local/bin` that point into it break
+for *other* users with `sudo: unable to execute /usr/local/bin/wdotool:
+Permission denied`; for a machine-wide drop-in use the
+[`/opt` venv](#other-ways-to-install). And a symlink left behind after the venv
+is deleted just says `No such file or directory` — remove the links when you
+remove the install.
+
+### Without installing: the single-file builds
+
+```sh
+sh scripts/build-pyz.sh
+```
+
+builds `dist/wdotool`, `dist/wwmctl`, `dist/wxprop`, `dist/wxrandr` and
+`dist/warandr`: five self-contained executables, 0.5–0.9 MB each, needing
+nothing but the `python3` that is already on the machine — no pip, no venv, no
+apt, not even a package to add. (`warandr` still imports the system GTK
+bindings at run time, so the GUI wants `python3-gi` and `gir1.2-gtk-3.0` like
+everywhere else; the other four are stdlib-only.)
+
+Prefer this when you would rather not touch apt at all, when you want no venv,
+when you are on a machine you do not administer, or when you want one file to
+copy to another box. They run from `dist/`, from `~/bin`, or from
+`/usr/local/bin` under an original's name — see
+[above](#installing-over-the-originals). What you give up is `pip uninstall`
+and any notion of an upgrade: you rebuild and copy again.
+
+### Nix
+
+`nix build` → `result/bin/` with all five tools, plus `xdotool`, `wmctrl`,
+`xprop`, `xrandr` and `arandr` symlinks next to them. The flake wraps the GTK
+typelibs into `warandr`, so the GUI works without a system PyGObject.
+
+### Check it worked
+
+The five answer everywhere, whatever install path you took (from a single-file
+build, prefix them with `dist/`). Note that `wxprop` takes xprop's single-dash
+`-version`:
+
+```console
+$ wdotool --version
+xdotool version 4.20260303.1
+$ wwmctl --version
+1.07
+$ wxprop -version
+xprop 1.2.8
+$ wxrandr --version
+xrandr program version       1.5.4
+Server reports RandR version 1.6
+$ warandr --version
+warandr 0.1.0
+```
+
+On a **Wayland** session (GNOME, KDE, sway) the version strings are ours, and
+the next three commands are the real check — which backend was picked, whether
+the compositor answers, and whether input lands:
+
+```console
+$ wxrandr --print-backend --verbose
+mutter
+session: wayland
+chosen by: detection
+compositor: Mutter
+protocol: org.gnome.Mutter.DisplayConfig (D-Bus)
+$ wwmctl -l
+0x8d58a7dd  0 box Screen Layout Editor
+$ wdotool key a          # types an 'a' into the focused window
+```
+
+The backend token is `mutter` on GNOME, `kwin` on Plasma and `sway` on
+wlroots; the second line of `wxrandr --version` is whatever RandR version your
+own session reports. `wwmctl -l` on GNOME is the one that needs the
+[bridge extension](#gnome) — if it says so instead of listing windows, that is
+the step still missing, and `wxrandr` above will have worked anyway.
+
+On an **X11** session the tools are the originals: `wdotool --version` prints
+the version of the `xdotool` that is actually installed there, not ours, and
+`warandr --print-backend` says `x11`. That is the handover working. If instead
+you get exit 127 and a line about no real xdotool on `PATH`, install them:
+`sudo apt install xdotool wmctrl`.
+
+If something did not work, the first thing to try:
+
+| what you saw | what to do |
+|---|---|
+| `wdotool: command not found` | `command -v wdotool` — the symlinks, or `~/.local/bin` not on `PATH` yet (log out and back in) |
+| `gnome backend: the fuckwayland bridge extension is not running in GNOME Shell` | `sh gnome/install-bridge.sh`, then log out and back in; `sh gnome/install-bridge.sh --check` must say `loaded in shell: yes` and `org.fuckwayland.Bridge owned: yes` |
+| `cannot create uinput devices: [Errno 13] Permission denied` | `sudo wdotool …`, or install the [udev rule](#input-access); `sudo sh gnome/install-bridge.sh --udev --check` should end `uinput usable by <your user>: yes (logind ACL)` |
+| `warandr: GTK 3 for Python is not available` | `sudo apt install python3-gi gir1.2-gtk-3.0` — and the venv must have been made `--system-site-packages` |
+| `xdotool: … no real xdotool was found on PATH`, exit 127 | you are on X11: `sudo apt install xdotool wmctrl` |
+| the tool does something you did not expect on X11 | it *is* the original there; `FUCKWAYLAND_PASSTHROUGH=never` runs our own code instead |
 
 ## Desktop support
 
