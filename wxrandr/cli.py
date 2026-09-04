@@ -128,10 +128,18 @@ class Opts:
 
 
 def _number(s: str) -> float:
+    """A number an option can be given.  Python's float() also takes `nan`,
+    `inf` and anything that overflows to one (`1e400`), and none of those is
+    a size, a rate or a pixel clock: left alone they surface much later as
+    raw interpreter text (`cannot convert float NaN to integer`) or, worse,
+    get written to the state file as a mode line nothing can render."""
     try:
-        return float(s)
+        v = float(s)
     except ValueError:
         raise ArgErr("failed to parse '%s' as a number\n" % s)
+    if not math.isfinite(v):
+        raise ArgErr("failed to parse '%s' as a number\n" % s)
+    return v
 
 
 def parse(argv: list) -> Opts:
@@ -311,6 +319,11 @@ def parse(argv: list) -> Opts:
                     sx = sy = float(v)
             except ValueError:
                 raise ArgErr("failed to parse '%s' as a scaling factor\n" % v)
+            if not (math.isfinite(sx) and math.isfinite(sy)):
+                # before the positivity test: `nan <= 0` is False, so a nan
+                # went through and came back out as an "anisotropic scaling
+                # nanxnan" warning followed by a truncation failure
+                raise ArgErr("failed to parse '%s' as a scaling factor\n" % v)
             if sx <= 0 or sy <= 0:
                 raise ArgErr("scaling factors must be positive\n")
             cur.scale = (sx, sy)
@@ -368,6 +381,8 @@ def parse(argv: list) -> Opts:
                 vals = vals * 3
             if len(vals) != 3:
                 raise ArgErr("%s: invalid argument '%s'\n" % (a, v))
+            if not all(math.isfinite(g) for g in vals):
+                raise ArgErr("%s: invalid argument '%s'\n" % (a, v))
             if any(g <= 0 for g in vals):
                 raise ArgErr("gamma correction factors must be positive\n")
             cur.gamma = tuple(vals)
@@ -378,6 +393,8 @@ def parse(argv: list) -> Opts:
             try:
                 cur.brightness = float(v)
             except ValueError:
+                raise ArgErr("%s: invalid argument '%s'\n" % (a, v))
+            if not math.isfinite(cur.brightness):
                 raise ArgErr("%s: invalid argument '%s'\n" % (a, v))
             o.setit_1_2 = True
         elif a == "--primary":
@@ -801,6 +818,12 @@ class Session:
 
     BACKENDS = WAYLAND_BACKENDS
 
+    # the handles close() drops, as class defaults: __init__ always rebinds
+    # them, and a Session built any other way (the backend tests stub
+    # __init__ with their own fake) is still closeable
+    ipc = wlr = mutter = kwin = None
+    probes: dict = {}
+
     def __init__(self, forced=None):
         from wdotool import session as wsession
         name, self.backend_source, self.backend_note = resolve_backend(forced)
@@ -923,7 +946,35 @@ class Session:
             for t in targets:
                 if t.name in moved:
                     t.changed = True   # its crtc line belongs in the plan
+        for t in targets:
+            # so does a shift resolve_positions itself made: it normalises
+            # the whole layout to min x = min y = 0, so a --pos -400x-400 on
+            # one output really does move every other one, and a --dryrun
+            # that printed a crtc line only for the outputs the command
+            # names under-reported what the run would do
+            if t.enabled and t.name in pos and \
+                    pos[t.name] != (t.output.x, t.output.y):
+                t.changed = True
         return pos
+
+    def close(self):
+        """Drop the compositor connections.  SwayIPC, WlrOutputs, KwinOutputs
+        and MutterOutputs all have a close() and nothing called any of them,
+        so every run handed its socket (and, on sway, a second one for the
+        wlr enrichment) to the garbage collector -- which reports it as a
+        ResourceWarning whenever it gets round to it.  Idempotent: the probe
+        objects hold the same handles and swallow a second close."""
+        for handle in (self.ipc, self.wlr, self.mutter, self.kwin):
+            closer = getattr(handle, "close", None)
+            if closer is None:
+                continue
+            try:
+                closer()
+            except OSError:
+                pass
+        self.ipc = self.wlr = self.mutter = self.kwin = None
+        for probe in self.probes.values():
+            probe.close()
 
     def apply(self, targets):
         if self.backend == "sway":
@@ -1321,6 +1372,13 @@ def _run(argv) -> int:
     if opts.version:
         print("xrandr program version       " + core.PROGRAM_VERSION)
     sess = Session(opts.backend)
+    try:
+        return _run_session(sess, opts)
+    finally:
+        sess.close()
+
+
+def _run_session(sess: Session, opts: Opts) -> int:
     if opts.persistent:
         sess.persistent = True
     if opts.screen > 0:
@@ -1373,6 +1431,28 @@ def _run(argv) -> int:
     return 0
 
 
+def _flush_stdout() -> bool:
+    """Push what we printed out, and say whether it got there.
+
+    A stdout that has gone (the reader closed a full pipe, `>&-`) has to be
+    CLOSED here as well as reported: the interpreter flushes it again on the
+    way out, and a failure there turns whatever we returned into exit 120 --
+    a code no xrandr ever produces, from a message nobody printed."""
+    try:
+        sys.stdout.flush()
+        return True
+    except BrokenPipeError:
+        pass                      # the reader left: xrandr says nothing
+    except (OSError, ValueError, AttributeError) as e:
+        # AttributeError: `>&-` leaves sys.stdout None
+        sys.stderr.write("xrandr: %s\n" % e)
+    try:
+        sys.stdout.close()
+    except (OSError, ValueError, AttributeError):
+        pass
+    return False
+
+
 def main(argv=None) -> int:
     # X11 session: the X server's RandR is authoritative, hand over -- but
     # the handover happens before any parsing, so it has to look ahead for
@@ -1403,21 +1483,15 @@ def main(argv=None) -> int:
         argv = sys.argv[1:]
     try:
         code = _run(list(argv))
-        sys.stdout.flush()
-        return code
     except ArgErr as e:
         sys.stderr.write("xrandr: %s" % e.args[0])
         sys.stderr.write("Try 'xrandr --help' for more information.\n")
-        return 1
+        code = 1
     except Fatal as e:
         sys.stderr.write("xrandr: %s" % e.args[0])
-        return 1
+        code = 1
     except BrokenPipeError:
-        try:
-            sys.stdout.close()
-        except Exception:
-            pass
-        return 1
+        code = 1
     except KeyboardInterrupt:
         return 130
     except Exception as e:
@@ -1425,4 +1499,5 @@ def main(argv=None) -> int:
         # struct pack, a lost compositor connection mid-apply, malformed IPC —
         # all become one-line xrandr: fatals, like the real thing.
         sys.stderr.write("xrandr: %s\n" % e)
-        return 1
+        code = 1
+    return code if _flush_stdout() else (code or 1)

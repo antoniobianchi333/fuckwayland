@@ -452,7 +452,19 @@ class State:
             self._orig = copy.deepcopy(merged)
             tmp = "%s.%d.tmp" % (self.path, os.getpid())
             try:
-                with open(tmp, "w") as f:
+                # O_EXCL|O_NOFOLLOW: the default state path is under /tmp
+                # when there is no XDG_RUNTIME_DIR, so the name is guessable
+                # and the directory is shared.  A symlink planted there must
+                # not be written through, and a leftover from a crashed run
+                # of ours (the name carries our pid) is unlinked, not opened.
+                flags = (os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                         | os.O_NOFOLLOW)
+                try:
+                    fd = os.open(tmp, flags, 0o600)
+                except FileExistsError:
+                    os.unlink(tmp)      # removes a symlink, not its target
+                    fd = os.open(tmp, flags, 0o600)
+                with os.fdopen(fd, "w") as f:
                     json.dump(disk, f)
                 os.replace(tmp, self.path)
             except OSError as e:
@@ -482,11 +494,23 @@ class State:
             self.d["primary"] = name
 
     # custom modes -----------------------------------------------------------
+    def _container(self, key: str) -> dict:
+        """One of the store's sub-dicts, coerced.  The state file is a plain
+        JSON file, hand-editable by design and shared by every wxrandr in the
+        session: a value of the wrong type used to survive setdefault() and
+        come back as a str, an int or a list, whose next [] or .get() raises
+        a TypeError somewhere else entirely.  __init__ already does exactly
+        this for the top level."""
+        d = self.d.get(key)
+        if not isinstance(d, dict):
+            d = self.d[key] = {}
+        return d
+
     def modes(self) -> dict:
-        return self.d.setdefault("modes", {})
+        return self._container("modes")
 
     def addmodes(self) -> dict:
-        return self.d.setdefault("addmode", {})
+        return self._container("addmode")
 
     def custom_mode(self, name: str) -> Mode | None:
         m = self.modes().get(name)
@@ -514,11 +538,11 @@ class State:
 
     # gamma holders ----------------------------------------------------------
     def gamma(self) -> dict:
-        return self.d.setdefault("gamma", {})
+        return self._container("gamma")
 
     # last known pixel mode of outputs wxrandr disabled ----------------------
     def lastmodes(self) -> dict:
-        return self.d.setdefault("lastmode", {})
+        return self._container("lastmode")
 
 
 # -- wlr-output-management snapshot + atomic apply ----------------------------
@@ -942,7 +966,7 @@ def build_targets(outputs: list, stanzas: list, state: State,
             t.sway_tf = sway_transform(rot, refl)
         if s.scale is not None:
             sx, sy = s.scale
-            if sx != sy:
+            if sx != sy and sx == sx and sy == sy:   # a nan differs from itself
                 warn("anisotropic scaling %gx%g not supported on Wayland; "
                      "using %g for both axes\n" % (sx, sy, sx))
             t.scale = sx

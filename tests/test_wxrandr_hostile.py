@@ -38,6 +38,9 @@ sys.path.insert(0, ROOT)
 from wxrandr import cli, core                                    # noqa: E402
 
 
+HELP_LINE = "Try 'xrandr --help' for more information.\n"
+
+
 class FakeWlr(unittest.TestCase):
     """One fake wlroots compositor per test, in `mode`."""
 
@@ -220,6 +223,118 @@ class DpiFallback(FakeWlr):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.split("\n")[0],
                          "screen 0: 1920x1080 254x142 mm 192.00dpi")
+
+
+class NonFiniteArguments(FakeWlr):
+    """float() also takes `nan`, `inf` and anything that overflows to one.
+    Left alone they surfaced as raw interpreter text much later -- or, for
+    --newmode, went into the state file as a mode line nothing can render."""
+
+    CASES = [
+        (["--output", "HEAD-1", "--scale", "nan"],
+         "xrandr: failed to parse 'nan' as a scaling factor\n"),
+        (["--output", "HEAD-1", "--scale", "inf"],
+         "xrandr: failed to parse 'inf' as a scaling factor\n"),
+        (["--output", "HEAD-1", "--scale", "1e400"],
+         "xrandr: failed to parse '1e400' as a scaling factor\n"),
+        (["--output", "HEAD-1", "--rate", "nan"],
+         "xrandr: failed to parse 'nan' as a number\n"),
+        (["-s", "inf"], "xrandr: failed to parse 'inf' as a number\n"),
+        (["--newmode", "m", "nan", "1", "2", "3", "4", "5", "6", "7", "8"],
+         "xrandr: failed to parse 'nan' as a number\n"),
+        (["--output", "HEAD-1", "--brightness", "nan"],
+         "xrandr: --brightness: invalid argument 'nan'\n"),
+        (["--output", "HEAD-1", "--gamma", "inf:1:1"],
+         "xrandr: --gamma: invalid argument 'inf:1:1'\n"),
+    ]
+
+    def test_each_is_one_xrandr_line(self):
+        for argv, want in self.CASES:
+            with self.subTest(argv=argv):
+                p = self.wxrandr(*argv)
+                self.assertEqual(p.returncode, 1)
+                self.assertEqual(p.stdout, "")
+                # the whole of it: the message, then at most xrandr's own
+                # "Try 'xrandr --help'" line.  No interpreter text.
+                self.assertIn(p.stderr, (want, want + HELP_LINE), p.stderr)
+        self.assertEqual(self.apply_count(), 0)
+
+
+class HandEditedState(FakeWlr):
+    """The state file is a plain JSON file the docs invite you to edit, in a
+    directory shared with everything else that has your uid.  A container of
+    the wrong type used to survive setdefault() and come back as a str, an
+    int or a list, whose next [] or .get() raised somewhere else entirely."""
+
+    SHAPES = [
+        {"modes": "nope"}, {"gamma": "nope"}, {"addmode": 3},
+        {"lastmode": []}, {"modes": None, "gamma": 7, "addmode": "x"},
+    ]
+
+    def state_path(self):
+        return os.path.join(self.tmp, "wxrandr-state.json")
+
+    def test_a_wrong_shaped_container_never_crashes(self):
+        for shape in self.SHAPES:
+            with self.subTest(shape=shape):
+                with open(self.state_path(), "w") as f:
+                    json.dump({self.sock: shape}, f)
+                p = self.wxrandr("--query")
+                self.assertEqual((p.returncode, p.stderr), (0, ""))
+                self.assertIn("HEAD-1 connected", p.stdout)
+                p = self.wxrandr("--output", "HEAD-1", "--primary")
+                self.assertEqual((p.returncode, p.stderr), (0, ""))
+
+    def test_the_top_level_can_be_junk_too(self):
+        for junk in ("[]", '"nope"', "3", "{"):
+            with self.subTest(junk=junk):
+                with open(self.state_path(), "w") as f:
+                    f.write(junk)
+                p = self.wxrandr("--query")
+                self.assertEqual((p.returncode, p.stderr), (0, ""))
+
+
+class BrokenStdout(FakeWlr):
+    """A stdout that has gone must still exit 1.  The flush used to sit
+    inside the try, so the failure became `xrandr: <errno>` and exit 1 --
+    and then the interpreter flushed the same stream again on the way out,
+    failed again, and turned that into exit 120."""
+
+    def run_with_stdout(self, target):
+        with open(target, "w") as out:
+            return subprocess.run(
+                [sys.executable, "-m", "wxrandr", "--backend", "wlr",
+                 "--query"], env=self.env(), stdout=out,
+                stderr=subprocess.PIPE, text=True, timeout=60)
+
+    def test_a_full_stdout_exits_one(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("no /dev/full")
+        p = self.run_with_stdout("/dev/full")
+        self.assertEqual(p.returncode, 1)
+        self.assertNotIn("Traceback", p.stderr)
+        self.assertEqual(len(p.stderr.strip().split("\n")), 1, p.stderr)
+        self.assertTrue(p.stderr.startswith("xrandr: "), p.stderr)
+
+    def test_a_working_stdout_still_exits_zero(self):
+        p = self.run_with_stdout(os.path.join(self.tmp, "out.txt"))
+        self.assertEqual((p.returncode, p.stderr), (0, ""))
+        with open(os.path.join(self.tmp, "out.txt")) as f:
+            self.assertIn("HEAD-1 connected", f.read())
+
+
+class ConnectionsAreClosed(FakeWlr):
+    """Session opens the compositor connection and never closed it: the
+    socket went to the garbage collector, which says so at whatever moment it
+    gets round to it."""
+
+    def test_no_resource_warning(self):
+        p = subprocess.run(
+            [sys.executable, "-W", "always::ResourceWarning", "-m", "wxrandr",
+             "--backend", "wlr", "--query"], env=self.env(),
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn("ResourceWarning", p.stderr)
 
 
 if __name__ == "__main__":
