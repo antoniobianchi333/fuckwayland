@@ -512,7 +512,7 @@ class SelectionTests(GnomeXpropBase):
     def test_click_select_uses_select_window(self):
         code, out, err = self.run_cli("WM_CLASS")
         self.assertEqual(code, 0)
-        self.assertIn("xprop: focus the target window to select it\n", err)
+        self.assertIn("xprop: click the target window to select it\n", err)
         self.assertEqual(out, b'WM_CLASS(STRING) = "org.gnome.TextEditor", '
                               b'"org.gnome.TextEditor"\n')
         self.assertEqual(self.calls("SelectWindow"), [(0,)])

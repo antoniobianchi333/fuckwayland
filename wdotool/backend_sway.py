@@ -279,7 +279,18 @@ class SwayBackend(WindowBackend):
     def num_desktops(self) -> int:
         return len(self._msg(GET_WORKSPACES))
 
+    select_window_hint = "focus the target window to select it"
+
     def select_window(self) -> int:
+        """sway/i3: wait for the next window-focus event.
+
+        Not xdotool's semantics (the window under the pointer at the next
+        button press) and knowingly so: sway's IPC has no interactive picker,
+        no pointer position and no way to grab input from outside the
+        compositor, so there is nothing to click *with*. Clicking the window
+        that already has focus therefore does not end this wait -- focus it
+        from another window, or use another selector. Fixing it properly
+        needs a sway-side feature, not a client-side workaround."""
         s = self._connect()
         try:
             self._send(s, SUBSCRIBE, b'["window"]')

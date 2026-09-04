@@ -82,6 +82,20 @@ Ubuntu ships `org.gnome.shell disable-user-extensions = false` and
 policy changed them. Upgrading an already-loaded extension still needs a
 re-login (the ESM module cache is per process).
 
+**The extension changed in this release** (`extension.js`, `metadata.json`):
+`SelectWindow` is a new implementation — a stage grab resolved by a button
+press — and it refuses, rather than grabs, when another picker is running or
+the shell is already modal. Reinstall and log back in; nothing else in the
+interface moved.
+
+**An already-installed bridge must be reinstalled for v2.** `SelectWindow`
+became a click-to-select picker in bridge version 2 (it waited for a focus
+change in v1), so an installed v1 has to be replaced: re-run
+`sh gnome/install-bridge.sh` **and log out and back in once** — copying the
+files over a loaded extension does not reload it. `--check` prints the
+running bridge's version; `wdotool selectwindow` refuses to run against a v1
+bridge and says this, rather than hanging on the focused window.
+
 Debugging: `journalctl --user -f -o cat _COMM=gnome-shell | grep -i
 fuckwayland`. Enable/disable, bus-name changes and unexpected (`.Failed`)
 errors are logged at message level and always show up; expected errors
@@ -132,7 +146,7 @@ gdbus call --session --dest org.fuckwayland.Bridge --object-path /org/fuckwaylan
 | `MoveResize` | `(t, i, i, i, i)` | |
 | `SetState` | `(t, s state, s action) → b` | `state` ∈ `FULLSCREEN MAXIMIZED_HORZ MAXIMIZED_VERT MAXIMIZED HIDDEN ABOVE BELOW STICKY DEMANDS_ATTENTION SHADED SKIP_TASKBAR SKIP_PAGER MODAL`, `action` ∈ `add remove toggle`. `MAXIMIZED_HORZ`/`_VERT` are real per-axis operations on every release. Returns `false` (and does nothing) for what Mutter cannot set: `SHADED`, `SKIP_*`, `MODAL`, `BELOW`. Unknown ids still raise `NotFound`. |
 | `MoveToWorkspace` | `(t, i index)` | `change_workspace_by_index`; `index < 0` = stick to all workspaces (EWMH 0xFFFFFFFF); `NotFound` for a missing workspace |
-| `SelectWindow` | `(u timeout_ms) → t` | resolves with the next window that gains focus (the user must focus a *different* window, like sway), `0` on timeout; `timeout_ms = 0` waits forever. Set your D-Bus call timeout above `timeout_ms`. |
+| `SelectWindow` | `(u timeout_ms) → t` | **v2**: takes a stage grab and resolves with the window under the pointer at the next button press (`xdotool selectwindow`, including the window that already has focus); `0` when the press landed on no window. Escape, the deadline, a caller that disconnected and a disabled extension all come back as `Cancelled`. `timeout_ms = 0` means "as long as the user takes" and is still capped at 5 minutes, as is any larger value — a grab is never held indefinitely. Set your D-Bus call timeout above it (the clients use none). v1 resolved on the next *focus change* instead. |
 
 There is no hit-test method on purpose: `getmouselocation`'s window is
 computed client-side from `ListWindows` (`GnomeBackend.window_at()`, looking
@@ -199,7 +213,8 @@ stable_sequence    get_stable_sequence() (creation counter)
 Ubuntu 24.04.4 / GNOME Shell 46.0 (gnome-shell 46.0-0ubuntu6~24.04.14, gjs
 1.80.2, Xwayland 23.2.6), fresh autologin session, xterm + gnome-text-editor +
 gnome-calculator: user install → "log out and back in" → after the reboot
-`--check` shows state 1 / name owned / version 1 and the journal only has
+`--check` shows state 1 / name owned / version 1 (the bridge version then;
+it is 2 since the picker rewrite) and the journal only has
 `enabled`/`acquired` lines (no JS ERROR). Through `wdotool`: `search`
 (name/class/classname/pid/desktop/onlyvisible), `getactivewindow`,
 `getwindow{name,classname,pid,geometry}`, `windowactivate --sync` (switches
@@ -209,8 +224,8 @@ FULLSCREEN / MAXIMIZED_VERT (per-axis: 500x768 at y=32) / ABOVE / STICKY /
 DEMANDS_ATTENTION (SKIP_TASKBAR warns; SHADED and BELOW error), `windowminimize` /
 `windowmap --sync`, `set_desktop[_for_window]`, `get_desktop_for_window` (-1
 when sticky), `getmouselocation` window hit-test, `windowraise/lower`,
-`windowclose`, `windowkill`, `type`/`key` into xterm, `selectwindow` (returns
-on the next focus change). As `root` over ssh with no session environment the
+`windowclose`, `windowkill`, `type`/`key` into xterm, `selectwindow`
+(bridge v1: returned on the next focus change). As `root` over ssh with no session environment the
 same commands work (bus found next to `wayland-0`, dbus_mini's fork auth,
 `x_info()` = `(':0', '/run/user/1000/.mutter-Xwaylandauth.*')`). The
 installer's live paths: re-run while loaded → "is live", `--uninstall` →
@@ -244,6 +259,71 @@ follows `set_desktop_for_window` (1) and `STICKY` (`0xffffffff`,
 `_NET_WM_STATE_STICKY`). Note that on 26.04 even the desktop user needs
 `XAUTHORITY=$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` to talk to Xwayland
 (`XInfo`/`session.find_xauthority()` return exactly that file).
+
+Bridge v2 on 24.04 / GNOME Shell 46.0 (install → re-login → `--check` says
+version 2, journal has `enabled (bridge v2, gnome-shell 46.0)` and no
+`JS ERROR`): `selectwindow` while the calculator has focus, with the click
+injected by `wdotool click 1` over its centre, prints that window's id and
+rc 0 — the case the old focus-change picker could never answer — and the
+press does not reach the application (its window stays focused, nothing is
+typed into it); a click on empty desktop is `selectwindow: no window under
+the pointer`, rc 1; Escape is `selectwindow: cancelled with Escape`, rc 1;
+killing the client mid-pick releases the grab (the next injected click and
+keystroke reach the application again); `SelectWindow(2500)` over `gdbus`
+with no click answers `.Cancelled: no window picked within 2500 ms`. The
+session was usable after every one of them. Hit-testing Mutter's raw window
+list rather than `ListWindows`' rows was found here too: every click answered
+with an untitled surface no other command reports (hence the rule in
+`_windowUnderPointer`).
+
+`--clearmodifiers` was measured on 24.04, 26.04 and KDE with QEMU's emulated
+PS/2 keyboard (a real keyboard to the guest kernel and to libinput) holding
+Ctrl, reading back through a raw-mode terminal. Two findings, both now fixed
+and both the reason L7 reads as it does:
+* pressing the modifier back put it down on **our** virtual keyboard, where
+  the user's own release could not clear it: `type ab` after the sequence
+  still produced `^A^B`, for the rest of the daemon's life. Reproduced
+  identically on GNOME 46, GNOME 50 and KWin; not on sway, where wlroots does
+  not reference-count and the press was merely invisible.
+* not one of the eight key-ups appeared on the wire at all — the kernel drops
+  a release from a device that does not hold the key — so the flag had never
+  cleared a foreign modifier in the first place.
+
+  wdotool now restores only what it was holding itself, and says (as root)
+  which modifier it could not clear. Re-verified after the fix on 26.04 /
+  GNOME Shell 50.1 with the same emulated PS/2 keyboard: with Ctrl held on it,
+  `type --clearmodifiers ab` still arrives as `^A^B` (the modifier cannot be
+  cleared — and the warning now says so, naming `ctrl`), our virtual keyboard
+  is left holding **nothing**, and after the host releases Ctrl a plain
+  `type ab` arrives as `ab` — no stick, matching `origin/main`. Also measured
+  there: `keydown shift` is released and pressed back around the injection;
+  `keyup --clearmodifiers ctrl` ends with nothing down; two foreign keyboards
+  are named in one warning and neither is pressed; the key released *during*
+  an 8-character injection leaves nothing down on either device; chained
+  `--clearmodifiers` ops warn once per command and nothing warns without the
+  flag; `WDOTOOL_NO_KEYSTATE=1` is silent and still restores our own modifier;
+  and the desktop user (`READABLE=0 UNREADABLE=4`) gets rc 0, zero bytes of
+  stderr, no traceback, and the same clear/restore of wdotool's own modifiers.
+  The ordinary injected event stream is byte-identical to `origin/main` (188
+  events, md5 `790a14c8e5ccdfd00aa48bbcab37088e`).
+
+Bridge v2's picker was re-verified on **26.04 / GNOME Shell 50.1** after the
+review (install → re-login → `--check` version 2, journal clean, `JS ERROR`
+count 0 across every run): clicking the already-focused window answers it with
+rc 0 and the press does not reach the application; clicking the other window
+answers that one; Escape and a click on empty desktop are rc 1 with a reason;
+overlapping windows answer with whichever is raised, both ways round;
+`SelectWindow(2500)`/`(1200)` come back as `.Cancelled` after 2689/1383 ms; a
+client killed mid-pick releases the grab (typing works immediately after).
+Wedge attempts, none of which wedged anything: two pickers at once (the second
+is `.Unsupported: another window selection is already in progress`, the first
+still answers the click, none left running), the picker over the **Activities
+overview** and over **Alt+F2** (both `.Unsupported: the shell is already
+modal`, and a normal pick works immediately afterwards), `gnome-extensions
+disable` with a grab held, two SIGKILLs of the client mid-pick, twelve rapid
+pick/cancel cycles, and a timeout racing a click — after every one of them an
+injected click and `type` reached the application. `wwmctl -a :SELECT:` and
+`wxprop` click-select now print *click* the target window, and complete.
 
 Not exercised live yet: `ConfirmDisplayChange` (no display change was
 triggered) and the Looking-Glass probes of §6 of the checklist.
@@ -345,11 +425,39 @@ repo can fix; the bugs that *were* fixable have been.
   layout only reaches through a Compose sequence that is not a dead-key pair
   (`ø` on German, say), and one the layout simply does not have (`ñ` on
   `fr(basic)`, which has neither `dead_tilde` nor `ntilde`).
-* **L7 — `--clearmodifiers` releases but does not restore.** X11 lets
-  xdotool read the modifier state, clear it and put it back; Wayland has no
-  way to read it, so wdotool releases all eight modifier keys and leaves
-  them released. A modifier a *user* is physically holding stays logically
-  released until they release and press it again.
+* **L7 — `--clearmodifiers` clears wdotool's own modifiers, not the ones in
+  your hand.** X11 lets xdotool read the modifier state, clear it and put it
+  back. Through uinput neither half is possible for a key held on a *physical*
+  keyboard, and both halves were measured on live GNOME, KDE and sway
+  sessions:
+  * the kernel (`input_handle_event()`) **drops an `EV_KEY` release for a code
+    the emitting device does not hold**, so the eight key-ups wdotool sends
+    produce no events at all when it is holding nothing. The modifier is not
+    "ignored by the compositor"; nothing reaches the wire.
+  * a key-*down* wdotool sends is real, and it belongs to wdotool's virtual
+    keyboard until wdotool releases it. Mutter and KWin reference-count key
+    state across the seat's devices, so the user letting go of the same
+    modifier takes the count 2→1 and leaves it **active for the rest of the
+    session** — nothing else will ever send the matching release.
+
+  So the flag releases the eight modifier keys and presses back exactly the
+  ones **wdotool itself** was holding (from an earlier `keydown`); a modifier
+  held on a real keyboard is left alone, and the injection goes ahead with it
+  down. That cannot strand anything: every key wdotool presses, wdotool (or
+  the daemon exiting, which destroys the device) releases.
+
+  When wdotool may read the key state it says which modifier it could not
+  clear, once per command — `EVIOCGKEY` on `/dev/input/event*`,
+  `wdotool/keystate.py`, reading only, never deciding what to inject. That
+  read needs **root**: logind's `uaccess` ACL covers `/dev/uinput` (and
+  joysticks, and sound) but *not* keyboards — measured on 24.04 and 26.04
+  alike, the seat user cannot open `/dev/input/event*` (`crw-rw---- root:input`,
+  no ACL), and this repo ships no rule to change that, because a read ACL on
+  every keyboard is a system-wide keylogger for every process of that user.
+  Without the access the **behaviour is identical** and the diagnostic is
+  simply absent, so nothing warns about root. `WDOTOOL_NO_KEYSTATE=1` forces
+  that path. Clearing a foreign modifier for real would need the device
+  grabbed away from the compositor (`EVIOCGRAB`) — a different tool.
 * **L11 — a held `keydown` autorepeats.** The compositor applies its own
   key-repeat to an injected key held down, exactly as it does for a physical
   key. `keydown a; sleep 2; keyup a` types a row of `a`s. xdotool on X11
@@ -388,10 +496,36 @@ repo can fix; the bugs that *were* fixable have been.
   `/dev/uinput` does not care that the screen is locked, and neither does
   the compositor. Treat a machine where anyone can reach `/dev/uinput` as a
   machine where anyone can type into the lock screen.
-* **L8 — `selectwindow` returns on the next focus *change*.** Mutter offers
-  no click-to-select-a-window primitive, so the bridge waits for the next
-  focus change instead of a click. Clicking the window that already has
-  focus never returns; click another window first.
+* **L8 — `selectwindow` is a real picker, with a deadline.** The bridge
+  takes a Clutter stage grab and answers with the window under the pointer at
+  the next button press — `xdotool selectwindow`'s own semantics, the
+  already-focused window included. Differences that remain: the press is
+  swallowed (it does not reach the application, as under an X11 pointer
+  grab), keystrokes during the pick are swallowed too and **Escape cancels**
+  (rc 1, `selectwindow: cancelled with Escape`), a click on no window is an
+  error rather than X11's root window, and the grab is capped at **5
+  minutes** — an input grab that outlived its client would leave the session
+  unable to click anything, so it is bounded, released when the caller
+  disconnects (Ctrl-C), and released when the extension is disabled. The grab
+  is held a moment past the press (≤300 ms) for the matching button-release,
+  so the application does not receive half a click it never saw the start of;
+  scroll, touch and pad events during a pick are swallowed as well, while
+  pointer motion is let through so hover feedback still works while aiming.
+  **Two refusals, both rc 1 with a reason and neither taking a grab:** a
+  second `selectwindow` while one is already running (two stage grabs coexist,
+  but only the first handler sees each event, so the second would silently eat
+  the user's next click), and a shell that is **already modal** — the
+  Activities overview, `Alt+F2`, an open menu, a system dialog. In the last
+  case the extension reads the shell's own state (`Main.actionMode`,
+  `Main.modalCount`, `Main.overview.visible`, each feature-detected) rather
+  than trusting `pushModal`, which nests on top of the overview on GNOME 50
+  instead of refusing: measured with the overview up, grabbing anyway
+  hit-tested the click against the windows' real frame rects, which are not
+  what is on screen then, and answered with a window nowhere near the pointer
+  (46 answered with none). Dismiss the overview and pick again. Needs bridge v2: see *Install*. On sway/i3 there is no picker at all and
+  `selectwindow` still waits for a focus change (that IPC has neither an
+  interactive picker nor a pointer position); KDE has always used KWin's own
+  `queryWindowInfo` picker, which is click-to-select already.
 * **L9 — `--sync` on a maximized, fullscreen or modal-attached window.**
   Mutter constrains moves and resizes of such windows and silently refuses
   them, exactly as an X11 window manager does, so the size or position never

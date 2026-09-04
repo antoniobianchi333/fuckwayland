@@ -160,8 +160,22 @@ class WindowBackend:
     def set_window_desktop(self, wid: int, n: int):
         self._unsupported("set_desktop_for_window")
 
+    # What to tell the user while an interactive selection is pending. The
+    # backends that implement select_window() properly want a click (GNOME's
+    # bridge grab, KWin's own picker); the sway backend, which can only wait
+    # for a focus change, says so instead -- callers print this rather than
+    # guess, because the two are opposite instructions.
+    select_window_hint = "click the target window to select it"
+
     def select_window(self) -> int:
-        """Block until the user focuses a window; return it (selectwindow)."""
+        """Interactively pick a window (selectwindow); return its id.
+
+        xdotool grabs the pointer and answers with the window under it at the
+        next button press. GNOME (bridge grab) and KDE (KWin's own picker) do
+        exactly that; sway/i3 have no picker and no pointer query in their
+        IPC, so that backend still waits for the next focus change and says
+        so. Cancelling (Escape, or the picker's own timeout) raises
+        CmdError -- rc 1, never a made-up window."""
         self._unsupported("selectwindow")
 
     # optional richer views (additive, see the module docstring)

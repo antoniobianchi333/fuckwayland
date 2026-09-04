@@ -249,12 +249,13 @@ Wayland forces a few honest approximations:
 |---|---|
 | `key`/`type` `--window` | activates the target first, then injects (no XSendEvent) |
 | `getmouselocation` | asks the compositor where the pointer is (GNOME); falls back to the injected position where it cannot (sway) |
-| `--clearmodifiers` | releases all modifier keys; can't read or restore prior state |
+| `--clearmodifiers` | clears and restores the modifiers **wdotool itself** holds (from `keydown`). One held on a physical keyboard cannot be cleared through uinput at all — the kernel drops a key-up from a device that does not hold the key — and pressing it back afterwards would leave it stuck, so it is left alone; wdotool names it if it may read `/dev/input/event*` (root), and is silent, with identical behaviour, if it may not |
 | `type` non-US chars | typed through the session's active layout (see below); characters it cannot produce warn and skip |
 | `search --role` | roles don't exist on Wayland; matches against empty string |
 | `windowraise`/`lower` | floating windows only (tiling has no z-order) |
 | `set_window`, `windowreparent`, viewport/desktop-count setters | warn and succeed (cosmetic on Wayland; scripts keep running) |
 | `behave`, `behave_screen_edge`, `windowmap --sync` waits on X events | unsupported, fail cleanly |
+| `selectwindow` | click-to-select on GNOME (bridge grab, needs bridge v2) and KDE (KWin's picker); Escape cancels with rc 1, as does a second picker or a shell that is already modal (the GNOME overview, a menu). sway/i3 have no picker in their IPC and still wait for the next focus change |
 
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
 scratchpad on sway.

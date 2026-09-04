@@ -176,10 +176,14 @@ class GnomeBackend(WindowBackend):
         n = e.name
         if n.startswith(IFACE + "."):
             kind = n[len(IFACE) + 1:]
-            if kind in ("NotFound", "Unsupported"):
+            if kind in ("NotFound", "Unsupported", "Cancelled"):
                 err = CmdError(e.message or "%s: %s" % (member, kind))
                 if kind == "Unsupported":
                     err.unsupported = True  # a capability gap, not a failure
+                if kind == "Cancelled":
+                    # SelectWindow only: Escape, the timeout, a shutdown --
+                    # the user's answer was "no window", not a failure of ours
+                    err.cancelled = True
                 return err
             return CmdError("gnome backend: %s: %s" % (member, e.message or kind))
         if n in (ERR + "ServiceUnknown", ERR + "NameHasNoOwner"):
@@ -442,13 +446,38 @@ class GnomeBackend(WindowBackend):
         # set_num_desktops can warn instead of failing (B9).
         self._call("SetNWorkspaces", "i", (n,))
 
+    # The bridge version that made SelectWindow a click-to-pick; v1 waited
+    # for a focus change and would hang on the already-focused window.
+    _SELECT_MIN_VERSION = 2
+
     def select_window(self) -> int:
-        # SelectWindow(0) waits for the next focus change without a deadline;
-        # the reply comes when the user focuses a different window.
-        (wid,) = self._call("SelectWindow", "u", (0,), timeout=None)
+        """xdotool selectwindow: the window under the pointer at the next
+        button press. The bridge takes a stage grab and answers when the user
+        clicks; Escape (and the bridge's own timeout) come back as
+        `.Cancelled`, which is rc 1 with a reason, like KWin's picker.
+
+        The D-Bus call has no timeout of its own on purpose -- the wait is as
+        long as the user takes -- but the bridge always answers, so it cannot
+        hang here either."""
+        version = 0
+        try:
+            version = self.bridge_version()
+        except CmdError:
+            pass  # too old to ask, or gone: the call below reports it
+        if 0 < version < self._SELECT_MIN_VERSION:
+            raise CmdError(
+                "selectwindow: the installed fuckwayland bridge is version %d, "
+                "which can only wait for a focus change (clicking the window "
+                "that already has focus would never return). Reinstall it with "
+                "gnome/install-bridge.sh and log back in." % version)
+        try:
+            (wid,) = self._call("SelectWindow", "u", (0,), timeout=None)
+        except CmdError as e:
+            if getattr(e, "cancelled", False):
+                raise CmdError("selectwindow: %s" % e) from None
+            raise
         if not wid:
-            raise CmdError("selectwindow: the bridge stopped waiting "
-                           "(extension disabled while waiting?)")
+            raise CmdError("selectwindow: no window under the pointer")
         return int(wid)
 
     def display_size(self) -> tuple[int, int]:

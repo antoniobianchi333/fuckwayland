@@ -473,10 +473,14 @@ class ActionTests(GnomeCliBase):
         self.assertEqual((rc, self.calls("Close")), (0, [(XTERM,)]))
         self.assertNotIn(XTERM, [d["id"] for d in self.bridge.windows])
 
-    def test_select_magic_waits_for_the_next_focus(self):
+    def test_select_magic_asks_for_a_click(self):
+        # The GNOME bridge's picker answers on the next button press, so the
+        # hint says click -- "focus the target window" was true only of the
+        # focus-change wait sway is still stuck with.
         rc, _o, err = self.wm(["-a", ":SELECT:"], x11=None)
         self.assertEqual(rc, 0)
-        self.assertIn("focus the target window to select it", err)
+        self.assertIn("click the target window to select it", err)
+        self.assertNotIn("focus the target window", err)
         self.assertEqual(self.calls("SelectWindow"), [(0,)])
         self.assertEqual(self.calls("Activate"), [(EDITOR,)])
 

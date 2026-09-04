@@ -88,10 +88,15 @@ class MockBridge:
     connection does. State lives in `windows` (bridge JSON shape) and is
     mutated by the actions; `calls` records (member, args)."""
 
+    # The bridge's own hard cap on a window selection (extension.js
+    # SELECT_MAX_MS); a test below checks the two have not drifted apart.
+    SELECT_MAX_MS = 300000
+    VERSION = 2
+
     def __init__(self, mock, own_shell=True, own_bridge=True,
                  eval_unsafe=False, select_delay=0.2, select_id=EDITOR,
                  shell_mode="user", ext_info=None, screensaver_active=False,
-                 shell_version="46.0"):
+                 shell_version="46.0", version=None):
         #: the MockBus itself, not just its address: close() has to wait for
         #: the bus to let go of the names this connection owns before the
         #: next bridge asks for them (MockBus.wait_dropped)
@@ -107,7 +112,14 @@ class MockBridge:
         self.ext_info = ext_info  # None: uuid unknown to the shell
         self.screensaver_active = screensaver_active
         self.select_delay = select_delay
+        # What the user does at the picker: "button" (the default), "escape",
+        # "timeout" or "disable"; where the press lands is select_at (a point,
+        # hit-tested) or, by default, select_id (the window it resolves to).
+        self.select_event = "button"
         self.select_id = select_id
+        self.select_at = None
+        self.grabs = []            # "take"/"release", in order
+        self.version = self.VERSION if version is None else version
         self.xinfo = (":0", "/run/user/1000/.mutter-Xwaylandauth.AB12CD")
         self.pointer = (640, 400, 0)
         self._show_desktop_wins = []   # ShowDesktop(true)'s restore set
@@ -180,7 +192,7 @@ class MockBridge:
         a = m.args()
         if m.interface == dbus_mini.PROPS_IFACE and m.member == "Get":
             if a == (IFACE, "Version"):
-                return "v", (Variant("u", 1),)
+                return "v", (Variant("u", self.version),)
             if a == (SHELL_NAME, "Mode"):
                 return "v", (Variant("s", self.shell_mode),)
             if a == (SHELL_NAME, "ShellVersion"):
@@ -313,9 +325,61 @@ class MockBridge:
         self._refresh_active()
         return "", ()
 
+    def window_under_pointer(self, x, y):
+        """Port of the extension's _windowUnderPointer, over the same rows it
+        uses (ListWindows', bottom-to-top): the topmost window containing the
+        point, DESKTOP/DOCK looked through, hidden windows and other
+        workspaces skipped. The last hit wins -- a focused window does NOT win
+        over one above it, unlike getmouselocation's tie-break. 0 = the press
+        landed on no window."""
+        hit = 0
+        for d in self.windows:
+            if d["window_type"] in ("DESKTOP", "DOCK"):
+                continue
+            if d["minimized"] or d["hidden"]:
+                continue
+            if not (d["on_active_workspace"] or d["on_all_workspaces"]):
+                continue
+            if d["width"] <= 0 or d["height"] <= 0:
+                continue
+            if (d["x"] <= x < d["x"] + d["width"]
+                    and d["y"] <= y < d["y"] + d["height"]):
+                hit = d["id"]
+        return hit
+
     def m_SelectWindow(self, m, timeout_ms):
-        time.sleep(self.select_delay)
-        return "t", (self.select_id,)
+        """Port of the extension's SelectWindow (extension.js): grab, answer
+        on the NEXT BUTTON PRESS with the window under the pointer, and let
+        Escape / the timeout / a shutdown come back as .Cancelled -- with the
+        grab released on every one of those paths, which `grabs` records."""
+        cap = min(timeout_ms or self.SELECT_MAX_MS, self.SELECT_MAX_MS)
+        # Refused before anything is taken: a second concurrent picker (the
+        # first one's handler would eat every event, leaving this one to
+        # swallow the user's next click), and a shell that is already modal
+        # (the overview, a menu -- pushModal refuses and the extension does
+        # not reach past it for a plain stage grab, because the windows'
+        # frame rects are not what is on screen then).
+        if self.select_event == "busy":
+            raise DBusError(IFACE + ".Unsupported",
+                            "another window selection is already in progress")
+        if self.select_event == "modal":
+            raise DBusError(IFACE + ".Unsupported",
+                            "the shell would not grant an input grab "
+                            "(something else is modal: the overview, a menu, "
+                            "a dialog)")
+        self.grabs.append("take")
+        try:
+            time.sleep(self.select_delay)
+            reasons = {"escape": "cancelled with Escape",
+                       "timeout": "no window picked within %d ms" % cap,
+                       "disable": "the bridge extension was disabled"}
+            if self.select_event in reasons:
+                raise DBusError(IFACE + ".Cancelled", reasons[self.select_event])
+            if self.select_at is not None:
+                return "t", (self.window_under_pointer(*self.select_at),)
+            return "t", (self.select_id,)
+        finally:
+            self.grabs.append("release")
 
     def m_GetActiveWorkspace(self, m):
         return "i", (self.active_ws,)
@@ -390,7 +454,7 @@ class MockBridge:
         return "b", (False,)
 
     def m_GetVersion(self, m):
-        return "u", (1,)
+        return "u", (self.version,)
 
 
 @contextlib.contextmanager
@@ -647,18 +711,117 @@ class BackendTests(_Base):
 
     def test_display_size_and_extras(self):
         self.assertEqual(self.b.display_size(), (1920, 1080))
-        self.assertEqual(self.b.bridge_version(), 1)
+        self.assertEqual(self.b.bridge_version(), MockBridge.VERSION)
         mons = self.b.monitors()
         self.assertEqual((mons[0]["connector"], mons[0]["primary"]), ("Virtual-1", True))
 
-    def test_select_window_blocks_for_the_next_focus(self):
+    # -- selectwindow: the window under the pointer at the next press
+
+    def test_select_window_blocks_for_a_button_press(self):
         t0 = time.monotonic()
         self.assertEqual(self.b.select_window(), EDITOR)
         self.assertGreaterEqual(time.monotonic() - t0, 0.15)
+        # timeout_ms 0: the wait is as long as the user takes (the bridge
+        # caps it), and the grab is released whatever happens
         self.assertEqual(self.calls("SelectWindow"), [(0,)])
-        self.bridge.select_id = 0
-        with self.assertRaises(CmdError):
+        self.assertEqual(self.bridge.grabs, ["take", "release"])
+
+    def test_select_window_returns_the_window_that_already_has_focus(self):
+        # The whole point: xdotool answers with the window under the pointer,
+        # so clicking the focused window is a selection like any other. The
+        # focus-change picker could never return it -- it waited for a focus
+        # event that a click on the focused window does not produce.
+        self.assertTrue(self.bridge.find(XTERM)["focused"])
+        self.bridge.select_at = (150, 100)          # inside the xterm
+        self.assertEqual(self.b.select_window(), XTERM)
+        self.assertEqual(self.bridge.grabs, ["take", "release"])
+        self.assertEqual([m for m, _ in self.bridge.calls if m == "Focus"], [])
+
+    def test_select_window_picks_the_topmost_not_the_focused(self):
+        # The one deliberate difference from getmouselocation's window: a
+        # click lands on what is on top of it, focus or no focus. Here the
+        # editor is focused and the xterm is stacked above it.
+        self.b.map(EDITOR)
+        self.b.focus(EDITOR)
+        self.assertEqual(self.b.window_at(350, 250), EDITOR)   # focused wins
+        self.bridge.select_at = (350, 250)
+        self.assertEqual(self.b.select_window(), XTERM)        # topmost wins
+
+    def test_select_window_hit_test_matches_the_client_side_rule(self):
+        # Same answers as window_at() for the same points: the desktop layer
+        # is looked through, other workspaces and hidden windows are not hits.
+        for x, y in ((150, 100), (600, 400), (1800, 1000), (0, 0)):
+            self.bridge.select_at = (x, y)
+            expected = self.b.window_at(x, y)
+            if expected:
+                self.assertEqual(self.b.select_window(), expected)
+            else:
+                with self.assertRaises(CmdError) as cm:
+                    self.b.select_window()
+                self.assertIn("no window under the pointer", str(cm.exception))
+
+    def test_select_window_cancelled_with_escape(self):
+        self.bridge.select_event = "escape"
+        with self.assertRaises(CmdError) as cm:
             self.b.select_window()
+        self.assertEqual(str(cm.exception), "selectwindow: cancelled with Escape")
+        self.assertFalse(getattr(cm.exception, "unsupported", False))
+        self.assertEqual(self.bridge.grabs, ["take", "release"])
+
+    def test_select_window_timeout_and_shutdown_are_cancellations(self):
+        for event, needle in (("timeout", "no window picked within"),
+                              ("disable", "extension was disabled")):
+            self.bridge.grabs = []
+            self.bridge.select_event = event
+            with self.assertRaises(CmdError) as cm:
+                self.b.select_window()
+            self.assertIn(needle, str(cm.exception))
+            self.assertTrue(str(cm.exception).startswith("selectwindow: "))
+            self.assertEqual(self.bridge.grabs, ["take", "release"])
+
+    def test_select_window_refused_while_something_else_is_modal(self):
+        # F4: with the overview up the extension used to grab anyway and
+        # hit-test the click against frame rects that were not on screen,
+        # answering with the wrong window or none. It refuses now, and the
+        # session keeps its own modal.
+        self.bridge.select_event = "modal"
+        with self.assertRaises(CmdError) as cm:
+            self.b.select_window()
+        self.assertIn("would not grant an input grab", str(cm.exception))
+        self.assertTrue(getattr(cm.exception, "unsupported", False))
+        self.assertEqual(self.bridge.grabs, [])     # nothing taken, nothing held
+
+    def test_a_second_picker_is_refused_rather_than_left_grabbing(self):
+        # Two stage grabs coexist, but only the first captured-event handler
+        # sees each event, so the second picker would sit there grabbing and
+        # then eat the user's next click.
+        self.bridge.select_event = "busy"
+        with self.assertRaises(CmdError) as cm:
+            self.b.select_window()
+        self.assertIn("already in progress", str(cm.exception))
+        self.assertTrue(getattr(cm.exception, "unsupported", False))
+        self.assertEqual(self.bridge.grabs, [])
+
+    def test_the_hint_for_an_interactive_selection_says_click(self):
+        # wwmctl -a :SELECT: and wxprop's click-select print this before
+        # blocking. On GNOME the picker wants a click; only sway's backend,
+        # which can do nothing but wait for a focus change, says "focus".
+        from wdotool.backend_sway import SwayBackend
+        self.assertEqual(self.b.select_window_hint,
+                         "click the target window to select it")
+        self.assertEqual(SwayBackend.select_window_hint,
+                         "focus the target window to select it")
+
+    def test_select_window_on_an_old_bridge_says_to_reinstall_it(self):
+        # A v1 bridge is still installed until the user logs back in; it can
+        # only wait for a focus change, so it would hang on the focused
+        # window. Say what to do about it instead of hanging.
+        self.bridge.version = 1
+        with self.assertRaises(CmdError) as cm:
+            self.b.select_window()
+        self.assertIn("version 1", str(cm.exception))
+        self.assertIn("install-bridge.sh", str(cm.exception))
+        self.assertEqual(self.calls("SelectWindow"), [])
 
     # -- pointer hit-test
 
@@ -1047,6 +1210,134 @@ class ShippedFilesTests(unittest.TestCase):
         for needle in ('"/run/udev/data/c$maj:$min"', '/run/udev/tags/*/"c$maj:$min"',
                        "/run/udev/static_node-tags/uaccess/uinput", "udevadm info -q property"):
             self.assertIn(needle, forget)
+
+    def _extension_js(self):
+        with open(os.path.join(self.EXT, "extension.js")) as f:
+            return f.read()
+
+    def _select_window_source(self):
+        """The SelectWindow region of extension.js (the picker and its
+        teardown), so a test can say what is and is not in it."""
+        js = self._extension_js()
+        start = js.index("    // -- selectwindow ---")
+        return js[start:js.index("    // -- window bookkeeping ---", start)]
+
+    def test_select_window_no_longer_waits_for_a_focus_change(self):
+        # The defect: waiting on the compositor's focus signal meant clicking
+        # the window that already had focus never returned. Nothing in the
+        # picker may look at focus again.
+        block = self._select_window_source()
+        for gone in ("notify::focus-window", "focus_window", "focus-window"):
+            self.assertNotIn(gone, block)
+        # ...and what replaced it: a grab, resolved by a button press, with
+        # Escape and a cap as the ways out
+        for needed in ("takeGrab(", "Clutter.EventType", "BUTTON_PRESS",
+                       "Clutter.KEY_Escape", "SELECT_MAX_MS",
+                       "_windowUnderPointer", "ERR_CANCELLED"):
+            self.assertIn(needed, block)
+        # the picker may only ever name a window ListWindows reports: Mutter's
+        # raw list carries surfaces no other command would resolve
+        hit = block[block.index("    _windowUnderPointer(x, y) {"):]
+        self.assertIn("for (const d of this._listWindows())", hit)
+        self.assertNotIn("_allWindows()", hit)
+
+    def test_the_grab_is_feature_detected_and_always_released(self):
+        js = self._extension_js()
+        grab = js[js.index("function takeGrab("):js.index("\n}\n", js.index("function takeGrab("))]
+        # both spellings, neither assumed to exist (46 vs 50)
+        for needed in ("isFn(Main, 'pushModal')", "Main.popModal(grab)",
+                       "isFn(global.stage, 'grab')", "grab.dismiss()"):
+            self.assertIn(needed, grab)
+        # a grab that came back dead is dismissed rather than returned
+        self.assertIn("grabIsLive(grab)", grab)
+        block = self._select_window_source()
+        # the timeout is armed before the grab is taken, so a setup that
+        # throws is already bounded
+        self.assertLess(block.index("GLib.timeout_add"), block.index("_beginSelect(sel)"))
+        # every acquisition has its release in the one teardown
+        end = block[block.index("    _endSelect(sel, id, errName, errMsg) {"):]
+        for needed in ("obj.disconnect(hid)", "GLib.source_remove(sel.timerId)",
+                       "Gio.bus_unwatch_name(sel.watchId)", "sel.grab.release()",
+                       "if (sel.done)"):
+            self.assertIn(needed, end)
+        # a caller that goes away (Ctrl-C) releases it too
+        self.assertIn("bus_watch_name_on_connection", block)
+        # ...as does disabling the extension
+        self.assertIn("safe(() => finish(0, ERR_CANCELLED", js)
+
+    def test_the_picker_refuses_rather_than_grabbing_over_a_modal(self):
+        # A picker on top of the overview swallows the click and hit-tests it
+        # against frame rects that are not on screen (measured: a window
+        # nowhere near the pointer on GNOME 50, none at all on 46). Asking
+        # pushModal does not settle it -- it nests on some releases -- so the
+        # shell's own modal state is read, every signal feature-detected.
+        js = self._extension_js()
+        modal = js[js.index("function shellIsModal("):
+                   js.index("\n}\n", js.index("function shellIsModal("))]
+        for needed in ("Shell.ActionMode.NORMAL", "Main.actionMode",
+                       "Main.modalCount", "Main.overview.visible"):
+            self.assertIn(needed, modal)
+        self.assertEqual(modal.count("safe(() =>"), 4)   # none of them assumed
+        # ...and it is checked before anything is taken
+        block = self._select_window_source()
+        guard = block[:block.index("const asked")]
+        self.assertIn("shellIsModal()", guard)
+        self.assertIn("ERR_UNSUPPORTED", guard)
+        # a pushModal that refuses is still final: no plain-stage-grab retry
+        grab = js[js.index("function takeGrab("):js.index("\n}\n", js.index("function takeGrab("))]
+        between = grab[grab.index("Main.pushModal("):
+                       grab.index("isFn(global.stage, 'grab')")]
+        self.assertIn("return null;", between)
+
+    def test_only_one_picker_at_a_time(self):
+        block = self._select_window_source()
+        guard = block[:block.index("const asked")]
+        self.assertIn("this._selects?.size", guard)
+        self.assertIn("ERR_UNSUPPORTED", guard)
+
+    def test_the_press_is_not_answered_until_its_release(self):
+        # An application must not receive a button-release whose press it
+        # never saw. The grab is kept for the matching release, bounded by
+        # SELECT_RELEASE_MS, and exactly one timer is armed at a time so the
+        # single source_remove in _endSelect stays sufficient.
+        js = self._extension_js()
+        self.assertIn("const SELECT_RELEASE_MS = ", js)
+        block = self._select_window_source()
+        for needed in ("BUTTON_RELEASE", "TOUCH_END", "sel.pick",
+                       "SELECT_RELEASE_MS", "_pickAt(sel, event)"):
+            self.assertIn(needed, block)
+        pick = block[block.index("    _pickAt(sel, event) {"):]
+        # the old deadline is removed before the new one is armed, and a
+        # source that cannot be created answers instead of leaving the grab
+        # unbounded
+        self.assertLess(pick.index("GLib.source_remove(sel.timerId)"),
+                        pick.index("GLib.timeout_add("))
+        self.assertIn("sel.finish(sel.pick, null, null);",
+                      pick[pick.index("if (id)"):])
+
+    def test_the_picker_swallows_every_discrete_input_event(self):
+        # A keystroke, a scroll or a touch aimed at the picker must not land
+        # in the window under it; motion is deliberately let through.
+        block = self._select_window_source()
+        handler = block[block.index("    _onSelectEvent(sel, event) {"):
+                        block.index("    _pickAt(sel, event) {")]
+        for needed in ("T.KEY_RELEASE", "T.SCROLL", "T.TOUCH_UPDATE",
+                       "T.TOUCH_CANCEL", "T.PAD_BUTTON_PRESS",
+                       "T.PAD_BUTTON_RELEASE"):
+            self.assertIn(needed, handler)
+        self.assertNotIn("T.MOTION", handler)
+
+    def test_bridge_version_is_bumped_everywhere(self):
+        import json as _json
+        js = self._extension_js()
+        self.assertIn("const VERSION = %d;" % MockBridge.VERSION, js)
+        with open(os.path.join(self.EXT, "metadata.json")) as f:
+            meta = _json.load(f)
+        self.assertEqual(meta["version"], MockBridge.VERSION)
+        # the client refuses to hang on anything older
+        self.assertEqual(backend_gnome.GnomeBackend._SELECT_MIN_VERSION,
+                         MockBridge.VERSION)
+        self.assertIn("const SELECT_MAX_MS = %d;" % MockBridge.SELECT_MAX_MS, js)
 
     def test_embedded_xml_matches_file_and_has_no_hit_test(self):
         with open(os.path.join(self.EXT, "org.fuckwayland.Bridge1.xml")) as f:

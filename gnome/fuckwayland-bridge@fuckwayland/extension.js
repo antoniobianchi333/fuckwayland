@@ -19,6 +19,7 @@
 // .Unsupported, .InvalidArgs or .Failed. Every method body is guarded: a
 // broken call yields a D-Bus error, never a shell crash.
 
+import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
@@ -31,12 +32,35 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 const BUS_NAME = 'org.fuckwayland.Bridge';
 const OBJECT_PATH = '/org/fuckwayland/Bridge';
 const IFACE_NAME = 'org.fuckwayland.Bridge1';
-const VERSION = 1;
+// 2: SelectWindow picks the window under the pointer on the next button
+// press (v1 waited for a focus change). An installed v1 has to be replaced --
+// see gnome/README.md -- and the client says so instead of hanging.
+const VERSION = 2;
 
 const ERR_NOT_FOUND = `${IFACE_NAME}.NotFound`;
 const ERR_UNSUPPORTED = `${IFACE_NAME}.Unsupported`;
 const ERR_INVALID = `${IFACE_NAME}.InvalidArgs`;
 const ERR_FAILED = `${IFACE_NAME}.Failed`;
+// SelectWindow only: Escape, the timeout, a caller that went away, the
+// extension being disabled. Not a failure -- the client turns it into
+// "selectwindow: <reason>" and a non-zero exit, as KWin's picker does.
+const ERR_CANCELLED = `${IFACE_NAME}.Cancelled`;
+
+// Hard cap on a window selection, and what timeout_ms 0 ("wait for the user")
+// means. A pointer grab is the one thing here that can make a desktop feel
+// broken, so it is never held indefinitely: five minutes is far longer than
+// any click takes and short enough that a forgotten picker frees the session
+// on its own. The client is also watched (see _beginSelect) and Escape
+// cancels, so this is the last of three ways out, not the first.
+const SELECT_MAX_MS = 300000;
+
+// How long the grab is kept after the picking press, waiting for the matching
+// release. The answer is already decided by then; this only keeps the release
+// from reaching the application under the pointer as half a click it never saw
+// the start of. A device that sends no release (a touch turned into a gesture,
+// a synthetic press) must not delay the answer, so when this expires the
+// answer is returned anyway.
+const SELECT_RELEASE_MS = 300;
 
 // Keep in sync with org.fuckwayland.Bridge1.xml next to this file.
 const IFACE_XML = `<node>
@@ -170,6 +194,80 @@ function safe(fn, dflt = null) {
 
 function isFn(obj, name) {
     return !!obj && typeof obj[name] === 'function';
+}
+
+// A Clutter.Grab that did not actually take the seat is worse than none: it
+// answers no events and would have to be dismissed anyway.
+function grabIsLive(grab) {
+    if (!grab)
+        return false;
+    if (isFn(grab, 'get_seat_state')) {
+        const none = safe(() => Clutter.GrabState.NONE, null);
+        const state = safe(() => grab.get_seat_state(), null);
+        if (none !== null && state !== null && state === none)
+            return false;
+    }
+    return true;
+}
+
+// Grab all input for `actor`, feature-detected: the grab API is not the same
+// across the releases this extension targets, and neither spelling may be
+// assumed to exist.
+//
+//   Main.pushModal(actor, {actionMode}) -> Clutter.Grab, released with
+//     Main.popModal(grab). The shell's own way in; it also puts the session
+//     in a modal action mode, so no keybinding, panel button or hot corner
+//     fires while the picker is up, and it restores key focus afterwards.
+//   global.stage.grab(actor) -> Clutter.Grab, released with grab.dismiss().
+//     The plain Clutter grab underneath it, for a shell whose pushModal is
+//     missing altogether.
+//
+// pushModal *refusing* is a different thing from it being absent: the shell
+// is already modal and will not share. A refusal is therefore final here --
+// no reaching past it for a plain stage grab (see shellIsModal below for why).
+//
+// Returns {release} or null; a grab that came back dead is dismissed here, so
+// a null answer never leaves anything held.
+function takeGrab(actor) {
+    if (isFn(Main, 'pushModal')) {
+        const mode = safe(() => Shell.ActionMode.POPUP, 0);
+        const grab = safe(() => Main.pushModal(actor, mode ? {actionMode: mode} : {}), null);
+        if (grabIsLive(grab))
+            return {release: () => Main.popModal(grab)};
+        if (grab)
+            safe(() => Main.popModal(grab));
+        return null;
+    }
+    if (isFn(global.stage, 'grab')) {
+        const grab = safe(() => global.stage.grab(actor), null);
+        if (grabIsLive(grab))
+            return {release: () => grab.dismiss()};
+        if (grab)
+            safe(() => grab.dismiss());
+    }
+    return null;
+}
+
+// Is the shell already modal -- the overview, Alt+F2, an open menu, a system
+// dialog? A picker on top of that swallows the click and hit-tests it against
+// the windows' *real frame rects*, which are not what is on screen then:
+// measured with the overview up, a click on a visible thumbnail answered with
+// a window nowhere near the pointer on GNOME 50, and with none at all on 46.
+// So the picker refuses (.Unsupported) and leaves the shell's own modal alone.
+//
+// Asking pushModal is not enough: on some releases it nests happily on top of
+// the overview and hands out a second grab. Every signal here is
+// feature-detected and each is only trusted when it can be read; a shell that
+// answers none of them gets the old behaviour, which is to go ahead.
+function shellIsModal() {
+    const normal = safe(() => Shell.ActionMode.NORMAL, null);
+    const mode = safe(() => Main.actionMode, null);
+    if (normal !== null && typeof mode === 'number' && mode !== normal)
+        return true;
+    const count = safe(() => Main.modalCount, null);
+    if (typeof count === 'number' && count > 0)
+        return true;
+    return safe(() => Main.overview.visible, false) === true;
 }
 
 // A real timestamp keeps Mutter's focus-stealing prevention happy; 0
@@ -577,7 +675,7 @@ export default class FuckwaylandBridge extends Extension {
 
     disable() {
         for (const finish of Array.from(this._selects ?? []))
-            safe(() => finish(0));
+            safe(() => finish(0, ERR_CANCELLED, 'the bridge extension was disabled'));
         this._selects = null;
 
         for (const w of Array.from(this._handlers?.keys() ?? []))
@@ -661,49 +759,242 @@ export default class FuckwaylandBridge extends Extension {
         this._emit('WindowEvent', '(ts)', [id, change]);
     }
 
-    // SelectWindow(u timeout_ms) -> t: resolve with the next window that gains
-    // focus (like sway's "next focus event"; the user must focus a different
-    // window), or 0 on timeout / disable. timeout_ms 0 = wait forever.
+    // -- selectwindow -------------------------------------------------------
+
+    // SelectWindow(u timeout_ms) -> t: the window under the pointer at the
+    // NEXT BUTTON PRESS, which is what `xdotool selectwindow` means and what
+    // KWin's own picker does. v1 waited for the compositor's focus signal
+    // instead, so clicking the window that already had focus never returned
+    // at all and every other click answered only after the focus had moved.
+    //
+    // The shape: take a grab (takeGrab above), swallow the next press, hit-test
+    // the window under it, let go. Escape cancels; timeout_ms 0 means "wait
+    // for the user" and is still bounded by SELECT_MAX_MS.
+    //
+    // A grab that outlives the call would leave the session unable to click
+    // anything, which is far worse than a slow picker -- so every way out of
+    // this method goes through the one teardown, _endSelect():
+    //   * the button press and Escape, from the event handler;
+    //   * the timeout, whose source is installed BEFORE the grab is taken, so
+    //     even a setup that throws half way is already bounded;
+    //   * the caller vanishing (Ctrl-C on `wdotool selectwindow`: the pending
+    //     method call would otherwise simply never be answered), watched on
+    //     the sender's unique bus name;
+    //   * disable(), which cancels every pending selection;
+    //   * a throw anywhere in setup or in the handler, both of which end in
+    //     _endSelect() too.
+    // _endSelect() releases whatever was taken, in any order, and is a no-op
+    // the second time -- two of those racing is expected, not exceptional.
     SelectWindowAsync(params, invocation) {
+        let sel = null;
         try {
-            const timeoutMs = Number(params?.[0] ?? 0) >>> 0;
-            let sigId = 0;
-            let timerId = 0;
-            let done = false;
-            const finish = id => {
-                if (done)
-                    return;
-                done = true;
-                if (sigId)
-                    safe(() => global.display.disconnect(sigId));
-                if (timerId)
-                    safe(() => GLib.source_remove(timerId));
-                sigId = 0;
-                timerId = 0;
-                this._selects?.delete(finish);
-                try {
-                    invocation.return_value(new GLib.Variant('(t)', [Number(id) || 0]));
-                } catch (e) {
-                    debug(`SelectWindow reply failed: ${e}`);
-                }
-            };
-            sigId = global.display.connect('notify::focus-window', () => {
-                const w = safe(() => global.display.focus_window, null);
-                if (!w)
-                    return;   // focus went to nothing; keep waiting
-                finish(safe(() => this._idOf(w), 0));
-            });
-            if (timeoutMs > 0) {
-                timerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, timeoutMs, () => {
-                    timerId = 0;
-                    finish(0);
-                    return GLib.SOURCE_REMOVE;
-                });
+            // One at a time. Two stage grabs coexist happily, but only the
+            // first captured-event handler sees each event (it answers with
+            // EVENT_STOP), so the second picker would sit there grabbing --
+            // and then eat the user's next click, for up to SELECT_MAX_MS.
+            if ((this._selects?.size ?? 0) > 0) {
+                throw new BridgeError(ERR_UNSUPPORTED,
+                    'another window selection is already in progress');
             }
-            this._selects.add(finish);
+            if (shellIsModal()) {
+                throw new BridgeError(ERR_UNSUPPORTED,
+                    'the shell is already modal (the overview, a menu or a ' +
+                    'dialog has the input); dismiss it and pick again');
+            }
+            const asked = Number(params?.[0] ?? 0) >>> 0;
+            const ms = Math.min(asked || SELECT_MAX_MS, SELECT_MAX_MS);
+            sel = {done: false, invocation, handlers: [], timerId: 0,
+                   watchId: 0, grab: null, pick: null};
+            sel.finish = (id, errName, errMsg) =>
+                this._endSelect(sel, id, errName, errMsg);
+            this._selects.add(sel.finish);
+            // Bound the grab before there is one: nothing below can throw
+            // past this without the timeout still being armed.
+            sel.timerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
+                sel.timerId = 0;
+                sel.finish(0, ERR_CANCELLED,
+                    `no window picked within ${ms} ms`);
+                return GLib.SOURCE_REMOVE;
+            });
+            this._beginSelect(sel);
         } catch (e) {
-            this._returnError(invocation, 'SelectWindow', e);
+            // Keep a BridgeError's own name (a shell that will not grant a
+            // grab is .Unsupported, not a bug of ours); anything else is
+            // .Failed and gets a journal line from _endSelect.
+            const name = (e && typeof e.name === 'string' && e.name.includes('.'))
+                ? e.name : ERR_FAILED;
+            const message = e && e.message ? String(e.message) : String(e);
+            if (sel)
+                sel.finish(0, name, message);
+            else
+                this._returnError(invocation, 'SelectWindow', e);
         }
+    }
+
+    _beginSelect(sel) {
+        // The stage is the grab actor: no picker chrome to create, nothing
+        // covering the screen, nothing to leak if a teardown step fails.
+        const stage = global.stage;
+        sel.grab = takeGrab(stage);
+        if (!sel.grab) {
+            throw new BridgeError(ERR_UNSUPPORTED,
+                'the shell would not grant an input grab (something else is ' +
+                'modal: the overview, a menu, a dialog)');
+        }
+        sel.handlers.push([stage, stage.connect('captured-event',
+            (_a, event) => this._onSelectEvent(sel, event))]);
+        // Cosmetic, and best-effort on both counts: a client's own cursor
+        // wins over the display's while the pointer is over its window.
+        safe(() => global.display.set_cursor(Meta.Cursor.CROSSHAIR));
+        const sender = safe(() => sel.invocation.get_sender(), '');
+        if (sender) {
+            sel.watchId = safe(() => Gio.bus_watch_name_on_connection(
+                Gio.DBus.session, sender, Gio.BusNameWatcherFlags.NONE, null,
+                () => sel.finish(0, ERR_CANCELLED, 'the caller went away')), 0);
+        }
+    }
+
+    _onSelectEvent(sel, event) {
+        try {
+            const T = Clutter.EventType;
+            const type = safe(() => event.type(), null);
+            if (type === T.BUTTON_PRESS || type === T.TOUCH_BEGIN) {
+                if (sel.pick === null)
+                    this._pickAt(sel, event);
+                return Clutter.EVENT_STOP;
+            }
+            if (type === T.BUTTON_RELEASE || type === T.TOUCH_END) {
+                if (sel.pick !== null)
+                    sel.finish(sel.pick, null, null);
+                return Clutter.EVENT_STOP;
+            }
+            if (type === T.KEY_PRESS) {
+                const sym = safe(() => event.get_key_symbol(), 0);
+                // Once the click has happened the answer is settled; Escape
+                // is then just another key to swallow.
+                if (sym === Clutter.KEY_Escape && sel.pick === null)
+                    sel.finish(0, ERR_CANCELLED, 'cancelled with Escape');
+                return Clutter.EVENT_STOP;
+            }
+            // Everything else the grab can see and an application would
+            // otherwise act on: swallowed, so that nothing aimed at the
+            // picker lands in the window under it. Motion, enter and leave
+            // are deliberately let through -- hover feedback while aiming is
+            // wanted and changes nothing about the answer.
+            if (type === T.KEY_RELEASE || type === T.SCROLL ||
+                type === T.TOUCH_UPDATE || type === T.TOUCH_CANCEL ||
+                type === T.PAD_BUTTON_PRESS || type === T.PAD_BUTTON_RELEASE)
+                return Clutter.EVENT_STOP;
+        } catch (e) {
+            // A handler that throws must not be the reason a grab is kept.
+            sel.finish(0, ERR_FAILED, `picker failed: ${e}`);
+            return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    // The press decides the answer. The grab is held a moment longer, for the
+    // matching release, so the application does not receive a button-release
+    // whose press it never saw; SELECT_RELEASE_MS bounds that wait.
+    //
+    // The deadline is *replaced*, never added to: exactly one timer is armed
+    // at any moment, which is what makes _endSelect's single source_remove
+    // enough. Every failure here still ends in an answer -- a throw goes to
+    // the handler's catch, and a timeout source that cannot be created
+    // finishes on the spot rather than leaving the grab unbounded.
+    _pickAt(sel, event) {
+        let x = 0, y = 0;
+        const at = safe(() => event.get_coords(), null);
+        if (at)
+            [x, y] = at;
+        else
+            [x, y] = safe(() => global.get_pointer(), [0, 0]);
+        sel.pick = this._windowUnderPointer(x, y);
+        if (sel.timerId) {
+            safe(() => GLib.source_remove(sel.timerId));
+            sel.timerId = 0;
+        }
+        const id = safe(() => GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT, SELECT_RELEASE_MS, () => {
+                sel.timerId = 0;
+                sel.finish(sel.pick, null, null);
+                return GLib.SOURCE_REMOVE;
+            }), 0);
+        if (id)
+            sel.timerId = id;
+        else
+            sel.finish(sel.pick, null, null);
+    }
+
+    // The one teardown. Idempotent, order-independent, and it never lets an
+    // exception skip the steps after it.
+    _endSelect(sel, id, errName, errMsg) {
+        if (sel.done)
+            return;
+        sel.done = true;
+        this._selects?.delete(sel.finish);
+        for (const [obj, hid] of sel.handlers)
+            safe(() => obj.disconnect(hid));
+        sel.handlers = [];
+        if (sel.timerId) {
+            safe(() => GLib.source_remove(sel.timerId));
+            sel.timerId = 0;
+        }
+        if (sel.watchId) {
+            safe(() => Gio.bus_unwatch_name(sel.watchId));
+            sel.watchId = 0;
+        }
+        if (sel.grab) {
+            safe(() => sel.grab.release());
+            sel.grab = null;
+        }
+        safe(() => global.display.set_cursor(Meta.Cursor.DEFAULT));
+        if (errName === ERR_FAILED)
+            info(`SelectWindow: ${errName}: ${errMsg}`);
+        try {
+            if (errName)
+                sel.invocation.return_dbus_error(errName, errMsg || errName);
+            else
+                sel.invocation.return_value(new GLib.Variant('(t)', [Number(id) || 0]));
+        } catch (e) {
+            debug(`SelectWindow reply failed: ${e}`);
+        }
+    }
+
+    // Topmost window containing (x, y). NOT exported on the bus:
+    // getmouselocation's hit-test stays the client-side one over ListWindows
+    // (there must be exactly one of those). This one answers a different
+    // question -- what the click that just happened would have landed on, at
+    // the instant it happened -- which only the shell can know.
+    //
+    // The candidates are literally what ListWindows reports, so the picker
+    // can never name a window no other command knows: same order (actors,
+    // bottom-to-top), same exclusions (override-redirect surfaces, windows
+    // whose info cannot be read). Measured live: hit-testing Mutter's raw
+    // window list instead answered with an untitled surface that ListWindows
+    // does not carry, for every click.
+    //
+    // DESKTOP and DOCK layers are looked through, as the client-side rule
+    // does; hidden windows and other workspaces are not hits. The LAST hit
+    // wins -- unlike getmouselocation's tie-break, a focused window does not
+    // win over one stacked above it: for a picker the answer is what the
+    // click would have gone to. 0 = the press landed on no window; on
+    // Wayland there is no root window to name.
+    _windowUnderPointer(x, y) {
+        let hit = 0;
+        for (const d of this._listWindows()) {
+            if (d.window_type === 'DESKTOP' || d.window_type === 'DOCK')
+                continue;
+            if (d.minimized || d.hidden)
+                continue;
+            if (!(d.on_active_workspace || d.on_all_workspaces))
+                continue;
+            if (d.width <= 0 || d.height <= 0)
+                continue;
+            if (x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height)
+                hit = d.id;
+        }
+        return hit;
     }
 
     // -- window bookkeeping -------------------------------------------------

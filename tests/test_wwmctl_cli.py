@@ -37,6 +37,10 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 
 class FakeSwayBackend:
+    # sway's IPC has no picker: its select_window() waits for a focus change,
+    # and its hint says so (see wdotool.backend.WindowBackend).
+    select_window_hint = "focus the target window to select it"
+
     """Sway-shaped backend: offers _nodes() (raw tree view) and _msg()."""
 
     name = "sway"

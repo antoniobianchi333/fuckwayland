@@ -14,6 +14,7 @@ back with the `seed_pointer` op before a relative move (see B1/B6 in
 DESIGN.md).
 """
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -24,7 +25,7 @@ import threading
 import time
 import traceback
 
-from wdotool import keymap, uinput, xkbmap
+from wdotool import keymap, keystate, uinput, xkbmap
 from wdotool.ctx import CmdError
 
 # Per-euid log path: /tmp is shared, and a root-owned log must not break (or
@@ -65,6 +66,23 @@ def _text(val, what: str) -> str:
     if not isinstance(val, str):
         raise RuntimeError(f"invalid {what}: {val!r} (expected a string)")
     return val
+
+
+def _mods(val, what: str) -> list:
+    """Validate a request's modifier-keycode list: nothing but the eight
+    modifier keycodes may ever be pressed on a client's say-so."""
+    if val is None:
+        return []
+    if not isinstance(val, list):
+        raise RuntimeError(f"invalid {what}: {val!r} (expected a list)")
+    out = []
+    for v in val:
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise RuntimeError(f"invalid {what} entry: {v!r} (expected a keycode)")
+        if v not in keymap.MODIFIER_KEYCODES:
+            raise RuntimeError(f"{what}: {v} is not a modifier keycode")
+        out.append(v)
+    return out
 
 
 def socket_path() -> str:
@@ -159,6 +177,32 @@ def _wayland_bbox() -> tuple[int, int, int, int]:
 
 
 _SHIFTS = (keymap.KEY_LEFTSHIFT, keymap.KEY_RIGHTSHIFT)
+
+# A modifier held on a keyboard that is not ours cannot be cleared through
+# uinput at all (see "modifiers around an injection" below), so the flag says
+# so rather than look like it worked. Emitted once per client connection and
+# only when the key state could be read -- without that access there is
+# nothing to report and the behaviour is the same either way.
+FOREIGN_MODS_WARNING = (
+    "wdotool: --clearmodifiers cannot clear %s: held on a keyboard that is "
+    "not ours, and a uinput device cannot release a key it does not hold -- "
+    "the kernel drops that key-up, so nothing reaches the compositor. The "
+    "injection goes ahead with the modifier still down; let go of it, or "
+    "spell it out in the key sequence instead. Modifiers wdotool itself "
+    "holds (keydown) are cleared and put back as usual.")
+
+# Names for that warning, one per MODIFIER_KEYCODES entry.
+_MOD_LABELS = {
+    keymap.KEY_LEFTSHIFT: "shift", keymap.KEY_RIGHTSHIFT: "right shift",
+    keymap.KEY_LEFTCTRL: "ctrl", keymap.KEY_RIGHTCTRL: "right ctrl",
+    keymap.KEY_LEFTALT: "alt", keymap.KEY_RIGHTALT: "altgr",
+    keymap.KEY_LEFTMETA: "super", keymap.KEY_RIGHTMETA: "right super",
+}
+
+# Skip the key-state read (the diagnostic) entirely; for testing.
+NO_KEYSTATE_ENV = "WDOTOOL_NO_KEYSTATE"
+
+_UNSET = object()
 
 CGROUP_ROOT = "/sys/fs/cgroup"
 # Name of the cgroup the daemon moves itself into; a plain directory under
@@ -266,6 +310,8 @@ class _Daemon:
         # starts at 0,0, which is what the kernel will compare against.
         self._last_abs = (0, 0)
         self._rel_abs = None      # relative moves as absolute warps? (B1)
+        self._reader = _UNSET     # evdev key-state reader (None: degraded)
+        self._keystate_logged = False
         self.pos_known = False    # has px/py ever been established? (B6)
         self.geom_fallback = False  # last geometry() used FALLBACK_GEOMETRY
         # Active-layout state (B13). `_layout_cache` is ((keymap digest,
@@ -294,6 +340,7 @@ class _Daemon:
             self.mouse = uinput.rel_mouse()
             self.tablet = uinput.abs_pointer()
             self._last_abs = (0, 0)  # fresh device: kernel axis state is 0,0
+            self._reader = _UNSET    # rebuild it: our event nodes are new
             self.dev_error = None
             if os.environ.get("WDOTOOL_FAKE_UINPUT") != "1":
                 time.sleep(0.6)  # compositor hotplug settle
@@ -629,78 +676,234 @@ class _Daemon:
             self.down.discard(code)
             self._key_gap(delay)
 
-    def op_key(self, spec, direction, delay_ms, clearmods):
+    # -- modifiers around an injection (--clearmodifiers) ------------------
+    #
+    # xdotool's --clearmodifiers is "clear around the injection", not "clear
+    # for good": X11 reads the modifier state, releases it, injects, and puts
+    # back what was held. Through uinput that is possible for exactly the
+    # modifiers *we* hold, and for no others. Two kernel facts decide it, both
+    # measured on live GNOME, KDE and sway sessions:
+    #
+    #   * `input_handle_event()` drops an EV_KEY release for a code the
+    #     emitting device does not have down. A key-up we send for a modifier
+    #     the user holds on their own keyboard therefore produces no event at
+    #     all -- not "the compositor ignored it": nothing reaches the wire. So
+    #     a foreign modifier cannot be cleared from here.
+    #   * a key-down we send *does* produce an event, and it stays ours until
+    #     we release it. Mutter and KWin reference-count key state across the
+    #     seat's devices, so the user letting go of the same modifier takes
+    #     the count 2->1 and leaves it active -- for the rest of the session,
+    #     because nothing else will ever send our release.
+    #
+    # Pressing back a modifier we did not hold is thus the worst of both: it
+    # restores nothing (nothing was cleared) and it sticks. The restore set is
+    # `self.down` -- what this daemon is holding -- sampled with no ioctl and
+    # no re-read, so it cannot go stale: clear, inject and restore all happen
+    # under one hold of the injection lock.
+    #
+    # The real keyboards are still read (`keystate.py`, EVIOCGKEY) for the
+    # diagnostic: when that is permitted (root; logind's uaccess ACL covers
+    # /dev/uinput, not the keyboards) and a foreign keyboard is holding a
+    # modifier, say so once instead of letting a flag that cannot help look
+    # like it did nothing. Clearing such a modifier for real would need the
+    # device grabbed away from the compositor (EVIOCGRAB) -- a different tool.
+
+    def _key_reader(self):
+        """The evdev key-state reader used for the diagnostic, or None when
+        we must not read: the WDOTOOL_NO_KEYSTATE override. Built once per set
+        of uinput devices, so that our own event nodes -- which would answer
+        with our own injection -- are known before the first read."""
+        if self._reader is not _UNSET:
+            return self._reader
+        override = os.environ.get(NO_KEYSTATE_ENV, "")
+        if override and override != "0":
+            self._reader = None
+        else:
+            self._reader = keystate.Reader(exclude_paths=self._own_event_nodes())
+        return self._reader
+
+    def _own_event_nodes(self) -> set:
+        """/dev/input paths of our own virtual devices (UI_GET_SYSNAME)."""
+        out = set()
+        for dev in (self.kb, self.mouse, self.tablet):
+            name = ""
+            if dev is not None:
+                try:
+                    name = dev.sysname()
+                except AttributeError:   # a test double
+                    name = ""
+            if name:
+                out.add(os.path.join(keystate.INPUT_DIR, name))
+        return out
+
+    def _clear_mods(self, warnings=None, session=None) -> set:
+        """Release the modifier keys; return the ones to press back afterwards.
+
+        That set is what *this daemon* holds. A modifier on another keyboard
+        is neither released by the loop below (the kernel drops the key-up)
+        nor safe to press back (it would stick), so it is reported and left
+        alone. The loop still sends all eight: a key-up for a code we do not
+        hold costs one write and is dropped, and spelling out "let go of
+        every modifier" is what the flag means."""
+        ours = {c for c in keymap.MODIFIER_KEYCODES if c in self.down}
+        self._warn_foreign_mods(warnings, session)
+        for code in keymap.MODIFIER_KEYCODES:
+            self.kb.key(code, False)
+            self.down.discard(code)
+        return ours
+
+    def _restore_mods(self, held):
+        """Press back what _clear_mods() released -- the modifiers this daemon
+        was already holding.
+
+        They stay down afterwards, exactly as they were before the injection:
+        `keydown ctrl; type --clearmodifiers x` ends with ctrl down, and the
+        user's own `keyup ctrl` (or the daemon exiting, which destroys the
+        device and releases its keys) still ends it. Nothing else is ever
+        pressed here, which is what makes a stuck modifier impossible."""
+        for code in keymap.MODIFIER_KEYCODES:
+            if code in held:
+                self.kb.key(code, True)
+                self.down.add(code)
+
+    def _foreign_mods(self):
+        """Modifiers held on a keyboard that is not ours, or None when the key
+        state cannot be read at all (no permission -- the normal non-root
+        case, in which nothing about the behaviour changes)."""
+        reader = self._key_reader()
+        if reader is None:
+            return None
+        try:
+            return reader.held(keymap.MODIFIER_KEYCODES)
+        except Exception:
+            return None   # a diagnostic must never break an injection
+
+    def _warn_foreign_mods(self, warnings, session):
+        """One warning per client connection (`session`), so a chained
+        command says it once and the next invocation says it again."""
+        held = self._foreign_mods()
+        if not held:
+            return       # nothing held, or nothing readable: nothing to say
+        msg = FOREIGN_MODS_WARNING % ", ".join(
+            _MOD_LABELS[c] for c in keymap.MODIFIER_KEYCODES if c in held)
+        if not self._keystate_logged:
+            self._keystate_logged = True
+            print(msg, file=sys.stderr, flush=True)
+        if session is not None:
+            if session.get("keystate_warned"):
+                return
+            session["keystate_warned"] = True
+        if warnings is not None:
+            warnings.append(msg)
+
+    @contextlib.contextmanager
+    def _mods_cleared(self, on, warnings, session):
+        """clear -> inject -> restore without letting go of the injection
+        lock. The ops that carry `clearmods` themselves (`type`, `key`) do it
+        inline; this is for the ones handle() wraps. Doing it as three
+        requests instead would leave two gaps in which another wdotool
+        process could inject with the modifiers down, or land its own
+        injection between ours and the restore."""
+        if not on:
+            yield
+            return
+        self._need_devices()
+        held = self._clear_mods(warnings, session)
+        try:
+            yield
+        finally:
+            self._restore_mods(held)
+
+    def op_clear_modifiers(self, warnings=None, session=None) -> list:
+        """The clear half on its own (DaemonClient.clear_modifiers, kept for
+        the frozen API). Every wdotool command uses the `clearmods` flag on
+        the injection op instead, which keeps the pair atomic."""
+        self._need_devices()
+        return sorted(self._clear_mods(warnings, session))
+
+    def op_restore_modifiers(self, held):
+        """The restore half; see op_clear_modifiers. `held` is validated to
+        modifier keycodes by handle(), and _restore_mods presses nothing
+        else, so a client cannot use this to hold down an arbitrary key."""
+        self._need_devices()
+        self._restore_mods(held)
+
+    def op_key(self, spec, direction, delay_ms, clearmods, session=None):
         self._need_devices()
         warnings = []
+        # Outside the clear/restore window: reading the compositor's keymap
+        # is a query, and holding the modifiers released across it buys
+        # nothing.
         layout = self._layout(warnings)
-        if clearmods:
-            for code in keymap.MODIFIER_KEYCODES:
-                self.kb.key(code, False)
-                self.down.discard(code)
-        # ValueError on a sequence xdo rejects outright
-        keys, warns = keymap.parse_keyseq(spec, layout)
-        d = delay_ms / 1000
-        if direction == "press":
-            # xdo_send_keysequence_window converts the sequence once per pass
-            # (press, then release), so every "(symbol) No such key name"
-            # diagnostic is printed twice by the real xdotool (B12). Our own
-            # one-shot layout notice is not one of xdo's and is not doubled.
-            warns = warns * 2
-            self._press(keys, d / 2, layout)
-            self._release(keys, d / 2, layout)
-        elif direction == "down":
-            self._press(keys, d, layout)
-        elif direction == "up":
-            self._release(keys, d, layout)
-        else:
-            raise RuntimeError(f"invalid key direction {direction!r}")
+        # Restore even when the sequence is rejected or the injection fails:
+        # the modifiers are already released by then.
+        with self._mods_cleared(clearmods, warnings, session):
+            # ValueError on a sequence xdo rejects outright
+            keys, warns = keymap.parse_keyseq(spec, layout)
+            d = delay_ms / 1000
+            if direction == "press":
+                # xdo_send_keysequence_window converts the sequence once per pass
+                # (press, then release), so every "(symbol) No such key name"
+                # diagnostic is printed twice by the real xdotool (B12). Our own
+                # one-shot layout notice is not one of xdo's and is not doubled.
+                warns = warns * 2
+                self._press(keys, d / 2, layout)
+                self._release(keys, d / 2, layout)
+            elif direction == "down":
+                self._press(keys, d, layout)
+            elif direction == "up":
+                self._release(keys, d, layout)
+            else:
+                raise RuntimeError(f"invalid key direction {direction!r}")
         return warnings + warns
 
-    def op_type(self, text, delay_ms, clearmods):
+    def op_type(self, text, delay_ms, clearmods, session=None):
         self._need_devices()
         warnings = []
-        layout = self._layout(warnings)
+        layout = self._layout(warnings)   # a query: see op_key
         lname = "US" if layout is None else layout.name
-        if clearmods:
-            for code in keymap.MODIFIER_KEYCODES:
-                self.kb.key(code, False)
-                self.down.discard(code)
-        # xdo_enter_text_window: delay split between down and up, down capped at 50ms
-        down_d = min(delay_ms / 2, 50) / 1000
-        up_d = delay_ms / 1000 - down_d
-        for ch in text:
-            if layout is None:
-                hit = keymap.char_to_key(ch)
-                seq = None if hit is None else [(hit[0], int(hit[1]))]
-            else:
-                # One character can be two keystrokes: a dead key and then
-                # the base letter, which is how a French keyboard types "ô".
-                seq = layout.lookup_char(ch)
-            if not seq:
-                warnings.append(
-                    f"Can't type character '{ch}' (not on the {lname} layout). Skipping.")
-                continue
-            for code, mask in seq:
-                mods = [m for m in self._mod_keycodes(mask, layout)
-                        if not (m in (keymap.KEY_LEFTSHIFT, keymap.KEY_RIGHTSHIFT)
-                                and any(s in self.down for s in _SHIFTS))
-                        and m not in self.down]
-                for mod in mods:
-                    self.kb.key(mod, True)
-                self.kb.key(code, True)
-                if down_d > 0:
-                    time.sleep(down_d)
-                self.kb.key(code, False)
-                for mod in reversed(mods):
-                    self.kb.key(mod, False)
-                self._key_gap(up_d)
+        with self._mods_cleared(clearmods, warnings, session):
+            # xdo_enter_text_window: delay split between down and up, down capped at 50ms
+            down_d = min(delay_ms / 2, 50) / 1000
+            up_d = delay_ms / 1000 - down_d
+            for ch in text:
+                if layout is None:
+                    hit = keymap.char_to_key(ch)
+                    seq = None if hit is None else [(hit[0], int(hit[1]))]
+                else:
+                    # One character can be two keystrokes: a dead key and then
+                    # the base letter, which is how a French keyboard types "ô".
+                    seq = layout.lookup_char(ch)
+                if not seq:
+                    warnings.append(
+                        f"Can't type character '{ch}' (not on the {lname} layout). Skipping.")
+                    continue
+                for code, mask in seq:
+                    mods = [m for m in self._mod_keycodes(mask, layout)
+                            if not (m in (keymap.KEY_LEFTSHIFT, keymap.KEY_RIGHTSHIFT)
+                                    and any(s in self.down for s in _SHIFTS))
+                            and m not in self.down]
+                    for mod in mods:
+                        self.kb.key(mod, True)
+                    self.kb.key(code, True)
+                    if down_d > 0:
+                        time.sleep(down_d)
+                    self.kb.key(code, False)
+                    for mod in reversed(mods):
+                        self.kb.key(mod, False)
+                    self._key_gap(up_d)
         return warnings
 
     # -- protocol ----------------------------------------------------------
 
-    def handle(self, req) -> dict:
+    def handle(self, req, session=None) -> dict:
+        """One request. `session` is the per-connection scratch dict (a
+        warning that must be said once per command belongs there, not in the
+        daemon: the daemon outlives every client)."""
         if not isinstance(req, dict):
             return {"ok": False, "error": f"invalid request: {req!r} (expected an object)"}
+        if session is None:
+            session = {}
         op = req.get("op")
         warnings: list[str] = []
         with self.lock:
@@ -708,28 +911,37 @@ class _Daemon:
                 warnings = self.op_type(
                     _text(req.get("text"), "text"),
                     _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
-                    req.get("clearmods", False))
+                    req.get("clearmods", False), session)
             elif op == "key":
                 warnings = self.op_key(
                     _text(req.get("spec"), "spec"),
                     req.get("direction", "press"),
                     _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
-                    req.get("clearmods", False))
+                    req.get("clearmods", False), session)
+            elif op == "clear_modifiers":
+                held = self.op_clear_modifiers(warnings, session)
+                return {"ok": True, "held": held, "warnings": warnings}
+            elif op == "restore_modifiers":
+                self.op_restore_modifiers(_mods(req.get("held"), "held"))
             elif op == "mousemove_abs":
-                self.op_mousemove_abs(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
-                                      _num(req.get("y"), "y", _I32_MIN, _I32_MAX),
-                                      warnings)
+                with self._mods_cleared(req.get("clearmods", False), warnings, session):
+                    self.op_mousemove_abs(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
+                                          _num(req.get("y"), "y", _I32_MIN, _I32_MAX),
+                                          warnings)
             elif op == "mousemove_rel":
-                self.op_mousemove_rel(_num(req.get("dx"), "dx", _I32_MIN, _I32_MAX),
-                                      _num(req.get("dy"), "dy", _I32_MIN, _I32_MAX),
-                                      warnings)
+                with self._mods_cleared(req.get("clearmods", False), warnings, session):
+                    self.op_mousemove_rel(_num(req.get("dx"), "dx", _I32_MIN, _I32_MAX),
+                                          _num(req.get("dy"), "dy", _I32_MIN, _I32_MAX),
+                                          warnings)
             elif op == "button":
-                self.op_button(_num(req.get("btn"), "button", 0, 255),
-                               bool(req.get("down")))
+                with self._mods_cleared(req.get("clearmods", False), warnings, session):
+                    self.op_button(_num(req.get("btn"), "button", 0, 255),
+                                   bool(req.get("down")))
             elif op == "click":
-                self.op_click(_num(req.get("btn"), "button", 0, 255),
-                              _num(req.get("repeat", 1), "repeat", 0, MAX_REPEAT),
-                              _num(req.get("delay_ms", 100), "delay_ms", 0, MAX_DELAY_MS))
+                with self._mods_cleared(req.get("clearmods", False), warnings, session):
+                    self.op_click(_num(req.get("btn"), "button", 0, 255),
+                                  _num(req.get("repeat", 1), "repeat", 0, MAX_REPEAT),
+                                  _num(req.get("delay_ms", 100), "delay_ms", 0, MAX_DELAY_MS))
             elif op == "seed_pointer":
                 self.op_seed_pointer(_num(req.get("x"), "x", _I32_MIN, _I32_MAX),
                                      _num(req.get("y"), "y", _I32_MIN, _I32_MAX),
@@ -755,6 +967,7 @@ class _Daemon:
 
     def serve_client(self, conn: socket.socket):
         rfile = conn.makefile("r", encoding="utf-8")
+        session: dict = {}   # per-connection state (see handle())
         try:
             while True:
                 line = rfile.readline(_MAX_REQUEST + 1)
@@ -775,7 +988,7 @@ class _Daemon:
                     # JSON, wrong types, bare non-object) must produce an
                     # {"ok":false} reply, never kill the connection thread.
                     try:
-                        resp = self.handle(json.loads(line))
+                        resp = self.handle(json.loads(line), session)
                     except Exception as e:
                         resp = {"ok": False, "error": str(e) or repr(e)}
                 conn.sendall((json.dumps(resp) + "\n").encode())
@@ -991,24 +1204,45 @@ class DaemonClient:
             raise CmdError(resp.get("error", "wdotool daemon error"))
         return resp
 
-    def type_text(self, text: str, delay_ms: int):
-        self._rpc(op="type", text=text, delay_ms=delay_ms)
+    def type_text(self, text: str, delay_ms: int, clearmods: bool = False):
+        self._rpc(op="type", text=text, delay_ms=delay_ms, clearmods=clearmods)
 
     def key(self, spec: str, direction: str, delay_ms: int, clearmods: bool):
         self._rpc(op="key", spec=spec, direction=direction, delay_ms=delay_ms,
                   clearmods=clearmods)
 
-    def mousemove_abs(self, x: int, y: int):
-        self._rpc(op="mousemove_abs", x=x, y=y)
+    def clear_modifiers(self) -> list:
+        """Release the modifier keys and report which ones wdotool itself was
+        holding, to be handed back to restore_modifiers() when the injection
+        is done. Kept for the frozen API: every command passes `clearmods` to
+        the injection op instead, so that the daemon can do clear, inject and
+        restore under one lock -- as two extra round trips this pair leaves
+        gaps another process can inject into."""
+        return list(self._rpc(op="clear_modifiers").get("held") or [])
 
-    def mousemove_rel(self, dx: int, dy: int):
-        self._rpc(op="mousemove_rel", dx=dx, dy=dy)
+    def restore_modifiers(self, held):
+        """Press back what clear_modifiers() released. No round trip when
+        there is nothing to restore."""
+        if not held:
+            return
+        self._rpc(op="restore_modifiers", held=list(held))
 
-    def button(self, btn: int, down: bool):
-        self._rpc(op="button", btn=btn, down=down)
+    # `clearmods` on these is the whole --clearmodifiers dance in one
+    # request: the daemon releases the modifiers, injects and puts back what
+    # it was holding without letting go of the injection lock.
+    def mousemove_abs(self, x: int, y: int, clearmods: bool = False):
+        self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods)
 
-    def click(self, btn: int, repeat: int, delay_ms: int):
-        self._rpc(op="click", btn=btn, repeat=repeat, delay_ms=delay_ms)
+    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False):
+        self._rpc(op="mousemove_rel", dx=dx, dy=dy, clearmods=clearmods)
+
+    def button(self, btn: int, down: bool, clearmods: bool = False):
+        self._rpc(op="button", btn=btn, down=down, clearmods=clearmods)
+
+    def click(self, btn: int, repeat: int, delay_ms: int,
+              clearmods: bool = False):
+        self._rpc(op="click", btn=btn, repeat=repeat, delay_ms=delay_ms,
+                  clearmods=clearmods)
 
     def pointer(self) -> tuple[int, int]:
         resp = self._rpc(op="pointer")

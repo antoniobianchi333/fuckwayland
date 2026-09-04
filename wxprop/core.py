@@ -972,7 +972,10 @@ def select_target(sess: Session, prog: str):
             raise FatalError("can't select a window: %s" % sess.backend_error)
         raise FatalError("can't select a window without a compositor "
                          "backend; use -root, -id or -name")
-    sys.stderr.write("%s: focus the target window to select it\n" % prog)
+    # The instruction differs by backend: click on GNOME and KDE, focus the
+    # window on sway, whose IPC has no picker (see WindowBackend).
+    sys.stderr.write("%s: %s\n" % (prog, getattr(
+        b, "select_window_hint", "click the target window to select it")))
     sys.stderr.flush()
     try:
         node_id = b.select_window()

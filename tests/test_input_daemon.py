@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 
-from wdotool import daemon, keymap, uinput
+from wdotool import daemon, keymap, keystate, uinput
 from wdotool.ctx import CmdError
 
 # The suite never hands a tool over to the real X11 one: see
@@ -45,15 +45,142 @@ class RecorderDev:
         pass
 
 
-def make_daemon(geom=(0, 0, 1920, 1080), rel_abs=False):
+class KernelDev(RecorderDev):
+    """RecorderDev with the kernel's own filter in front of it.
+
+    `input_handle_event()` drops an EV_KEY event that would not change the
+    *emitting* device's key state: a release for a code this device does not
+    hold produces no event at all, and neither does a repeated press. That
+    rule is what decides what --clearmodifiers can do, and a recorder that
+    echoes everything cannot express it -- which is how "press back a
+    modifier we never held" once looked right in a test and left the modifier
+    stuck down on a real session."""
+
+    def __init__(self):
+        super().__init__()
+        self.held = set()
+
+    def key(self, code, down):
+        if (code in self.held) == bool(down):
+            return                    # no state change: the kernel drops it
+        if down:
+            self.held.add(code)
+        else:
+            self.held.discard(code)
+        super().key(code, down)
+
+
+# -- the evdev layer, faked -------------------------------------------------
+#
+# --clearmodifiers reads the real keyboards' key state (EVIOCGKEY) to know
+# what to put back. A test must never read the *runner's* keyboard for that:
+# it would answer differently depending on what the person at the keyboard
+# happens to be holding, and there is no keyboard at all in a container. So
+# keystate.Evdev -- the whole syscall layer -- is swapped for this.
+
+KB_PATH = "/dev/input/event1"       # "the keyboard"
+KB2_PATH = "/dev/input/event5"      # a second, USB keyboard
+MOUSE_PATH = "/dev/input/event2"    # not a keyboard: no modifier keys
+OURS_PATH = "/dev/input/event9"     # our own uinput keyboard's node
+MODS = tuple(keymap.MODIFIER_KEYCODES)
+CTRL, SHIFT, ALT = (keymap.KEY_LEFTCTRL, keymap.KEY_LEFTSHIFT,
+                    keymap.KEY_LEFTALT)
+
+
+def _bitmap(codes):
+    """A kernel key bitmap (EVIOCGKEY / EVIOCGBIT shape)."""
+    buf = bytearray((keystate.KEY_MAX + 8) // 8)
+    for c in codes:
+        buf[c >> 3] |= 1 << (c & 7)
+    return bytes(buf)
+
+
+class FakeEvdev:
+    """keystate.Evdev over scripted devices: (path, name, caps, held).
+
+    `unreadable` paths raise EACCES on open, which is what an
+    /dev/input/event* looks like to a uid that may not read it (the normal
+    case for a desktop user -- see the module docstring of keystate.py).
+    `before_read(self, nth)` runs before every key-state read, which is how a
+    test makes the user let go of a key mid-sequence."""
+
+    def __init__(self, devices=(), unreadable=(), before_read=None):
+        self.devices = {p: [name, set(caps), set(held)]
+                        for p, name, caps, held in devices}
+        self.unreadable = set(unreadable)
+        self.before_read = before_read
+        self.reads = []          # paths whose key state was read, in order
+        self.opened = []
+        self._fds = {}
+        self._next_fd = 10
+
+    # -- keystate.Evdev interface
+    def paths(self):
+        return sorted(set(self.devices) | self.unreadable)
+
+    def open(self, path):
+        if path not in self.devices:
+            raise PermissionError(13, "Permission denied", path)
+        self.opened.append(path)
+        fd = self._next_fd
+        self._next_fd += 1
+        self._fds[fd] = path
+        return fd
+
+    def close(self, fd):
+        self._fds.pop(fd, None)
+
+    def name(self, fd):
+        return self.devices[self._fds[fd]][0]
+
+    def key_caps(self, fd):
+        return _bitmap(self.devices[self._fds[fd]][1])
+
+    def key_state(self, fd):
+        path = self._fds[fd]
+        self.reads.append(path)
+        if self.before_read:
+            self.before_read(self, len(self.reads))
+        return _bitmap(self.devices[path][2])
+
+    # -- test helpers
+    def press(self, path, *codes):
+        self.devices[path][2].update(codes)
+
+    def release(self, path, *codes):
+        self.devices[path][2].difference_update(codes)
+
+
+def fake_evdev(held=(), devices=None, **kw):
+    """One PS/2 keyboard holding `held`, plus a mouse that is not one."""
+    if devices is None:
+        devices = [(KB_PATH, "AT Translated Set 2 keyboard", MODS, held),
+                   (MOUSE_PATH, "VirtualPS/2 VMware VMMouse", (0x110,), ())]
+    return FakeEvdev(devices, **kw)
+
+
+_DEFAULT = object()
+
+
+def make_daemon(geom=(0, 0, 1920, 1080), rel_abs=False, evdev=_DEFAULT):
     """A daemon on recorder devices. `rel_abs` pins the relative-move mode
     (B1) so no test depends on whether a sway socket happens to exist where
-    it runs; False is the sway/i3 contract (REL events), True the warp."""
+    it runs; False is the sway/i3 contract (REL events), True the warp.
+
+    `evdev` is the faked key-state layer: the default is a keyboard with
+    nothing held (so --clearmodifiers has nothing to restore and reads
+    nothing real), and None leaves the daemon to build its own reader --
+    only for the WDOTOOL_NO_KEYSTATE override, which builds none."""
     d = daemon._Daemon()
     d.kb, d.mouse, d.tablet = RecorderDev(), RecorderDev(), RecorderDev()
     d.dev_error = None
     d.geom = geom
     d._rel_abs = rel_abs
+    if evdev is _DEFAULT:
+        evdev = fake_evdev()
+    if evdev is not None:
+        d.evdev = evdev
+        d._reader = keystate.Reader(evdev=evdev, exclude_paths=(OURS_PATH,))
     return d
 
 
@@ -123,7 +250,9 @@ class TestInjectionLogic(unittest.TestCase):
         ups = d.kb.events[:8]
         self.assertEqual({e[1] for e in ups}, set(keymap.MODIFIER_KEYCODES))
         self.assertTrue(all(e[0] == "KEY" and e[2] == 0 for e in ups))
-        self.assertEqual(d.kb.events[8:], [("KEY", 30, 1), ("KEY", 30, 0)])
+        # ...and the two we were holding come back afterwards
+        self.assertEqual(d.kb.events[8:], [("KEY", 30, 1), ("KEY", 30, 0),
+                                           ("KEY", 42, 1), ("KEY", 29, 1)])
 
     def test_key_warnings(self):
         # `key` converts the sequence once per press pass and once per
@@ -248,6 +377,311 @@ class TestInjectionLogic(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 d.op_button(1, True)
 
+
+
+class TestClearModifiers(unittest.TestCase):
+    """--clearmodifiers releases the modifier keys, injects, and presses back
+    the ones *wdotool itself* was holding.
+
+    The ones the user holds on their own keyboard are neither released (the
+    kernel drops a key-up from a device that does not hold the key) nor
+    pressed back (that press would be ours, and the user's release would
+    never clear it -- a modifier stuck down for the rest of the session).
+    They are reported instead, when the key state can be read at all."""
+
+    def ups(self, d):
+        return d.kb.events[:8]
+
+    def rest(self, d):
+        return d.kb.events[8:]
+
+    def warn(self, *labels):
+        return daemon.FOREIGN_MODS_WARNING % ", ".join(labels)
+
+    # -- what is restored
+
+    def test_a_modifier_we_hold_is_released_and_pressed_back(self):
+        d = make_daemon()
+        d.down = {CTRL}
+        d.op_key("a", "press", 0, True)
+        self.assertEqual({e[1] for e in self.ups(d)}, set(MODS))
+        self.assertTrue(all(e[2] == 0 for e in self.ups(d)))
+        self.assertEqual(self.rest(d), [("KEY", 30, 1), ("KEY", 30, 0),
+                                        ("KEY", CTRL, 1)])
+        self.assertIn(CTRL, d.down)      # still held afterwards, as before
+
+    def test_a_modifier_held_on_another_keyboard_is_never_pressed_back(self):
+        # The regression this suite exists for. Pressing ctrl here would put
+        # it down on OUR device; the user releasing theirs would not clear it
+        # (Mutter and KWin refcount key state across the seat's devices), and
+        # nothing else ever would -- the session keeps a live ctrl until the
+        # daemon dies.
+        d = make_daemon(evdev=fake_evdev(held=(CTRL,)))
+        with contextlib.redirect_stderr(io.StringIO()):
+            d.op_key("a", "press", 0, True)
+        self.assertEqual(self.rest(d), [("KEY", 30, 1), ("KEY", 30, 0)])
+        self.assertNotIn(("KEY", CTRL, 1), d.kb.events)
+        self.assertNotIn(CTRL, d.down)
+
+    def test_keyup_clearmodifiers_does_not_end_with_the_modifier_down(self):
+        # `wdotool keyup --clearmodifiers ctrl` used to *press* ctrl on the
+        # way out: the user was holding it, so the restore put it back.
+        d = make_daemon(evdev=fake_evdev(held=(CTRL,)))
+        with contextlib.redirect_stderr(io.StringIO()):
+            d.op_key("ctrl", "up", 0, True)
+        self.assertNotIn(("KEY", CTRL, 1), d.kb.events)
+        self.assertEqual(d.down, set())
+
+    def test_two_foreign_keyboards_press_nothing(self):
+        d = make_daemon(evdev=fake_evdev(devices=[
+            (KB_PATH, "AT Translated Set 2 keyboard", MODS, (CTRL,)),
+            (KB2_PATH, "USB Keyboard", MODS, (ALT,)),
+        ]))
+        with contextlib.redirect_stderr(io.StringIO()):
+            d.op_key("a", "press", 0, True)
+        self.assertEqual([e for e in d.kb.events if e[2] == 1],
+                         [("KEY", 30, 1)])
+        self.assertEqual(d.down, set())
+
+    def test_a_later_command_carries_nothing_over(self):
+        d = make_daemon(evdev=fake_evdev(held=(CTRL,)))
+        with contextlib.redirect_stderr(io.StringIO()):
+            d.op_key("a", "press", 0, True)
+        d.kb.events.clear()
+        d.op_type("x", 0, False)
+        self.assertEqual(d.kb.events, [("KEY", 45, 1), ("KEY", 45, 0)])
+
+    def test_the_user_letting_go_meanwhile_cannot_strand_anything(self):
+        # Nothing is read to decide what to press, so the state going stale
+        # between the sample and the restore has nothing to corrupt: the one
+        # read is the diagnostic, and it decides only what to say.
+        ev = fake_evdev(held=(CTRL,))
+        ev.before_read = lambda e, n: e.release(KB_PATH, CTRL)
+        d = make_daemon(evdev=ev)
+        d.down = {SHIFT}
+        with contextlib.redirect_stderr(io.StringIO()):
+            d.op_key("a", "press", 0, True)
+        self.assertEqual(self.rest(d), [("KEY", 30, 1), ("KEY", 30, 0),
+                                        ("KEY", SHIFT, 1)])
+        self.assertEqual(d.evdev.reads, [KB_PATH])   # once, for the warning
+
+    def test_a_reader_that_raises_does_not_break_the_injection(self):
+        class Boom(FakeEvdev):
+            def key_state(self, fd):
+                raise OSError(5, "EIO")
+
+        d = make_daemon(evdev=Boom([
+            (KB_PATH, "AT Translated Set 2 keyboard", MODS, ())]))
+        d.down = {CTRL}
+        warnings = d.op_key("a", "press", 0, True, {})
+        self.assertEqual(warnings, [])
+        self.assertEqual(self.rest(d), [("KEY", 30, 1), ("KEY", 30, 0),
+                                        ("KEY", CTRL, 1)])
+
+    def test_type_restores_too(self):
+        d = make_daemon()
+        d.down = {SHIFT}
+        d.op_type("a", 0, True)
+        self.assertEqual(self.rest(d), [("KEY", 30, 1), ("KEY", 30, 0),
+                                        ("KEY", SHIFT, 1)])
+
+    def test_restore_happens_even_when_the_sequence_is_rejected(self):
+        d = make_daemon()
+        d.down = {CTRL}
+        with self.assertRaises(ValueError):
+            d.op_key("ctrl-x", "press", 0, True)   # invalid sequence
+        self.assertEqual(self.rest(d), [("KEY", CTRL, 1)])
+
+    # -- what actually reaches the compositor (the kernel's filter)
+
+    def test_a_foreign_modifier_produces_no_event_at_all(self):
+        # Not "the compositor ignores our key-up": the kernel generates
+        # nothing. --clearmodifiers cannot clear a key it does not hold, and
+        # the docs say so rather than promising otherwise.
+        d = make_daemon(evdev=fake_evdev(held=(CTRL,)))
+        d.kb = KernelDev()
+        with contextlib.redirect_stderr(io.StringIO()):
+            d.op_key("a", "press", 0, True)
+        self.assertEqual(d.kb.events, [("KEY", 30, 1), ("KEY", 30, 0)])
+        self.assertEqual(d.kb.held, set())
+
+    def test_our_own_modifier_is_cleared_and_restored_on_the_wire(self):
+        d = make_daemon(evdev=fake_evdev(held=(CTRL,)))
+        d.kb = KernelDev()
+        d.kb.key(CTRL, True)
+        d.down.add(CTRL)
+        d.kb.events.clear()
+        with contextlib.redirect_stderr(io.StringIO()):
+            d.op_key("a", "press", 0, True)
+        self.assertEqual(d.kb.events, [("KEY", CTRL, 0), ("KEY", 30, 1),
+                                       ("KEY", 30, 0), ("KEY", CTRL, 1)])
+        self.assertEqual(d.kb.held, {CTRL})
+
+    # -- the diagnostic
+
+    def test_a_foreign_modifier_is_named_once_per_connection(self):
+        d = make_daemon(evdev=fake_evdev(held=(CTRL, SHIFT)))
+        session = {}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(d.op_key("a", "press", 0, False, session), [])
+            first = d.op_key("a", "press", 0, True, session)
+            again = d.op_key("b", "press", 0, True, session)
+            fresh = d.op_key("c", "press", 0, True, {})
+        self.assertEqual(first, [self.warn("shift", "ctrl")])
+        self.assertEqual(again, [])          # same command, said once
+        self.assertEqual(fresh, [self.warn("shift", "ctrl")])
+        self.assertIn("cannot release a key it does not hold", first[0])
+        # ...and the daemon log carries it once, not once per request
+        self.assertEqual(err.getvalue().count("--clearmodifiers"), 1)
+
+    def test_nothing_held_says_nothing(self):
+        d = make_daemon(evdev=fake_evdev(held=()))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(d.op_key("a", "press", 0, True, {}), [])
+        self.assertEqual(err.getvalue(), "")
+
+    def test_unreadable_devices_say_nothing_and_change_nothing(self):
+        # The normal non-root case: the key state cannot be read, so there is
+        # nothing to report -- and nothing about the behaviour differs, which
+        # is why it is silent rather than nagging about root.
+        d = make_daemon(evdev=FakeEvdev(unreadable=[KB_PATH]))
+        d.down = {CTRL}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            warnings = d.op_key("a", "press", 0, True, {})
+        self.assertEqual(warnings, [])
+        self.assertEqual(err.getvalue(), "")
+        self.assertEqual(self.rest(d), [("KEY", 30, 1), ("KEY", 30, 0),
+                                        ("KEY", CTRL, 1)])
+
+    def test_our_own_virtual_keyboard_is_never_read(self):
+        # Our uinput keyboard is a keyboard like any other from evdev's point
+        # of view, and it holds ctrl because we pressed it. Reading it would
+        # make us warn about our own injection.
+        d = make_daemon(evdev=fake_evdev(devices=[
+            (KB_PATH, "AT Translated Set 2 keyboard", MODS, ()),
+            (OURS_PATH, "wdotool virtual keyboard", MODS, (CTRL,)),
+        ]))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(d.op_key("a", "press", 0, True, {}), [])
+        self.assertNotIn(OURS_PATH, d.evdev.reads)
+
+    def test_a_wdotool_device_at_an_unknown_path_is_skipped_by_name(self):
+        # Belt and braces for a kernel too old for UI_GET_SYSNAME (and for a
+        # stale device left behind by a killed daemon): the name settles it.
+        d = make_daemon(evdev=fake_evdev(devices=[
+            (KB_PATH, "AT Translated Set 2 keyboard", MODS, ()),
+            (KB2_PATH, "wdotool virtual keyboard", MODS, (SHIFT,)),
+        ]))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(d.op_key("a", "press", 0, True, {}), [])
+
+    def test_no_keystate_override_skips_the_diagnostic(self):
+        old = os.environ.get(daemon.NO_KEYSTATE_ENV)
+        os.environ[daemon.NO_KEYSTATE_ENV] = "1"
+        try:
+            d = make_daemon(evdev=None)          # would build a real reader
+            d.down = {CTRL}
+            with contextlib.redirect_stderr(io.StringIO()):
+                warnings = d.op_key("a", "press", 0, True, {})
+            self.assertIsNone(d._key_reader())
+            self.assertEqual(warnings, [])
+            self.assertEqual(self.rest(d), [("KEY", 30, 1), ("KEY", 30, 0),
+                                            ("KEY", CTRL, 1)])
+        finally:
+            if old is None:
+                os.environ.pop(daemon.NO_KEYSTATE_ENV, None)
+            else:
+                os.environ[daemon.NO_KEYSTATE_ENV] = old
+
+    # -- one request, one lock hold
+
+    def test_the_wrapped_ops_clear_and_restore_in_one_request(self):
+        # Three requests (clear, inject, restore) leave two gaps in which
+        # another wdotool process can inject -- with the modifiers down, or
+        # across the restore. Each of these does the lot under one lock.
+        for req, injected in (
+                ({"op": "click", "btn": 1, "repeat": 1, "delay_ms": 0}, ("BTN", 272)),
+                ({"op": "button", "btn": 1, "down": True}, ("BTN", 272)),
+                ({"op": "mousemove_abs", "x": 5, "y": 5}, None),
+                ({"op": "mousemove_rel", "dx": 5, "dy": 5}, None)):
+            d = make_daemon()
+            d.down = {CTRL}
+            req = dict(req, clearmods=True)
+            self.assertTrue(d.handle(req, {})["ok"], req)
+            self.assertEqual(d.kb.events[0], ("KEY", MODS[0], 0), req)
+            self.assertEqual(d.kb.events[-1], ("KEY", CTRL, 1), req)
+            self.assertIn(CTRL, d.down)
+
+    def test_the_wrapped_ops_do_nothing_without_the_flag(self):
+        d = make_daemon()
+        d.down = {CTRL}
+        self.assertTrue(d.handle({"op": "click", "btn": 1, "repeat": 1,
+                                  "delay_ms": 0}, {})["ok"])
+        self.assertEqual(d.kb.events, [])
+        self.assertEqual(d.down, {CTRL})
+
+    # -- the two ops kept for the frozen client API
+
+    def test_clear_and_restore_ops(self):
+        d = make_daemon(evdev=fake_evdev(held=(ALT,)))
+        d.down = {CTRL, SHIFT}
+        session = {}
+        with contextlib.redirect_stderr(io.StringIO()):
+            resp = d.handle({"op": "clear_modifiers"}, session)
+        self.assertEqual(resp["ok"], True)
+        self.assertEqual(sorted(resp["held"]), sorted([CTRL, SHIFT]))
+        self.assertEqual(resp["warnings"], [self.warn("alt")])
+        d.kb.events.clear()
+        self.assertEqual(d.handle({"op": "restore_modifiers",
+                                   "held": resp["held"]}, session)["ok"], True)
+        self.assertEqual(d.kb.events, [("KEY", SHIFT, 1), ("KEY", CTRL, 1)])
+
+    def test_restore_only_ever_presses_modifier_keycodes(self):
+        # A request is not allowed to name any other key: this is the one op
+        # that presses a key a client did not spell out. serve_client turns
+        # the rejection into {"ok": false} (TestProtocol covers that end).
+        d = make_daemon()
+        with self.assertRaises(RuntimeError) as cm:
+            d.handle({"op": "restore_modifiers", "held": [30]}, {})
+        self.assertIn("not a modifier keycode", str(cm.exception))
+        for bad in ("x", [["a"]], [True], [None]):
+            with self.assertRaises(RuntimeError):
+                d.handle({"op": "restore_modifiers", "held": bad}, {})
+        self.assertEqual(d.kb.events, [])
+
+
+class TestKeyStateReader(unittest.TestCase):
+    """keystate.Reader on its own: what "unknown" means and what is skipped."""
+
+    def test_unknown_is_not_the_same_as_nothing_held(self):
+        readable = keystate.Reader(evdev=fake_evdev(held=()))
+        self.assertEqual(readable.held(MODS), set())
+        nothing = keystate.Reader(evdev=FakeEvdev(unreadable=[KB_PATH]))
+        self.assertIsNone(nothing.held(MODS))
+        empty = keystate.Reader(evdev=FakeEvdev())
+        self.assertIsNone(empty.held(MODS))
+
+    def test_a_device_without_modifier_keys_is_not_a_keyboard(self):
+        r = keystate.Reader(evdev=FakeEvdev([
+            (MOUSE_PATH, "VirtualPS/2 VMware VMMouse", (0x110,), (0x110,)),
+        ]))
+        self.assertIsNone(r.held(MODS))
+
+    def test_no_codes_asked_no_devices_touched(self):
+        ev = fake_evdev(held=(CTRL,))
+        self.assertEqual(keystate.Reader(evdev=ev).held([]), set())
+        self.assertEqual(ev.opened, [])
+
+    def test_bitmap_helper(self):
+        bits = _bitmap([0, 7, 8, keymap.KEY_RIGHTMETA])
+        self.assertTrue(keystate.bit(bits, 0) and keystate.bit(bits, 7))
+        self.assertTrue(keystate.bit(bits, 8))
+        self.assertTrue(keystate.bit(bits, keymap.KEY_RIGHTMETA))
+        self.assertFalse(keystate.bit(bits, 1))
+        self.assertFalse(keystate.bit(bits, 9999))   # past the bitmap
 
 
 class TestPointerMapping(unittest.TestCase):
@@ -538,11 +972,16 @@ class TestProtocol(unittest.TestCase):
         cls.env_backup = {
             k: os.environ.get(k)
             for k in ("XDG_RUNTIME_DIR", "WDOTOOL_UINPUT_PATH", "WDOTOOL_FAKE_UINPUT",
-                      "WAYLAND_DISPLAY", "SWAYSOCK", "I3SOCK")
+                      "WAYLAND_DISPLAY", "SWAYSOCK", "I3SOCK",
+                      daemon.NO_KEYSTATE_ENV)
         }
         os.environ["XDG_RUNTIME_DIR"] = cls.tmp.name
         os.environ["WDOTOOL_UINPUT_PATH"] = "/dev/null"
         os.environ["WDOTOOL_FAKE_UINPUT"] = "1"
+        # The spawned daemon must not read the *runner's* keyboards: this is
+        # the documented override, and it makes the degraded path the one
+        # thing the wire tests below can assert on deterministically.
+        os.environ[daemon.NO_KEYSTATE_ENV] = "1"
         os.environ.pop("WAYLAND_DISPLAY", None)
         os.environ.pop("SWAYSOCK", None)
         os.environ.pop("I3SOCK", None)
@@ -610,6 +1049,45 @@ class TestProtocol(unittest.TestCase):
             self.assertEqual(self.client.pointer(), (200, 450))
             self.client.mousemove_abs(99999, 99999)
             self.assertEqual(self.client.pointer(), (1919, 1079))
+
+    def test_clear_modifiers_over_the_wire(self):
+        # No readable keyboard here (a container has none, and the runner may
+        # not read what there is), so nothing is reported and nothing about
+        # the behaviour changes -- but what the daemon itself holds still
+        # comes back, and goes back down.
+        client = daemon.DaemonClient.connect_or_spawn()
+        self.addCleanup(client.close)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(client.clear_modifiers(), [])
+            client.key("ctrl", "down", 0, False)
+            self.assertEqual(client.clear_modifiers(),
+                             [keymap.KEY_LEFTCTRL])
+            client.restore_modifiers([keymap.KEY_LEFTCTRL])
+            client.key("ctrl", "up", 0, False)
+        self.assertEqual(stderr.getvalue(), "")
+        client.restore_modifiers([])                    # no-op, no round trip
+
+    def test_clearmods_rides_on_the_injection_request(self):
+        client = daemon.DaemonClient.connect_or_spawn()
+        self.addCleanup(client.close)
+        with contextlib.redirect_stderr(io.StringIO()):
+            client.type_text("a", 0, clearmods=True)
+            client.click(1, 1, 0, clearmods=True)
+            client.button(1, True, clearmods=True)
+            client.button(1, False, clearmods=True)
+            client.mousemove_abs(4, 4, clearmods=True)
+            client.mousemove_rel(1, 1, clearmods=True)
+
+    def test_restore_modifiers_rejects_a_non_modifier(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(daemon.socket_path())
+        self.addCleanup(sock.close)
+        rfile = sock.makefile("r")
+        sock.sendall(b'{"op": "restore_modifiers", "held": [30]}\n')
+        resp = json.loads(rfile.readline())
+        self.assertFalse(resp["ok"])
+        self.assertIn("not a modifier keycode", resp["error"])
 
     def test_key_and_type(self):
         self.client.key("ctrl+shift+t", "press", 0, False)
