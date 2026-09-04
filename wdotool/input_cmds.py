@@ -108,6 +108,27 @@ def _backend_pointer(ctx):
     return (int(hit[0]), int(hit[1]))
 
 
+def _pointer_opt(ctx, seed=True):
+    """_pointer(), for the callers that only want the answer if there is one.
+
+    `mousemove` and `mousemove_relative` ask where the pointer is before they
+    move it -- the first to remember it for `mousemove restore`, the second to
+    count the delta from the real position (B1/B6). Neither NEEDS the answer:
+    an absolute move states its own destination, and a relative one is a delta
+    the compositor applies wherever the cursor happens to be. On sway with no
+    /dev/uinput -- the whole point of the virtual-pointer path -- there IS no
+    answer (zwlr_virtual_pointer_v1 has no events), so a query that raises
+    would fail the move itself and leave the pointer commands as unusable as
+    they were before the protocol. So: ask, and shrug if the answer is that
+    nobody knows. The real failure, if there is one, still comes out of the
+    move.
+    """
+    try:
+        return _pointer(ctx, seed)
+    except CmdError:
+        return None
+
+
 def _pointer(ctx, seed=True):
     """Where the pointer really is (B6).
 
@@ -276,6 +297,15 @@ def _mode_kw(ctx):
     return kw
 
 
+def _vkbd_kw(ctx):
+    """The same, for the pointer commands: `--vkbd` selects which pointer
+    injects as well as which keyboard (one switch, one decision -- see the
+    daemon's POLICY note), while `--layout` is a keyboard-only question and
+    has no meaning here."""
+    mode = getattr(ctx, "vkbd_mode", None)
+    return {"vkbd_mode": mode} if mode else {}
+
+
 def cmd_type(ctx, args):
     cmdname = getattr(ctx, "cmd_name", "type")
     usage = _USAGE_TYPE % cmdname
@@ -379,7 +409,8 @@ def cmd_click(ctx, args):
     for wid in _target_windows(ctx, window_arg):
         if wid is not None:
             _activate_settle(ctx, wid)
-        daemon.click(button, repeat, delay, clearmods=clearmods)
+        daemon.click(button, repeat, delay, clearmods=clearmods,
+                     **_vkbd_kw(ctx))
     return i + 1
 
 
@@ -408,7 +439,8 @@ def _mouse_updown(ctx, args, default_name, down, noargs_msg):
     for wid in _target_windows(ctx, opts.get("window")):
         if wid is not None:
             _activate_settle(ctx, wid)
-        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")))
+        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")),
+                      **_vkbd_kw(ctx))
     return i + 1
 
 
@@ -468,7 +500,9 @@ def cmd_mousemove(ctx, args):
     daemon = ctx.daemon()
     for wid in _target_windows(ctx, window_arg):
         if wid is None:
-            ctx._last_mouse = _pointer(ctx)  # noqa: SLF001 — restore state
+            # `mousemove restore` needs this; the move itself does not, so a
+            # compositor that cannot be asked must not fail it (_pointer_opt).
+            ctx._last_mouse = _pointer_opt(ctx)  # noqa: SLF001 — restore state
         tx, ty = x, y
         if opts.get("polar"):
             if wid is not None:
@@ -481,7 +515,8 @@ def cmd_mousemove(ctx, args):
         elif wid is not None:
             win = ctx.backend().find(wid)
             tx, ty = win.x + x, win.y + y
-        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")))
+        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")),
+                             **_vkbd_kw(ctx))
         # --sync: our injected position is authoritative, nothing to wait for
     return i + consumed
 
@@ -525,9 +560,12 @@ def cmd_mousemove_relative(ctx, args):
     # be asked, this also decides pixel-exactness: the daemon then emits the
     # target as an absolute warp instead of REL events that libinput's
     # acceleration curve would scale. Outside the clearmodifiers window: it
-    # is a query, not part of the injection.
-    _pointer(ctx)
-    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")))
+    # is a query, not part of the injection -- and an optional one: where
+    # nothing can answer it (sway, no /dev/uinput), the delta still moves the
+    # cursor the compositor is holding.
+    _pointer_opt(ctx)
+    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")),
+                               **_vkbd_kw(ctx))
     return i + 2
 
 

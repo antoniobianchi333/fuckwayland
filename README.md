@@ -89,9 +89,10 @@ There is no X server to lie to, so wdotool goes underneath instead:
   keyboard, a relative mouse, and an absolute tablet (the same shape QEMU uses, which
   every compositor maps across the whole output layout). The compositor can't tell it
   from real hardware, so this works on GNOME, KDE, sway, anything. That's also why it
-  needs root — on wlroots, `type` and `key` can skip that entirely through
-  `zwp_virtual_keyboard_v1` (see [Typing with no privilege at
-  all](#typing-with-no-privilege-at-all---vkbd)), but the pointer cannot — or,
+  needs root — on wlroots, every injecting command skips that entirely through
+  `zwp_virtual_keyboard_v1` and `zwlr_virtual_pointer_v1` (see [Typing and
+  clicking with no privilege at
+  all](#typing-and-clicking-with-no-privilege-at-all---vkbd)) — or,
   if you'd rather not: one udev rule (`sudo sh
   gnome/install-bridge.sh --udev` installs `gnome/60-fuckwayland-uinput.rules`,
   which tags `/dev/uinput` for the logged-in user's ACL — no group, nobody
@@ -384,7 +385,12 @@ the rest.
 Injecting input goes through the kernel's `/dev/uinput`, which is
 `root:root 0600` on a stock Ubuntu — so `wdotool`'s **input** commands (`key`,
 `type`, `click`, `mousemove`, `mousedown`/`mouseup`, `behave`, and any chain
-containing one) need either root or the rule below. Without it they stop with
+containing one) need either root or the rule below. On **sway and the wlroots
+family** they need neither, because the compositor offers both halves as
+unprivileged Wayland protocols and wdotool uses them exactly where the kernel
+device is closed — see [Typing and clicking with no privilege at
+all](#typing-and-clicking-with-no-privilege-at-all---vkbd). Everywhere else,
+without the rule, they stop with
 
 ```
 cannot create uinput devices: [Errno 13] Permission denied: '/dev/uinput'
@@ -568,7 +574,7 @@ layout. `vm/README.md` keeps the rig and the verbatim messages behind these cell
 | **wxprop** | works, X and native windows | works | hands over to `xprop` | works; from a root shell `-root` is synthesized **(e)** |
 | **wxrandr** | works (mutter) | works (kwin) **(f)** | hands over to `xrandr` **(g)** | works (sway) |
 | **warandr** | works (mutter) | works (kwin) **(f)** | works, driving the real `xrandr` **(g)** | works (sway); the stock image has no GTK 3 bindings **(h)** |
-| **`wdotool` without root** | pointer *and* keyboard need the udev rule (or root) | pointer *and* keyboard need the udev rule (or root) | nothing needs it (X11) | **keyboard needs nothing**; the pointer needs the udev rule (or root) **(i)** |
+| **`wdotool` without root** | pointer *and* keyboard need the udev rule (or root) | pointer *and* keyboard need the udev rule (or root) | nothing needs it (X11) | **nothing needs it**: keyboard and pointer both **(i)** |
 
 All of it works **as the desktop user and as root** — `sudo`, `ssh root@box`, cron —
 because the session's compositor socket, session bus, `DISPLAY` and X cookie are
@@ -624,12 +630,13 @@ then never draws it.
 8192 x 8192`), and whether an output is marked `primary` is the desktop's business.
 
 **(i)** sway/wlroots is the only one of the four that implements
-`zwp_virtual_keyboard_v1`, so it is the only one where `key`, `keydown`,
-`keyup` and `type` can run with no root, no group and no udev rule — see
-[Typing with no privilege at all](#typing-with-no-privilege-at-all---vkbd).
-Mutter and KWin (6.6 and 5.27, both measured) do not implement it, so on
-GNOME and KDE every injecting command still goes through `/dev/uinput`. The
-protocol has no pointer on any of them.
+`zwp_virtual_keyboard_v1` *and* `zwlr_virtual_pointer_v1`, so it is the only
+one where every injecting command — `key`, `keydown`, `keyup`, `type`,
+`click`, `mousedown`, `mouseup`, `mousemove`, `mousemove_relative` — runs
+with no root, no group and no udev rule; see [Typing and clicking with no
+privilege at all](#typing-and-clicking-with-no-privilege-at-all---vkbd).
+Mutter and KWin (6.6 and 5.27, both measured) implement neither, so on GNOME
+and KDE every injecting command still goes through `/dev/uinput`.
 
 **(h)** `warandr` is the one tool with a dependency (`python3-gi`, `gir1.2-gtk-3.0`).
 GNOME, KDE and Xfce installs have them; a minimal sway image may not, and warandr then
@@ -649,8 +656,8 @@ Wayland forces a few honest approximations:
 | | |
 |---|---|
 | `key`/`type` `--window` | activates the target first, then injects (no XSendEvent) |
-| `getmouselocation` | asks the compositor where the pointer is (GNOME, KDE); falls back to the injected position where it cannot (sway, wlroots — neither IPC has a pointer query) |
-| `--clearmodifiers` | clears and restores the modifiers **wdotool itself** holds (from `keydown`). One held on a physical keyboard cannot be cleared through uinput at all — the kernel drops a key-up from a device that does not hold the key — and pressing it back afterwards would leave it stuck, so it is left alone; wdotool names it if it may read `/dev/input/event*` (root), and is silent, with identical behaviour, if it may not. On the virtual-keyboard path (see below) there is no such gap: modifier state there is per device, so a modifier on a real keyboard does not reach our keystrokes in the first place |
+| `getmouselocation` | asks the compositor where the pointer is (GNOME, KDE); on sway/wlroots nothing can be asked — the IPC has no pointer query and `zwlr_virtual_pointer_v1` has no events at all — so it reports the position wdotool itself put the pointer at, which is exact, and **refuses with that reason** rather than guessing when wdotool has not moved it |
+| `--clearmodifiers` | clears and restores the modifiers **wdotool itself** holds (from `keydown`). One held on a physical keyboard cannot be cleared through uinput at all — the kernel drops a key-up from a device that does not hold the key — and pressing it back afterwards would leave it stuck, so it is left alone; wdotool names it if it may read `/dev/input/event*` (root), and is silent, with identical behaviour, if it may not. On the virtual-keyboard path (see below) there is no such gap: modifier state there is per device, so a modifier on a real keyboard does not reach our keystrokes in the first place. On a *pointer* command the modifier still rides the click whichever device sends it, because modifier state reaches the seat from the seat's keyboards, so that warning stays |
 | `type` non-US chars | typed through the session's active layout (see below); characters it cannot produce warn and skip |
 | `search --role` | roles don't exist on Wayland; matches against empty string |
 | `windowraise`/`lower` | floating windows only (tiling has no z-order) |
@@ -760,7 +767,7 @@ actually sent; `--info` summarises it (groups, active group, whether the US
 bypass takes it). For "what do I press for this character?" the documented
 command is `wdotool keys explain`, below.
 
-### Typing with no privilege at all (`--vkbd`)
+### Typing and clicking with no privilege at all (`--vkbd`)
 
 There is a Wayland protocol built for exactly the problem above:
 `zwp_virtual_keyboard_v1` lets a client upload **its own** keymap and send
@@ -769,47 +776,59 @@ our keycodes is the one we just uploaded. wdotool uploads a captured plain-US
 keymap, which is precisely the one its built-in character table was written
 for.
 
-**Who has it, and what that means for privileges.** Measured on all four
+And there is a second one for the other half. `zwp_virtual_keyboard_v1` has
+four requests — keymap, key, modifiers, destroy — and not one of them is a
+pointer, so wlroots ships `zwlr_virtual_pointer_v1` beside it: absolute and
+relative motion, buttons and scroll, equally unprivileged. wdotool uses both,
+under one policy and one flag.
+
+**Who has them, and what that means for privileges.** Measured on all four
 desktops this branch is tested on, as the session user and as root:
 
-| session | does it implement `zwp_virtual_keyboard_v1`? | what types | typing needs | pointer (`click`, `mousemove`, `mousedown/up`) needs |
-|---|---|---|---|---|
-| **sway 1.11 / wlroots** | **yes**, v1, advertised to every client and restricted to none | `/dev/uinput` when it can be opened, the protocol when it cannot | **nothing** — no root, no group, no udev rule | root, or the udev rule |
-| **GNOME 46 / 50 (Mutter)** | no | `/dev/uinput`, always | root, or the udev rule | root, or the udev rule |
-| **Plasma 5.27 / 6.6 (KWin)** | no — the interface is in no Plasma library, and 5.27 does not advertise it either | `/dev/uinput`, always | root, or the udev rule | root, or the udev rule |
-| X11 (Xfce, …) | not applicable — wdotool hands over to the real `xdotool` | X | nothing | nothing |
+| session | `zwp_virtual_keyboard_v1` | `zwlr_virtual_pointer_v1` | what injects | typing needs | pointer (`click`, `mousemove`, `mousedown/up`) needs |
+|---|---|---|---|---|---|
+| **sway 1.11 / wlroots** | **yes**, v1, advertised to every client and restricted to none | **yes**, v2, likewise | `/dev/uinput` when it can be opened, the protocol when it cannot | **nothing** — no root, no group, no udev rule | **nothing** either |
+| **GNOME 46 / 50 (Mutter)** | no | no | `/dev/uinput`, always | root, or the udev rule | root, or the udev rule |
+| **Plasma 5.27 / 6.6 (KWin)** | no — the interface is in no Plasma library, and 5.27 does not advertise it either | no | `/dev/uinput`, always | root, or the udev rule | root, or the udev rule |
+| X11 (Xfce, …) | not applicable — wdotool hands over to the real `xdotool` | not applicable | X | nothing | nothing |
 
-So on sway the whole keyboard half of wdotool — `key`, `keydown`, `keyup`,
-`type` — needs **no privilege whatsoever**, where before it needed root
-because `/dev/uinput` there is `crw------- root root` with no `uaccess` ACL.
-The **pointer** half does not follow: this protocol has four requests (keymap,
-key, modifiers, destroy) and carries no pointer, no buttons and no scroll, so
-`click`, `mousemove`, `mousemove_relative`, `mousedown` and `mouseup` still go
-through `/dev/uinput` and still need root or the udev rule. `search`, the
-window commands, `getdisplaygeometry` and `getactivewindow` never needed
-either. On GNOME and KDE nothing changes at all, and the reverse map above
-stays exactly where it is for both.
+So on sway **every injecting command** wdotool has — `key`, `keydown`,
+`keyup`, `type`, `click`, `mousedown`, `mouseup`, `mousemove`,
+`mousemove_relative` — needs **no privilege whatsoever**, where before it
+needed root because `/dev/uinput` there is `crw------- root root` with no
+`uaccess` ACL. `search`, the window commands, `getdisplaygeometry` and
+`getactivewindow` never needed any. On GNOME and KDE nothing changes at all,
+and the reverse map above stays exactly where it is for both.
 
-**When it is used.** Only when the kernel keyboard cannot be opened *and* the
-compositor implements the protocol. Where `/dev/uinput` works — as root, or
-with the udev rule, or on GNOME and KDE — nothing changes at all: the same
-kernel device types the same events it always did. The protocol is not free
-where it exists (the compositor hands the focused application *our* keymap
-ahead of our first key and the session's keymap back afterwards, so each
-injection makes that application recompile its keymap twice), so it is used
-where it turns a hard failure into working keystrokes, and not to replace
-something that already works.
+The two halves are chosen **separately and by the same rule**, so a
+compositor that implements one and not the other gets the protocol for that
+one and the kernel device (and its error) for the other.
+
+**When they are used.** Only when the matching kernel device cannot be opened
+*and* the compositor implements that protocol. Where `/dev/uinput` works — as
+root, or with the udev rule, or on GNOME and KDE — nothing changes at all: the
+same kernel devices inject the same events they always did. Typing through the
+protocol is not free where it exists (the compositor hands the focused
+application *our* keymap ahead of our first key and the session's keymap back
+afterwards, so each injection makes that application recompile its keymap
+twice), so the protocols are used where they turn a hard failure into working
+input, and not to replace something that already works.
 
 ```console
 $ wdotool type 'hello'              # as a plain user on sway: works, no root
-$ wdotool click 1                   # ... but this still says: run it as root
-$ wdotool --vkbd on type 'hello'    # force the protocol (error if absent)
-$ wdotool --vkbd off type 'hello'   # force /dev/uinput, whatever is offered
+$ wdotool click 1                   # ... and so does this now
+$ wdotool mousemove 2560 360        # ... exactly, on any head of any layout
+$ wdotool --vkbd on click 1         # force the protocols (error if absent)
+$ wdotool --vkbd off click 1        # force /dev/uinput, whatever is offered
 ```
+
+`--vkbd` is one switch for one decision, and it covers both halves: `--vkbd
+on type x` and `--vkbd on click 1` each ask for the protocol wdotool would
+use for that command.
 
 | | |
 |---|---|
-| `--vkbd auto` | the default: `/dev/uinput`, and the protocol only where there is no usable `/dev/uinput` |
+| `--vkbd auto` | the default: `/dev/uinput`, and a protocol only where there is no usable kernel device |
 | `--vkbd on` | always the protocol; a compositor that does not implement it is an error, never a silent fallback |
 | `--vkbd off` | always `/dev/uinput`, including its "run it as root" error |
 | `WDOTOOL_VKBD=auto\|on\|off` | the same, for the daemon; the flag beats it |
@@ -864,6 +883,100 @@ Modifier state is per device in both directions, which is worth knowing before
 mixing them: a shift held on the kernel device does not reach keys sent
 through the protocol, `--clearmodifiers` on one does not clear the other's,
 and a CapsLock locked through the protocol applies to its own keys only.
+
+#### The pointer half (`zwlr_virtual_pointer_v1`)
+
+Same policy, same flag, same lifetime rules — and the coordinates come out
+*better* than the kernel path's, not merely as good.
+
+**Absolute moves land exactly.** `motion_absolute` takes a ratio over the
+whole output layout in logical pixels, so wdotool sends the offset from the
+layout origin with the layout's own size as the extent, and the compositor
+puts the cursor precisely there. Measured on a three-head layout — one head at
+a negative origin, one at scale 1.5 — 14 of 14 targets landed with **0.000**
+error, including both corners of the bounding box. There is no axis
+quantisation to correct for at all, which is the off-by-one the kernel tablet
+path had to be fixed for, and no way to reintroduce it.
+
+**Relative moves are exact too, for a structural reason.** A virtual pointer
+is not a libinput device (sway lists it with an empty libinput configuration),
+so `pointer_accel` and `accel_profile` cannot apply to it on any wlroots
+compositor: 1, 10, 100, 500 and 1000 pixels each moved exactly that far. On
+the same seat, a `/dev/uinput` mouse asked for 500 units of relative motion
+moved the cursor 858 — which is the acceleration problem the kernel path
+works around by warping, and it cannot come back here.
+
+**Buttons and scroll are the same gestures.** All eight buttons wdotool
+supports (`1 2 3 8 9 10 11 12`) arrive as the evdev codes the kernel device
+sends. The four wheel "buttons" (`4 5 6 7`) become one notched detent each,
+with Wayland's sign convention rather than evdev's — positive vertical is
+scroll *down* — and carry `axis_value120`, so a client cannot tell them from
+a real wheel.
+
+**`getmouselocation` is the one thing this path cannot do.**
+`zwlr_virtual_pointer_v1` sends input and receives nothing: it has no events
+at all, and sway's IPC carries no cursor position either (Xwayland only knows
+the pointer while it is over an X surface). So wdotool reports the position it
+put the pointer at — exact, per the paragraph above, until somebody moves a
+real mouse — and, when it has not moved the pointer at all, says so instead of
+printing a guess:
+
+```console
+$ wdotool getmouselocation
+wdotool does not know where the pointer is: it has not moved it, and zwlr_virtual_pointer_v1 cannot be asked -- the protocol delivers no events, and neither sway's IPC nor Xwayland carries the cursor position. Move the pointer once (mousemove) and this answers exactly where it was put; on GNOME and KDE the compositor answers it directly.
+$ wdotool mousemove 2560 360 getmouselocation
+x:2560 y:360 screen:0 window:...
+```
+
+It is an **absolute** move that makes it answerable. `mousemove_relative` is
+a delta: applied to a position nobody knows it produces another position
+nobody knows, so it moves the cursor and leaves the question refused rather
+than answering a number it made up.
+
+**The one place the answer can be wrong without anyone touching a mouse** is
+a coordinate inside the layout's bounding box but on **no output** — the gap
+above or below a head that does not span the full height, on a layout whose
+heads are not flush. wdotool asks for it, the compositor clamps the cursor to
+the nearest output, and the model still holds the coordinate that was asked
+for. On a rig with heads at `-1920,-540` and `0,0`, `mousemove 1 -539` puts
+the cursor at `-0.004,-539` and `getmouselocation` says `1,-539`. Both paths
+do this and always have: the kernel tablet is mapped across the same bounding
+box.
+
+A held button behaves exactly like a held key. `mousedown 1`, `mousemove`,
+`mouseup 1` is one drag through one connection and one pointer object; the
+compositor releases a held button the instant its client disconnects, so the
+daemon keeps both for its life. A button cannot move between the two paths any
+more than a key can, and forcing `--vkbd` differently mid-drag releases it on
+the pointer that has it and says so:
+
+```console
+$ wdotool --vkbd off mouseup 1
+wdotool: the mouse buttons wdotool was holding on the virtual pointer (left) were released: this command injects through the kernel one, and only the device that pressed a button can release it
+```
+
+The release happens **even when the sink you named turns out not to exist**,
+which on a stock wlroots box is the ordinary case: `--vkbd off` there is
+asking for a `/dev/uinput` you cannot open. The command fails with that
+error, as a forced mode must — but a button is never left down on a pointer
+nothing is going to use again:
+
+```console
+$ wdotool --vkbd on mousedown 1
+$ wdotool --vkbd off mouseup 1
+wdotool: the mouse buttons wdotool was holding on the virtual pointer (left) were released: this command asked for the kernel one, which cannot be used, and a button cannot be left down on a pointer nothing is going to inject through
+cannot create uinput devices: [Errno 13] Permission denied: '/dev/uinput' (wdotool injects input via /dev/uinput; run it as root)
+$ echo $?
+1
+```
+
+`--vkbd on keydown shift` followed by `--vkbd off keyup shift` says the same
+thing about the key.
+
+One last thing worth knowing: there is one cursor per seat and this *is* that
+cursor. A physical mouse moves "our" pointer, and the position wdotool
+reports goes stale the moment anyone touches it — the same caveat the kernel
+path has always had.
 
 ### Which key was that? — `wdotool keys`
 
@@ -1023,6 +1136,13 @@ layout, so neither pointer acceleration nor an already-identical coordinate
 can lose the move. On sway/i3, relative moves keep using relative events
 (that rig runs `pointer_accel 0`); `WDOTOOL_REL_MODE=abs|rel` forces either
 mode anywhere.
+
+Where the [pointer protocol](#the-pointer-half-zwlr_virtual_pointer_v1) is
+used instead of the tablet, it is exact rather than merely pixel-exact: the
+two paths were measured against each other on the same three-head rig, one
+head at a negative origin and one at scale 1.5, and every target landed on
+the same pixel — the protocol path with 0.000 error, the tablet path within
+its own 1/32768-of-the-layout axis step.
 
 ## wwmctl
 
@@ -1356,10 +1476,13 @@ what it is, who gets it, and what is not defended against.
 **What the tools do by design.** `wdotool` injects keystrokes and pointer
 events as a kernel-level virtual device, which every application — your
 terminal, your password prompt, the lock screen — receives as real hardware.
-Keystrokes have a second route on wlroots, `zwp_virtual_keyboard_v1`, which
-is not a kernel device at all and reaches the same places: measured, an
-unprivileged client typed the account password into `swaylock` through it and
-the session unlocked.
+Both halves have a second route on wlroots, `zwp_virtual_keyboard_v1` for the
+keys and `zwlr_virtual_pointer_v1` for the pointer, which are not kernel
+devices at all and reach the same places: measured, an unprivileged client
+typed the account password into `swaylock` through the first and, through the
+second, moved the cursor and clicked with no root, no group membership and no
+device rule. On that family of compositors **nothing wdotool injects needs a
+privilege of any kind**.
 `wwmctl`, `wxprop` and `wxrandr` read and change window and display state
 through the compositor. Anything you can do at the keyboard, a script running
 as you can do through these tools; that is the whole point, and it is not a
@@ -1386,17 +1509,17 @@ vulnerability.
   about the *kernel* device, which is global to the machine — on wlroots the
   Wayland route still works while the seat is elsewhere, because it reaches
   only the compositor whose socket it connected to, which is your own.
-* **`zwp_virtual_keyboard_v1` on wlroots grants nothing that was not
-  already granted**, and that is the note. sway advertises the protocol to
-  **every client of your Wayland socket** and restricts it to none: any of
-  them could already upload a keymap and type as you, with or without us.
-  wdotool installs nothing to use it and asks nobody for permission — it is
-  the compositor's grant, to everything that can open your compositor's
-  socket, which is the same-uid boundary below. Two consequences worth
-  spelling out: on sway, typing needs neither root nor the udev rule (the
-  pointer still needs one of them), and the lock-screen note below applies to
-  this route as much as to the kernel one. Mutter and KWin 6.6.6 do not
-  implement the protocol, so nothing changes there.
+* **`zwp_virtual_keyboard_v1` and `zwlr_virtual_pointer_v1` on wlroots grant
+  nothing that was not already granted**, and that is the note. sway
+  advertises both protocols to **every client of your Wayland socket** and
+  restricts them to none: any of them could already upload a keymap and type
+  as you, or move your cursor and click, with or without us. wdotool installs
+  nothing to use them and asks nobody for permission — it is the compositor's
+  grant, to everything that can open your compositor's socket, which is the
+  same-uid boundary below. Two consequences worth spelling out: on sway,
+  injecting input needs neither root nor the udev rule at all, and the
+  lock-screen note below applies to these routes as much as to the kernel
+  one. Mutter and KWin 6.6.6 implement neither, so nothing changes there.
 * **KDE needs nothing installed**, which is itself the note: any client of a
   Plasma session bus can already load a script into KWin, with or without us.
 * **Running as root** (`sudo wdotool`) is the alternative to the udev rule.

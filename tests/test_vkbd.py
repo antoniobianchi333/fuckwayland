@@ -613,7 +613,8 @@ class ThePolicy(VkbdTest):
         self.assertEqual(len(self.comp.created), 1)
         self.assertTrue(any("zwp_virtual_keyboard_v1" in w for w in warns),
                         warns)
-        self.assertTrue(any("still need" in w for w in warns), warns)
+        self.assertTrue(any("no root and no device rule" in w for w in warns),
+                        warns)
 
     def test_without_uinput_and_without_the_protocol_nothing_changes(self):
         self.comp.manager_version = None
@@ -963,6 +964,26 @@ class SwitchingSinks(VkbdTest):
                           (keymap.KEY_LEFTSHIFT, 0)])
         self.assertTrue(any("were released" in w for w in warns), warns)
 
+    def test_a_hold_does_not_survive_a_switch_that_cannot_happen(self):
+        """The half of the switch that only shows up where the OTHER sink is
+        missing, which is every session this path exists for. `--vkbd on
+        keydown shift` then `--vkbd off keyup shift` on a box with no
+        /dev/uinput used to report the uinput error and leave shift down on
+        the virtual keyboard for the daemon's life: _own_sink() sits below
+        the raise in _pick_keyboard() and never ran. Measured on sway 1.11."""
+        d = self.daemon(uinput=False)
+        d.op_key("shift", "down", 0, False, None, None, "on")
+        self.assertEqual(self.comp.keys[-1], (keymap.KEY_LEFTSHIFT, 1))
+        self.assertEqual(d.down, {keymap.KEY_LEFTSHIFT})
+        warnings = []
+        with self.assertRaises(RuntimeError):
+            d.op_key("shift", "up", 0, False, None, None, "off",
+                     warnings=warnings)
+        self.assertEqual(self.comp.keys[-1], (keymap.KEY_LEFTSHIFT, 0),
+                         "released on the keyboard that was holding it")
+        self.assertEqual(d.down, set())
+        self.assertTrue(any("were released" in w for w in warnings), warnings)
+
     def test_nothing_is_said_when_nothing_is_held(self):
         d = self.daemon(uinput=True)
         warns = d.op_type("a", 0, False, None, None, "on")
@@ -971,8 +992,15 @@ class SwitchingSinks(VkbdTest):
         self.assertEqual(warns, [])
 
 
-class ThePointerNeverGoesThroughTheProtocol(VkbdTest):
-    def test_a_click_still_needs_the_kernel_device(self):
+class ThePointerIsANeighbourNotAPassenger(VkbdTest):
+    """The pointer has its own protocol (zwlr_virtual_pointer_v1,
+    `tests/test_vptr.py`) and this compositor advertises only the keyboard
+    one, which is exactly the case worth pinning here: the keyboard half
+    switching to the protocol must not carry the pointer half with it, and a
+    click on a compositor that offers no pointer protocol still says what it
+    always said."""
+
+    def test_a_click_still_needs_the_kernel_device_when_only_the_keyboard_has_one(self):
         d = self.daemon(uinput=False)
         d.op_type("a", 0, False)              # the protocol is live and used
         for req in ({"op": "button", "btn": 1, "down": True},
@@ -1026,8 +1054,6 @@ class TheNoticeIsSaidWhenItHappens(VkbdTest):
         d._vk_backoff = 0.0
         warns = d.op_type("a", 0, False)
         self.assertTrue(any("zwp_virtual_keyboard_v1" in w for w in warns),
-                        warns)
-        self.assertTrue(any("still need /dev/uinput" in w for w in warns),
                         warns)
         self.assertEqual(d.op_type("a", 0, False), [], "and only once")
 
