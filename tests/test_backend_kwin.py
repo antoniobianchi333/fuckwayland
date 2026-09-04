@@ -773,6 +773,29 @@ class ScriptIdRaceTests(_Base):
         b.unload(plugin)
         self.assertNotIn(plugin, self.kwin.loaded)
 
+    def test_a_renamed_script_carries_its_new_name(self):
+        """The events script unloads itself by the pluginName baked into its
+        source (K1's watchdog), so a load that had to be renamed must carry
+        the new name -- a stale one would unload nothing and leave a resident
+        script hooked to every window for the rest of the session."""
+        b = self.backend()
+        self._wedge(b)
+        plugin = b._script("events", timeout=2.0)
+        # the padding is unloaded again before _script returns, so count the
+        # names KWin was ever handed rather than what is still loaded
+        ours = [n for n in self.kwin.plugins if n.startswith("wdotool-")]
+        self.assertGreater(len(ours), 1, "no rename happened; test is vacuous")
+        self.assertNotEqual(ours[0], plugin)             # the padding
+        self.assertEqual(ours[-1], plugin)
+        loaded = [e for e in self.kwin.script_list if e["plugin"] == plugin]
+        self.assertEqual(len(loaded), 1, self.kwin.script_list)
+        self.assertEqual(loaded[0]["args"]["plugin"], plugin)
+        # ...and the padding still carries its own, not this one
+        for entry in self.kwin.script_list:
+            self.assertEqual(entry["args"].get("plugin", entry["plugin"]),
+                             entry["plugin"])
+        b.unload(plugin)
+
 
 class BackendTests(_Base):
     def setUp(self):
@@ -1275,14 +1298,20 @@ class BackendTests(_Base):
         seen = {}
         orig = self.b._load_run
 
-        def spy(plugin, source, deadline):
-            seen["plugin"], seen["source"] = plugin, source
-            return orig(plugin, source, deadline)
+        def spy(plugin, make_source, deadline):
+            # `make_source` is a factory, not a string: an id race renames the
+            # load and the name is baked into the text, so the name the script
+            # carries has to be the one it is loaded under.
+            seen["plugin"] = plugin
+            seen["source"] = make_source(plugin)
+            seen["renamed"] = make_source("some-other-name")
+            return orig(plugin, make_source, deadline)
 
         self.b._load_run = spy
         self.addCleanup(lambda: self.b.__dict__.pop("_load_run", None))
         self.assertEqual(list(self.b.events(timeout=0.3)), [])
         self.assertIn('"plugin": "%s"' % seen["plugin"], seen["source"])
+        self.assertIn('"plugin": "some-other-name"', seen["renamed"])
         self.assertTrue(seen["plugin"].endswith(seen["plugin"].split("-")[-1]))
 
     def test_events_stop_after_silence(self):

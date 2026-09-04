@@ -298,7 +298,7 @@ What differs from X, and why:
 | `selectwindow` | KWin has one reply slot for its window picker, so a second picker started while the first is up takes the click. The first call then waits until `WDOTOOL_SELECT_TIMEOUT` (2 minutes) and says so |
 | XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list (pid + `WM_CLASS`, then title and geometry). A client that publishes neither `_NET_WM_PID` nor `WM_CLASS` keeps id 0 rather than being guessed at |
 | `wxprop -root` | `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW` and `_NET_DESKTOP_NAMES` are ours (native windows included), not KWin's stale X copies |
-| `getmouselocation` | KWin's scripting API has no pointer query, so the answer is the position wdotool itself last moved to (GNOME's bridge does answer). Move the mouse by hand and the reading goes stale until the next `mousemove` |
+| `getmouselocation` | answered by KWin (`workspace.cursorPos`), like GNOME's: a mouse moved by hand, or by another process, reads correctly, and the query needs no `/dev/uinput` at all |
 
 A window state that a client applies asynchronously (fullscreen and maximize
 on a Wayland client, applied when it acks the configure) is waited for before
@@ -591,7 +591,7 @@ Wayland forces a few honest approximations:
 | | |
 |---|---|
 | `key`/`type` `--window` | activates the target first, then injects (no XSendEvent) |
-| `getmouselocation` | asks the compositor where the pointer is (GNOME); falls back to the injected position where it cannot (sway, KDE, wlroots) |
+| `getmouselocation` | asks the compositor where the pointer is (GNOME, KDE); falls back to the injected position where it cannot (sway, wlroots — neither IPC has a pointer query) |
 | `--clearmodifiers` | clears and restores the modifiers **wdotool itself** holds (from `keydown`). One held on a physical keyboard cannot be cleared through uinput at all — the kernel drops a key-up from a device that does not hold the key — and pressing it back afterwards would leave it stuck, so it is left alone; wdotool names it if it may read `/dev/input/event*` (root), and is silent, with identical behaviour, if it may not |
 | `type` non-US chars | typed through the session's active layout (see below); characters it cannot produce warn and skip |
 | `search --role` | roles don't exist on Wayland; matches against empty string |
