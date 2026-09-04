@@ -16,6 +16,7 @@ import gc
 import io
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import unittest
@@ -118,6 +119,22 @@ class Base(unittest.TestCase):
         return os.pathsep.join([local, real_dir])
 
     def stub_execve(self):
+        """Stand in for the process replacement, and undo what it leaves.
+
+        `exec_real()` resets SIGPIPE and SIGXFSZ to SIG_DFL immediately before
+        `execve`, because an *ignored* disposition survives the exec and the
+        original has to die of the signal the way it always did. The real call
+        never comes back, so nothing there needs to put them back -- but this
+        stub does come back, into a runner that keeps going with SIGPIPE now
+        fatal. The next test anywhere in the process that writes down a closed
+        pipe then kills the run outright (status 141, no summary). One process
+        per file hides that; `python3 -m unittest discover -s tests` does not.
+        """
+        for name in ("SIGPIPE", "SIGXFSZ"):
+            sig = getattr(signal, name, None)
+            if sig is not None:
+                self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+
         def fake_execve(path, argv, env):
             raise ExecCalled(path, argv, env)
         p = mock.patch.object(passthrough.os, "execve", fake_execve)

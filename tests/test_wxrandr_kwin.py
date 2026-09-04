@@ -1410,6 +1410,15 @@ class Detection(unittest.TestCase):
         for sess in self.sessions:
             if sess.kwin is not None:
                 sess.kwin.close()
+                # Session adopts the connection _probe_kwin() opened, and
+                # KwinOutputs only closes one it opened itself, so the CLI
+                # leaves this one to process exit. Nothing exits here: close
+                # it, or the collector reports it as unclosed at some
+                # unrelated point later in a shared runner.
+                try:
+                    sess.kwin.conn.close()
+                except OSError:
+                    pass
         for mod, name, orig in self.patched:
             setattr(mod, name, orig)
         for k, v in self.saved.items():

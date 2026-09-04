@@ -750,7 +750,10 @@ class ForcedBackend(unittest.TestCase):
         for name in sorted(os.listdir(os.path.join(ROOT, "warandr"))):
             if not name.endswith(".py"):
                 continue
-            with open(os.path.join(ROOT, "warandr", name)) as f:
+            # explicit encoding: these sources hold non-ASCII, and the
+            # default is whatever LC_CTYPE happens to say (LANG=C -> ASCII)
+            with open(os.path.join(ROOT, "warandr", name),
+                      encoding="utf-8") as f:
                 src = f.read()
             self.assertNotIn("maybe_exec_real", src, name)
             self.assertNotIn("os.exec", src, name)
