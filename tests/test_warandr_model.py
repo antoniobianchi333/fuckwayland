@@ -715,6 +715,25 @@ class BackendChoice(unittest.TestCase):
         self.assertEqual(b.env["PYTHONPATH"].split(os.pathsep)[0], ROOT)
         self.assertEqual(b.env["WAYLAND_DISPLAY"], "wayland-1")
 
+    def test_wayland_no_sys_executable(self):
+        """`env -i warandr --command` on a Wayland session: an interpreter
+        that cannot work out its own path leaves sys.executable == "", and
+        argv[0]="" is execve's "Permission denied: ''". The runner must find
+        a python by name, or fall through to `wxrandr` on PATH."""
+        orig = sys.executable
+        sys.executable = ""
+        try:
+            b = randr.choose(self.wayland_env())
+        finally:
+            sys.executable = orig
+        self.assertTrue(b.wayland)
+        self.assertTrue(b.argv[0], "empty argv[0] is not runnable")
+        self.assertTrue(os.path.isabs(b.argv[0]) or b.argv == ["wxrandr"],
+                        b.argv)
+        if b.argv[0] != "wxrandr":
+            self.assertTrue(os.access(b.argv[0], os.X_OK), b.argv)
+            self.assertEqual(b.argv[1:], ["-m", "wxrandr"])
+
     def test_x11(self):
         b = randr.choose({"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11"})
         self.assertEqual(b.argv, ["xrandr"])

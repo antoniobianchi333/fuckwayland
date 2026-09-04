@@ -134,14 +134,20 @@ def _detect_backend():
 
 
 def _progname() -> str:
-    """argv[0] the way xprop prints it in its diagnostics."""
+    """argv[0] the way xprop prints it in its diagnostics.
+
+    Verbatim, not basename(): xprop sets `program_name = argv[0]` and never
+    trims it, so `/usr/bin/xprop -badflag` says "/usr/bin/xprop: ...". We
+    print the same string for the same invocation, which is the whole point
+    of a drop-in. `python -m wxprop` has no name worth printing, so the tool
+    name stands in (WXPROP_ARGV0 overrides both)."""
     override = os.environ.get("WXPROP_ARGV0")
     if override:
         return override
-    base = os.path.basename(sys.argv[0] or "")
-    if not base or base in ("__main__.py", "-c", "-m"):
+    argv0 = sys.argv[0] or ""
+    if not argv0 or os.path.basename(argv0) in ("__main__.py", "-c", "-m"):
         return "wxprop"
-    return base
+    return argv0
 
 
 def _hostname() -> str:
@@ -181,7 +187,9 @@ def _node_from_view(v) -> dict:
         "focused": bool(w.focused),
         "maximized_h": bool(v.maximized_h),
         "maximized_v": bool(v.maximized_v),
-        "above": bool(v.above), "skip_taskbar": bool(v.skip_taskbar),
+        "above": bool(v.above), "below": bool(v.below),
+        "skip_taskbar": bool(v.skip_taskbar),
+        "skip_pager": bool(v.skip_pager),
         "window_type": v.window_type or "NORMAL",
         "transient_for": int(v.transient_for or 0),
         "client_type": v.client_type, "instance": v.instance, "class": v.cls,
@@ -341,7 +349,8 @@ _EXTENDED_ATOMS = (
     "_NET_NUMBER_OF_DESKTOPS", "_NET_DESKTOP_NAMES",
     # what a views() backend (GNOME) additionally knows
     "_NET_WM_STATE_MAXIMIZED_HORZ", "_NET_WM_STATE_MAXIMIZED_VERT",
-    "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_SKIP_TASKBAR",
+    "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_BELOW",
+    "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER",
     "_NET_WM_STATE_DEMANDS_ATTENTION", "_NET_WM_WINDOW_TYPE_DESKTOP",
     "_NET_WM_WINDOW_TYPE_DOCK", "_NET_WM_WINDOW_TYPE_DIALOG",
     "_NET_WM_WINDOW_TYPE_TOOLBAR", "_NET_WM_WINDOW_TYPE_MENU",
@@ -552,6 +561,8 @@ class NativeViewTarget(NativeTarget):
         # Mutter's own _NET_WM_STATE order (window-x11.c set_net_wm_state),
         # so native and XWayland windows on GNOME print alike; the sway
         # subset (FULLSCREEN, HIDDEN, STICKY) keeps its relative order
+        if rich and node.get("skip_pager"):
+            states.append("_NET_WM_STATE_SKIP_PAGER")
         if rich and node.get("skip_taskbar"):
             states.append("_NET_WM_STATE_SKIP_TASKBAR")
         if rich and node.get("maximized_h"):
@@ -564,6 +575,8 @@ class NativeViewTarget(NativeTarget):
             states.append("_NET_WM_STATE_HIDDEN")
         if rich and node.get("above"):
             states.append("_NET_WM_STATE_ABOVE")
+        if rich and node.get("below"):
+            states.append("_NET_WM_STATE_BELOW")
         if rich and node.get("urgent"):
             states.append("_NET_WM_STATE_DEMANDS_ATTENTION")
         if node.get("sticky"):
@@ -673,6 +686,11 @@ class NativeRootTarget(NativeTarget):
             cur = max(b.get_desktop(), 0)
         except Exception:
             pass
+        # A compositor can be on a desktop it does not count: sway creates a
+        # workspace on demand and GET_WORKSPACES lists only the ones that
+        # exist, so "current 3 of 2 desktops" reached the root and no EWMH
+        # reader can make sense of that.
+        num = max(num, cur + 1)
         props[b"_NET_NUMBER_OF_DESKTOPS"] = _p_cardinal([num])
         props[b"_NET_CURRENT_DESKTOP"] = _p_cardinal([cur])
         if rich:

@@ -14,8 +14,10 @@ pre-scan that accepts --help/--version; the release does NOT):
    even `xprop -version` fails to open it first (both oracle-verified);
 4. trailing `[format [dformat]] atom` spec groups.
 
-Program name: like xprop we use basename(argv[0]) in messages (WXPROP_ARGV0
-overrides it for `python -m wxprop` runs, where argv[0] is __main__.py).
+Program name: like xprop we print argv[0] verbatim in messages -- xprop
+sets `program_name = argv[0]` and never trims it, so an absolute path in
+argv[0] comes out as one (WXPROP_ARGV0 overrides it, and `python -m wxprop`
+runs, where argv[0] is __main__.py, print "wxprop").
 Deliberate deviations, documented in tests: -version prints "xprop 1.2.8"
 for drop-in version-sniffing, which is NOT what the oracle on either
 supported flavor prints (1.2.6 on 24.04, 1.2.7 on 26.04); a missing X

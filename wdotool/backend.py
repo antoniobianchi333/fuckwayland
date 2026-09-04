@@ -51,11 +51,13 @@ class View:
     maximized_h: bool = False
     maximized_v: bool = False
     above: bool = False
+    below: bool = False
     sticky: bool = False
     urgent: bool = False
     minimized: bool = False
     hidden: bool = False
     skip_taskbar: bool = False
+    skip_pager: bool = False
     floating: bool = True  # tiling compositors only; GNOME windows all float
     ws_name: str = ""
     window_type: str = "NORMAL"
@@ -143,9 +145,21 @@ class WindowBackend:
     def lower(self, wid: int):
         self._unsupported("windowlower")
 
-    def set_state(self, wid: int, state: str, action: int):
+    def set_state(self, wid: int, state: str, action: int) -> "str | None":
         """state: uppercase _NET_WM_STATE suffix (e.g. "FULLSCREEN");
-        action: 0=remove 1=add 2=toggle"""
+        action: 0=remove 1=add 2=toggle.
+
+        Returns None when the state applied, or when the backend cannot
+        tell. Returns a one-line reason when the compositor ACCEPTED the
+        request and did not apply it -- which KWin does for a window rule,
+        for size hints a fullscreen cannot satisfy, and for SHADED on
+        anything but an X11 window. Raise a CmdError only for a request the
+        backend could not make at all.
+
+        The caller decides what to do with a reason: wdotool prints it and
+        succeeds (the X tools cannot tell either), wwmctl first tries the
+        EWMH ClientMessage, which reaches an XWayland window through the X
+        server the compositor's own API just refused."""
         self._unsupported("windowstate")
 
     def set_num_desktops(self, n: int):

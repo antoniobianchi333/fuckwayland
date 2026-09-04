@@ -8,6 +8,7 @@ import io
 import threading
 import os
 import sys
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
@@ -293,6 +294,57 @@ class ItIsALeadingOptionOnly(unittest.TestCase):
         with _Spy() as spy:
             rc, _o, _e = run("--layout", "us", "sleep", "0")
         self.assertEqual((rc, spy.mode), (0, "us"))
+
+    def test_handle_hands_it_to_the_op(self):
+        """The half that was missing: the ops took the argument and the client
+        sent the field, but handle() dropped it, so --layout only ever worked
+        through WDOTOOL_LAYOUT in the daemon's own environment."""
+        d = daemon._Daemon.__new__(daemon._Daemon)
+        d.lock = threading.RLock()
+        seen = {}
+
+        def op_type(text, delay_ms, clearmods, session=None, layout_mode=None):
+            seen["type"] = layout_mode
+            return []
+
+        def op_key(spec, direction, delay_ms, clearmods, session=None,
+                   layout_mode=None):
+            seen["key"] = layout_mode
+            return []
+
+        d.op_type, d.op_key = op_type, op_key
+        r = d.handle({"op": "type", "text": "hi", "layout_mode": "us"})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(seen["type"], "us")
+        r = d.handle({"op": "key", "spec": "a", "layout_mode": "xkb"})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(seen["key"], "xkb")
+        # absent stays None, so WDOTOOL_LAYOUT still decides
+        d.handle({"op": "type", "text": "hi"})
+        self.assertIsNone(seen["type"])
+
+    def test_handle_rejects_an_unknown_mode(self):
+        """The socket is a trust boundary: _layout() lower-cases what it gets
+        and anything unrecognised would read as `auto`."""
+        d = daemon._Daemon.__new__(daemon._Daemon)
+        d.lock = threading.RLock()
+        d.op_type = lambda *a, **k: []
+        # serve_client turns this into {"ok": false, "error": ...}, exactly as
+        # it does for every other bad request field.
+        with self.assertRaises(RuntimeError) as cm:
+            d.handle({"op": "type", "text": "hi", "layout_mode": "klingon"})
+        self.assertIn("layout_mode", str(cm.exception))
+        with self.assertRaises(RuntimeError):
+            d.handle({"op": "type", "text": "hi", "layout_mode": 7})
+
+    def test_handle_normalises_case_and_space(self):
+        d = daemon._Daemon.__new__(daemon._Daemon)
+        d.lock = threading.RLock()
+        seen = {}
+        d.op_type = lambda *a, **k: seen.update(m=k.get("layout_mode")
+                                                or (a[4] if len(a) > 4 else None)) or []
+        d.handle({"op": "type", "text": "hi", "layout_mode": "  US "})
+        self.assertEqual(seen["m"], "us")
 
 
 class ParityIsUntouched(unittest.TestCase):

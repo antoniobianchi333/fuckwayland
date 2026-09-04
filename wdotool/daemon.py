@@ -70,6 +70,24 @@ def _text(val, what: str) -> str:
     return val
 
 
+_LAYOUT_MODES = ("us", "fixed", "auto", "xkb")
+
+
+def _layout_mode(val, what: str = "layout_mode"):
+    """Validate a request's `layout_mode`. The CLI already screens it, but the
+    socket is a trust boundary and _layout() lower-cases whatever it is given:
+    an unknown name must be a rejected request, not a silent `auto`."""
+    if val is None:
+        return None
+    if not isinstance(val, str):
+        raise RuntimeError(f"invalid {what}: {val!r} (expected a string)")
+    mode = val.strip().lower()
+    if mode not in _LAYOUT_MODES:
+        raise RuntimeError(
+            f"invalid {what}: {val!r} (valid: " + ", ".join(_LAYOUT_MODES) + ")")
+    return mode
+
+
 def _mods(val, what: str) -> list:
     """Validate a request's modifier-keycode list: nothing but the eight
     modifier keycodes may ever be pressed on a client's say-so."""
@@ -1005,14 +1023,14 @@ class _Daemon:
                     _text(req.get("text"), "text"),
                     _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
                     req.get("clearmods", False), session,
-                    req.get("layout_mode"))
+                    _layout_mode(req.get("layout_mode")))
             elif op == "key":
                 warnings = self.op_key(
                     _text(req.get("spec"), "spec"),
                     req.get("direction", "press"),
                     _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
                     req.get("clearmods", False), session,
-                    req.get("layout_mode"))
+                    _layout_mode(req.get("layout_mode")))
             elif op == "clear_modifiers":
                 held = self.op_clear_modifiers(warnings, session)
                 return {"ok": True, "held": held, "warnings": warnings}

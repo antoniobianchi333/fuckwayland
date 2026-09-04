@@ -15,7 +15,7 @@ import time
 
 from wdotool import cli, window_cmds
 from wdotool.backend import Window, WindowBackend
-from wdotool.ctx import CmdError, Context, NoSessionError
+from wdotool.ctx import CmdError, Context, NoSessionError, SoftCmdError
 
 
 # The suite never hands a tool over to the real X11 one: see
@@ -442,6 +442,77 @@ class BoundedSyncTest(unittest.TestCase):
         rc, _o, err, _c = run(["windowminimize", "--sync", "11"], self.stuck())
         self.assertEqual(rc, 1)
         self.assertIn("gave up waiting for window 11 to be minimized", err)
+
+    class _Refuses(FakeBackend):
+        """A backend whose move/resize say no. `soft` picks which no."""
+
+        soft = False
+
+        def move_window(self, wid, x, y):
+            raise (SoftCmdError if self.soft else CmdError)("nope: move %d" % wid)
+
+        def resize(self, wid, w, h):
+            raise (SoftCmdError if self.soft else CmdError)("nope: resize %d" % wid)
+
+    def test_windowstate_unknown_property_is_a_typo_not_a_gap(self):
+        """`--add MAXIMISED` used to come back "not supported by the kwin
+        backend", which reads as a missing compositor feature."""
+        rc, _o, err, _c = run(["windowstate", "--add", "MAXIMISED", "11"])
+        self.assertEqual(rc, 1)
+        self.assertIn("no such property MAXIMISED", err)
+        self.assertIn("MAXIMIZED_VERT", err)
+        self.assertNotIn("not supported by", err)
+
+    def test_windowstate_a_real_gap_still_says_so(self):
+        rc, _o, err, _c = run(["windowstate", "--add", "SHADED", "11"])
+        self.assertEqual(rc, 1)
+        self.assertIn("not supported", err)
+
+    def test_windowstate_names_are_still_case_insensitive(self):
+        rc, _o, err, _c = run(["windowstate", "--add", "fullscreen", "11"])
+        self.assertEqual((rc, err), (0, ""))
+
+    def test_windowmove_hard_failure_exits_1(self):
+        """A stale window id, a KWin script that failed, a compositor that
+        said no: windowmove printed the error and exited 0, so `wdotool
+        windowmove $id ... && echo moved` said moved."""
+        b = self._Refuses([Window(id=11, x=0, y=0, w=10, h=10)])
+        rc, _o, err, _c = run(["windowmove", "11", "5", "5"], b)
+        self.assertEqual(rc, 1)
+        self.assertIn("nope: move 11", err)
+        self.assertIn("xdo_move_window reported an error while moving window 11",
+                      err)
+
+    def test_windowmove_soft_failure_warns_and_exits_0(self):
+        """sway tiling a window is the desktop's shape, not a failed request:
+        warn on stderr, carry on, rc 0 (unchanged behaviour)."""
+        b = self._Refuses([Window(id=11, x=0, y=0, w=10, h=10)])
+        b.soft = True
+        rc, _o, err, _c = run(["windowmove", "11", "5", "5"], b)
+        self.assertEqual(rc, 0)
+        self.assertIn("xdo_move_window reported an error", err)
+
+    def test_windowsize_hard_failure_still_exits_1(self):
+        b = self._Refuses([Window(id=11, x=0, y=0, w=10, h=10)])
+        rc, _o, err, _c = run(["windowsize", "11", "50", "50"], b)
+        self.assertEqual(rc, 1)
+        self.assertIn("xdo_set_window_size on window:11 reported an error", err)
+
+    def test_windowsize_soft_failure_warns_and_exits_0(self):
+        """The mirror of the windowmove case: a tiled sway resize."""
+        b = self._Refuses([Window(id=11, x=0, y=0, w=10, h=10)])
+        b.soft = True
+        rc, _o, err, _c = run(["windowsize", "11", "50", "50"], b)
+        self.assertEqual(rc, 0)
+        self.assertIn("nope: resize 11", err)
+        self.assertIn("xdo_set_window_size on window:11 reported an error", err)
+
+    def test_windowmove_hard_failure_aborts_the_chain(self):
+        b = self._Refuses([Window(id=11, x=0, y=0, w=10, h=10)])
+        rc, out, _e, _c = run(["windowmove", "11", "5", "5",
+                               "getwindowname", "11"], b)
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
 
     def test_windowmove_sync_gives_up(self):
         rc, _o, err, _c = run(["windowmove", "--sync", "11", "700", "800"],

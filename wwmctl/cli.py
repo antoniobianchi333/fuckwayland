@@ -330,10 +330,12 @@ Copyright (C) 2003
 
 
 def _prog() -> str:
+    """argv[0] verbatim, which is what wmctrl's getopt diagnostics print --
+    `/usr/bin/wmctrl -Q` says "/usr/bin/wmctrl: invalid option -- 'Q'".
+    `python -m wwmctl` has no name worth printing."""
     if sys.argv and sys.argv[0]:
-        name = os.path.basename(sys.argv[0])
-        if name != "__main__.py":  # `python -m wwmctl`
-            return name
+        if os.path.basename(sys.argv[0]) != "__main__.py":
+            return sys.argv[0]
     return "wwmctl"
 
 

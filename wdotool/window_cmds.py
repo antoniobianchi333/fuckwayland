@@ -10,7 +10,7 @@ import time
 
 from wdotool import commands
 from wdotool.cli import ChainAbort, GetoptError, getopt_long_only
-from wdotool.ctx import CmdError
+from wdotool.ctx import CmdError, SoftCmdError
 
 _SEE_STACK = "If no window is given, %1 is used. See WINDOW STACK in xdotool(1)\n"
 
@@ -691,9 +691,15 @@ def cmd_windowmove(ctx, args):
             ctx.backend().move_window(wid, tx, ty)
         except CmdError as e:
             sys.stderr.write("%s\n" % e)
-            sys.stderr.write(
-                "xdo_move_window reported an error while moving window %d\n" % wid
-            )
+            msg = ("xdo_move_window reported an error while moving window %d"
+                   % wid)
+            sys.stderr.write("%s\n" % msg)
+            if not isinstance(e, SoftCmdError):
+                # A stale window id, a KWin script that failed, a compositor
+                # that said no: xdotool's own loop keeps going but returns
+                # the error, and exiting 0 here made every one of those look
+                # like a move that happened.
+                raise CmdError(msg) from None
             continue
         if opsync:
             def moved():
@@ -774,9 +780,12 @@ def cmd_windowsize(ctx, args):
             ctx.backend().resize(wid, w_px, h_px)
         except CmdError as e:
             sys.stderr.write("%s\n" % e)
-            raise CmdError(
-                "xdo_set_window_size on window:%d reported an error" % wid
-            ) from None
+            msg = "xdo_set_window_size on window:%d reported an error" % wid
+            if isinstance(e, SoftCmdError):
+                # the tiled-sway case, as in windowmove: warn, rc 0
+                sys.stderr.write("%s\n" % msg)
+                continue
+            raise CmdError(msg) from None
         if opsync:
             def resized(wid=wid, ow=ow, oh=oh, rw=w_px, rh=h_px):
                 cur2 = ctx.backend().find(wid)
@@ -786,6 +795,15 @@ def cmd_windowsize(ctx, args):
 
             _wait_until(resized, "window %d to be resized" % wid)
     return nopts + used + 2
+
+
+# The _NET_WM_STATE properties EWMH defines -- what xdotool's own
+# windowstate usage lists, and the set wmctrl -b takes.
+_EWMH_STATES = frozenset((
+    "MODAL", "STICKY", "MAXIMIZED_VERT", "MAXIMIZED_HORZ", "SHADED",
+    "SKIP_TASKBAR", "SKIP_PAGER", "HIDDEN", "FULLSCREEN", "ABOVE", "BELOW",
+    "DEMANDS_ATTENTION", "FOCUSED",
+))
 
 
 def cmd_windowstate(ctx, args):
@@ -818,10 +836,25 @@ def cmd_windowstate(ctx, args):
     if action is None or prop is None:
         raise CmdError(usage.rstrip("\n"))
     warg, used = _window_arg(ctx, args[nopts:], 0, usage)
+    name = prop.upper()
+    if name not in _EWMH_STATES:
+        # A name no _NET_WM_STATE has is a typo, not a capability gap: the
+        # backends turned it into "not supported by the <backend> backend",
+        # which read as "this desktop cannot do it" and sent people looking
+        # for a compositor feature.
+        raise CmdError(
+            "windowstate: no such property %s\n"
+            "property can be one of \n"
+            "%s" % (prop, ", ".join(sorted(_EWMH_STATES))))
     has_error = False
     for wid in ctx.resolve_windows(warg):
         try:
-            ctx.backend().set_state(wid, prop.upper(), action)
+            why = ctx.backend().set_state(wid, name, action)
+            if why:
+                # the compositor took the request and did not apply it; the
+                # X tools cannot tell either, so this is a warning, not a
+                # failure (wwmctl has a second route and uses it instead)
+                sys.stderr.write("wdotool: %s\n" % why)
         except CmdError as e:
             has_error = True
             sys.stderr.write("%s\n" % e)

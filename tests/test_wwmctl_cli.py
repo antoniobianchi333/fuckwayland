@@ -125,6 +125,9 @@ class FakeSwayBackend:
         self._spec(wid)
         self.calls.append(("resize", wid, w, h))
 
+    # a state this backend takes and quietly does not apply (KWin's shape)
+    ignores = ()
+
     def set_state(self, wid, state, action):
         self._spec(wid)
         if state not in ("FULLSCREEN", "STICKY", "DEMANDS_ATTENTION",
@@ -132,6 +135,10 @@ class FakeSwayBackend:
             raise CmdError(
                 "windowstate %s is not supported by the sway backend" % state)
         self.calls.append(("set_state", wid, state, action))
+        if state in self.ignores:
+            return ("windowstate %s: the compositor did not apply it to "
+                    "window %d" % (state, wid))
+        return None
 
     def select_window(self):
         return self._select
@@ -153,6 +160,8 @@ class FakeX11:
         self.wm_name = wm_name
         self.calls = []
         self.atoms = {}
+        self.states = {}          # win -> {atom} (_NET_WM_STATE)
+        self.wm_honours_state = True
 
     def root(self):
         return 1
@@ -172,6 +181,8 @@ class FakeX11:
     def get_prop_ints(self, win, name):
         if name == "_NET_SUPPORTING_WM_CHECK":
             return [99]
+        if name == "_NET_WM_STATE":
+            return sorted(self.states.get(win, ()))
         return []
 
     def get_prop_string(self, win, name):
@@ -187,6 +198,15 @@ class FakeX11:
 
     def send_root_message(self, win, type_name, data):
         self.calls.append(("client_message", win, type_name, tuple(data)))
+        if type_name == "_NET_WM_STATE" and self.wm_honours_state:
+            # what a full EWMH window manager does with the message -- and
+            # what the caller now reads back to tell "sent" from "applied"
+            action, atom = data[0], data[1]
+            have = self.states.setdefault(win, set())
+            if action == 1 or (action == 2 and atom not in have):
+                have.add(atom)
+            else:
+                have.discard(atom)
 
 
 # standard fixture: one XWayland window, one native, one bare/N-A-ish
@@ -488,7 +508,15 @@ class SelectionTest(unittest.TestCase):
                                         "number.\n"))
 
     def test_i_unknown_id_exits_1(self):
+        """A title or class that matches nothing is wmctrl's silent exit 1.
+        An -i id that names no window is not a search -- real wmctrl asks
+        the X server and Xlib prints BadWindow -- so it says so."""
         rc, out, err, b = run(["-i", "-a", "0xdead"])
+        self.assertEqual((rc, out, b.calls), (1, "", []))
+        self.assertIn("no window with id 0x0000dead", err)
+
+    def test_a_title_that_matches_nothing_is_still_silent(self):
+        rc, out, err, b = run(["-a", "no such window anywhere"])
         self.assertEqual((rc, out, err, b.calls), (1, "", "", []))
 
     def test_active_magic(self):
@@ -860,11 +888,50 @@ class GitGenerationOptionsTest(unittest.TestCase):
                                         "server to set the window icon; "
                                         "ignoring\n"))
 
-    def test_unknown_ids_still_exit_1_silently(self):
+    def test_unknown_ids_still_exit_1(self):
         for opt in ("-Y", "-z", "-E"):
             rc, out, err, b = run(["-i", opt, "0x999999"])
-            self.assertEqual((rc, out, err), (1, "", ""))
+            self.assertEqual((rc, out), (1, ""))
+            self.assertIn("no window with id 0x00999999", err)
             self.assertEqual(b.calls, [])
+
+
+class DesktopOrderTest(unittest.TestCase):
+    """sway-2: wwmctl -d printed sway's GET_WORKSPACES order, which is
+    creation order. Real wmctrl -d is always ascending and positionally
+    indexed -- "the third line is desktop 2" is what a caller reads."""
+
+    class _Sway(FakeSwayBackend):
+        rows = ()
+
+        def _msg(self, _kind):
+            return list(self.rows)
+
+    def _rows(self, rows):
+        b = self._Sway([dict(s) for s in SPECS])
+        b.rows = rows
+        rc, out, err, _b = run(["-d"], backend=b)
+        self.assertEqual((rc, err), (0, ""))
+        return [ln.split() for ln in out.splitlines()]
+
+    def test_out_of_order_workspaces_are_sorted(self):
+        rows = self._rows([
+            {"num": 3, "name": "3", "focused": False, "rect": {}},
+            {"num": 1, "name": "1", "focused": True, "rect": {}},
+            {"num": 2, "name": "2", "focused": False, "rect": {}},
+        ])
+        self.assertEqual([r[0] for r in rows], ["0", "1", "2"])
+        # the star stays on the focused one after the sort
+        self.assertEqual([i for i, r in enumerate(rows) if r[1] == "*"], [0])
+
+    def test_named_workspaces_sort_after_the_numbered_ones(self):
+        rows = self._rows([
+            {"num": -1, "name": "scratch", "focused": False, "rect": {}},
+            {"num": 2, "name": "two", "focused": False, "rect": {}},
+            {"num": 1, "name": "one", "focused": True, "rect": {}},
+        ])
+        self.assertEqual([r[0] for r in rows], ["0", "1", "-1"])
+        self.assertEqual([i for i, r in enumerate(rows) if r[1] == "*"], [0])
 
 
 class XStateFallbackTest(unittest.TestCase):
@@ -884,6 +951,60 @@ class XStateFallbackTest(unittest.TestCase):
         rc, _o, err, _b = run(["-r", "Mail", "-b", "add,below"], x11=None)
         self.assertEqual(rc, 0)
         self.assertIn("ignoring", err)
+
+    def test_accepted_and_ignored_is_retried_on_the_x_plane(self):
+        """kde-1: KWin takes a state and does nothing with it (a window rule,
+        or size hints a fullscreen cannot satisfy) and the backend said so
+        while returning success, so wwmctl never reached for the X route --
+        which is the one real wmctrl uses and which works."""
+        x = FakeX11()
+        b = FakeSwayBackend([dict(s) for s in SPECS])
+        b.ignores = ("FULLSCREEN",)
+        rc, _o, err, _b = run(["-r", "Mail", "-b", "add,fullscreen"],
+                              backend=b, x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual([c for c in x.calls if c[0] == "client_message"],
+                         [("client_message", 0x40000C, "_NET_WM_STATE",
+                           (1, x.atom("_NET_WM_STATE_FULLSCREEN"), 0, 0, 0))])
+
+    def test_accepted_and_ignored_on_a_native_window_warns(self):
+        b = FakeSwayBackend([dict(s) for s in SPECS])
+        b.ignores = ("FULLSCREEN",)
+        rc, _o, err, _b = run(["-r", "FootWin", "-b", "add,fullscreen"],
+                              backend=b, x11=FakeX11())
+        self.assertEqual(rc, 0)
+        self.assertIn("did not apply it", err)
+
+    def test_a_client_message_the_wm_drops_is_not_success(self):
+        """kde-1 (b): _x_set_state answered True for a message that was only
+        *sent*. KWin 6 drops the shaded one, and the warning the caller would
+        have printed was suppressed by that False success."""
+        x = FakeX11()
+        x.wm_honours_state = False
+        b = FakeSwayBackend([dict(s) for s in SPECS])
+        b.ignores = ("FULLSCREEN",)
+        rc, _o, err, _b = run(["-r", "Mail", "-b", "add,fullscreen"],
+                              backend=b, x11=x)
+        self.assertEqual(rc, 0)
+        self.assertIn("did not apply it", err)
+        self.assertTrue([c for c in x.calls if c[0] == "client_message"])
+
+    def test_a_refused_state_the_wm_drops_still_warns(self):
+        x = FakeX11()
+        x.wm_honours_state = False
+        rc, _o, err, _b = run(["-r", "Mail", "-b", "add,below"], x11=x)
+        self.assertEqual(rc, 0)
+        self.assertIn("ignoring", err)
+
+    def test_remove_and_toggle_are_read_back_too(self):
+        x = FakeX11()
+        run(["-r", "Mail", "-b", "add,below"], x11=x)
+        self.assertIn(x.atom("_NET_WM_STATE_BELOW"), x.states[0x40000C])
+        rc, _o, err, _b = run(["-r", "Mail", "-b", "toggle,below"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertNotIn(x.atom("_NET_WM_STATE_BELOW"), x.states[0x40000C])
+        rc, _o, err, _b = run(["-r", "Mail", "-b", "remove,below"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
 
     def test_a_native_window_never_gets_a_client_message(self):
         x = FakeX11()

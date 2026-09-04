@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -119,7 +120,14 @@ class FakeKWin:
         self.min_desktops = min_desktops   # KWin keeps at least one
         self.desktops = [(0, "d-one", "Desktop 1"), (1, "d-two", "Desktop 2")]
         self.current = 0
-        self.scripts = {}               # id -> (plugin, args)
+        # KWin's own bookkeeping, modelled exactly: `script_list` is
+        # m_scripts (an id is its index at load time, so the ids come round
+        # when a lower one is unloaded) and `objects` is the D-Bus object
+        # registry, where a second registration at a live path is refused
+        # and the older script keeps the path.
+        self.script_list = []           # [{"id", "plugin", "args"}], in order
+        self.objects = {}               # id -> the entry that owns the path
+        self.last_args = None           # newest script's A, after unload
         self.plugins = []               # every pluginName ever loaded
         self.loaded = set()             # pluginNames live right now
         self.runs = []                  # object paths run() was tried on
@@ -131,6 +139,7 @@ class FakeKWin:
         self.events_ready = threading.Event()
         self.size = (1920, 1080)
         self.work_area = (0, 32, 1920, 1048)
+        self.cursor = (640, 480)        # workspace.cursorPos; None = no query
         if own_name:
             assert self.bus.request_name(KWIN_NAME) == 1
         self.thread = threading.Thread(target=self._serve, daemon=True)
@@ -186,9 +195,31 @@ class FakeKWin:
         except Exception:  # noqa: BLE001 -- socket shut down by close()
             pass
 
+    _INTRO = ('<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object '
+              'Introspection 1.0//EN" "http://www.freedesktop.org/standards/'
+              'dbus/1.0/introspect.dtd">\n<node>\n%s</node>\n')
+
+    def _introspect(self, path):
+        """Child nodes, the way QDBusConnection generates them: Plasma 6
+        registers /Scripting/Script<n>, 5.27 /<n> under the root."""
+        names = []
+        if self.plasma >= 6:
+            if path == SCRIPTING_PATH:
+                names = ["Script%d" % i for i in sorted(self.objects)]
+            elif path == "/":
+                names = ["Scripting", "KWin", "VirtualDesktopManager"]
+        else:
+            if path == "/":
+                names = (["Scripting", "KWin", "VirtualDesktopManager"]
+                         + [str(i) for i in sorted(self.objects)])
+        return "s", (self._INTRO % "".join(
+            '  <node name="%s"/>\n' % n for n in names),)
+
     def _dispatch(self, m):
         a = m.args()
         self.calls.append((m.path, m.member, a))
+        if m.interface == "org.freedesktop.DBus.Introspectable":
+            return self._introspect(m.path)
         if m.interface == dbus_mini.PROPS_IFACE and m.member == "Get":
             return self._prop(*a)
         if m.path == SCRIPTING_PATH and m.interface == SCRIPTING_IFACE:
@@ -211,8 +242,12 @@ class FakeKWin:
             source = fh.read()
         head = source.split("\n", 1)[0]
         args = json.loads(head[len(backend_kwin.HEADER):-len(" */")])
-        sid = len(self.scripts)         # KWin: scripts.size(), reused
-        self.scripts[sid] = (plugin, args)
+        sid = len(self.script_list)     # KWin: scripts.size(), reused
+        entry = {"id": sid, "plugin": plugin, "args": args}
+        self.last_args = args
+        self.script_list.append(entry)
+        # registerObject fails when the path is taken, and says nothing
+        self.objects.setdefault(sid, entry)
         self.plugins.append(plugin)
         self.loaded.add(plugin)
         return "i", (sid,)
@@ -220,6 +255,11 @@ class FakeKWin:
     def s_unloadScript(self, plugin):
         self.unloaded.append(plugin)
         self.loaded.discard(plugin)
+        for entry in list(self.script_list):
+            if entry["plugin"] == plugin:
+                self.script_list.remove(entry)
+                if self.objects.get(entry["id"]) is entry:
+                    del self.objects[entry["id"]]
         return "b", (True,)
 
     def s_isScriptLoaded(self, plugin):
@@ -236,9 +276,9 @@ class FakeKWin:
         if not want:
             raise DBusError(ERR + "UnknownObject", "no object at %s" % path)
         sid = int(want.group(1))
-        if sid not in self.scripts:
+        if sid not in self.objects:
             raise DBusError(ERR + "UnknownObject", "no script %d" % sid)
-        _plugin, args = self.scripts[sid]
+        args = self.objects[sid]["args"]
         if not self.silent:
             if self.decoy:
                 self._send(args, "stale-token", json.dumps({"ok": True, "v": []}))
@@ -267,6 +307,10 @@ class FakeKWin:
         if op == "screen":
             return {"w": self.size[0], "h": self.size[1],
                     "areas": [list(self.work_area) for _ in self.desktops]}
+        if op == "cursor":
+            if self.cursor is None:
+                raise _ScriptError("nocursor")
+            return {"x": self.cursor[0], "y": self.cursor[1]}
         if op == "events":
             self.event_args = (a["dest"], a["token"])
             self.events_ready.set()
@@ -299,6 +343,7 @@ class FakeKWin:
             w["m"] = w["hi"] = False
             return {}
         if op == "raise":
+            w["kb"] = False          # as the script does: undo a keepBelow lower
             self.windows.remove(w)
             self.windows.append(w)
             w["so"] = max(d["so"] for d in self.windows) + 1
@@ -318,7 +363,8 @@ class FakeKWin:
             return {k: w[k] for k in ("x", "y", "w", "h")}
         if op == "state":
             applied, settled = self._state(w, a["state"], a["action"])
-            return {"applied": applied, "settled": settled}
+            return {"applied": applied, "settled": settled,
+                    "xid": w.get("xid") or 0}
         if op == "desktop":
             n = a["n"]
             if n < 0:
@@ -358,6 +404,10 @@ class FakeKWin:
         if state == "SHADED":
             if w["sh"] is None:
                 raise _ScriptError("noshade")
+            if w.get("refuse"):
+                # 5.27: `shade` exists on every window and a write to a
+                # native one is accepted and ignored
+                return w["sh"], True
             w["sh"] = (not w["sh"]) if action == 2 else bool(action)
             return w["sh"], True
         key = self._STATES.get(state)
@@ -498,9 +548,16 @@ class TransportTests(_Base):
         self.assertEqual([w.id for w in wins],
                          [WID["desktop"], WID["kate"], WID["konsole"],
                           WID["xterm"]])
-        # loadScript -> run -> unloadScript, nothing else, no sleep
+        # Introspect (whose script ids are live? -- the ownership check that
+        # stops us running somebody else's script) -> loadScript -> run ->
+        # unloadScript, nothing else, no sleep. The second Introspect is the
+        # 5.27 path shape, asked for once and then remembered.
         members = [c[1] for c in self.kwin.calls]
-        self.assertEqual(members, ["loadScript", "run", "unloadScript"])
+        self.assertEqual(members, ["Introspect", "Introspect", "loadScript",
+                                   "run", "unloadScript"])
+        b.list()
+        self.assertEqual([c[1] for c in self.kwin.calls][5:],
+                         ["Introspect", "loadScript", "run", "unloadScript"])
 
     def test_negative_load_script_is_fatal(self):
         b = self.backend(refuse_load=True)
@@ -612,6 +669,134 @@ class TransportTests(_Base):
         self.assertIn(kwin_js.SCRIPT.strip()[:40], src)
 
 
+class ScriptIdRaceTests(_Base):
+    """loadScript answers with m_scripts.size(), so an id comes round the
+    moment a lower-numbered script is unloaded while a higher-numbered one is
+    still alive -- and KWin then refuses the second registration at that path
+    without saying so, leaving run() pointed at the OTHER script.
+
+    Measured on Plasma 6.6: A->0, B->1, unload A, C->1, and
+    /Scripting/Script1 is still B. Seven of ten concurrent windowmoves died
+    that way, some of them by running a stranger's command twice."""
+
+    def test_the_fake_reproduces_kwins_id_reuse(self):
+        """The premise. Without this the rest of the file proves nothing."""
+        k = FakeKWin(self.mock.address, own_name=False)
+        self.addCleanup(k.close)
+        js = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
+        js.write(backend_kwin.HEADER.encode() + b'{} */\n')
+        js.close()
+        self.addCleanup(os.unlink, js.name)
+        a = k.s_loadScript(js.name, "A")[1][0]
+        b = k.s_loadScript(js.name, "B")[1][0]
+        self.assertEqual((a, b), (0, 1))
+        k.s_unloadScript("A")
+        c = k.s_loadScript(js.name, "C")[1][0]
+        self.assertEqual(c, 1)                       # the id came round
+        self.assertEqual(k.objects[1]["plugin"], "B")  # ...and B keeps it
+        d = k.s_loadScript(js.name, "D")[1][0]
+        self.assertEqual(d, 2)                       # the next one is free
+
+    def _wedge(self, b):
+        """Leave one live script sitting on the id KWin will hand out next --
+        exactly the state another wdotool's in-flight command leaves."""
+        js = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
+        js.write(backend_kwin.HEADER.encode() + b'{} */\n')
+        js.close()
+        self.addCleanup(os.unlink, js.name)
+        self.kwin.s_loadScript(js.name, "stranger-A")
+        self.kwin.s_loadScript(js.name, "stranger-B")
+        self.kwin.s_unloadScript("stranger-A")
+        self.assertEqual(sorted(self.kwin.objects), [1])
+
+    def test_a_command_does_not_run_a_strangers_script(self):
+        b = self.backend()
+        self._wedge(b)
+        wins = b.list()
+        self.assertEqual([w.id for w in wins],
+                         [WID["desktop"], WID["kate"], WID["konsole"],
+                          WID["xterm"]])
+        # the stranger's script was never run
+        self.assertNotIn("/Scripting/Script1", self.kwin.runs)
+        # ...and it is still loaded: we must not unload another client's
+        self.assertIn("stranger-B", self.kwin.loaded)
+
+    def test_the_padding_is_cleaned_up(self):
+        b = self.backend()
+        self._wedge(b)
+        before = set(self.kwin.loaded)
+        b.list()
+        self.assertEqual(set(self.kwin.loaded), before)
+
+    def test_two_backends_interleaving_both_get_their_own_answer(self):
+        """The concurrency shape of the live repro, deterministically: each
+        of ten commands must come back with its own payload."""
+        b = self.backend()
+        for _ in range(10):
+            self._wedge(b)
+            self.assertEqual(len(b.list()), 4)
+            for name in [p for p in list(self.kwin.loaded)
+                         if p.startswith("stranger")]:
+                self.kwin.s_unloadScript(name)
+
+    def test_it_gives_up_rather_than_spinning(self):
+        """A scripting client churning as fast as we are: bounded, and it
+        says what happened instead of running a stranger's script."""
+        b = self.backend()
+        # every index a load could be handed is already a live object
+        for i in range(64):
+            self.kwin.objects[i] = {"id": i, "plugin": "stranger", "args": {}}
+        with self.assertRaises(CmdError) as cm:
+            b.list()
+        self.assertIn("already taken", str(cm.exception))
+        self.assertNotIn("/Scripting/Script0", self.kwin.runs)
+
+    def test_a_compositor_that_will_not_introspect_still_works(self):
+        """The check is best effort: an answer we cannot get is not a reason
+        to refuse the command."""
+        b = self.backend()
+
+        def no_introspect(path):
+            raise DBusError(ERR + "UnknownMethod", "no")
+
+        self.kwin._introspect = no_introspect
+        self.assertEqual(len(b.list()), 4)
+
+    def test_the_events_script_keeps_the_name_it_ended_up_with(self):
+        """_script returns the pluginName for the caller to unload later; an
+        id race renames it, and unloading the old name would leak a resident
+        script for the rest of the session."""
+        b = self.backend()
+        self._wedge(b)
+        plugin = b._script("events", timeout=2.0)
+        self.assertIn(plugin, self.kwin.loaded)
+        b.unload(plugin)
+        self.assertNotIn(plugin, self.kwin.loaded)
+
+    def test_a_renamed_script_carries_its_new_name(self):
+        """The events script unloads itself by the pluginName baked into its
+        source (K1's watchdog), so a load that had to be renamed must carry
+        the new name -- a stale one would unload nothing and leave a resident
+        script hooked to every window for the rest of the session."""
+        b = self.backend()
+        self._wedge(b)
+        plugin = b._script("events", timeout=2.0)
+        # the padding is unloaded again before _script returns, so count the
+        # names KWin was ever handed rather than what is still loaded
+        ours = [n for n in self.kwin.plugins if n.startswith("wdotool-")]
+        self.assertGreater(len(ours), 1, "no rename happened; test is vacuous")
+        self.assertNotEqual(ours[0], plugin)             # the padding
+        self.assertEqual(ours[-1], plugin)
+        loaded = [e for e in self.kwin.script_list if e["plugin"] == plugin]
+        self.assertEqual(len(loaded), 1, self.kwin.script_list)
+        self.assertEqual(loaded[0]["args"]["plugin"], plugin)
+        # ...and the padding still carries its own, not this one
+        for entry in self.kwin.script_list:
+            self.assertEqual(entry["args"].get("plugin", entry["plugin"]),
+                             entry["plugin"])
+        b.unload(plugin)
+
+
 class BackendTests(_Base):
     def setUp(self):
         self.b = self.backend()
@@ -701,6 +886,47 @@ class BackendTests(_Base):
         self.assertTrue(self.kwin.find(UU["kate"])["kb"])
         self.assertIn("keep-below", err.getvalue())
 
+    def test_raise_clears_the_keep_below_a_lower_set(self):
+        """windowlower on a non-active window is approximated with keepBelow,
+        and nothing used to clear it: the window stayed pinned to the bottom
+        for the rest of the session, across processes, with `raise` unable to
+        undo it and no wdotool command able to show it."""
+        err = _capture_stderr()
+        with err:
+            self.b.lower(WID["kate"])
+        self.assertTrue(self.kwin.find(UU["kate"])["kb"])
+        self.b.raise_(WID["kate"])
+        self.assertFalse(self.kwin.find(UU["kate"])["kb"])
+
+    def test_raise_clears_keep_below_on_5_27_too(self):
+        b = self.backend(plasma=5)
+        err = _capture_stderr()
+        with err:
+            b.lower(WID["kate"])
+            self.assertTrue(self.kwin.find(UU["kate"])["kb"])
+            b.raise_(WID["kate"])
+        self.assertFalse(self.kwin.find(UU["kate"])["kb"])
+
+    def test_shaded_on_a_native_window_does_not_blame_a_window_rule(self):
+        """5.27 has a `shade` property on every window and ignores a write to
+        a native one. Sending people to look for a window rule that does not
+        exist was the wrong diagnosis; the backend knows the window has no X
+        id."""
+        b = self.backend(plasma=5)
+        w = self.kwin.find(UU["konsole"])       # native: xid 0 in the fixture
+        self.assertFalse(w.get("xid"))
+        w["refuse"] = True
+        why = b.set_state(WID["konsole"], "SHADED", 1) or ""
+        self.assertIn("can only shade X11 windows", why)
+        self.assertNotIn("window rule", why)
+
+    def test_a_refused_state_on_an_x11_window_still_blames_the_rule(self):
+        b = self.backend(plasma=5)
+        w = self.kwin.find(UU["xterm"])
+        self.assertTrue(w.get("xid"))
+        w["refuse"] = True
+        self.assertIn("window rule", b.set_state(WID["xterm"], "SHADED", 1) or "")
+
     def test_raise_on_5_27_warns_that_it_activates(self):
         b = self.backend(plasma=5)
         err = _capture_stderr()
@@ -740,24 +966,28 @@ class BackendTests(_Base):
         self.b.set_state(WID["kate"], "MAXIMIZED_VERT", 0)
         self.assertEqual(d["mm"], 2)
 
-    def test_set_state_warns_when_kwin_ignores_it(self):
+    def test_set_state_reports_when_kwin_ignores_it(self):
         # KWin 5.27 accepts fullscreen on a size-hinted X11 client and does
-        # nothing with it; the read-back is what says so.
+        # nothing with it; the read-back is what says so. The reason comes
+        # back rather than going straight to stderr, because wwmctl has a
+        # second route for an XWayland window and takes it first.
         d = self.kwin.find(UU["kate"])
         d["refuse"] = True
         err = _capture_stderr()
         with err:
-            self.b.set_state(WID["kate"], "FULLSCREEN", 1)
-        self.assertIn("did not apply", err.getvalue())
+            why = self.b.set_state(WID["kate"], "FULLSCREEN", 1)
+        self.assertIn("did not apply", why or "")
+        self.assertEqual(err.getvalue(), "")
         self.assertFalse(d["fs"])
         # maximize too: the script waits for the window to agree before it
         # answers, so a state that stays unapplied really is one KWin refused
-        err = _capture_stderr()
-        with err:
-            self.b.set_state(WID["kate"], "MAXIMIZED_VERT", 1)
-        self.assertIn("did not apply", err.getvalue())
+        why = self.b.set_state(WID["kate"], "MAXIMIZED_VERT", 1)
+        self.assertIn("did not apply", why or "")
 
-    def test_set_state_never_warns_on_an_unverifiable_read(self):
+    def test_set_state_says_nothing_when_it_applied(self):
+        self.assertIsNone(self.b.set_state(WID["kate"], "ABOVE", 1))
+
+    def test_set_state_never_complains_on_an_unverifiable_read(self):
         # `settled: false` = the script could arm neither the window's change
         # signal nor a timer, so its read-back says nothing. Warning on it is
         # the false alarm every FULLSCREEN on a Wayland client used to print.
@@ -766,12 +996,19 @@ class BackendTests(_Base):
         for state in ("FULLSCREEN", "MAXIMIZED_VERT", "ABOVE"):
             err = _capture_stderr()
             with err:
-                self.b.set_state(WID["kate"], state, 1)
+                self.assertIsNone(self.b.set_state(WID["kate"], state, 1),
+                                  state)
             self.assertEqual(err.getvalue(), "", state)
+
+    def test_unsupported_states_is_the_hook_wwmctl_asks_for(self):
+        """Without it wwmctl never tried the X route for an XWayland window
+        whose state KWin has no setter for at all."""
+        self.assertIn("SHADED", self.b.unsupported_states())
 
     def test_set_state_asks_the_script_to_wait(self):
         self.b.set_state(WID["kate"], "FULLSCREEN", 1)
-        args = self.kwin.scripts[max(self.kwin.scripts)][1]
+        args = self.kwin.script_list[-1]["args"] if self.kwin.script_list \
+            else self.kwin.last_args
         self.assertEqual(args["op"], "state")
         self.assertEqual(args["settle"], backend_kwin.SETTLE_MS)
         self.assertGreater(args["settle"], 0)
@@ -877,6 +1114,32 @@ class BackendTests(_Base):
         with self.assertRaises(CmdError) as cm:
             b.select_window()
         self.assertIn("not managed", str(cm.exception))
+
+    def test_select_window_does_not_wait_for_ever(self):
+        """KWin has ONE reply slot for queryWindowInfo: a second picker
+        started while the first is up takes the click, and the first call is
+        never answered at all. timeout=None made that an unkillable wait."""
+        b = self.backend(select_delay=30.0)
+        old = backend_kwin.SELECT_TIMEOUT
+        backend_kwin.SELECT_TIMEOUT = 0.3
+        try:
+            t0 = time.monotonic()
+            with self.assertRaises(CmdError) as cm:
+                b.select_window()
+        finally:
+            backend_kwin.SELECT_TIMEOUT = old
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertIn("never answered", str(cm.exception))
+        self.assertIn("another picker", str(cm.exception))
+
+    def test_the_select_deadline_is_overridable(self):
+        os.environ["WDOTOOL_SELECT_TIMEOUT"] = "0.25"
+        self.addCleanup(os.environ.pop, "WDOTOOL_SELECT_TIMEOUT", None)
+        self.assertEqual(backend_kwin._select_timeout(), 0.25)
+        for junk in ("", "nonsense", "0", "-3"):
+            os.environ["WDOTOOL_SELECT_TIMEOUT"] = junk
+            self.assertEqual(backend_kwin._select_timeout(),
+                             backend_kwin.SELECT_TIMEOUT, junk)
 
     # -- typed hooks
 
@@ -1035,14 +1298,20 @@ class BackendTests(_Base):
         seen = {}
         orig = self.b._load_run
 
-        def spy(plugin, source, deadline):
-            seen["plugin"], seen["source"] = plugin, source
-            return orig(plugin, source, deadline)
+        def spy(plugin, make_source, deadline):
+            # `make_source` is a factory, not a string: an id race renames the
+            # load and the name is baked into the text, so the name the script
+            # carries has to be the one it is loaded under.
+            seen["plugin"] = plugin
+            seen["source"] = make_source(plugin)
+            seen["renamed"] = make_source("some-other-name")
+            return orig(plugin, make_source, deadline)
 
         self.b._load_run = spy
         self.addCleanup(lambda: self.b.__dict__.pop("_load_run", None))
         self.assertEqual(list(self.b.events(timeout=0.3)), [])
         self.assertIn('"plugin": "%s"' % seen["plugin"], seen["source"])
+        self.assertIn('"plugin": "some-other-name"', seen["renamed"])
         self.assertTrue(seen["plugin"].endswith(seen["plugin"].split("-")[-1]))
 
     def test_events_stop_after_silence(self):
@@ -1173,6 +1442,123 @@ class PayloadShapeTests(_Base):
             self.assertEqual(wid & 0xFFFFFFFF, wid, u)
 
 
+class XPropertyCorrectionTests(_Base):
+    """5.27 hands the X id straight to the script, so nothing ever asked the
+    X server about those windows -- and KWin's own answers are not the ones
+    xdotool and wmctrl give."""
+
+    class _FakeX:
+        def __init__(self, cls=("xterm", "XTerm"), name=""):
+            self.cls, self.name, self.asked = cls, name, []
+
+        def get_wm_class(self, xid):
+            self.asked.append(("class", xid))
+            return self.cls
+
+        def get_prop_string(self, xid, prop):
+            self.asked.append((prop, xid))
+            return self.name if prop == "_NET_WM_NAME" else ""
+
+    def setUp(self):
+        self.b = self.backend(plasma=5)      # only 5.27 has windowId
+
+    def test_wm_class_case_comes_from_x(self):
+        """kde-7: KWin 5.27 lower-cases resourceClass, so `wdotool
+        getwindowclassname` on an xterm printed "xterm" where xdotool (and
+        the X server) say "XTerm"."""
+        self.kwin.find(UU["xterm"])["c"] = "xterm"      # what 5.27 reports
+        self.kwin.find(UU["xterm"])["n"] = "xterm"
+        self.b._x = self._FakeX()
+        w = {x.id: x for x in self.b.list()}[WID["xterm"]]
+        self.assertEqual((w.instance, w.class_), ("xterm", "XTerm"))
+
+    def test_an_empty_caption_is_filled_from_x(self):
+        """kde-tools kde-4: KWin leaves the caption empty for a client whose
+        WM_NAME is COMPOUND_TEXT with no _NET_WM_NAME beside it."""
+        self.kwin.find(UU["xterm"])["t"] = ""
+        self.b._x = self._FakeX(name="a compound title")
+        w = {x.id: x for x in self.b.list()}[WID["xterm"]]
+        self.assertEqual(w.title, "a compound title")
+
+    def test_a_caption_kwin_has_is_not_overwritten(self):
+        x = self._FakeX(name="from the X server")
+        self.b._x = x
+        w = {y.id: y for y in self.b.list()}[WID["xterm"]]
+        self.assertEqual(w.title, "test@kde: ~")
+        self.assertNotIn(("_NET_WM_NAME", XTERM_XID), x.asked)
+
+    def test_native_windows_are_left_alone(self):
+        x = self._FakeX()
+        self.b._x = x
+        self.b.list()
+        self.assertEqual([a for a in x.asked if a[1] != XTERM_XID], [])
+
+    def test_no_x_server_is_not_an_error(self):
+        self.b._x = None
+        self.assertEqual(len(self.b.list()), 4)
+
+
+class PointerTests(_Base):
+    """B6 on KWin: getmouselocation used to fall through to the input
+    daemon's model of the last position it injected -- which needs
+    /dev/uinput open for a pure query and answers 0 0 after a restart."""
+
+    def setUp(self):
+        self.b = self.backend()
+
+    def test_pointer_reads_the_compositor(self):
+        self.kwin.cursor = (137, 42)
+        self.assertEqual(self.b.pointer(), (137, 42))
+
+    def test_pointer_is_the_hook_input_cmds_looks_for(self):
+        from wdotool import input_cmds
+
+        ctx = types.SimpleNamespace(backend=lambda: self.b)
+        self.kwin.cursor = (11, 22)
+        self.assertEqual(input_cmds._backend_pointer(ctx), (11, 22))
+
+    def test_a_compositor_with_no_cursor_query_falls_back(self):
+        """None, not an exception: the caller's fallback is the daemon."""
+        self.kwin.cursor = None
+        self.assertIsNone(self.b.pointer())
+
+    def test_no_script_is_left_loaded(self):
+        self.b.pointer()
+        loaded = [c[2][0] for c in self.kwin.calls if c[1] == "loadScript"]
+        self.assertEqual(len(self.kwin.unloaded), len(loaded))
+
+
+class ViewStateTests(_Base):
+    """States KWin reports that the View used to drop on the floor: BELOW is
+    what `windowlower` leaves behind, so it has to be readable."""
+
+    def setUp(self):
+        self.b = self.backend()
+
+    def _view(self, uuid):
+        for v in self.b.views():
+            if v.window.id == backend_kwin._wid(uuid):
+                return v
+        self.fail("no view for %s" % uuid)
+
+    def test_below_and_skip_pager_reach_the_view(self):
+        w = self.kwin.find(UU["kate"])
+        w["kb"], w["sp"] = True, True
+        v = self._view(UU["kate"])
+        self.assertTrue(v.below)
+        self.assertTrue(v.skip_pager)
+        self.assertFalse(v.above)
+        other = self._view(UU["xterm"])
+        self.assertFalse(other.below)
+        self.assertFalse(other.skip_pager)
+
+    def test_a_lowered_window_reads_back_as_below(self):
+        err = _capture_stderr()
+        with err:
+            self.b.lower(WID["kate"])
+        self.assertTrue(self._view(UU["kate"]).below)
+
+
 class ScriptTextTests(unittest.TestCase):
     """The one script has to cover both Plasma generations by itself."""
 
@@ -1195,6 +1581,23 @@ class ScriptTextTests(unittest.TestCase):
                      ("raiseWindow", "slotWindowRaise")):
             for token in pair:
                 self.assertIn(token, js)
+
+    def test_raise_clears_keep_below(self):
+        """The Python fake mirrors the JS; this is the JS itself."""
+        js = kwin_js.SCRIPT
+        body = js[js.index('if (op === "raise")'):js.index('if (op === "lower")')]
+        self.assertIn("w.keepBelow = false;", body)
+
+    def test_the_state_answer_carries_the_x_id(self):
+        js = kwin_js.SCRIPT
+        self.assertIn("function xnum(w)", js)
+        body = js[js.index('if (op === "state")'):js.index('if (op === "desktop")')]
+        self.assertEqual(body.count("xid: xnum(w)"), 2)
+
+    def test_the_cursor_op_uses_the_property_both_releases_have(self):
+        js = kwin_js.SCRIPT
+        self.assertIn("workspace.cursorPos", js)
+        self.assertIn('if (op === "cursor")', js)
 
     def test_never_uses_the_globals_kwin_does_not_have(self):
         # print() is gone from KWin's script globals in 5.27 and 6 alike
