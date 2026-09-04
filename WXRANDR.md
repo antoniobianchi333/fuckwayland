@@ -188,20 +188,28 @@ Mutter `--dryrun` is the compositor's own method-0 verify, so the same
 attributed one-liner is available on stderr without applying anything
 (stdout stays xrandr's dryrun bytes).
 
-**Out of scope: true region mirroring.** Compositor-level *output* mirroring is
-in scope wherever the compositor has it — Mutter's one logical monitor with
-several members, KWin's `set_replication_source` — and `--same-as` uses it
-there, but only where the simpler shared position cannot already deliver what
-was asked (below). Making a *region* show the same pixels where the compositor
-does not already do it is a different, much larger thing — a resident helper
-capturing one output and painting it onto another every frame. wxrandr does not do it and is not going to. On wlroots the route
-is the existing [wl-mirror](https://github.com/Ferdi265/wl-mirror) as an
-optional helper, not a reimplementation; there is no route worth having on
-GNOME or KDE. Two reasons it stays outside: no `xrandr` syntax expresses
-"mirror this rectangle onto that one", so it could not be spelled in a
-command line or a saved layout script; and on GNOME and KDE the only capture
-route is the desktop portal, which prompts the user for every session, which
-makes it useless from the hotkey a layout script exists for.
+**Region mirroring lives in its own command (`wmirror`), not here.**
+Compositor-level *output* mirroring is in scope wherever the compositor has
+it — Mutter's one logical monitor with several members, KWin's
+`set_replication_source` — and `--same-as` uses it there, but only where the
+simpler shared position cannot already deliver what was asked (below). Making
+a *region* show the same pixels is a different and much larger thing: a
+resident helper capturing one output and painting it onto another every
+frame. wxrandr does not do it and is not going to. The route does exist and
+is packaged, though, so since 0.2 the toolbox drives it from a **separate
+command**: `wmirror` runs the existing
+[wl-mirror](https://github.com/Ferdi265/wl-mirror) on wlroots and owns its
+lifetime — `WMIRROR.md` has the measurements and the contract. Three measured
+reasons it stays out of `wxrandr`: no `xrandr` syntax expresses "mirror this
+rectangle onto that one", so it could not be spelled in a command line or in
+a saved layout script that has to keep running on a plain X11 box; a shared
+rectangle is the one geometry in which the helper would capture its own
+window (a fullscreen window on the target is drawn on the source too), so
+`--same-as` cannot host it; and it leaves a resident process that stops the
+compositor ever idling, which is not what a layout tool should leave behind.
+On GNOME and KDE there is still no route worth having: the only capture path
+is the desktop portal, which prompts the user for every session, which makes
+it useless from the hotkey a layout script exists for.
 
 ## Mutter backend (`wxrandr/mutter.py`)
 

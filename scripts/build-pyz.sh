@@ -49,3 +49,7 @@ build wxrandr wxrandr.cli wdotool wxrandr
 # warandr bundles wxrandr: on Wayland it runs the same interpreter with
 # -m wxrandr, PYTHONPATH pointing at the pyz itself (zipimport)
 build warandr warandr.cli wdotool wxrandr warandr
+# wmirror drives an external binary but reads the layout through wxrandr's
+# own wlr client, and the detached supervisor is this same zipapp re-entered
+# by fork, so it needs nothing else in the bundle.
+build wmirror wmirror.cli wdotool wxrandr wmirror

@@ -1,0 +1,428 @@
+"""OWNER: wmirror. The detached supervisor that owns one wl-mirror process.
+
+Same shape, and the same reasoning, as `wxrandr/gamma.py`'s gamma holder --
+which is the repo's precedent for a process that must outlive the command
+that started it:
+
+  * double-fork + setsid, so nothing is left in our process group and the
+    mirror survives the shell that started it;
+  * the child reports `pid <pid> <starttime>` BEFORE it can fail, so even a
+    hang leaves a record a later wmirror can stop -- no unstoppable orphan;
+  * liveness is (pid, starttime) read out of /proc, so a recycled pid is
+    never signalled, and nothing is signalled that is not ours (euid check).
+
+One thing gamma does not have: the thing we spawn is not us, it is
+wl-mirror. So the record carries TWO (pid, starttime) pairs. If our
+supervisor is killed the helper is still found and stopped by `wmirror
+--stop`; if the helper dies on its own the supervisor exits and the record
+is reaped on the next `--list`.
+
+The supervisor is what makes the mirror end honestly. It watches the output
+layout over zwlr_output_management (the protocol wxrandr already speaks)
+and kills the helper when its source or target goes away, is switched off,
+or the two come to share pixels -- the geometry in which wl-mirror would
+capture its own picture. wl-mirror itself only handles the first of those:
+it exits when the SOURCE disappears, and it happily survives the target
+disappearing, which on sway relocates the mirror window onto the source.
+"""
+
+import os
+import select
+import signal
+import subprocess
+import tempfile
+import time
+
+from wxrandr import core as wxcore
+# gamma.py's pid-reuse guards, imported rather than copied: one
+# implementation of "is that still the process we started?" in the tree.
+from wxrandr.gamma import _proc_starttime as proc_starttime
+from wxrandr.gamma import _wait_gone as wait_gone
+
+from . import core
+
+#: How long a start waits to see whether wl-mirror stays up. It reaches its
+#: surface in ~150 ms and fails (bad output name, no protocol) faster than
+#: that, so a second is generous; the command blocks for it, once.
+STARTUP_SECONDS = 1.0
+#: Longest a supervisor waits between polls with nothing to do.
+POLL_SECONDS = 1.0
+#: Longest a SIGTERM'd wl-mirror gets before SIGKILL. Kept well under the
+#: second `wxrandr.gamma._wait_gone` gives US after a SIGTERM, so a stop
+#: normally ends with the supervisor exiting of its own accord rather than
+#: being killed halfway through ending the helper.
+STOP_SECONDS = 0.5
+
+
+# -- identity -----------------------------------------------------------------
+
+def _ours(pid: int) -> bool:
+    """A process we started runs as us. Anything else is never signalled,
+    whatever the state file claims (gamma.stop_holder's guard)."""
+    try:
+        return os.stat("/proc/%d" % pid).st_uid == os.geteuid()
+    except OSError:
+        return False
+
+
+def _comm(pid: int):
+    try:
+        with open("/proc/%d/comm" % pid) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def alive(pid, start, comm_hint=None) -> bool:
+    """Is that exact process still running?
+
+    With a starttime the answer is exact. Without one (a '?' record, written
+    when /proc could not be read) we fall back to the process name, like
+    gamma's `_looks_like_holder`: never matching would strand a mirror
+    covering somebody's screen with no way to stop it."""
+    if not pid:
+        return False
+    if not _ours(pid):
+        return False
+    cur = proc_starttime(pid)
+    if cur is None:
+        return False
+    if start and start != "?":
+        return cur == start
+    comm = _comm(pid)
+    return bool(comm and comm_hint and comm_hint.lower() in comm.lower())
+
+
+def _kill(pid: int, start) -> bool:
+    """SIGTERM, bounded wait, SIGKILL, confirm. Never fire-and-forget."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    if wait_gone(pid, start if start else "?"):
+        return True
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return True
+    wait_gone(pid, start if start else "?")
+    return True
+
+
+# -- records ------------------------------------------------------------------
+
+def liveness(rec: dict) -> tuple:
+    """(supervisor alive, helper alive) for one record."""
+    return (alive(rec.get("pid"), rec.get("start"), "python"),
+            alive(rec.get("helper_pid"), rec.get("helper_start"),
+                  core.HELPER))
+
+
+def reap(recs: dict) -> bool:
+    """Drop the records whose processes are gone, flag the ones whose
+    supervisor died but whose helper is still painting.
+
+    Mutates `recs`; returns whether anything changed, so a query that found
+    nothing to correct does not rewrite the state file."""
+    changed = False
+    for target in list(recs):
+        rec = recs[target]
+        if not isinstance(rec, dict):
+            del recs[target]
+            changed = True
+            continue
+        sup, helper = liveness(rec)
+        if not sup and not helper:
+            del recs[target]
+            changed = True
+            continue
+        orphan = bool(helper and not sup)
+        if rec.get("orphan") != orphan:
+            rec["orphan"] = orphan
+            changed = True
+    return changed
+
+
+def stop_record(rec: dict) -> bool:
+    """Stop one mirror: the supervisor first (it forwards the signal and
+    waits), then the helper directly, in case the supervisor was killed
+    before it could. True if anything was actually running."""
+    killed = False
+    if alive(rec.get("pid"), rec.get("start"), "python"):
+        killed = _kill(rec["pid"], rec.get("start")) or killed
+    if alive(rec.get("helper_pid"), rec.get("helper_start"), core.HELPER):
+        killed = _kill(rec["helper_pid"], rec.get("helper_start")) or killed
+    return killed
+
+
+# -- starting -----------------------------------------------------------------
+
+def start(recs: dict, source: str, target: str, argv: list, region=None,
+          scaling: str = core.DEFAULT_SCALING, wayland_socket=None):
+    """Spawn the detached supervisor for one mirror.
+
+    Writes the record into `recs` as soon as the supervisor names itself --
+    before anything can go wrong -- so a start that then hangs is still
+    stoppable. Returns None on success, else the lines to print (the record
+    is removed again when the helper reported a clean failure)."""
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:                      # child: detach, grandchild supervises
+        try:
+            os.close(r)
+            os.setsid()
+            if os.fork():
+                os._exit(0)
+            devnull = os.open(os.devnull, os.O_RDWR)
+            os.dup2(devnull, 0)
+            os.dup2(devnull, 1)
+            os.dup2(devnull, 2)
+            os.close(devnull)
+            supervisor_main(argv, source, target, status_fd=w,
+                            wayland_socket=wayland_socket)
+        finally:
+            os._exit(0)
+    os.close(w)
+    os.waitpid(pid, 0)
+
+    rec = {"source": source, "target": target,
+           "region": list(region) if region else None,
+           "scaling": scaling, "argv": list(argv), "since": int(time.time())}
+    deadline = time.monotonic() + STARTUP_SECONDS + 4.0
+    buf = b""
+    status = None
+    named = False
+    while status is None and time.monotonic() < deadline:
+        ready, _, _ = select.select([r], [], [], 0.2)
+        if not ready:
+            continue
+        try:
+            chunk = os.read(r, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            line = line.decode(errors="replace").strip()
+            parts = line.split()
+            if line.startswith("pid ") and len(parts) == 3:
+                rec["pid"], rec["start"] = int(parts[1]), parts[2]
+                recs[target] = rec       # stoppable from here on
+                named = True
+            elif line.startswith("helper ") and len(parts) == 3:
+                rec["helper_pid"] = int(parts[1])
+                rec["helper_start"] = parts[2]
+            else:
+                status = line
+                break
+    os.close(r)
+
+    if status == "ok":
+        recs[target] = rec
+        return None
+    if status is not None:
+        recs.pop(target, None)
+        msg = status[len("failed "):] if status.startswith("failed ") \
+            else status
+        return ["%s did not start: %s" % (core.HELPER, msg)]
+    if named:                 # no verdict, but it named itself: keep it
+        recs[target] = rec
+        return ["%s did not report that it started" % core.HELPER,
+                "if it is running, `wmirror --list` shows it and "
+                "`wmirror --stop %s` stops it" % target]
+    return ["%s could not be started (no answer from the supervisor)"
+            % core.HELPER]
+
+
+# -- the detached supervisor --------------------------------------------------
+
+def _on_term(signum, frame):
+    raise SystemExit(0)
+
+
+def _diagnosis(tail: list, rc) -> str:
+    """What to blame when wl-mirror exits during the startup window.
+
+    Its own `error:` line if it printed one. Nothing here reads stderr as
+    failure on its own: libEGL prints both `warning:` and `error:` lines
+    there while wl-mirror works perfectly, so these lines are only ever
+    consulted for a process that has actually exited, and wl-mirror's own
+    format (`error: options::find_output(): ...`) is preferred over anything
+    else that merely contains the word."""
+    for line in reversed(tail):
+        if line.strip().startswith("error:"):
+            return line.strip()
+    for line in reversed(tail):
+        if "error" in line.lower():
+            return line.strip()
+    return "%s exited with status %s" % (core.HELPER, rc)
+
+
+class _Stderr:
+    """The helper's stderr, on an unlinked temp file rather than a pipe.
+
+    A pipe would tie wl-mirror's life to ours twice over: it fills if
+    nobody drains it (stalling the helper), and after our own death its
+    first write would be SIGPIPE -- so a mirror that is supposed to survive
+    a killed supervisor, and stay stoppable, would die at an unpredictable
+    moment instead. A file does neither. The child gets its own O_APPEND
+    descriptor so our reads never move its write offset, and the file is
+    truncated when it grows: `-v` writes ~20 kB/s, and nothing here needs
+    more than the last few lines."""
+
+    CAP = 64 * 1024
+
+    def __init__(self):
+        fd, path = tempfile.mkstemp(prefix="wmirror-helper-")
+        self.wfd = os.open(path, os.O_WRONLY | os.O_APPEND)
+        os.unlink(path)
+        self.fd = fd
+
+    def tail(self) -> list:
+        try:
+            size = os.fstat(self.fd).st_size
+            start = max(0, size - self.CAP)
+            data = os.pread(self.fd, min(size, self.CAP), start)
+        except OSError:
+            return []
+        return data.decode(errors="replace").splitlines()
+
+    def trim(self):
+        try:
+            if os.fstat(self.fd).st_size > self.CAP:
+                os.ftruncate(self.fd, 0)      # O_APPEND: the child follows
+        except OSError:
+            pass
+
+    def close_write(self):
+        if self.wfd is not None:
+            os.close(self.wfd)
+            self.wfd = None
+
+    def close(self):
+        self.close_write()
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+def supervisor_main(argv: list, source: str, target: str, status_fd=None,
+                    wayland_socket=None) -> int:
+    """Run wl-mirror, report the start, then own it until it must end."""
+
+    def emit(msg: str, close: bool = False):
+        if status_fd is None:
+            return
+        try:
+            os.write(status_fd, (msg + "\n").encode())
+            if close:
+                os.close(status_fd)
+        except OSError:
+            pass
+
+    # name ourselves before anything can fail (gamma's rule)
+    emit("pid %d %s" % (os.getpid(), proc_starttime(os.getpid()) or "?"))
+    stderr = _Stderr()
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=stderr.wfd, env=helper_env(
+                                    wayland_socket))
+    except OSError as e:
+        emit("failed cannot run %s: %s" % (argv[0], e), close=True)
+        stderr.close()
+        return 1
+    stderr.close_write()          # only the helper holds the write end now
+    emit("helper %d %s" % (proc.pid, proc_starttime(proc.pid) or "?"))
+    signal.signal(signal.SIGTERM, _on_term)
+    try:
+        deadline = time.monotonic() + STARTUP_SECONDS
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                emit("failed %s" % _diagnosis(stderr.tail(),
+                                              proc.returncode), close=True)
+                return 1
+            time.sleep(0.02)
+        emit("ok", close=True)
+        _supervise(proc, stderr, source, target, wayland_socket)
+    finally:
+        _stop_child(proc)
+        stderr.close()
+    return 0
+
+
+def helper_env(wayland_socket):
+    """The environment wl-mirror is run with. wmirror works from a hotkey,
+    from `sudo` and from `ssh root@box` with an empty environment, because
+    the session's socket is found by scanning /run/user/* -- so the helper
+    is told which one rather than left to read a WAYLAND_DISPLAY that may
+    not be there. libwayland takes an absolute path in that variable."""
+    if not wayland_socket:
+        return None
+    env = dict(os.environ)
+    env["WAYLAND_DISPLAY"] = wayland_socket
+    env["XDG_RUNTIME_DIR"] = os.path.dirname(wayland_socket)
+    return env
+
+
+def _stop_child(proc):
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=STOP_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=STOP_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
+def _open_watch(wayland_socket):
+    """A zwlr_output_manager view of the layout, or None. A supervisor
+    without one still owns its helper; it just cannot notice an output
+    disappearing before wl-mirror does."""
+    if not wayland_socket:
+        return None
+    try:
+        from wdotool.wayland_mini import WlConn
+        conn = WlConn(wayland_socket)
+        return wxcore.WlrOutputs(conn=conn)
+    except Exception:
+        return None
+
+
+def _supervise(proc, stderr, source, target, wayland_socket):
+    """Until the helper dies, an output change makes the mirror impossible,
+    or the compositor goes away."""
+    wlr = _open_watch(wayland_socket)
+    serial = getattr(wlr, "serial", None)
+    while True:
+        if wlr is not None:
+            try:
+                ready, _, _ = select.select([wlr.conn.sock.fileno()], [], [],
+                                            POLL_SECONDS)
+            except InterruptedError:
+                ready = []
+            if ready:
+                try:
+                    wlr.conn.dispatch(timeout=0.1)
+                except Exception:
+                    return      # compositor gone: the helper goes with it
+                if wlr.serial != serial:
+                    serial = wlr.serial
+                    if core.watch_reason(core.outputs_from_heads(wlr),
+                                         source, target):
+                        return
+        else:
+            time.sleep(POLL_SECONDS)
+        if stderr is not None:
+            stderr.trim()
+        if proc.poll() is not None:
+            return

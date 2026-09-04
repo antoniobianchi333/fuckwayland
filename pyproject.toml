@@ -14,6 +14,7 @@ wwmctl = "wwmctl.cli:main"
 wxprop = "wxprop.cli:main"
 wxrandr = "wxrandr.cli:main"
 warandr = "warandr.cli:main"
+wmirror = "wmirror.cli:main"
 
 [tool.setuptools]
-packages = ["wdotool", "wwmctl", "wxprop", "wxrandr", "warandr"]
+packages = ["wdotool", "wwmctl", "wxprop", "wxrandr", "warandr", "wmirror"]

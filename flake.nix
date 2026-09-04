@@ -17,7 +17,7 @@
           pyproject = true;
           build-system = [ pkgs.python3Packages.setuptools ];
 
-          # pyproject.toml declares five console scripts, warandr among them,
+          # pyproject.toml declares six console scripts, warandr among them,
           # so this derivation has always installed $out/bin/warandr -- it
           # just could not run: warandr is the one GUI here, and `import gi`
           # needs PyGObject while gi.require_version("Gtk", "3.0") needs the
