@@ -292,7 +292,10 @@ new geometry), and re-bases on the *current* outputs like arandr (unknown
 output/mode → error). A stanza with `--primary` moves the primary (the
 previous one is cleared even when the script does not mention it, as
 xrandr does); a mentioned output without `--primary` loses it (arandr). Saving appends `.sh`, chmods 0700, defaults to
-`~/.screenlayout/` — all arandr habits. The command word on save is the
+`~/.screenlayout/` — all arandr habits. The directory itself is not created: a
+`--save` into one that is not there is a `warandr: [Errno 2] No such file or
+directory` line and rc 1, so `mkdir -p ~/.screenlayout` first. The command word on
+save is the
 current backend's, so an X11 arandr file re-saved on Wayland says `wxrandr`.
 arandr itself can load our files when they use only arandr's vocabulary
 (`--rate/--reflect/--scale/--same-as` make its parser bail — documented gap).
@@ -440,11 +443,18 @@ on backend/parse/file errors.
   does not own: `<Ctrl><Alt>F1`–`F12` are its VT switches (the chord changes
   the VT and gsd logs `Failed to grab accelerator`); `<Super>F6`/`<Super>F7`
   work. The window is up ~2 s after the chord; a three-head layout script
-  restores the screen in about a second (0.65 s / 0.99 s measured).
+  restores the screen in about a second (0.65 s / 0.99 s measured). The
+  shortcut is dead until the session is up, so the first press after a
+  reboot is silently lost (~24 s from `reboot` on the rig).
 - **Temporary, like xrandr**: Apply uses Mutter's non-persistent method —
   no "Keep changes?" dialog, nothing written to `monitors.xml` — and Mutter
-  drops it at the next hotplug or login (`wxrandr --persistent` is the
-  other way). The shortcut script is how a layout comes back, as with arandr.
+  lays the monitors out afresh at the next login (`wxrandr --persistent` is
+  the other way). At a hotplug it is dropped only while the set of monitors
+  is different, and comes back in full when the original set does (GNOME 50;
+  the hotplug bullet below). The shortcut script is how a layout comes back,
+  as with arandr, and it is the same answer on the other three desktops:
+  what each of them does on its own, and how to bind the script there, is
+  under "Keeping a layout" in README.md.
 - **Mutter allows no gaps**: a layout leaving a hole between monitors
   (`--pos 5000x0`) is refused by Mutter itself; the dialog shows its text
   (`XRandR failed: xrandr: Logical monitors not adjacent`), the screen is

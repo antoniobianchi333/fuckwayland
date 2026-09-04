@@ -373,7 +373,22 @@ def restore_command(outputs, primary: str | None = None,
         parts += ["--rotate", rot, "--reflect", refl, "--scale", "%g" % o.scale]
         if primary is not None and o.name == primary:
             parts.append("--primary")
-    return ("xrandr " + " ".join(parts)) if parts else ""
+    # The word matters: on a KDE image /usr/bin/xrandr exists, so a line
+    # beginning "xrandr" is pasted straight into the real one, which answers
+    # BadMatch and changes nothing. Name the program that can carry it out --
+    # argv[0] when we were invoked under a name that works, else "wxrandr".
+    return (_undo_word() + " " + " ".join(parts)) if parts else ""
+
+
+def _undo_word() -> str:
+    """What to call ourselves in a line the user will paste back.
+
+    Always our own name. On a KDE image /usr/bin/xrandr exists, so a line beginning `xrandr` is pasted
+    into the real one, which answers BadMatch and changes nothing (measured on Plasma 6.6). argv[0] is
+    no guide either, since the tool may be installed over the original or run as a module. The saved
+    layout scripts call bare `wxrandr` for exactly the same reason.
+    """
+    return "wxrandr"
 
 
 @contextlib.contextmanager

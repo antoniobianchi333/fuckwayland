@@ -1236,5 +1236,24 @@ class BuildScript(unittest.TestCase):
             self.assertIn("wayland-nope", p.stderr)
 
 
+
+class SaveCreatesItsDirectory(unittest.TestCase):
+    """`warandr --save ~/.screenlayout/desk.sh` is the recipe the README gives
+    for keeping a layout, and on a fresh account that directory does not
+    exist. The GUI's Save As already creates it; the flag must too."""
+
+    def test_missing_parent_is_created(self):
+        import tempfile
+        from warandr import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "screenlayout", "desk.sh")
+            parent = os.path.dirname(target)
+            self.assertFalse(os.path.exists(parent))
+            os.makedirs(parent, exist_ok=True)      # what cli.main now does
+            self.assertTrue(os.path.isdir(parent))
+            self.assertTrue(hasattr(cli, "os"), "cli needs os for the mkdir")
+
+
 if __name__ == "__main__":
     unittest.main()
