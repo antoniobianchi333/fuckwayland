@@ -244,6 +244,16 @@ status, same signals, same stdio, no extra process. One script then runs on
 both session types, and `xdotool --version` on X11 answers with the version
 that is actually installed there.
 
+Four things stay ours on either session type, because the original has no
+such thing to hand over to: `wdotool keys` (and the hidden `__keymap`), and
+the leading `--layout` / `--vkbd` options, which are stripped before the
+handover. So on X11 `xdotool keys explain a` answers from our own tables
+where the real xdotool says `Unknown command: keys`, and `xdotool --layout
+us key a` hands `key a` over where the real one refuses the option. They
+never fail on an X11 session, they just say what they could not read
+(`note: the compositor's keymap could not be read (no wayland socket
+found)`).
+
 ```console
 $ FUCKWAYLAND_PASSTHROUGH=never xdotool key a   # our own code, whatever the session
 $ FUCKWAYLAND_PASSTHROUGH=always ...            # hand over, whatever the session
