@@ -331,6 +331,23 @@ and unloads it again. `wwmctl`, `wxprop` and `wxrandr` come along with it.
 (That is also a security note in the GNOME sense: any client on your session
 bus can already do this, with or without these tools.)
 
+**Plasma 6.7 changed how KWin publishes displays, and `wxrandr` follows it.**
+From 6.7.0 an output is no longer a `kde_output_device_v2` wl_registry global;
+the compositor hands the device objects out through a
+`kde_output_device_registry_v2` object instead (kwin `7e32e00c`, never
+backported — 6.6 still publishes the globals). On a real Plasma 6.7.4 session
+the old global is simply **absent**, so that second path is the only way to
+see an output at all, and `wxrandr` takes it: query, mode, position, rotation,
+scale, `--off`, `--primary`, `--same-as` and hot-plug all measured there, on
+the `stonking-kde` VM image (Ubuntu 26.10), against `kscreen-doctor` — see
+[WXRANDR.md](WXRANDR.md#kwin-backend-wxrandrkwinpy).
+
+That is the *only* thing measured on 6.7 so far. `wdotool`, `wwmctl` and
+`wxprop` reach KWin through its scripting interface, which this change does
+not touch, but they have not been run on 6.7 here and the support matrix below
+is still 5.27 and 6.6. The image exists (`vm/vmctl build stonking-kde`) if you
+want to close that gap.
+
 What differs from X, and why:
 
 | | |
@@ -624,7 +641,11 @@ no rectangle of its own on that desktop — KWin drops it out of the layout — 
 `--query` reports it at its source's geometry, `--right-of` it starts where the
 source ends, and it cannot be the primary. Mirroring *onto* one is resolved to
 the output whose picture it is really showing: KWin accepts a copy of a copy and
-then never draws it.
+then never draws it. Both cells are measured on Plasma 5.27 and 6.6, and the
+display path again on **6.7.4**, where KWin publishes outputs through a
+registry object instead of as globals and `wxrandr` switches discovery paths to
+match — see [KDE Plasma](#kde-plasma). The other four cells in this column are
+5.27 and 6.6 only.
 
 **(g)** X11 answers are the X server's own (`Screen 0: minimum 320 x 200 … maximum
 8192 x 8192`), and whether an output is marked `primary` is the desktop's business.

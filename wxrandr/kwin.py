@@ -14,20 +14,49 @@ kde_output_*).
 
 - Discovery has two shapes. Through Plasma 6.6 every output is a
   `kde_output_device_v2` wl_registry global (find them all -- find_global()
-  returns only the first). From Plasma 6.7 / device v21 KWin stopped exporting
-  that global (wayland_server.cpp constructs only OutputDeviceRegistryV2 and
-  hands resources out with wl_resource_create) and the devices arrive as
-  new_ids on `kde_output_device_registry_v2`, which must be bound at v21 or
-  higher. Both paths are implemented; the device object behaves identically
-  either way.
-- Versions move fast: 5.27 advertises device 2 / management 3, 6.0 6/7, 6.3
-  11/12, 6.4-6.5 16/16, 6.6 20/19, master 25/22. We bind LOW -- device 2 (the
+  returns only the first). **Plasma 6.7.0** is where that stopped: kwin commit
+  7e32e00c, "wayland: Don't advertise kde-output-device-v2 globals anymore"
+  (Vlad Zahorodnii, 2026-03-05, alongside 67f58528 "Implement
+  kde-output-device-v2 v21"), first released in v6.7.0 and never backported --
+  v6.6.6, cut four months later, still does
+  `new OutputDeviceV2Interface(m_display, output)`, while v6.7.0's
+  wayland_server.cpp constructs only `m_outputDeviceRegistry` and answers a
+  hotplug with `m_outputDeviceRegistry->offer(output)`. From there the devices
+  arrive as new_ids on `kde_output_device_registry_v2`, which the compositor
+  refuses below v21:
+
+      // OutputDeviceRegistryV2Private::..._bind_resource()
+      if (resource->version() < 21) {
+          wl_resource_post_error(resource->handle,
+                                 error_unsupported_version,
+                                 "unsupported version");
+
+  and whose device resources take *the version the registry itself was bound
+  at* -- `offer(target->client(), target->version(), ...)` ->
+  `wl_resource_create(client, &kde_output_device_v2_interface, version, 0)`,
+  the trailing 0 being what puts the id in the server's 0xff000000 range.
+  There is no second bind and no separate device version to negotiate. Both
+  paths are implemented; past that, the device object behaves identically
+  either way, and the whole burst still lands inside the registry bind
+  (`d->add(resource)` runs `kde_output_device_v2_bind_resource`, which sends
+  geometry .. done synchronously), so one roundtrip publishes everything.
+  Measured on KWin 6.7.4 (Ubuntu 26.10): `kde_output_device_v2` is not in
+  wl_registry at all there, the registry is advertised at 23 and management at
+  21, and query / mode / position / rotate / scale / --off / --primary /
+  --same-as and a head plugged and unplugged all behave as on 6.6. An unplug
+  on this path is the device's own `removed`, not a global going away.
+- Versions move fast. KWin's own `s_version` per release, device / management:
+  5.27 = 2/3, 6.0 = 6/7, 6.3 = 11/12, 6.4 and 6.5 = 16/16, 6.6 = 20/19,
+  **6.7 = 23/21**, master = 25/22; the registry global shares the device's
+  number (23 on 6.7.x, 25 on master). We bind LOW -- device 2 (the
   `name` event, i.e. the connector name, is since 2) and management
   min(advertised, 12) (`set_primary_output` is since 2, `failure_reason` since
   12) -- because a server only sends events whose `since` is <= the bound
   version, so binding low is the compatible choice and every field xrandr
   needs exists at device 2. Optional features are gated on the *bound*
   version, never assumed: on 5.27 a rejection carries no reason string at all.
+  The registry is the exception that cannot be bound low: below 21 it is a
+  fatal protocol error, so REG_MIN is a floor and not a preference.
 - Modes are objects, like wlroots: `mode` is a server-allocated new_id whose
   own events carry size (hardware pixels, pre-transform, pre-scale) and
   refresh (mHz). We read the id off the wire and register a handler for it,
@@ -177,7 +206,7 @@ DEV_WANT = 13        # `name` (the connector) is since 2 and is the reason to
                      # so the device goes no higher.
 MGMT_WANT = 13       # set_primary_output since 2, failure_reason since 12,
                      # set_replication_source since 13
-REG_WANT = 25
+REG_WANT = 25        # the highest kde_output_device_v2 in the XML today
 REG_MIN = 21         # binding the registry lower is error_unsupported_version
 ORDER_WANT = 1       # kde_output_order_v1 is v1 from 5.27 to master
 
@@ -535,13 +564,26 @@ class KwinOutputs:
             name, adv = reg
             ver = min(adv, REG_WANT)
             if ver >= REG_MIN:
+                # the device resources this registry hands out are created at
+                # the version the REGISTRY was bound at, so this is the device
+                # version too -- there is no per-device bind on this path
                 self.dev_version = ver
                 self.registry = self.conn.bind(name, REG, ver)
                 self.conn.on(self.registry, self._on_registry)
             elif not self._warned_registry:
+                # A registry we may not bind is only fatal when it is the
+                # only way outputs are published. Nothing real advertises it
+                # below 21 -- the interface did not exist before then -- but
+                # if something did while still exporting the globals, the
+                # globals path below still works and saying "no outputs can
+                # be listed" would be a lie.
                 self._warned_registry = True
-                warn("%s version %d is older than the %d this protocol needs;"
-                     " no outputs can be listed\n" % (REG, adv, REG_MIN))
+                globals_too = any(i == DEV for i, _v in regs.values())
+                warn("%s version %d is older than the %d this protocol "
+                     "needs; %s\n"
+                     % (REG, adv, REG_MIN,
+                        "falling back to the per-output %s globals" % DEV
+                        if globals_too else "no outputs can be listed"))
         if self.registry is not None:
             return                      # devices arrive as new_ids, not globals
         live = set()
@@ -572,11 +614,12 @@ class KwinOutputs:
 
     def _on_registry(self, op, cur, fds):
         """kde_output_device_registry_v2's `output` event: one new_id of
-        kde_output_device_v2 per output. The interface lives in
-        plasma-wayland-protocols, not in the kwin tree, and the opcode is
-        recorded as 1 -- so rather than trust one index we accept any event
-        whose whole payload is a single server-range new_id, which no other
-        event of this interface can look like."""
+        kde_output_device_v2 per output. The interface has exactly two events
+        -- `finished` (opcode 0, no arguments, the answer to `stop`, which we
+        never send) and `output` (opcode 1, one new_id) -- so rather than
+        trust one index we accept any event whose whole payload is a single
+        server-range new_id. `finished` cannot look like that, and if the
+        announcement ever moves opcode we still read it."""
         if len(cur.d) != 4:
             return
         oid = cur.u32()
@@ -709,10 +752,17 @@ class KwinOutputs:
         (post-`done`) device state."""
         self._refresh()
         if not self.live():
-            # management without a single published device: the 6.7 registry
-            # too old to bind, a compositor that answers the protocol and owns
-            # no output. Silently printing an empty screen and calling every
-            # apply a success is worse than saying so.
+            # management without a single published device. Silently printing
+            # an empty screen and calling every apply a success is worse than
+            # saying so -- and which of the two discovery paths came up empty
+            # is the whole diagnosis, so the message names it. On the registry
+            # path this is also where a wrong guess about the 6.7 protocol
+            # would land: a `stop`-less registry that announces nothing is
+            # indistinguishable from one we are failing to read, so say both.
+            if self.registry is not None:
+                raise Fatal("%s announced no outputs (this compositor hands "
+                            "them out through %s; wxrandr bound it at version "
+                            "%d)\n" % (MGMT, REG, self.dev_version))
             raise Fatal("%s is advertised but the compositor announced no "
                         "outputs\n" % MGMT)
         self.by_name, self.edid, self.uuid = {}, {}, {}
