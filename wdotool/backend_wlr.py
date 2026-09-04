@@ -53,8 +53,11 @@ class WlrBackend(WindowBackend):
             raise CmdError(
                 "wlr backend: cannot connect to %s: %s" % (sockpath, e)
             ) from None
-        reg = self.c.get_registry()
-        g = self.c.find_global("zwlr_foreign_toplevel_manager_v1")
+        try:
+            reg = self.c.get_registry()
+            g = self.c.find_global("zwlr_foreign_toplevel_manager_v1")
+        except (OSError, RuntimeError, struct.error) as e:
+            raise CmdError("wlr backend: %s" % e) from None
         if not g:
             self.c.close()
             raise CmdError(
@@ -80,8 +83,8 @@ class WlrBackend(WindowBackend):
                 oid = self.c.bind(name, "wl_output", min(ver, 2))
                 self.c.on(oid, self._on_output)
 
-        self.c.roundtrip()  # toplevel announcements
-        self.c.roundtrip()  # each handle's initial title/app_id/state/done
+        self._pump()  # toplevel announcements
+        self._pump()  # each handle's initial title/app_id/state/done
 
     # -- events -------------------------------------------------------------
 
@@ -114,7 +117,18 @@ class WlrBackend(WindowBackend):
                 self.out_h = max(self.out_h, h)
 
     def _pump(self):
-        self.c.roundtrip()
+        """One roundtrip, with the wire's failures turned into one clear line.
+
+        A compositor that goes away mid-session (RuntimeError), or answers
+        with an event whose payload is shorter than the interface says
+        (struct.error), or whose socket errors or times out (OSError), is a
+        routine thing for a session that is restarting -- not a traceback."""
+        try:
+            self.c.roundtrip()
+        except CmdError:
+            raise
+        except (OSError, RuntimeError, struct.error) as e:
+            raise CmdError("wlr backend: %s" % e) from None
 
     def _by_wid(self, wid: int) -> _Toplevel:
         self._pump()
@@ -126,8 +140,11 @@ class WlrBackend(WindowBackend):
         raise CmdError("window %d not found" % wid)
 
     def _request(self, t: _Toplevel, opcode: int, args=()):
-        self.c.send(t.oid, opcode, args)
-        self.c.roundtrip()
+        try:
+            self.c.send(t.oid, opcode, args)
+        except OSError as e:
+            raise CmdError("wlr backend: %s" % e) from None
+        self._pump()
 
     # -- WindowBackend ------------------------------------------------------
 

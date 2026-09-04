@@ -25,6 +25,12 @@ EVENT_WINDOW = _EVENT_BIT | 3
 SCRATCHPAD_WS = "__i3_scratch"
 
 
+def _lost(e) -> CmdError:
+    """Any wire-level failure of the i3/sway IPC socket, as one clear line."""
+    return CmdError("sway backend: lost the connection to the compositor (%s)"
+                    % e)
+
+
 class SwayBackend(WindowBackend):
     name = "sway"
 
@@ -64,16 +70,28 @@ class SwayBackend(WindowBackend):
     def _send(cls, sock, mtype: int, payload=b""):
         if isinstance(payload, str):
             payload = payload.encode()
-        sock.sendall(_MAGIC + struct.pack("<II", len(payload), mtype) + payload)
+        try:
+            sock.sendall(_MAGIC + struct.pack("<II", len(payload), mtype)
+                         + payload)
+        except OSError as e:
+            raise _lost(e) from None
 
     @classmethod
     def _recv(cls, sock):
-        hdr = cls._read_exact(sock, 14)
-        if hdr[:6] != _MAGIC:
-            raise CmdError("sway backend: bad IPC framing")
-        length, mtype = struct.unpack("<II", hdr[6:])
-        payload = cls._read_exact(sock, length) if length else b"null"
-        return mtype, json.loads(payload.decode("utf-8", "replace"))
+        # A clean EOF is only the tidiest way for the compositor to go away:
+        # a session that ends mid-chain gives ECONNRESET on the read and EPIPE
+        # on the next write, and a compositor that answers with something that
+        # is not JSON gives ValueError. All three are the same event to the
+        # user -- one line, not a traceback (B5).
+        try:
+            hdr = cls._read_exact(sock, 14)
+            if hdr[:6] != _MAGIC:
+                raise CmdError("sway backend: bad IPC framing")
+            length, mtype = struct.unpack("<II", hdr[6:])
+            payload = cls._read_exact(sock, length) if length else b"null"
+            return mtype, json.loads(payload.decode("utf-8", "replace"))
+        except (OSError, struct.error, ValueError) as e:
+            raise _lost(e) from None
 
     def _msg(self, mtype: int, payload=b""):
         self._send(self.sock, mtype, payload)
