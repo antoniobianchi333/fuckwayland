@@ -19,6 +19,7 @@ point of them.
 | `sway_de.xkb` | `de` | `German` |
 | `us_swapescape.xkb` | `us` + `caps:swapescape` | `English (US)`, `English (US)` |
 | `us_grptoggle.xkb` | `us` + `grp:win_space_toggle` | `English (US)`, `English (US)` |
+| `neo.xkb` | `de(neo)` | `German (Neo 2)` |
 
 The last two are plain `us` sessions with a keyboard *option* set, which is
 the shape that made the US bypass refuse: `caps:swapescape` moves Escape onto
@@ -26,7 +27,16 @@ the shape that made the US bypass refuse: `caps:swapescape` moves Escape onto
 Neither changes a single character the built-in US table types, so both have
 to bypass.
 
-Everything but `noble_de.xkb` and `sway_de.xkb` comes from GNOME 50 / Mutter
+`neo.xkb` is the one file here that was not captured from a live session:
+it is `xkbcli compile-keymap --layout de --variant neo` (libxkbcommon 1.6 —
+the same compiler the compositors hand their clients the output of), because
+Neo 2 is the layout that settles a question no recorded session here can.
+It puts `ISO_Level3_Shift` on `<CAPS>` and `<BKSL>` and `ISO_Level5_Shift` on
+`<RALT>`, so "the third-level key is right Alt" — true of every other fixture
+— is false in it, and `wdotool keys watch` has to report the key that was
+really pressed rather than the one the layout nominates (`<LVL3>`, 84).
+
+Everything but `noble_de.xkb`, `sway_de.xkb` and `neo.xkb` comes from GNOME 50 / Mutter
 on Ubuntu 26.04 (libxkbcommon 1.11, which writes every keysym as a hex number).
 `noble_de.xkb` comes from GNOME 46 / Mutter on Ubuntu 24.04 (libxkbcommon
 1.6, which writes keysym *names*) — the same layout in the other dialect, so

@@ -380,6 +380,17 @@ def main(argv: list[str] | None = None) -> int:
 
         return xkbmap.diagnostic_main(argv[2:])
 
+    # `wdotool keys watch|explain` (README: Keyboard layouts). Ours, and
+    # routed here for the same three reasons as __keymap: xdotool has no
+    # `keys`, so there is nothing to hand a passthrough over to; the command
+    # registry is what `help` prints and that output is byte-compatible with
+    # the real xdotool's; and, like every one of the 48 built-ins, a command
+    # name beats a file of the same name in script mode.
+    if len(argv) > 1 and argv[1] == "keys":
+        from wdotool import keys_cmds
+
+        return keys_cmds.keys_main(argv[2:])
+
     # X11 session: this is the real xdotool's job. Before option parsing and
     # before --help/--version -- installed as `xdotool`, even the version
     # string has to be theirs (ours pins one upstream version and will drift).
