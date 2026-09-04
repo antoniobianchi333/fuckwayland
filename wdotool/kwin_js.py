@@ -207,7 +207,15 @@ function info(w) {
 function listAll() {
   var l = wins(), out = [];
   for (var i = 0; i < l.length; i++) {
-    out.push(info(l[i]));
+    var w = info(l[i]);
+    /* Position in workspace.windowList(), kept because the sort below
+       destroys it: windowList() is KWin's m_windows, and _NET_CLIENT_LIST
+       is m_windows with everything but the managed X11 windows dropped
+       (Workspace::propagateWindows). The two orders are therefore the same
+       order, which is what tells two identical windows of one client apart
+       on 6, where nothing carries the X id. */
+    w.ix = i;
+    out.push(w);
   }
   out.sort(function (a, b) { return a.so - b.so; });   /* bottom -> top */
   return out;

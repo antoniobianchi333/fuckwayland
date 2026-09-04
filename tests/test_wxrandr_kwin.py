@@ -42,6 +42,70 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 DEV, REG, MGMT, ORDER = kwin.DEV, kwin.REG, kwin.MGMT, kwin.ORDER
 GAMMA = kwin.GAMMA
 
+# kde_output_device_v2's events, transcribed from plasma-wayland-protocols
+# src/protocols/kde-output-device-v2.xml at v1.21.0/master (interface version
+# 25): (opcode, name, since, wire types).  The fake sends EVERY one of these
+# whose `since` the bound version covers -- not just the handful the backend
+# reads -- because a real KWin does, and a client that mis-parses one of the
+# other 25 would corrupt the ones after it.  "-" is a zero-argument event.
+DEVICE_EVENTS = [
+    (0, "geometry", 1, "iiiii s s i"), (1, "current_mode", 1, "o"),
+    (2, "mode", 1, "n"), (3, "done", 1, "-"), (4, "scale", 1, "f"),
+    (5, "edid", 1, "s"), (6, "enabled", 1, "i"), (7, "uuid", 1, "s"),
+    (8, "serial_number", 1, "s"), (9, "eisa_id", 1, "s"),
+    (10, "capabilities", 1, "u"), (11, "overscan", 1, "u"),
+    (12, "vrr_policy", 1, "u"), (13, "rgb_range", 1, "u"),
+    (14, "name", 2, "s"), (15, "high_dynamic_range", 3, "u"),
+    (16, "sdr_brightness", 3, "u"), (17, "wide_color_gamut", 3, "u"),
+    (18, "auto_rotate_policy", 4, "u"), (19, "icc_profile_path", 5, "s"),
+    (20, "brightness_metadata", 6, "uuu"),
+    (21, "brightness_overrides", 6, "iii"),
+    (22, "sdr_gamut_wideness", 6, "u"), (23, "color_profile_source", 7, "u"),
+    (24, "brightness", 8, "u"), (25, "color_power_tradeoff", 10, "u"),
+    (26, "dimming", 11, "u"), (27, "replication_source", 13, "s"),
+    (28, "ddc_ci_allowed", 14, "u"), (29, "max_bits_per_color", 15, "u"),
+    (30, "max_bits_per_color_range", 15, "uu"),
+    (31, "automatic_max_bits_per_color_limit", 15, "u"),
+    (32, "edr_policy", 16, "u"), (33, "sharpness", 17, "u"),
+    (34, "priority", 18, "u"), (35, "auto_brightness", 20, "u"),
+    (36, "removed", 21, "-"), (37, "hdr_icc_profile_path", 22, "s"),
+    (38, "hdr_color_profile_source", 22, "u"), (39, "abm_level", 23, "u"),
+]
+DEVICE_SINCE = {name: since for _op, name, since, _t in DEVICE_EVENTS}
+DEVICE_OP = {name: op for op, name, _s, _t in DEVICE_EVENTS}
+
+# The order KWin sends the initial burst in, verbatim from
+# OutputDeviceV2InterfacePrivate::kde_output_device_v2_bind_resource()
+# (kwin src/wayland/outputdevice_v2.cpp, v6.7.4).  "@modes" is where
+# sendNewMode() runs for every mode and "@current" is sendCurrentMode(), so
+# `mode` and `current_mode` appear under those two names rather than their
+# own; `removed` is absent because it is not part of a burst at all -- it is
+# what ~OutputDeviceV2Interface sends on the way out (see unplug()).  Every
+# other event in DEVICE_EVENTS appears here exactly once.  `done` closes the
+# burst only once the uuid is set, which it always is here.
+BURST_ORDER = [
+    "geometry", "scale", "eisa_id", "name", "serial_number",
+    "@modes", "@current", "uuid", "edid", "enabled", "capabilities",
+    "overscan", "vrr_policy", "rgb_range", "high_dynamic_range",
+    "sdr_brightness", "wide_color_gamut", "auto_rotate_policy",
+    "icc_profile_path", "brightness_metadata", "brightness_overrides",
+    "sdr_gamut_wideness", "color_profile_source", "brightness",
+    "color_power_tradeoff", "dimming", "replication_source",
+    "ddc_ci_allowed", "max_bits_per_color", "max_bits_per_color_range",
+    "automatic_max_bits_per_color_limit", "edr_policy", "sharpness",
+    "priority", "auto_brightness", "hdr_icc_profile_path",
+    "hdr_color_profile_source", "abm_level", "done",
+]
+
+# kde_output_device_registry_v2 (same XML, since 21): `finished` is opcode 0
+# and `output` is opcode 1, and binding it below 21 is
+# error_unsupported_version, whose value is 0.
+REG_EV_FINISHED, REG_EV_OUTPUT = 0, 1
+REG_ERR_UNSUPPORTED_VERSION = 0
+# KWin's own s_version for the registry, per release: 6.7.0/6.7.4 advertise 23
+# (src/wayland/outputdevice_v2.cpp), master 25.
+REG_VERSION_67 = 23
+
 # ---------------------------------------------------------------- fixtures
 
 EDP_MODES = [(1920, 1080, 60020, True), (1920, 1080, 48000, False),
@@ -185,13 +249,22 @@ class _Client(threading.Thread):
             self.mgmt, self.mgmt_bound = nid, ver
         elif iface == REG:
             if ver < kwin.REG_MIN:
-                self.send(_msg(1, 0, struct.pack("<II", nid, 1)
+                # OutputDeviceRegistryV2Private::..._bind_resource():
+                # wl_resource_post_error(error_unsupported_version,
+                #                        "unsupported version")
+                self.send(_msg(1, 0, struct.pack("<II", nid,
+                                                 REG_ERR_UNSUPPORTED_VERSION)
                                + _s("unsupported version")))
                 self.dead = True
                 return
             self.reg_obj, self.dev_bound = nid, ver
             for h in list(self.svc.heads):
                 self._offer(h)
+            if self.svc.send_finished:
+                # the zero-argument `finished` (opcode 0), which a client
+                # that keys on the opcode index alone would take for an
+                # output announcement with a truncated payload
+                self.send(_msg(nid, REG_EV_FINISHED))
         elif iface == ORDER:
             self.order_obj = nid
             self.send_order()
@@ -225,44 +298,86 @@ class _Client(threading.Thread):
 
     # -- device events
 
+    #: what a re-burst after an apply can carry: the properties that change.
+    #: KWin sends the individual `send*` for whatever moved and then one
+    #: scheduled `done`; the fake sends this fixed subset plus `done`.
+    MUTABLE = ("geometry", "@current", "scale", "enabled",
+               "replication_source", "priority", "done")
+
+    def _dev_payload(self, name, h):
+        """One device event's body. The events the backend reads carry this
+        head's real values; every other event in DEVICE_EVENTS is filled from
+        its declared wire types, because a real KWin sends those too and the
+        client has to skip them without losing its place in the stream."""
+        if name == "geometry":
+            return (struct.pack("<iiiii", h["x"], h["y"], h["mm"][0],
+                                h["mm"][1], h["subpixel"])
+                    + _s(h["make"]) + _s(h["model"])
+                    + struct.pack("<i", h["transform"]))
+        if name == "scale":
+            return struct.pack("<i", kwin.to_fixed(h["scale"]))
+        if name == "enabled":
+            return struct.pack("<i", 1 if h["enabled"] else 0)
+        if name == "edid":
+            return _s(h["edid"])
+        if name == "uuid":
+            return _s(h["uuid"])
+        if name == "serial_number":
+            return _s(h["serial"])
+        if name == "eisa_id":
+            return _s(h["eisa"])
+        if name == "name":
+            return _s(h["name"])
+        if name == "capabilities":
+            return struct.pack("<I", h["caps"])
+        if name == "replication_source":
+            return _s(h["repl"])
+        if name == "priority":
+            return struct.pack("<I", h["priority"] or 0)
+        types = [t for _o, n, _si, t in DEVICE_EVENTS if n == name][0]
+        out = b""
+        for c in types.replace(" ", ""):
+            if c == "-":
+                continue
+            out += _s("") if c == "s" else struct.pack("<I", 0)
+        return out
+
     def _burst(self, oid, h, full):
+        """The initial burst in KWin's own bind_resource order, every event
+        the bound version covers -- or, for a post-apply refresh, the mutable
+        subset and `done`."""
         ver = self.dev_bound
-        out = _msg(oid, 0, struct.pack("<iiiii", h["x"], h["y"], h["mm"][0],
-                                       h["mm"][1], h["subpixel"])
-                   + _s(h["make"]) + _s(h["model"])
-                   + struct.pack("<i", h["transform"]))
-        if full:
-            for j, m in enumerate(h["modes"]):
-                mid = self.alloc()
-                self.modes[mid] = (h["gname"], j)
-                self.mode_of[(h["gname"], j)] = mid
-                out += _msg(oid, 2, struct.pack("<I", mid))
-                out += _msg(mid, 0, struct.pack("<ii", m[0], m[1]))
-                if m[2]:
-                    out += _msg(mid, 1, struct.pack("<i", m[2]))
-                if m[3]:
-                    out += _msg(mid, 2)
-        if h["enabled"]:
-            mid = self.mode_of.get((h["gname"], h["current"]))
-            if mid is not None:
-                out += _msg(oid, 1, struct.pack("<I", mid))
-        out += _msg(oid, 4, struct.pack("<i", kwin.to_fixed(h["scale"])))
-        if full:
-            out += _msg(oid, 5, _s(h["edid"]))
-        out += _msg(oid, 6, struct.pack("<i", 1 if h["enabled"] else 0))
-        if ver >= 13:
-            out += _msg(oid, 27, _s(h["repl"]))   # replication_source
-        if full:
-            out += _msg(oid, 7, _s(h["uuid"]))
-            out += _msg(oid, 8, _s(h["serial"]))
-            out += _msg(oid, 9, _s(h["eisa"]))
-            out += _msg(oid, 10, struct.pack("<I", h["caps"]))
-            if ver >= 2:
-                out += _msg(oid, 14, _s(h["name"]))
-            if ver >= 18 and h["priority"] is not None:
-                out += _msg(oid, 34, struct.pack("<I", h["priority"]))
-        if h["name"] != self.svc.withhold_done:
-            out += _msg(oid, 3)                       # done
+        steps = BURST_ORDER if full else self.MUTABLE
+        out = b""
+        for step in steps:
+            if step == "@modes":
+                for j, m in enumerate(h["modes"]):
+                    mid = self.alloc()
+                    self.modes[mid] = (h["gname"], j)
+                    self.mode_of[(h["gname"], j)] = mid
+                    out += _msg(oid, DEVICE_OP["mode"], struct.pack("<I", mid))
+                    out += _msg(mid, 0, struct.pack("<ii", m[0], m[1]))
+                    if m[2]:
+                        out += _msg(mid, 1, struct.pack("<i", m[2]))
+                    if m[3]:
+                        out += _msg(mid, 2)
+                    if ver >= 19:                     # mode `flags`, since 19
+                        out += _msg(mid, 4, struct.pack("<I", 0))
+                continue
+            if step == "@current":
+                if h["enabled"]:
+                    mid = self.mode_of.get((h["gname"], h["current"]))
+                    if mid is not None:
+                        out += _msg(oid, DEVICE_OP["current_mode"],
+                                    struct.pack("<I", mid))
+                continue
+            if ver < DEVICE_SINCE[step]:
+                continue
+            if step == "done" and h["name"] == self.svc.withhold_done:
+                continue
+            if step == "priority" and h["priority"] is None:
+                continue
+            out += _msg(oid, DEVICE_OP[step], self._dev_payload(step, h))
         self.send(out)
 
     def refresh(self):
@@ -386,8 +501,9 @@ class FakeKWin:
     """KWin's two output protocols on a real unix socket."""
 
     def __init__(self, heads, dev_version=20, mgmt_version=19,
-                 registry_path=False, registry_opcode=1, gamma=False,
-                 order=True, registry_version=None):
+                 registry_path=False, registry_opcode=REG_EV_OUTPUT,
+                 gamma=False, order=True, registry_version=None,
+                 send_finished=False, also_globals=False):
         self.heads = list(heads)
         for i, h in enumerate(self.heads):
             h["gname"] = i + 1
@@ -399,6 +515,8 @@ class FakeKWin:
         self.registry_path = registry_path
         self.registry_version = registry_version
         self.registry_opcode = registry_opcode
+        self.send_finished = send_finished
+        self.also_globals = also_globals
         self.gamma = gamma
         self.created = 0          # configuration objects created
         self.applied = []         # request lists that reached `apply`
@@ -435,9 +553,12 @@ class FakeKWin:
     def globals(self):
         out = []
         if self.registry_path:
-            out.append((REG_GNAME, REG, self.registry_version
-                        or max(self.dev_version, kwin.REG_MIN)))
-        else:
+            # KWin 6.7.0/6.7.4 advertise 23 (outputdevice_v2.cpp s_version),
+            # and the device resources the registry hands out take the
+            # version the REGISTRY was bound at -- there is no second bind.
+            out.append((REG_GNAME, REG,
+                        self.registry_version or REG_VERSION_67))
+        if not self.registry_path or self.also_globals:
             for h in self.heads:
                 out.append((h["gname"], DEV, self.dev_version))
         out.append((MGMT_GNAME, MGMT, self.mgmt_version))
@@ -509,7 +630,16 @@ class FakeKWin:
                 oid = c.dev_of.pop(h["gname"], None)
                 if self.registry_path:
                     if oid is not None:
-                        c.send(_msg(oid, 36))          # removed (since v21)
+                        # ~OutputDeviceV2Interface(): send_removed first, and
+                        # only then m_modes.clear() -- whose own destructors
+                        # send each mode object its `removed`. The comment
+                        # upstream says why that order: a client must never
+                        # see an output with no modes.
+                        c.send(_msg(oid, DEVICE_OP["removed"]))
+                        for j in range(len(h["modes"])):
+                            mid = c.mode_of.pop((h["gname"], j), None)
+                            if mid is not None:
+                                c.send(_msg(mid, 3))   # mode `removed`
                 elif c.registry is not None:
                     c.send(_msg(c.registry, 1, struct.pack("<I", h["gname"])))
                 c.send_order()
@@ -801,18 +931,69 @@ class Discovery(KwinCase):
         self.assertEqual([o.name for o in outs], ["eDP-1", "DP-1"])
 
     def test_registry_path(self):
-        """Plasma 6.7+: no device global at all, devices arrive as new_ids."""
-        for opcode in (0, 1):
+        """Plasma 6.7+: no device global at all, devices arrive as new_ids.
+
+        The registry advertises 23 on the released 6.7.x and 25 on master,
+        and the device resources it hands out take the version the REGISTRY
+        was bound at (`offer(client, target->version(), ...)` ->
+        `wl_resource_create(client, ..., version, 0)`) -- there is no second
+        bind to negotiate a device version with."""
+        for reg_version in (kwin.REG_MIN, REG_VERSION_67, kwin.REG_WANT):
             self.svc.close()
-            self.svc = two_heads(dev_version=25, mgmt_version=22,
-                                 registry_path=True, registry_opcode=opcode)
+            self.svc = two_heads(mgmt_version=21, registry_path=True,
+                                 registry_version=reg_version)
             ko = self.outputs()
             self.assertIsNotNone(ko.registry)
-            self.assertEqual(ko.dev_version, 25)
+            self.assertEqual(ko.dev_version, reg_version)
             outs = ko.snapshot(self.state())
             self.assertEqual([(o.name, o.active, o.x, o.w) for o in outs],
                              [("eDP-1", True, 0, 1920),
                               ("DP-1", True, 1920, 2560)])
+
+    def test_registry_beyond_what_we_understand(self):
+        """A registry newer than REG_WANT is bound at REG_WANT, not at what
+        it advertises: a server only sends events whose `since` is <= the
+        bound version, so binding low is what keeps a future KWin readable."""
+        self.svc.close()
+        self.svc = two_heads(registry_path=True,
+                             registry_version=kwin.REG_WANT + 9)
+        ko = self.outputs()
+        self.assertEqual(ko.dev_version, kwin.REG_WANT)
+        self.assertEqual([o.name for o in ko.snapshot(self.state())],
+                         ["eDP-1", "DP-1"])
+
+    def test_a_registry_too_old_to_bind_falls_back_to_the_globals(self):
+        """Below 21 the registry may not be bound at all, and saying "no
+        outputs can be listed" is only true when it is the only way outputs
+        are published. Nothing real advertises it that low -- the interface
+        did not exist before 21 -- but if something did while still exporting
+        the per-output globals, those still work and the warning says so."""
+        self.svc.close()
+        self.svc = two_heads(registry_path=True, registry_version=20,
+                             also_globals=True)
+        ko = self.outputs()
+        self.assertIsNone(ko.registry)
+        self.assertEqual([o.name for o in ko.snapshot(self.state())],
+                         ["eDP-1", "DP-1"])
+        code, out, err = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertIn("DP-1 connected", out)
+        self.assertIn("kde_output_device_registry_v2 version 20 is older than"
+                      " the 21 this protocol needs; falling back to the"
+                      " per-output kde_output_device_v2 globals\n", err)
+
+    def test_registry_finished_is_not_an_output(self):
+        """kde_output_device_registry_v2 has two events: `finished` (opcode
+        0, no arguments) and `output` (opcode 1, one new_id). A `finished`
+        must not be read as an output announcement -- and an `output` that
+        ever moved opcode still is one, which is why the handler keys on the
+        payload being a single server-range id rather than on the index."""
+        for opcode in (REG_EV_OUTPUT, 7):
+            self.svc.close()
+            self.svc = two_heads(registry_path=True, registry_opcode=opcode,
+                                 send_finished=True)
+            outs = self.outputs().snapshot(self.state())
+            self.assertEqual([o.name for o in outs], ["eDP-1", "DP-1"])
 
     def test_snapshot_fields(self):
         self.svc = three_heads()
@@ -1287,6 +1468,28 @@ class Apply(KwinCase):
         self.assertEqual([h["name"] for h in self.svc.heads],
                          ["eDP-1", "DP-1"])
 
+    def test_a_hotplug_on_the_registry_path_is_the_removed_event(self):
+        """On 6.7 an unplug is not a global going away -- there is no global
+        -- it is the device's own `removed` (opcode 36, since 21), with the
+        mode objects torn down right behind it. The invalidation retry keys
+        on the set of published devices moving, so it sees that too."""
+        self.svc = three_heads(hdmi_on=True, registry_path=True,
+                               mgmt_version=21)
+        self.svc.invalidate_once = True
+        orig = kwin.KwinOutputs
+        kwin.KwinOutputs = self._hotplug_class()
+        try:
+            code, _out, err = self.run_cli("--output", "DP-1", "--scale",
+                                           "1.5")
+        finally:
+            kwin.KwinOutputs = orig
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.svc.by_name("DP-1")["scale"], 1.5)
+        self.assertEqual((self.svc.created, len(self.svc.applied)), (2, 2))
+        self.assertEqual([o.name for o in
+                          self.outputs().snapshot(self.state())],
+                         ["eDP-1", "DP-1"])
+
     def test_a_rejection_that_is_not_a_hotplug_is_not_retried(self):
         """The evidence test must not turn every failure into a second
         configuration: with the outputs unmoved, the message stands."""
@@ -1423,6 +1626,18 @@ class Apply(KwinCase):
         # the too-old registry says which version it was
         self.assertIn("kde_output_device_registry_v2 version 20 is older than"
                       " the 21", err)
+        # and a registry that binds and then announces nothing -- which is
+        # also what a wrong guess about the 6.7 protocol would look like --
+        # names the path it came up empty on, and the version it bound
+        self.svc.close()
+        self.svc = FakeKWin([], registry_path=True, mgmt_version=21)
+        code, out, err = self.run_cli()
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "xrandr: kde_output_management_v2 announced no"
+                              " outputs (this compositor hands them out"
+                              " through kde_output_device_registry_v2;"
+                              " wxrandr bound it at version %d)\n"
+                         % REG_VERSION_67)
 
     def test_logical_size_gates_the_layout_on_the_plasma_version(self):
         """Plasma 6 takes the enclosing integer: a neighbour placed one pixel
@@ -1485,13 +1700,20 @@ class Apply(KwinCase):
         self.assertEqual(self.state().lastmodes()["DP-1"], [2560, 1600, 59972])
 
     def test_apply_through_the_registry_path(self):
-        self.svc = two_heads(dev_version=25, mgmt_version=22,
-                             registry_path=True)
-        code, _out, err = self.run_cli("--output", "DP-1", "--above", "eDP-1")
-        self.assertEqual((code, self.strip_save(err)), (0, ""))
-        self.assertEqual(sorted(self.svc.applied[-1]),
-                         sorted([("position", "DP-1", (0, 0)),
-                                 ("position", "eDP-1", (0, 1600))]))
+        """The whole apply against a 6.7-shaped compositor, at the released
+        6.7.x version pair (registry/device 23, management 21) and at
+        master's (25/22): the device objects are server-allocated ids from
+        the registry rather than bound globals, and nothing else changes."""
+        for regv, mgmtv in ((REG_VERSION_67, 21), (kwin.REG_WANT, 22)):
+            self.svc.close()
+            self.svc = two_heads(mgmt_version=mgmtv, registry_path=True,
+                                 registry_version=regv)
+            code, _out, err = self.run_cli("--output", "DP-1",
+                                           "--above", "eDP-1")
+            self.assertEqual((code, self.strip_save(err)), (0, ""))
+            self.assertEqual(sorted(self.svc.applied[-1]),
+                             sorted([("position", "DP-1", (0, 0)),
+                                     ("position", "eDP-1", (0, 1600))]))
 
     def test_randr_1_0_path(self):
         self.svc = one_head()

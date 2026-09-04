@@ -949,6 +949,9 @@ class KwinBackend(WindowBackend):
 
     @staticmethod
     def _x_clients(x) -> "list[dict]":
+        """The X clients, in _NET_CLIENT_LIST order -- which _match_xids
+        reads as an order and not just a set (a window that has just died
+        drops out, and that leaves the order of the rest alone)."""
         out = []
         for xid in x.client_list():
             try:
@@ -1140,6 +1143,19 @@ def _id_map(rows: "list[dict]") -> "dict[int, str]":
     return out
 
 
+def _simplified(s: str) -> str:
+    """QString::simplified(): every run of whitespace becomes one space and
+    the ends are trimmed.
+
+    KWin stores an X11 window's caption that way -- X11Window::readName()
+    ends in `.simplified()` -- while the X server hands back the raw
+    _NET_WM_NAME the client set. Comparing the two as they come makes any
+    title with a doubled, leading or trailing space compare *unequal to its
+    own window* and equal to nothing, which does not merely lose the title
+    as a signal: it points it at the other window of the pair."""
+    return " ".join((s or "").split())
+
+
 def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
     """Greedy best-first matching of KWin windows to Xwayland's clients.
 
@@ -1153,9 +1169,33 @@ def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
     _NET_WM_PID nor WM_CLASS contradicts nothing, and matching it on
     geometry alone hands its id to a native Wayland window, which then
     claims to be an X11 client. Such a client keeps xid 0 instead -- an
-    unknown id beats a wrong one."""
-    pairs = []
-    for c in clients:
+    unknown id beats a wrong one.
+
+    Neither of those separates two windows of one application that sit in
+    the same place under the same title -- two maximized editor windows,
+    two terminals stacked on each other. Title and geometry tie, and the
+    pairing was then decided by whichever uuid sorted first, which is a coin
+    flip: measured on Plasma 6.6, four runs in ten moved the other window.
+    So the *order* of the two lists is the third key, and it is not a
+    heuristic:
+
+        Workspace::propagateWindows() (src/layers.cpp) writes
+        _NET_CLIENT_LIST from m_windows, keeping only the managed X11
+        windows and their order, and workspace.windowList() *is* m_windows.
+
+    The X11 windows of the script's list, in `ix` order, are therefore the
+    client list, in its order -- so a pair whose two positions disagree is
+    the wrong pair. Positions are ranked over the windows and clients that
+    are actually in play, so a window with no X client (a native one, or an
+    override-redirect popup, which KWin lists but never publishes) only
+    shifts what it precedes, and only where the pairs already tied.
+
+    A tie the position cannot break either -- two windows that could each
+    take the same id, on a session where the script answered without `ix`
+    -- is left unresolved: those windows keep xid 0 and say so, rather than
+    being handed one of the two ids at random."""
+    cand = []
+    for ci, c in enumerate(clients):
         for d in raw:
             if c["pid"] and d.get("p") and c["pid"] != d["p"]:
                 continue
@@ -1171,16 +1211,51 @@ def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
             x, y, w, h = c["geo"]
             dist = (abs(x - int(d.get("x", 0))) + abs(y - int(d.get("y", 0)))
                     + abs(w - int(d.get("w", 0))) + abs(h - int(d.get("h", 0))))
-            same_title = (c["name"] or "") == (d.get("t") or "")
-            pairs.append((0 if same_title else 1, dist, c["xid"], d["u"]))
+            same_title = _simplified(c["name"]) == _simplified(d.get("t"))
+            cand.append((0 if same_title else 1, dist, ci, d))
+    # Dense positions over what is in play. `ix` is the script's index into
+    # workspace.windowList(); a list without it (an older script, or 5.27,
+    # which never reaches here) leaves every position 0 and the key inert.
+    have_ix = bool(cand) and all("ix" in d for _t, _d, _c, d in cand)
+    krank: "dict[str, int]" = {}
+    if have_ix:
+        seen = {d["u"]: int(d["ix"]) for _t, _d, _c, d in cand}
+        for i, u in enumerate(sorted(seen, key=lambda k: (seen[k], k))):
+            krank[u] = i
+    crank = {ci: i for i, ci in enumerate(sorted({p[2] for p in cand}))}
+    pairs = [(t, dist,
+              abs(krank.get(d["u"], 0) - crank[ci]) if have_ix else 0,
+              clients[ci]["xid"], d["u"])
+             for t, dist, ci, d in cand]
     pairs.sort()
-    out: dict[str, int] = {}
-    used = set()
-    for _t, _dist, xid, u in pairs:
-        if u in out or xid in used:
-            continue
-        out[u] = xid
-        used.add(xid)
+    out: "dict[str, int]" = {}
+    used: "set[int]" = set()
+    blocked: "set[str]" = set()
+    i = 0
+    while i < len(pairs):
+        j = i
+        while j < len(pairs) and pairs[j][:3] == pairs[i][:3]:
+            j += 1
+        live = [p for p in pairs[i:j]
+                if p[4] not in out and p[4] not in blocked and p[3] not in used]
+        by_win: "dict[str, set[int]]" = {}
+        by_id: "dict[int, set[str]]" = {}
+        for _t, _d, _o, xid, u in live:
+            by_win.setdefault(u, set()).add(xid)
+            by_id.setdefault(xid, set()).add(u)
+        for _t, _d, _o, xid, u in live:
+            if u in out or u in blocked or xid in used:
+                continue
+            if len(by_win[u]) > 1 or len(by_id[xid]) > 1:
+                blocked.update(by_id[xid])   # a coin flip: no id at all
+                continue
+            out[u] = xid
+            used.add(xid)
+        i = j
+    if blocked:
+        _warn("%d XWayland window(s) could not be told apart from each "
+              "other in the X client list; their X ids are left unset"
+              % len(blocked))
     return out
 
 

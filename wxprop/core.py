@@ -128,8 +128,32 @@ def _x11_connect(display, xauthority=None):
 def _detect_backend():
     """A wdotool window backend, or None when there is none to be had.
     Raises the detector's CmdError (e.g. the GNOME bridge install hint) so
-    Session can keep the reason for the error paths that need it."""
-    from wdotool import backend_detect
+    Session can keep the reason for the error paths that need it.
+
+    None outright on a plain X11 session -- hardening, not a fix for an
+    observed wrong answer. We only run at all there when no real xprop is
+    installed (`maybe_exec_real(..., fallback_native=True)`), and what is
+    promised then is an X11 client; but the detector goes by the session
+    bus, and a compositor that is a plain X window manager owns its bus
+    name there just the same (KWin on Xorg owns org.kde.KWin), so `-root`
+    used to be answered by `MergedRootTarget` with the compositor's
+    `_NET_CLIENT_LIST`/`_NET_ACTIVE_WINDOW`/... over the X root's. On both
+    Plasma X11 images this branch measured **byte-identical** to the real
+    xprop -- every window on an X11 session is an X window, so the two
+    views agree, and the timings are the same to within noise. What it
+    removes is the case where they cannot agree: with no X id among the
+    compositor's windows `Session.x_present()` is false and the answer is
+    the *synthesized* root (`_NET_SUPPORTING_WM_CHECK ... 0x0`, ids minted
+    from compositor handles), which on a session that has a real X root and
+    a real EWMH window manager is simply wrong. That state is reachable in
+    principle and is pinned hermetically (tests/test_wxprop_cli.py); it was
+    not reproducible on Plasma 5.27 or 6.6 on Xorg.
+    `FUCKWAYLAND_PASSTHROUGH=never` still says "our own code whatever the
+    session" and still detects, so the Wayland paths stay reachable from an
+    X11 development box (and the whole test suite)."""
+    from wdotool import backend_detect, passthrough
+    if passthrough.session_kind("xprop") == "x11":
+        return None
     return backend_detect.detect()
 
 

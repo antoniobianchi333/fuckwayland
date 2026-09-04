@@ -236,11 +236,23 @@ naming the package to install.
 
 The tools are meant to be installed **over** the originals, so they also have
 to behave when the session is a plain X11 one (Xfce, i3, GNOME-on-Xorg,
-KDE-on-Xorg): there they detect the session and hand over to the real
+KDE-on-Xorg — the last two are measured, see
+[Desktop support](#desktop-support) note **(j)**): there they detect the session
+and hand over to the real
 `xdotool`/`wmctrl`/`xprop`/`xrandr` with `execve`, argv untouched — same exit
 status, same signals, same stdio, no extra process. One script then runs on
 both session types, and `xdotool --version` on X11 answers with the version
 that is actually installed there.
+
+Four things stay ours on either session type, because the original has no
+such thing to hand over to: `wdotool keys` (and the hidden `__keymap`), and
+the leading `--layout` / `--vkbd` options, which are stripped before the
+handover. So on X11 `xdotool keys explain a` answers from our own tables
+where the real xdotool says `Unknown command: keys`, and `xdotool --layout
+us key a` hands `key a` over where the real one refuses the option. They
+never fail on an X11 session, they just say what they could not read
+(`note: the compositor's keymap could not be read (no wayland socket
+found)`).
 
 ```console
 $ FUCKWAYLAND_PASSTHROUGH=never xdotool key a   # our own code, whatever the session
@@ -264,7 +276,12 @@ own record of your session — counts.
 Bonus, on X11 as on Wayland: run under `sudo`, over `ssh root@box` or from
 cron and we find the session's `DISPLAY` and `XAUTHORITY` and hand them to
 the original, so `sudo xdotool key a` works *through* us where
-`sudo /usr/bin/xdotool key a` says `Can't open display`. `warandr` gets the
+`sudo /usr/bin/xdotool key a` says `Can't open display`. The cookie is looked
+for in `$XAUTHORITY`, in the session's own leader (`/proc/<pid>/environ` of
+gnome-shell, `startplasma-x11`, `kwin_x11`, `plasmashell`, `xfce4-session`,
+`sway` — uid-qualified), in the runtime directory, and in `~/.Xauthority`;
+the leader is the one that finds SDDM 0.20's, which lives in
+`/tmp/xauth_<random>` and is in none of the other three places. `warandr` gets the
 same repair for the `xrandr` it runs, so `--command` and `--save` answer from
 a root shell too — but a *saved* layout script calls the bare command word,
 exactly as arandr's does, so running the script itself still wants a session
@@ -331,6 +348,23 @@ and unloads it again. `wwmctl`, `wxprop` and `wxrandr` come along with it.
 (That is also a security note in the GNOME sense: any client on your session
 bus can already do this, with or without these tools.)
 
+**Plasma 6.7 changed how KWin publishes displays, and `wxrandr` follows it.**
+From 6.7.0 an output is no longer a `kde_output_device_v2` wl_registry global;
+the compositor hands the device objects out through a
+`kde_output_device_registry_v2` object instead (kwin `7e32e00c`, never
+backported — 6.6 still publishes the globals). On a real Plasma 6.7.4 session
+the old global is simply **absent**, so that second path is the only way to
+see an output at all, and `wxrandr` takes it: query, mode, position, rotation,
+scale, `--off`, `--primary`, `--same-as` and hot-plug all measured there, on
+the `stonking-kde` VM image (Ubuntu 26.10), against `kscreen-doctor` — see
+[WXRANDR.md](WXRANDR.md#kwin-backend-wxrandrkwinpy).
+
+That is the *only* thing measured on 6.7 so far. `wdotool`, `wwmctl` and
+`wxprop` reach KWin through its scripting interface, which this change does
+not touch, but they have not been run on 6.7 here and the support matrix below
+is still 5.27 and 6.6. The image exists (`vm/vmctl build stonking-kde`) if you
+want to close that gap.
+
 What differs from X, and why:
 
 | | |
@@ -344,7 +378,7 @@ What differs from X, and why:
 | `wwmctl -l -G` positions | on Plasma 6.6 (and sway) `wmctrl` doubles the frame offset under a non-reparenting WM and ours are the real ones; KWin 5.27's xwm *does* reparent, so both agree there |
 | a state KWin ignores | KWin accepts a state a window rule or the client's size hints forbid and does nothing with it. `wwmctl` then sends the EWMH `_NET_WM_STATE` ClientMessage instead, which reaches an XWayland window through KWin's X-plane window manager, and checks that one landed too; `wdotool` has no second route and says what happened |
 | `selectwindow` | KWin has one reply slot for its window picker, so a second picker started while the first is up takes the click. The first call then waits until `WDOTOOL_SELECT_TIMEOUT` (2 minutes) and says so |
-| XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list (pid + `WM_CLASS`, then title and geometry). A client that publishes neither `_NET_WM_PID` nor `WM_CLASS` keeps id 0 rather than being guessed at |
+| XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list: pid and `WM_CLASS` filter, title and geometry score. Where those tie — two windows of one application in the same place under the same title, two maximized editor windows — the order of the two lists decides, and that is exact rather than a guess: `_NET_CLIENT_LIST` is KWin's own window list with everything but the managed X11 windows dropped. A client that publishes neither `_NET_WM_PID` nor `WM_CLASS`, and a pair that nothing at all separates, keep id 0 rather than being handed one of two ids |
 | `wxprop -root` | `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW` and `_NET_DESKTOP_NAMES` are ours (native windows included), not KWin's stale X copies |
 | `getmouselocation` | answered by KWin (`workspace.cursorPos`), like GNOME's: a mouse moved by hand, or by another process, reads correctly, and the query needs no `/dev/uinput` at all |
 
@@ -352,6 +386,20 @@ A window state that a client applies asynchronously (fullscreen and maximize
 on a Wayland client, applied when it acks the configure) is waited for before
 the command returns, so `windowstate` never reports a state it merely has not
 seen land yet, and the next command sees a settled window.
+
+**Plasma on X11** (Kubuntu's X11 session, and 26.04's after `apt install
+plasma-session-x11`) is none of the above: it is a plain [X11](#x11) session, so
+all four command-line tools hand over to the real `xdotool`/`wmctrl`/`xprop`/
+`xrandr` and `warandr` drives the real `xrandr`. `kwin_x11` owning `org.kde.KWin`
+does not change that — the session decides, not the session bus — and there is no
+compositor socket for the KDE display backend to talk to, so `wxrandr` goes to the
+X server (`--print-backend` says `x11`). Everything in the table above therefore
+applies to the Wayland session only; on Xorg you get X's own answers, including
+`xdotool`'s real X window ids and whatever `xdotool` version is installed. The
+KWin backend is still reachable on purpose with `FUCKWAYLAND_PASSTHROUGH=never`,
+and there it does work — but it is a downgrade on that session (no
+`getdisplaygeometry`, minted ids instead of X ids), which is why it is not the
+default.
 
 ### sway and other wlroots compositors
 
@@ -562,12 +610,19 @@ If something did not work, the first thing to try:
 ## Desktop support
 
 What each tool does on each desktop, measured rather than assumed: the branch is run
-on seven golden VM images — GNOME 46 and 50, Plasma 5.27 and 6.6, Xfce 4.18 and 4.20,
-sway 1.11 on wlroots — twice per image, once **inside the session** and once as
-**root over ssh with an empty environment**, against real windows on a two-head
-layout. `vm/README.md` keeps the rig and the verbatim messages behind these cells.
+on nine golden VM images — GNOME 46 and 50, Plasma 5.27 and 6.6 on Wayland and the
+same two again on **Xorg**, Xfce 4.18 and 4.20, sway 1.11 on wlroots — twice per
+image, once **inside the session** and once as **root over ssh with an empty
+environment**, against real windows on a two-head layout. `vm/README.md` keeps the
+rig and the verbatim messages behind these cells. A tenth image, Plasma 6.7 on
+26.10, is a probe for one protocol change rather than a support target: what has
+been measured on it is `wxrandr` and nothing else, and the cells below do not
+count it.
 
-| | GNOME 46 / 50 | Plasma 5.27 / 6.6 | Xfce 4.18 / 4.20 (X11) | sway 1.11 (wlroots) |
+The last column is a *session type*, not a desktop: what an X11 session gets is the
+real tools, whichever desktop is drawing it.
+
+| | GNOME 46 / 50 | Plasma 5.27 / 6.6 (Wayland) | X11 sessions — Xfce 4.18 / 4.20, Plasma on Xorg **(j)** | sway 1.11 (wlroots) |
 |---|---|---|---|---|
 | **wdotool** | all 48 commands; the window ones need the [bridge extension](#gnome) | all 48, nothing to install **(a)** | hands over to the installed `xdotool` **(b)** | all 48; four differences **(c)** |
 | **wwmctl** | works; the window list needs the bridge | works **(d)** | hands over to `wmctrl` | works |
@@ -624,7 +679,11 @@ no rectangle of its own on that desktop — KWin drops it out of the layout — 
 `--query` reports it at its source's geometry, `--right-of` it starts where the
 source ends, and it cannot be the primary. Mirroring *onto* one is resolved to
 the output whose picture it is really showing: KWin accepts a copy of a copy and
-then never draws it.
+then never draws it. Both cells are measured on Plasma 5.27 and 6.6, and the
+display path again on **6.7.4**, where KWin publishes outputs through a
+registry object instead of as globals and `wxrandr` switches discovery paths to
+match — see [KDE Plasma](#kde-plasma). The other four cells in this column are
+5.27 and 6.6 only.
 
 **(g)** X11 answers are the X server's own (`Screen 0: minimum 320 x 200 … maximum
 8192 x 8192`), and whether an output is marked `primary` is the desktop's business.
@@ -641,6 +700,30 @@ and KDE every injecting command still goes through `/dev/uinput`.
 **(h)** `warandr` is the one tool with a dependency (`python3-gi`, `gir1.2-gtk-3.0`).
 GNOME, KDE and Xfce installs have them; a minimal sway image may not, and warandr then
 names the package and exits 1. The other four are stdlib-only.
+
+**(j)** Plasma on Xorg is an X11 session like any other and is handled like one,
+measured on both generations: Plasma 5.27 / KWin 5.27 (Kubuntu 24.04, the X11 session
+it ships) and Plasma 6.6 / KWin 6.6 (26.04, after `apt install plasma-session-x11` —
+`kubuntu-desktop` installs no X11 session there, though the packages are in the
+archive). Every handover is the same on both, and so is every byte of the output.
+Two things are worth naming because
+they look like they might change the answer and do not. **KWin owns
+`org.kde.KWin` on the session bus exactly as it does on Wayland** — but the
+handover is decided before any backend is detected, and by the session, not by the
+bus, so nothing of ours ever asks it: `session_kind()` is `x11` for all four tools,
+a Plasma X11 session has no compositor socket at all (`find_wayland_socket()` →
+`None`), `wxrandr --print-backend` says `x11` / `compositor: X server (RandR)`, and
+`wxrandr --backends` marks `kwin` *unavailable — no wayland socket*. And the KWin
+script backend **would** half-work there (`FUCKWAYLAND_PASSTHROUGH=never wwmctl -l`
+does list KWin's windows), which is the argument for the handover rather than against
+it: on the same session our own `getdisplaygeometry` fails (`no wayland socket found`,
+rc 2) where the real `xdotool` answers, and the ids are only right by accident — 5.27
+still hands `windowId` to scripts, so those rows carry the real X ids, while KWin 6.6
+has dropped it and the same command prints ids minted from KWin uuids on a session
+where every window has an X id. The recovery that fills those in on a Wayland
+session cannot help here: it is gated on an `Xwayland` process being alive, on the
+sound principle that connecting to the X plane must not *start* one — and a Plasma
+X11 session has Xorg, not Xwayland.
 
 ## Compatibility
 

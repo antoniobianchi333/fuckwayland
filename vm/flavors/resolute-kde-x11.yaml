@@ -1,0 +1,47 @@
+#cloud-config
+# vmctl flavor resolute-kde-x11: Ubuntu 26.04 LTS (resolute) + kubuntu-desktop, KDE Plasma 6.6 on X11.
+# 26.04's kubuntu-desktop installs no X11 session at all -- plasma-session-x11 and kwin-x11 are in
+# the archive (universe) but nothing pulls them in -- so this flavor lists them, and is therefore
+# NOT a default install: it is what a 26.04 user gets after `apt install plasma-session-x11`.
+# SDDM autologin of user test into /usr/share/xsessions/plasmax11.desktop.
+# Native display tool: kscreen-doctor (libkscreen's XRandR backend); xrandr.
+# vmctl fills in the two @@...@@ placeholders at build time (root ssh public
+# key; the contents of vm/build-image.sh). The base image lives in $VMIMAGES:
+# vmctl-base: ubuntu-26.04-server-cloudimg-amd64.img
+# vmctl-desktop: kde-x11
+hostname: resolute-kde-x11
+manage_etc_hosts: true
+disable_root: false
+ssh_pwauth: false
+ssh_authorized_keys:
+  - @@ROOT_PUBKEY@@
+users:
+  - name: test
+    uid: 1000
+    gecos: Test User
+    groups: [adm, sudo]
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: test
+    sudo: ALL=(ALL) NOPASSWD:ALL
+write_files:
+  - path: /etc/ssh/sshd_config.d/60-vmctl.conf
+    content: "PermitRootLogin prohibit-password\n"
+  - path: /etc/modules-load.d/uinput.conf
+    content: "uinput\n"
+  - path: /etc/vmctl-build.env
+    content: |
+      FLAVOR=resolute-kde-x11
+      DESKTOP=kde-x11
+      DESKTOP_PKG="kubuntu-desktop plasma-session-x11 kwin-x11 libkf6config-bin"
+      EXTRA_PKGS="xdotool wmctrl x11-utils x11-xserver-utils"
+  - path: /usr/local/sbin/vmctl-build
+    permissions: '0755'
+    content: |
+      @@BUILD_SCRIPT@@
+runcmd:
+  - [/usr/local/sbin/vmctl-build]
+power_state:
+  mode: poweroff
+  message: vmctl golden build finished
+  timeout: 120

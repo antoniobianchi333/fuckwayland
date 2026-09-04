@@ -307,6 +307,15 @@ DisplayConfig service on `dbus_mini`'s mock bus that validates like mutter
 
 ## KWin backend (`wxrandr/kwin.py`)
 
+**This is the Wayland session only.** Plasma on Xorg is a plain X11 session: the X
+server's RandR is the truth there, so `main()` hands over to the real `xrandr` before
+any of this runs, `--print-backend` says `x11` (`compositor: X server (RandR)`), and
+`--backends` marks `kwin` `unavailable  no wayland socket` — measured on the
+`noble-kde-x11` flavor, where `kwin_x11` owns `org.kde.KWin` on the session bus and
+`/run/user/<uid>` holds no compositor socket at all. `--backend kwin` there is the
+same one-line refusal (`xrandr: --backend kwin is not available in this session: no
+wayland socket`), because the protocol pair below exists only in `kwin_wayland`.
+
 KWin has no `zwlr_output_management` and no D-Bus display API (`org.kde.KWin` only
 exposes `activeOutputName()`). Everything goes through the Wayland protocols from
 plasma-wayland-protocols — NOT from the kwin repo — which are unauthenticated:
@@ -327,8 +336,9 @@ plasma-wayland-protocols — NOT from the kwin repo — which are unauthenticate
 | the rectangle a replica occupies | is its **source's**, and that is what every relation measures from: `--right-of` a 1280x1024 replica of a 1920x1080 output starts at 1920, not at 1280. Measured on KWin 6.6 the other way round: the replica's own panel size put the neighbour 640 px *inside* its source, two overlapping panels on a desktop meant to be a row, because the replica contributes nothing of its own to the layout. Disabling the source hands it back to itself — layout, position, scale and all — so the position it comes back at is the one `--query` was reporting for it |
 | a replicated output | stops being a layout member: its `wl_output` global goes away, it leaves `kde_output_order_v1` — so it can never be the primary, `set_priority` on it moving nothing (measured), and `--primary` on one says so instead of sending it — and it contributes nothing of its own to the bounding box. Its own **mode and transform still count** (they are the panel the copy is fitted onto); its own **position and scale are inert**, but still accepted, still read back and still persisted, and come back the moment the mirror ends. `--query` therefore reports it with the *source's* rectangle and its own mode table, so the pair reads the way xrandr renders a mirror and the `Screen` line matches the desktop KWin really has. Clearing the source (the empty string) restores it completely, and so does disabling the source. Mirroring an output onto itself is KWin's own `failed` (`An output cannot mirror itself`); a uuid naming no enabled output is accepted and silently does nothing, so the source uuid always comes from a fresh snapshot. It is persisted like everything else, as `replicationSource` in `~/.config/kwinoutputconfig.json`, and the undo line spells it `--same-as` rather than as a position. `kscreen-doctor` 6.6 can read the replication source and has no syntax to set one |
 
-Versions move fast — 5.27 advertises device 2 / management 3, 6.0 6/7, 6.3 11/12,
-6.4–6.5 16/16, 6.6 20/19, master 25/22 — so we bind LOW (device
+Versions move fast. KWin's own `s_version`, device / management, per release:
+5.27 = 2/3, 6.0 = 6/7, 6.3 = 11/12, 6.4 and 6.5 = 16/16, 6.6 = 20/19,
+**6.7 = 23/21**, master = 25/22 — so we bind LOW (device
 `min(advertised, 13)`: `name` is since 2 and `replication_source` since 13;
 management `min(advertised, 13)` for `set_priority`, `failure_reason` and
 `set_replication_source`) and gate mirroring on **both** halves — the request
@@ -336,14 +346,89 @@ to send one and the event to read one back, because a mirror that cannot be
 read back could never be cleared again and `--right-of` a replica would be
 silently inert — and
 gate every optional feature on the *bound* version: on 5.27 a rejection carries no
-reason string at all and says so. Discovery has two shapes and both are
-implemented: per-output `kde_output_device_v2` globals (5.27..6.6) and, from Plasma
-6.7 where that global is gone, `kde_output_device_registry_v2` (bound at ≥ 21)
-handing device objects out as new_ids. `done` is the publish barrier: an output
+reason string at all and says so. `done` is the publish barrier: an output
 appears in the snapshot only after it arrives — and management advertised with not
-one device published (a registry too old to bind, say) is a refusal
-(`xrandr: kde_output_management_v2 is advertised but the compositor announced no
-outputs`), not an empty screen and an apply that silently succeeds.
+one device published is a refusal, not an empty screen and an apply that silently
+succeeds.
+
+### The two discovery paths, and which Plasma made the second one
+
+Through Plasma 6.6 every output is its own `kde_output_device_v2` wl_registry
+global. **Plasma 6.7.0 is where that stopped** — not 6.6, and not master-only:
+kwin commit `7e32e00c`, *“wayland: Don't advertise kde-output-device-v2 globals
+anymore”* (2026-03-05, “all various Plasma components have been migrated to the
+registry global”), landed beside `67f58528` *“Implement kde-output-device-v2
+v21”* and shipped in v6.7.0. It was never backported: v6.6.6, cut four months
+later, still builds `new OutputDeviceV2Interface(m_display, output)`, while
+v6.7.0's `wayland_server.cpp` constructs only `m_outputDeviceRegistry` and
+answers a hotplug with `m_outputDeviceRegistry->offer(output)`. So on 6.7 there
+is no device global left to bind, and the devices arrive as `new_id`s on
+`kde_output_device_registry_v2` (plasma-wayland-protocols ≥ v1.21.0), whose two
+events are `finished` (opcode 0, no arguments) and `output` (opcode 1, one
+`new_id`).
+
+Three things about that interface decide the client:
+
+* **It cannot be bound low.** `kde_output_device_registry_v2_bind_resource()`
+  answers `wl_resource_post_error(..., error_unsupported_version, "unsupported
+  version")` below 21, so `REG_MIN` is a floor, not a preference — the one
+  place in this backend where binding low is wrong.
+* **The device version is the registry's.** `offer(target->client(),
+  target->version(), …)` → `wl_resource_create(client,
+  &kde_output_device_v2_interface, version, 0)`; there is no second bind to
+  negotiate with, and the trailing `0` is what puts the object id in the
+  server's `0xff000000` range, which is how we tell an announcement from
+  anything else on the wire.
+* **The burst is synchronous.** `d->add(resource)` runs
+  `kde_output_device_v2_bind_resource()`, which sends geometry … `done` right
+  there, so binding the registry publishes every output in one roundtrip.
+
+A hotplug-out on this path is likewise not a global going away — there is no
+global — but the device's own `removed` (event 36, since 21), with the mode
+objects torn down behind it. Both paths are implemented and the device object
+behaves identically past discovery; libkscreen's own client — the one
+`kscreen-doctor` and the System Settings KCM are built on — made exactly this
+move, and its `WaylandOutputDeviceRegistry` binds the registry at the same
+number KWin advertises (23 at v6.7.4, 25 on master) and collects its devices
+from `kde_output_device_registry_v2_output`, which is what `min(advertised,
+REG_WANT)` lands on here too. It dropped the globals path outright; we do not,
+because 5.27 through 6.6 are still supported.
+
+**Measured on Plasma 6.7.4** (KWin `4:6.7.4-0ubuntu2`, Ubuntu 26.10, the
+`stonking-kde` vmctl flavor), which settles it: `kde_output_device_v2` is
+**absent from `wl_registry`** on that session — the globals are
+`kde_output_device_registry_v2` v23, `kde_output_management_v2` v21 and
+`kde_output_order_v1` v1 — so the registry path is not an optimisation there,
+it is the only way to see an output at all. Through it, on two virtual heads:
+`--query` and `--listmonitors` list both outputs with every mode, `--mode`,
+`--pos`/`--right-of`, `--rotate left`, `--off` and back, `--scale 1.5`
+(1920 ÷ 1.5 → 1280×720, byte-equal to `kscreen-doctor`'s `Geometry`),
+`--primary` (priorities 1 and 2, and `kscreen-doctor` agrees) and `--same-as`
+(`set_replication_source`, read back as `replication source:2`, the replica
+reported at its source's rectangle) all apply and read back correctly, the
+restore line each apply prints round-trips, and both refusals still refuse
+(`cannot disable all outputs`, `cannot find mode 1234x567`). A head plugged and
+unplugged from outside the guest is picked up both ways — on this path an
+unplug is the device's own `removed` (event 36, since 21), not a global going
+away, and that is the one thing no other Plasma can exercise.
+
+Behind that, and what stands when a newer Plasma lands: every opcode, `since`
+and argument shape this backend uses is checked field by field against
+plasma-wayland-protocols `kde-output-device-v2.xml` /
+`kde-output-management-v2.xml` at v1.21.0 and master by
+`repro/kde-outreg-conformance.py` (45 constants, all matching), and the fake
+compositor in `tests/test_wxrandr_kwin.py` is built from that same table: it
+sends **every** event the bound version covers in KWin's own `bind_resource()`
+order — all 40 of them at v23, not the fifteen the backend reads — because a
+client that mis-parsed one of the other twenty-five would lose its place in the
+stream. The failure modes are engineered too, and measured against
+`repro/kde-outreg-specfake.py`: a registry that binds and announces nothing is
+a refusal naming the path and the version bound (`xrandr:
+kde_output_management_v2 announced no outputs (this compositor hands them out
+through kde_output_device_registry_v2; wxrandr bound it at version 23)`), one
+too old to bind says so and falls back to the globals if the compositor still
+has them, and one that goes quiet after binding is a single `xrandr:` line
+after the socket deadline — never a hang, never a traceback.
 
 Apply is atomic and **one-shot** — a second `apply` on one configuration object is
 a fatal `already_applied` protocol error that kills the connection — so every

@@ -3,7 +3,7 @@
 Two rigs live here:
 
 * **`vmctl`** (this document): full, default-configured Ubuntu desktops in QEMU/KVM —
-  **seven flavors** over four desktops (GNOME, KDE Plasma, Xfce, sway) and two releases,
+  **nine flavors** over four desktops (GNOME, KDE Plasma, Xfce, sway) and two releases,
   each with autologin of user `test` — on a **multi-head virtio-vga** whose monitors are
   plugged, unplugged and resized from the host at runtime, plus host-side screenshots of
   every head. This is the rig for testing `wxrandr`/`wwmctl`/`wdotool`/`wxprop` against
@@ -21,7 +21,7 @@ Two rigs live here:
 
 ```console
 $ vm/vmctl build noble-gnome            # ~7 min, once; golden image -> ~/vm-data/golden/
-$ vm/vmctl build resolute-kde           # any of the seven flavors (see Flavors below)
+$ vm/vmctl build resolute-kde           # any of the nine flavors (see Flavors below)
 $ vm/vmctl start gnome1 --flavor noble-gnome --heads 3
 vmctl: gnome1: QEMU pid 1234, flavor noble-gnome, 3 vCPU/4G, ssh port 2400, bus ...
 vmctl: gnome1: heads: 0=1920x1080, 1=1920x1080, 2=1920x1080  (guest connectors Virtual-1, Virtual-2, Virtual-3; set before the guest boots)
@@ -84,7 +84,7 @@ time comfortably; 8 vCPU / 32 GB runs four.
 |---|---|
 | `vm/vmctl` | the CLI (host side) |
 | `vm/build-image.sh` | guest-side build script; embedded into the flavor's cloud-init user-data by `vmctl build`, runs once as root inside the build VM |
-| `vm/flavors/<flavor>.yaml` | cloud-init user-data template per flavor (`@@ROOT_PUBKEY@@`, `@@BUILD_SCRIPT@@` placeholders; `# vmctl-base:` names the base cloud image, `# vmctl-desktop:` the desktop — `gnome`, `kde`, `xfce` or `sway`) |
+| `vm/flavors/<flavor>.yaml` | cloud-init user-data template per flavor (`@@ROOT_PUBKEY@@`, `@@BUILD_SCRIPT@@` placeholders; `# vmctl-base:` names the base cloud image, `# vmctl-desktop:` the desktop **and its session type** — `gnome`, `kde`, `kde-x11`, `xfce` or `sway`) |
 | `vm/reference/<flavor>-packages.txt` | `dpkg-query -W -f='${binary:Package}\n'` of the finished golden image: **what a default install of that flavor contains**. Multi-arch names carry their `:amd64` suffix (`libei1:amd64`), so grep for exact names with `^name(:amd64)?$`. |
 | `vm/selftest.sh <flavor> [name]` | end-to-end check of any flavor's golden image: boot 3 heads, autologin, monitors/primary in that desktop's own display tool, no stray first-run window, real screenshots, hotplug (details below) |
 
@@ -122,9 +122,10 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 
 ## Flavors
 
-Seven golden images: four desktops over two Ubuntu releases. A flavor is one
+Ten golden images: four desktops over three Ubuntu releases, and Plasma twice on each
+LTS — once on Wayland and once on Xorg. A flavor is one
 `vm/flavors/<flavor>.yaml` (cloud-init user-data). Its `# vmctl-base:` header names the base
-cloud image and its `# vmctl-desktop:` header (`gnome`, `kde`, `xfce`, `sway`) is what `vmctl`
+cloud image and its `# vmctl-desktop:` header (`gnome`, `kde`, `kde-x11`, `xfce`, `sway`) is what `vmctl`
 and `selftest.sh` key off: which display manager owns the session, what `loginctl` calls its
 `Type`, which sockets `vmctl user` must export, which process paints the first frame, and which
 native tool reports monitors.
@@ -134,10 +135,13 @@ native tool reports monitors.
 | `noble-gnome` | 24.04 LTS | GNOME Shell 46 / mutter 46 (`ubuntu-desktop`) | GDM | Wayland | mutter's `org.gnome.Mutter.DisplayConfig.GetCurrentState` |
 | `resolute-gnome` | 26.04 LTS | GNOME Shell 50 / mutter 50 (`ubuntu-desktop`) | GDM | Wayland | the same |
 | `noble-kde` | 24.04 LTS | Plasma 5.27 / KWin 5.27 (`kubuntu-desktop`, `plasma-workspace-wayland`) | SDDM | Wayland | `kscreen-doctor -o` |
+| `noble-kde-x11` | 24.04 LTS | the same packages, started as the **Plasma X11 session** (Xorg + `kwin_x11`) | SDDM | **X11** | `kscreen-doctor -o` (libkscreen's XRandR backend); `xrandr` |
 | `resolute-kde` | 26.04 LTS | Plasma 6.6 / KWin 6.6 (`kubuntu-desktop`) | SDDM | Wayland | `kscreen-doctor -o` |
+| `resolute-kde-x11` | 26.04 LTS | Plasma 6.6 / KWin 6.6 on **X11** (`kubuntu-desktop` **plus `plasma-session-x11`, `kwin-x11`** — 26.04 installs no X11 session by itself) | SDDM | **X11** | the same |
 | `noble-xfce` | 24.04 LTS | Xfce 4.18 (`xubuntu-desktop`) | LightDM | **X11** | `xrandr` |
 | `resolute-xfce` | 26.04 LTS | Xfce 4.20 (`xubuntu-desktop`) | LightDM | **X11** | `xrandr` |
 | `resolute-sway` | 26.04 LTS | sway 1.11 / wlroots, Xwayland, `foot`, `grim` | greetd | Wayland | `swaymsg -t get_outputs` |
+| `stonking-kde` | 26.10 | Plasma 6.7 / KWin 6.7 (`kde-plasma-desktop`) | SDDM | Wayland | `kscreen-doctor -o` |
 
 Every flavor:
 
@@ -146,7 +150,9 @@ Every flavor:
 * the desktop metapackage installed non-interactively (`DEBIAN_FRONTEND=noninteractive`,
   `--force-confold`), so the image is as close to a default install of that Ubuntu flavor as a
   cloud image allows. Only four extra packages: `xdotool wmctrl x11-utils x11-xserver-utils`
-  (the X-parity oracles; on the Wayland flavors they talk to Xwayland). Not in the image
+  (the X-parity oracles; on the Wayland flavors they talk to Xwayland). The one exception is
+  `resolute-kde-x11`, which also names the X11 session itself (`plasma-session-x11`,
+  `kwin-x11`) because 26.04's `kubuntu-desktop` ships none. Not in the image
   (not part of a default desktop, not needed by the tools): `python3-tk`; `python3-gi` +
   `gir1.2-gtk-3.0`/`gir1.2-gtk-4.0` *are* there for test windows.
 * autologin of `test` into that desktop's own session, `graphical.target` as the default target,
@@ -175,11 +181,27 @@ Every flavor:
   existing and the second one *not* existing — so the first marker alone switches that dialog on).
   The `update-notifier` / `ubuntu-report` autostarts are hidden for `test`.
 
-**KDE Plasma** (`noble-kde`, `resolute-kde`)
+**KDE Plasma** (`noble-kde`, `resolute-kde`, `stonking-kde`, `noble-kde-x11`,
+`resolute-kde-x11`)
 
 * SDDM: `/etc/sddm.conf.d/` autologin of `test` into the **Plasma Wayland** session —
   `plasmawayland.desktop` on 5.27, `plasma.desktop` on 6 (the build picks whichever
   `/usr/share/wayland-sessions/` file exists and fails if neither does).
+* **`noble-kde-x11`** and **`resolute-kde-x11`** are the same images built with `DESKTOP=kde-x11`: the same packages, the
+  same SDDM, autologin into the **X11** session from `/usr/share/xsessions/` instead
+  (`plasma.desktop` on 5.27, `plasmax11.desktop` on 6), so Xorg owns the scanout and
+  `kwin_x11` is a plain X window manager on top of it. The pair is a controlled experiment —
+  one Plasma, one session bus, one `org.kde.KWin`, two session types. SDDM's autologin
+  resolves the session *name* against `/usr/share/wayland-sessions/` **first**
+  (`Display::attemptAutologin`), so a name that exists in both directories would quietly
+  start the Wayland session: the build refuses to produce such an image rather than ship one
+  that lies about its session type. On 26.04 the two names differ anyway
+  (`plasma.desktop` is the Wayland one, `plasmax11.desktop` the X11 one), but
+  `kubuntu-desktop` installs no X11 session at all there — `plasma-session-x11` and
+  `kwin-x11` are in the archive, in universe, and nothing pulls them in — so
+  `resolute-kde-x11` lists them explicitly and is, alone among the ten, **not** a
+  default install of its Ubuntu flavor. It is what a 26.04 user gets after
+  `apt install plasma-session-x11`.
 * `kwriteconfig5`/`kwriteconfig6` (whichever the release ships) turn off the screen locker
   (`kscreenlockerrc`) and display power management (`powerdevilrc`) for `test`.
 * the welcome centre and the Discover update notifier are hidden as autostart entries — enough on
@@ -188,6 +210,35 @@ Every flavor:
   is missing or older than the installed `plasma-welcome`, so the build also writes that key.
 * Plasma reaches its first frame in several steps, so `vmctl session` waits for all of them:
   `kwin_wayland` owning head 0's scanout, `plasmashell` up, and `ksplashqml` gone.
+
+`stonking-kde` exists for one reason: **Plasma 6.7 is the first release that
+stopped advertising `kde_output_device_v2` as a wl_registry global** and hands
+the device objects out through `kde_output_device_registry_v2` instead (kwin
+commit `7e32e00c`, released in v6.7.0 and never backported — v6.6.6 still
+publishes the globals). It is therefore the only image on which `wxrandr`'s
+second output-discovery path runs at all — and on it, `wl_registry` carries no
+`kde_output_device_v2` whatsoever, only `kde_output_device_registry_v2` v23,
+`kde_output_management_v2` v21 and `kde_output_order_v1` v1. Ubuntu 26.10 (`stonking`) is the
+first Ubuntu carrying it: `kwin-wayland 4:6.7.4-0ubuntu2`, against 6.6.4 in
+26.04.
+
+It is the one flavor that does **not** install its distro's desktop
+metapackage, and 26.10 being a development release is why. `kubuntu-desktop`
+pulls the `firefox` deb, whose postinst installs the firefox *snap* — and
+snapd does not work in the 26.10 cloud image (`snapd.service` fails to start),
+so that postinst parks in `Unable to contact the store, trying every minute
+for the next 30 minutes` and the build never finishes. The flavor installs
+`kde-plasma-desktop` instead — `kwin-wayland` + `plasma-workspace` +
+`plasma-desktop`, i.e. the whole Plasma session and every display protocol
+this image exists for — and pins `firefox`/`thunderbird` to −1 so no
+Recommends chain can drag one back in. Everything else (SDDM autologin, the
+screen-lock and power-management overrides) is the shared `kde` path in
+`build-image.sh`, unchanged.
+
+For the same reason — a development release whose cloud image
+(`stonking-server-cloudimg-amd64.img`) and packages move under you — this
+flavor is a probe for one protocol change, not a support target: the other
+nine are what the desktop-support matrix is measured on.
 
 **Xfce** (`noble-xfce`, `resolute-xfce`) — the X11 flavors
 
@@ -250,7 +301,9 @@ order, using that desktop's own tools:
 4. `vmctl user` gives a working session environment: `XDG_SESSION_ID` whose logind `Type` is the
    flavor's (`wayland`, `x11`, or `wayland`/`tty` for sway), `XDG_SESSION_TYPE` exactly `wayland`
    or `x11`, the display sockets (`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`, `$SWAYSOCK`) and an X
-   display `xdpyinfo` can reach — Xwayland on the Wayland flavors, Xorg on Xfce.
+   display `xdpyinfo` can reach — Xwayland on the Wayland flavors, Xorg on Xfce and
+   `noble-kde-x11` (where `$WAYLAND_DISPLAY` must be **empty**: a Plasma X11 session has no
+   compositor socket of its own, and that is the whole point of the flavor).
 5. `vmctl heads` sees the DRM connectors, and `vmctl shot --all` yields one PNG per head whose
    pixel standard deviation is > 0.01 (a session that never finished starting paints every head a
    flat `#222222`). A head that is still flat is re-shot every 4 s, up to six times, before it
@@ -290,6 +343,7 @@ image. Neither may claim what the other denies: change them together.
 |---|---|---|---|---|---|---|
 | `noble-gnome`, `resolute-gnome` | works | works | needs the bridge extension | `getdisplaygeometry` works; window/input commands need the bridge extension | works | works |
 | `noble-kde`, `resolute-kde` | works | works | works | works | works | works |
+| `noble-kde-x11`, `resolute-kde-x11` | works (hands over to `xrandr`) | works (`wmctrl`) | works (`wmctrl`) | works (`xdotool`) | works (`xprop`) | works (runs the real `xrandr`) |
 | `noble-xfce`, `resolute-xfce` | works (hands over to `xrandr`) | works (`wmctrl`) | works (`wmctrl`) | works (`xdotool` — but see the version note below) | works (`xprop`) | works (runs the real `xrandr`) |
 | `resolute-sway` | works | works | works | works, bar `windowstate MAXIMIZED_*` and moving, resizing, raising or lowering a *tiled* window | works in the session; **synthesized** from a root shell | works, once the image has the GTK 3 bindings |
 
@@ -330,6 +384,55 @@ reparents), while on 6.6 real `wmctrl` doubles the frame offset and ours are the
 **As root over plain `vmctl ssh` the KWin backend works too** (the session bus is found by
 scanning `/run/user/*`), so `vmctl ssh` and `vmctl user` both drive Plasma. That was not true
 while the backend used `dbus-monitor`; it is the `dbus_mini` client that made it work.
+
+**KDE Plasma on X11** (`noble-kde-x11`, `resolute-kde-x11`) — a plain X11 session, so all four command-line
+tools hand over and `warandr` drives the real `xrandr`, exactly as on Xfce. What the flavor
+is *for* is the two things that look like they might make Plasma different and do not.
+`kwin_x11` owns `org.kde.KWin` on the session bus just as `kwin_wayland` does — `busctl
+--user list` shows it, and `wdotool.backend_detect.detect()` answers `KwinBackend` if you
+ask it — but nothing of ours does ask it: the handover is decided by the session, before
+any backend is detected. Measured in the session: `passthrough.session_kind()` is `x11`
+for all four tools, `find_wayland_socket()` is `None` (there is no compositor socket at
+all, `/run/user/1000` holds none), `wxrandr --print-backend --verbose` prints `x11` /
+`session: x11` / `compositor: X server (RandR)` / `real xrandr: /usr/bin/xrandr`,
+`wxrandr --backends` marks `kwin` `unavailable  no wayland socket`, and
+`warandr --print-backend` prints `x11` (its status bar says `backend: xrandr (X11)`).
+Every handover is an `execve`, not a subprocess: `/proc/<pid>/exe` of the process the
+shell started is `/usr/bin/xdotool`. Output is the original's, byte for byte —
+`xdotool getdisplaygeometry` (`1920 1080`, per screen), `getactivewindow`, `search`,
+`getwindowname/geometry/pid`, `getmouselocation`; `wmctrl -m` (`Name: KWin`, `Class: N/A`,
+`PID: N/A`), `-d`, `-l`, `-l -G -p -x`, `-a`; the whole of `xprop -root` and `xprop -id`;
+`xrandr --query` (`Screen 0: minimum 320 x 200, current 3840 x 1080, maximum 8192 x 8192`),
+`--listmonitors`, `--listproviders`. The versions are the box's own (`xdotool
+3.20160805.1`, `xprop 1.2.6`, `xrandr 1.5.2`, `wmctrl 1.07`).
+
+**And it works as root over plain `vmctl ssh` with an empty environment** — but only
+since this branch. **SDDM keeps the X cookie in `/tmp/xauth_<random>`**, which is neither
+`~/.Xauthority` (it does not exist on this image) nor anything in a runtime directory, so
+the cookie search came back empty and every handover died with `Authorization required,
+but no authorization protocol specified`. `wdotool/session.py` now reads it out of the
+session's own leader (`startplasma-x11`, `kwin_x11`, `plasmashell`, ... — uid-qualified
+`/proc/<pid>/environ`, the same trick that already found gnome-shell's), so
+`repair_x_env()` from a root shell yields `{'DISPLAY': ':0', 'XAUTHORITY':
+'/tmp/xauth_...'}` and root gets the same answers `test` gets, where the originals alone
+still say `Can't open display`.
+
+**The KWin backend is still reachable here on purpose**, with
+`FUCKWAYLAND_PASSTHROUGH=never` (or `WDOTOOL_BACKEND=kwin`), and it works: `loadScript`
+is as unprivileged on `kwin_x11` as on `kwin_wayland`, `wwmctl -l` lists KWin's windows,
+`wdotool getactivewindow`/`search`/`getmouselocation` answer. It is still a downgrade,
+which is the argument for the handover being in front of it: `wdotool
+getdisplaygeometry` fails there with `cannot query Wayland output geometry (no wayland
+socket found)`, rc 2, and the ids depend on the KWin generation — 5.27 still exposes
+`windowId` to scripts, so `wwmctl -l` prints the windows' **real X ids**, while on 6.6
+that property is gone and the same command prints ids minted from KWin's uuids
+(`0x54b18d30` where real `wmctrl` says `0x600014`) on a session where every window has
+a perfectly good X id. Two more differences between the two releases' images, neither
+ours: SDDM 0.20 (24.04) keeps the X cookie in `/tmp/xauth_<random>` and logind records
+the session's `DISPLAY=:0`, while SDDM 0.21 (26.04) keeps it in
+`/run/user/1000/xauth_<random>` and logind records **no** `DISPLAY` at all — so on 26.04
+the display comes from the socket scan and on 24.04 the cookie comes from the session
+leader. Both paths are exercised by the pair.
 
 **Xfce** — the X11 flavors, and every tool hands over there, so the answers are the real
 tools' own. `wxrandr` prints the X server's listing
