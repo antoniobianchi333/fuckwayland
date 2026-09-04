@@ -360,6 +360,20 @@ def compositor_pixel(axis_value, span):
 # daemons
 
 
+def _over_the_socket(d, req):
+    """One request through serve_client(), which is where an error becomes a
+    reply -- the only place that decides whether a failing command's warnings
+    reach the user at all."""
+    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        a.sendall((__import__("json").dumps(req) + "\n").encode())
+        a.shutdown(socket.SHUT_WR)
+        d.serve_client(b)
+        return __import__("json").loads(a.makefile("r").readline())
+    finally:
+        a.close()
+
+
 class RecorderDev:
     """A uinput device, recording (the same double as test_input_daemon)."""
 
@@ -661,6 +675,27 @@ class RelativeMotion(VptrTest):
         d.op_mousemove_rel(37, -11, [])
         self.assertEqual(self.comp.of("motion"), [("motion", 37.0, -11.0)],
                          "the motion asked for, not one computed from 0,0")
+
+    def test_it_does_not_invent_a_position_it_never_knew(self):
+        """A delta applied to a position nobody knows is a guess, and B6's
+        rule is that a guess is never reported as known. `mousemove_relative`
+        used to set pos_known unconditionally, so on this path -- where
+        nothing can be asked -- the very next `getmouselocation` answered a
+        fabricated coordinate with rc 0."""
+        d = self.daemon(uinput=False)
+        self.assertFalse(d.pos_known)
+        d.op_mousemove_rel(37, -11, [])
+        self.assertFalse(d.pos_known, "still nobody knows")
+        with self.assertRaises(RuntimeError) as cm:
+            d.handle({"op": "pointer"})
+        self.assertEqual(str(cm.exception), daemon.POINTER_UNKNOWN)
+
+    def test_a_position_that_was_known_survives_it_exactly(self):
+        d = self.daemon(uinput=False)
+        d.op_mousemove_abs(1000, 500, [])
+        d.op_mousemove_rel(-40, 7, [])
+        self.assertEqual(d.handle({"op": "pointer"}),
+                         {"ok": True, "x": 960, "y": 507, "known": True})
 
     def test_rel_mode_abs_still_forces_a_warp(self):
         os.environ["WDOTOOL_REL_MODE"] = "abs"
@@ -1004,6 +1039,72 @@ class ThePointerCommandsOverTheWire(VptrTest):
                          + [{"clearmods": False, "vkbd_mode": "on"}] * 2)
 
 
+class TheQueryThatComesBeforeTheMove(unittest.TestCase):
+    """`mousemove` and `mousemove_relative` ask where the pointer is before
+    they move it -- the first for `mousemove restore`, the second to count
+    the delta from the real position (B1/B6). On sway with no /dev/uinput
+    NOTHING can answer that: sway's IPC has no cursor position and the
+    protocol has no events, so `daemon.pointer()` refuses. The query used to
+    be mandatory, which made the refusal fail the move -- so on the one kind
+    of session this whole path exists for, `wdotool mousemove 100 100` exited
+    1 and moved nothing, every time, however well the protocol worked."""
+
+    def _ctx(self, calls):
+        from wdotool.ctx import CmdError
+
+        class Ctx:
+            stack: list = []
+
+            def daemon(self):
+                class D:
+                    def mousemove_abs(self, *a, **kw):
+                        calls.append(("abs", a))
+
+                    def mousemove_rel(self, *a, **kw):
+                        calls.append(("rel", a))
+
+                    def seed_pointer(self, *a):
+                        raise AssertionError("nothing to seed from")
+
+                    def pointer(self):
+                        raise CmdError(daemon.POINTER_UNKNOWN)
+
+                return D()
+
+            def resolve_windows(self, arg):
+                return [None]
+
+            def backend(self):
+                return object()      # no pointer query on this compositor
+
+        return Ctx()
+
+    def test_an_absolute_move_still_moves(self):
+        from wdotool import input_cmds
+        calls = []
+        ctx = self._ctx(calls)
+        input_cmds.cmd_mousemove(ctx, ["100", "200"])
+        self.assertEqual(calls, [("abs", (100, 200))])
+        self.assertIsNone(ctx._last_mouse,
+                          "and `mousemove restore` knows it has nothing")
+
+    def test_a_relative_move_still_moves(self):
+        from wdotool import input_cmds
+        calls = []
+        input_cmds.cmd_mousemove_relative(self._ctx(calls), ["10", "20"])
+        self.assertEqual(calls, [("rel", (10, 20))])
+
+    def test_restore_says_so_rather_than_moving_to_nowhere(self):
+        from wdotool import input_cmds
+        from wdotool.ctx import CmdError
+        calls = []
+        ctx = self._ctx(calls)
+        input_cmds.cmd_mousemove(ctx, ["100", "200"])
+        with self.assertRaises(CmdError) as cm:
+            input_cmds.cmd_mousemove(ctx, ["restore"])
+        self.assertIn("Have no previous mouse position", str(cm.exception))
+
+
 # ---------------------------------------------------------------------------
 # held buttons: the lifetime, and the sink switch
 
@@ -1034,6 +1135,46 @@ class HeldButtons(VptrTest):
         self.assertEqual([k for k in kinds if k != "frame" and k != "create"],
                          ["motion_absolute", "button", "motion_absolute",
                           "motion", "button"])
+
+    def test_a_hold_does_not_survive_a_switch_that_cannot_happen(self):
+        """MEASURED ON sway 1.11 with /dev/uinput root-only: `--vkbd on
+        mousedown 1` then `--vkbd off mouseup 1` reported the uinput error
+        and left the LEFT BUTTON DOWN on the virtual pointer -- a drag
+        outliving the command that failed, on exactly the kind of session
+        this path exists for. _own_pointer() sits below the raise in
+        _pick_pointer(), so it never ran."""
+        d = self.daemon(uinput=False)         # no kernel pointer at all
+        d.handle({"op": "button", "btn": 1, "down": True, "vkbd_mode": "on"})
+        self.assertEqual(d.btns, {uinput.BTN_LEFT})
+        warnings = []
+        with self.assertRaises(RuntimeError) as cm:
+            d.handle({"op": "button", "btn": 1, "down": False,
+                      "vkbd_mode": "off"}, None, warnings)
+        self.assertEqual(str(cm.exception), UINPUT_ERROR,
+                         "the failure is still the kernel device's")
+        self.assertEqual(self.comp.last("button"), ("button", 0x110, 0),
+                         "released on the pointer that was holding it")
+        self.assertEqual(d.btns, set())
+        self.assertTrue(any("were released" in w for w in warnings), warnings)
+
+    def test_the_release_is_reported_on_the_failing_reply(self):
+        """A command that fails can still have changed something. The reply
+        an error produces used to drop every warning the command had
+        collected, so the one line that says a button was let go of was said
+        to nobody."""
+        d = self.daemon(uinput=False)
+        d.handle({"op": "button", "btn": 1, "down": True, "vkbd_mode": "on"})
+        resp = _over_the_socket(d, {"op": "button", "btn": 1, "down": False,
+                                    "vkbd_mode": "off"})
+        self.assertFalse(resp["ok"], resp)
+        self.assertTrue(any("were released" in w
+                            for w in resp.get("warnings", [])), resp)
+
+    def test_an_ordinary_error_still_carries_no_warnings_key(self):
+        d = self.daemon(uinput=False)
+        resp = _over_the_socket(d, {"op": "button", "btn": 1, "down": True,
+                                    "vkbd_mode": "off"})
+        self.assertEqual(resp, {"ok": False, "error": UINPUT_ERROR})
 
     def test_auto_does_not_change_pointers_under_a_held_button(self):
         """`wdotool --vkbd on mousedown 1` and then a plain `wdotool mouseup

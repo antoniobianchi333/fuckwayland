@@ -928,6 +928,21 @@ $ wdotool mousemove 2560 360 getmouselocation
 x:2560 y:360 screen:0 window:...
 ```
 
+It is an **absolute** move that makes it answerable. `mousemove_relative` is
+a delta: applied to a position nobody knows it produces another position
+nobody knows, so it moves the cursor and leaves the question refused rather
+than answering a number it made up.
+
+**The one place the answer can be wrong without anyone touching a mouse** is
+a coordinate inside the layout's bounding box but on **no output** — the gap
+above or below a head that does not span the full height, on a layout whose
+heads are not flush. wdotool asks for it, the compositor clamps the cursor to
+the nearest output, and the model still holds the coordinate that was asked
+for. On a rig with heads at `-1920,-540` and `0,0`, `mousemove 1 -539` puts
+the cursor at `-0.004,-539` and `getmouselocation` says `1,-539`. Both paths
+do this and always have: the kernel tablet is mapped across the same bounding
+box.
+
 A held button behaves exactly like a held key. `mousedown 1`, `mousemove`,
 `mouseup 1` is one drag through one connection and one pointer object; the
 compositor releases a held button the instant its client disconnects, so the
@@ -939,6 +954,24 @@ the pointer that has it and says so:
 $ wdotool --vkbd off mouseup 1
 wdotool: the mouse buttons wdotool was holding on the virtual pointer (left) were released: this command injects through the kernel one, and only the device that pressed a button can release it
 ```
+
+The release happens **even when the sink you named turns out not to exist**,
+which on a stock wlroots box is the ordinary case: `--vkbd off` there is
+asking for a `/dev/uinput` you cannot open. The command fails with that
+error, as a forced mode must — but a button is never left down on a pointer
+nothing is going to use again:
+
+```console
+$ wdotool --vkbd on mousedown 1
+$ wdotool --vkbd off mouseup 1
+wdotool: the mouse buttons wdotool was holding on the virtual pointer (left) were released: this command asked for the kernel one, which cannot be used, and a button cannot be left down on a pointer nothing is going to inject through
+cannot create uinput devices: [Errno 13] Permission denied: '/dev/uinput' (wdotool injects input via /dev/uinput; run it as root)
+$ echo $?
+1
+```
+
+`--vkbd on keydown shift` followed by `--vkbd off keyup shift` says the same
+thing about the key.
 
 One last thing worth knowing: there is one cursor per seat and this *is* that
 cursor. A physical mouse moves "our" pointer, and the position wdotool
@@ -1103,6 +1136,13 @@ layout, so neither pointer acceleration nor an already-identical coordinate
 can lose the move. On sway/i3, relative moves keep using relative events
 (that rig runs `pointer_accel 0`); `WDOTOOL_REL_MODE=abs|rel` forces either
 mode anywhere.
+
+Where the [pointer protocol](#the-pointer-half-zwlr_virtual_pointer_v1) is
+used instead of the tablet, it is exact rather than merely pixel-exact: the
+two paths were measured against each other on the same three-head rig, one
+head at a negative origin and one at scale 1.5, and every target landed on
+the same pixel — the protocol path with 0.000 error, the tablet path within
+its own 1/32768-of-the-layout axis step.
 
 ## wwmctl
 
@@ -1436,10 +1476,13 @@ what it is, who gets it, and what is not defended against.
 **What the tools do by design.** `wdotool` injects keystrokes and pointer
 events as a kernel-level virtual device, which every application — your
 terminal, your password prompt, the lock screen — receives as real hardware.
-Keystrokes have a second route on wlroots, `zwp_virtual_keyboard_v1`, which
-is not a kernel device at all and reaches the same places: measured, an
-unprivileged client typed the account password into `swaylock` through it and
-the session unlocked.
+Both halves have a second route on wlroots, `zwp_virtual_keyboard_v1` for the
+keys and `zwlr_virtual_pointer_v1` for the pointer, which are not kernel
+devices at all and reach the same places: measured, an unprivileged client
+typed the account password into `swaylock` through the first and, through the
+second, moved the cursor and clicked with no root, no group membership and no
+device rule. On that family of compositors **nothing wdotool injects needs a
+privilege of any kind**.
 `wwmctl`, `wxprop` and `wxrandr` read and change window and display state
 through the compositor. Anything you can do at the keyboard, a script running
 as you can do through these tools; that is the whole point, and it is not a

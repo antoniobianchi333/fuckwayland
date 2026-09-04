@@ -964,6 +964,26 @@ class SwitchingSinks(VkbdTest):
                           (keymap.KEY_LEFTSHIFT, 0)])
         self.assertTrue(any("were released" in w for w in warns), warns)
 
+    def test_a_hold_does_not_survive_a_switch_that_cannot_happen(self):
+        """The half of the switch that only shows up where the OTHER sink is
+        missing, which is every session this path exists for. `--vkbd on
+        keydown shift` then `--vkbd off keyup shift` on a box with no
+        /dev/uinput used to report the uinput error and leave shift down on
+        the virtual keyboard for the daemon's life: _own_sink() sits below
+        the raise in _pick_keyboard() and never ran. Measured on sway 1.11."""
+        d = self.daemon(uinput=False)
+        d.op_key("shift", "down", 0, False, None, None, "on")
+        self.assertEqual(self.comp.keys[-1], (keymap.KEY_LEFTSHIFT, 1))
+        self.assertEqual(d.down, {keymap.KEY_LEFTSHIFT})
+        warnings = []
+        with self.assertRaises(RuntimeError):
+            d.op_key("shift", "up", 0, False, None, None, "off",
+                     warnings=warnings)
+        self.assertEqual(self.comp.keys[-1], (keymap.KEY_LEFTSHIFT, 0),
+                         "released on the keyboard that was holding it")
+        self.assertEqual(d.down, set())
+        self.assertTrue(any("were released" in w for w in warnings), warnings)
+
     def test_nothing_is_said_when_nothing_is_held(self):
         d = self.daemon(uinput=True)
         warns = d.op_type("a", 0, False, None, None, "on")

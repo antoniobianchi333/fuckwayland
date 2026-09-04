@@ -413,7 +413,18 @@ Daemon notes (B):
   op with that reason rather than answering `0,0` with rc 0; a daemon on the
   virtual-pointer path refuses it with the protocol's reason instead
   (`POINTER_UNKNOWN`) — /dev/uinput is not what the user would have to fix
-  there, and cannot be, because nothing on that path can be asked.
+  there, and cannot be, because nothing on that path can be asked. Only an
+  **absolute** move establishes the model: a relative one is a delta, and a
+  delta applied to a position nobody knows is a guess, so it moves the cursor
+  and leaves `pos_known` false rather than reporting a number it invented.
+  The **query the two move commands make before injecting** — `_pointer_opt`
+  in `input_cmds.py` — is therefore optional by construction: `mousemove`
+  wants it only to remember a position for `mousemove restore`, and
+  `mousemove_relative` only to count from the truth where a compositor can
+  supply it. Making it mandatory is what made the refusal above fail the
+  move: on sway with no `/dev/uinput` — the session the whole path exists
+  for — `wdotool mousemove 100 100` exited 1 and moved nothing, however well
+  the protocol worked.
 - **the active layout (B13, `xkbmap.py`)**: we inject *keycodes*, and the
   compositor reads them through whatever XKB layout the session has active, so
   the fixed US table is wrong for everyone else: `type y` gives `z` on German,
@@ -683,9 +694,26 @@ Daemon notes (B):
     mousedown 1` then `--vkbd off mouseup 1` would otherwise leave a button
     down for the daemon's life, released by nobody, turning every later click
     into a drag. It is released on the pointer that holds it and said out
-    loud. The keyboard and the pointer are **two connections and two
-    objects** on purpose: a disconnect releases only what that connection
-    holds, so one half's troubles cannot drop the other's.
+    loud — **and also when the sink the command named is not there**, which
+    is the ordinary case on a stock wlroots box, where `--vkbd off` asks for
+    a `/dev/uinput` nobody can open. Both `_own_sink()` and `_own_pointer()`
+    sat *below* the `raise` in `_pick_keyboard()`/`_pick_pointer()`, so on
+    the one kind of session either protocol exists for, the release never ran
+    and the button stayed down: measured on sway 1.11, `--vkbd on mousedown
+    1` then `--vkbd off mouseup 1` reported the uinput error and left a drag
+    behind it. `_release_named_sink()` runs them on the way out of the
+    failure — for **both** halves, because `--vkbd` is one switch and one
+    failed command can strand one of each — and the command still fails with
+    the sink's own error, because a forced mode must not quietly fall back.
+    It fires only for a *named* sink: `auto` failing means neither sink
+    exists, so there is nothing left that could release anything. The line it
+    prints reaches the user because `serve_client()` now puts a failing
+    command's warnings on the error reply (and `op_type`/`op_key` take the
+    caller's list rather than a local one); without that, the one sentence
+    describing a state change nobody asked for was collected and dropped.
+    The keyboard and the pointer are **two connections and two objects** on
+    purpose: a disconnect releases only what that connection holds, so one
+    half's troubles cannot drop the other's.
   - **`--clearmodifiers` on a pointer command** clears on whichever *keyboard*
     sink holds our modifiers (a key-up on one device releases nothing the
     other holds), and when there is no keyboard of either kind it says so once

@@ -315,6 +315,23 @@ BTN_SWITCH_WARNING = (
     "released: this command injects through the %s one, and only the device "
     "that pressed a button can release it")
 
+# The same two, for a command that NAMED a sink it then could not have. The
+# command fails -- `--vkbd off` on a session with no /dev/uinput is asking for
+# a device that is not there -- but the hold must not survive it. Measured on
+# sway with /dev/uinput root-only: `--vkbd on mousedown 1` then `--vkbd off
+# mouseup 1` reported the uinput error and left the LEFT BUTTON DOWN on the
+# virtual pointer, which is a drag that outlives the command that failed. The
+# release has to happen on the way out of the failure, not after it.
+SINK_GONE_WARNING = (
+    "the keys wdotool was holding on the %s keyboard (%s) were released: "
+    "this command asked for the %s one, which cannot be used, and a key "
+    "cannot be left down on a keyboard nothing is going to type through")
+BTN_GONE_WARNING = (
+    "the mouse buttons wdotool was holding on the %s pointer (%s) were "
+    "released: this command asked for the %s one, which cannot be used, and "
+    "a button cannot be left down on a pointer nothing is going to inject "
+    "through")
+
 # Names for that warning, one per _Daemon._BTN entry.
 _BTN_LABELS = {uinput.BTN_LEFT: "left", uinput.BTN_MIDDLE: "middle",
                uinput.BTN_RIGHT: "right", uinput.BTN_SIDE: "side",
@@ -735,9 +752,35 @@ class _Daemon:
 
     def _keyboard(self, warnings=None, mode=None):
         """(device, is_virtual) for one typing op -- see THE POLICY above."""
-        dev, virtual = self._pick_keyboard(warnings, mode)
+        try:
+            dev, virtual = self._pick_keyboard(warnings, mode)
+        except Exception:
+            # The sink this command named is unusable. Whatever we are
+            # holding is held on the OTHER one, and _own_sink() -- the thing
+            # that releases it -- is below the raise. So it never ran, and
+            # `--vkbd off keyup shift` on a session with no /dev/uinput left
+            # shift down on the virtual keyboard for the daemon's life. Let
+            # go of it here, then report why the sink is unusable.
+            self._release_named_sink(mode, warnings)
+            raise
         self._own_sink(virtual, warnings)
         return dev, virtual
+
+    def _named_sink(self, mode):
+        """Which sink `--vkbd` names outright: True virtual, False kernel,
+        None for `auto` (which names neither, and whose failure means neither
+        sink exists -- so there is nothing left that could release a hold)."""
+        return {"on": True, "off": False}.get(self._vkbd_setting(mode))
+
+    def _release_named_sink(self, mode, warnings):
+        """Let go of keys and buttons held on the sink a failed command was
+        switching AWAY from. Both halves: `--vkbd` is one switch, so one
+        failed command can strand one of each."""
+        want = self._named_sink(mode)
+        if want is None:
+            return
+        self._own_sink(want, warnings, gone=True)
+        self._own_pointer(want, warnings, gone=True)
 
     def _pick_keyboard(self, warnings=None, mode=None):
         mode = self._vkbd_setting(mode)
@@ -787,7 +830,7 @@ class _Daemon:
         self._xkb_say("vkbd", VKBD_CHOSE_WARNING % why, warnings)
         return dev, True
 
-    def _own_sink(self, virtual: bool, warnings=None):
+    def _own_sink(self, virtual: bool, warnings=None, gone: bool = False):
         """Make `self.down` describe the sink that is about to type.
 
         The kernel device and the virtual keyboard are separate devices with
@@ -811,7 +854,8 @@ class _Daemon:
                 except (OSError, vkbd.VkbdError):
                     break     # that device is gone; so are its keys
             self._flush_quietly(old)
-            self._xkb_print(SINK_SWITCH_WARNING % (
+            self._xkb_print((SINK_GONE_WARNING if gone
+                             else SINK_SWITCH_WARNING) % (
                 "virtual" if self._down_virtual else "kernel",
                 ", ".join(_MOD_LABELS.get(c, "keycode %d" % c) for c in codes),
                 "kernel" if self._down_virtual else "virtual"), warnings)
@@ -916,7 +960,11 @@ class _Daemon:
 
     def _pointer_sink(self, warnings=None, mode=None):
         """(sink, is_virtual) for one pointer op -- see THE POLICY above."""
-        sink, virtual = self._pick_pointer(warnings, mode)
+        try:
+            sink, virtual = self._pick_pointer(warnings, mode)
+        except Exception:
+            self._release_named_sink(mode, warnings)   # see _keyboard()
+            raise
         self._own_pointer(virtual, warnings)
         return sink, virtual
 
@@ -966,7 +1014,7 @@ class _Daemon:
         self._xkb_say("vptr", VPTR_CHOSE_WARNING % why, warnings)
         return vp, True
 
-    def _own_pointer(self, virtual: bool, warnings=None):
+    def _own_pointer(self, virtual: bool, warnings=None, gone: bool = False):
         """Make `self.btns` describe the pointer that is about to inject.
 
         The exact shape of _own_sink(), and it exists for the exact defect
@@ -990,7 +1038,8 @@ class _Daemon:
                 except (OSError, vptr.VptrError):
                     break     # that device is gone; so are its buttons
             self._flush_quietly(old)
-            self._xkb_print(BTN_SWITCH_WARNING % (
+            self._xkb_print((BTN_GONE_WARNING if gone
+                             else BTN_SWITCH_WARNING) % (
                 "virtual" if self._btns_virtual else "kernel",
                 ", ".join(_BTN_LABELS.get(c, "button %d" % c) for c in codes),
                 "kernel" if self._btns_virtual else "virtual"), warnings)
@@ -1121,7 +1170,12 @@ class _Daemon:
             self._flush(sink)
             return
         self.px, self.py = tx, ty
-        self.pos_known = True
+        # NOT pos_known: a delta applied to a position we never knew is a
+        # guess, and B6's rule is that a guess is never reported as known.
+        # (A warp above is a different matter -- it puts the pointer where it
+        # says it does, so it may claim to know.) Where the position WAS
+        # known, relative motion keeps it: exact on the protocol path, and
+        # the model the kernel path has always kept.
         sink.move(dx, dy)
         self._flush(sink)
 
@@ -1628,8 +1682,12 @@ class _Daemon:
         return None
 
     def op_key(self, spec, direction, delay_ms, clearmods, session=None,
-               layout_mode=None, vkbd_mode=None):
-        warnings = []
+               layout_mode=None, vkbd_mode=None, warnings=None):
+        # The caller's list when it passed one: these ops can raise after
+        # _keyboard() has already let go of a hold (see handle()), and a
+        # warnings list local to this frame takes that line down with it.
+        if warnings is None:
+            warnings = []
         dev, vk = self._keyboard(warnings, vkbd_mode)
         # Outside the clear/restore window: reading the compositor's keymap
         # is a query, and holding the modifiers released across it buys
@@ -1659,8 +1717,12 @@ class _Daemon:
         return warnings + warns
 
     def op_type(self, text, delay_ms, clearmods, session=None,
-                layout_mode=None, vkbd_mode=None):
-        warnings = []
+                layout_mode=None, vkbd_mode=None, warnings=None):
+        # The caller's list when it passed one: these ops can raise after
+        # _keyboard() has already let go of a hold (see handle()), and a
+        # warnings list local to this frame takes that line down with it.
+        if warnings is None:
+            warnings = []
         dev, vk = self._keyboard(warnings, vkbd_mode)
         layout = self._typing_layout(vk, warnings, layout_mode)  # see op_key
         lname = "US" if layout is None else layout.name
@@ -1699,16 +1761,25 @@ class _Daemon:
 
     # -- protocol ----------------------------------------------------------
 
-    def handle(self, req, session=None) -> dict:
+    def handle(self, req, session=None, warnings=None) -> dict:
         """One request. `session` is the per-connection scratch dict (a
         warning that must be said once per command belongs there, not in the
-        daemon: the daemon outlives every client)."""
+        daemon: the daemon outlives every client).
+
+        `warnings` is the caller's own list, for the case where this RAISES:
+        a command that fails can still have changed something the user has to
+        know about -- letting go of a button or a key it was holding on a
+        sink the command asked to switch away from (_release_named_sink) --
+        and an error reply that dropped those lines said nothing at all about
+        it. serve_client() passes one in and puts what is in it on the error
+        response."""
         if not isinstance(req, dict):
             return {"ok": False, "error": f"invalid request: {req!r} (expected an object)"}
         if session is None:
             session = {}
         op = req.get("op")
-        warnings: list[str] = []
+        if warnings is None:
+            warnings = []
         with self.lock:
             if op == "type":
                 with self._vk_guard():
@@ -1717,7 +1788,8 @@ class _Daemon:
                         _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
                         req.get("clearmods", False), session,
                         _layout_mode(req.get("layout_mode")),
-                        _vkbd_mode(req.get("vkbd_mode")))
+                        _vkbd_mode(req.get("vkbd_mode")),
+                        warnings=warnings)
             elif op == "key":
                 with self._vk_guard():
                     warnings = self.op_key(
@@ -1726,7 +1798,8 @@ class _Daemon:
                         _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
                         req.get("clearmods", False), session,
                         _layout_mode(req.get("layout_mode")),
-                        _vkbd_mode(req.get("vkbd_mode")))
+                        _vkbd_mode(req.get("vkbd_mode")),
+                        warnings=warnings)
             elif op == "clear_modifiers":
                 with self._vk_guard():
                     held = self.op_clear_modifiers(warnings, session)
@@ -1808,10 +1881,16 @@ class _Daemon:
                     # Catch-all per-request boundary: a malformed request (bad
                     # JSON, wrong types, bare non-object) must produce an
                     # {"ok":false} reply, never kill the connection thread.
+                    warnings: list[str] = []
                     try:
-                        resp = self.handle(json.loads(line), session)
+                        resp = self.handle(json.loads(line), session, warnings)
                     except Exception as e:
                         resp = {"ok": False, "error": str(e) or repr(e)}
+                        # ...and whatever the failed command already changed
+                        # (see handle()). Added only when there is something
+                        # to say, so an ordinary error stays byte-identical.
+                        if warnings:
+                            resp["warnings"] = warnings
                 conn.sendall((json.dumps(resp) + "\n").encode())
         except OSError:
             pass
