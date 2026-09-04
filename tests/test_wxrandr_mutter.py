@@ -974,6 +974,32 @@ class Apply(MutterCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(self.lms()[1][:2], (1920, 0))
 
+    def test_same_as_keeps_the_primary_the_user_chose(self):
+        """Mutter flags the primary *logical monitor*, not a connector, so a
+        mirror group has several members and no order that means anything --
+        it is the order the group was built in.  Taking the first member
+        moved the primary onto whichever output happened to lead, silently
+        undoing a --primary the user had set on the other one."""
+        self.mock.mutter = two_monitors()
+        code, _out, err = self.run_cli("--output", "DP-1", "--primary")
+        self.assertEqual((code, err), (0, ""))
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected primary ", out)
+        code, _out, err = self.run_cli("--output", "DP-1", "--mode",
+                                       "1920x1080", "--same-as", "eDP-1")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(len(self.lms()), 1)          # one mirror group
+        code, out, _err = self.run_cli()
+        self.assertIn("DP-1 connected primary 1920x1080+0+0 ", out)
+        self.assertNotIn("eDP-1 connected primary", out)
+        code, out, _err = self.run_cli("--listmonitors")
+        self.assertIn(" +*DP-1 ", out)
+        # ...and a primary that leaves the group falls back to a member
+        code, _out, err = self.run_cli("--output", "DP-1", "--off")
+        self.assertEqual((code, err), (0, ""))
+        code, out, _err = self.run_cli()
+        self.assertIn("eDP-1 connected primary ", out)
+
     def test_same_as_with_different_modes_is_fatal(self):
         self.mock.mutter = two_monitors()
         before = self.lms()

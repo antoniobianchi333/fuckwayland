@@ -396,7 +396,20 @@ class MutterOutputs:
             for spec in lm[5]:
                 lm_of[spec[0]] = lm
         primary_lm = self._primary_lm(logical, lm_of)
-        self.primary = primary_lm[5][0][0] if primary_lm is not None else None
+        # Which CONNECTOR is primary, out of the primary logical monitor's
+        # members.  A mirror group has several and Mutter names none of them
+        # -- the flag is on the group -- so its member order decides, and
+        # that order is the order the group was built in, not a choice
+        # anybody made.  Mirroring A onto B therefore used to move the
+        # primary to whichever came first, silently overwriting a --primary
+        # the user had set on the other member.  Keep the user's choice
+        # whenever it is still in the group.
+        if primary_lm is None:
+            self.primary = None
+        else:
+            members = [spec[0] for spec in primary_lm[5]]
+            self.primary = (state.primary if state.primary in members
+                            else members[0])
         self.scales = {}
         self.underscan = {}
         current_ids = {}
