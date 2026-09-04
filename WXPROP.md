@@ -184,9 +184,11 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   unattainable in principle; `fmt._oob_thunk` prints a stable value and
   `format_icons` stops at the budget. Real `xprop -id 99999999999999999999`
   segfaults; we report the id.
-* **Click-to-select** (no `-root`/`-id`/`-name`) is the bridge's
-  `SelectWindow` with the stderr hint: focus the target window (a
-  different one) and wxprop continues with it on whichever plane it lives.
+* **Click-to-select** (no `-root`/`-id`/`-name`) is the backend's
+  `select_window()` with a stderr hint that follows the backend: *click* the
+  target window on GNOME (the bridge's grab) and KDE (KWin's picker), *focus*
+  it on sway, whose IPC has no picker. wxprop continues with the window it
+  answers, on whichever plane it lives.
   **`-name`** keeps xprop's semantics first — pre-order `QueryTree` walk
   from the X root, exact `WM_NAME` match, frames included (Mutter's
   `mutter-x11-frames` windows may carry the client's title, bug-for-bug)

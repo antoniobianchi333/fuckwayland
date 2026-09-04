@@ -40,6 +40,11 @@ UI_SET_EVBIT = 0x40045564
 UI_SET_KEYBIT = 0x40045565
 UI_SET_RELBIT = 0x40045566
 UI_SET_ABSBIT = 0x40045567
+# UI_GET_SYSNAME(len) = _IOR('U', 44, len): the "eventN" the kernel gave our
+# device. Linux 4.4+; older kernels answer EINVAL and the caller falls back to
+# matching on the device name.
+_UI_SYSNAME_LEN = 32
+UI_GET_SYSNAME = 0x8000552C | (_UI_SYSNAME_LEN << 16)
 
 BUS_USB = 0x03
 
@@ -99,6 +104,18 @@ class UinputDevice:
     def key(self, code: int, down: bool):
         self.emit(EV_KEY, code, 1 if down else 0)
         self.syn()
+
+    def sysname(self) -> str:
+        """Our device's input node name ("event12"), or "" when the kernel
+        will not say. Used to keep the key-state reader off our own device."""
+        if self.fake or self.fd < 0:
+            return ""
+        buf = bytearray(_UI_SYSNAME_LEN)
+        try:
+            fcntl.ioctl(self.fd, UI_GET_SYSNAME, buf)
+        except OSError:
+            return ""
+        return buf.split(b"\0")[0].decode("utf-8", "replace")
 
     def close(self):
         if self.fd < 0:

@@ -24,34 +24,52 @@ os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
 
 
+def _cm(clearmods):
+    """A "+clearmods" tail on the recorded call, so a test can see that the
+    flag travelled *with* the injection instead of as a clear call, an
+    injection and a restore call around it (three requests, two gaps another
+    process can inject into)."""
+    return ("+clearmods",) if clearmods else ()
+
+
 class FakeDaemon:
-    def __init__(self):
+    def __init__(self, held=()):
         self.calls = []
         self.pos = (0, 0)
+        # What the daemon reports it was holding when clear_modifiers() is
+        # called on its own -- the frozen API no command uses any more.
+        self.held = list(held)
 
-    def type_text(self, text, delay_ms):
-        self.calls.append(("type", text, delay_ms))
+    def type_text(self, text, delay_ms, clearmods=False):
+        self.calls.append(("type", text, delay_ms) + _cm(clearmods))
+
+    def clear_modifiers(self):
+        self.calls.append(("clearmods",))
+        return list(self.held)
+
+    def restore_modifiers(self, held):
+        self.calls.append(("restoremods", list(held)))
 
     def key(self, spec, direction, delay_ms, clearmods):
         self.calls.append(("key", spec, direction, delay_ms, clearmods))
 
-    def mousemove_abs(self, x, y):
-        self.calls.append(("abs", x, y))
+    def mousemove_abs(self, x, y, clearmods=False):
+        self.calls.append(("abs", x, y) + _cm(clearmods))
         self.pos = (x, y)
 
-    def mousemove_rel(self, dx, dy):
-        self.calls.append(("rel", dx, dy))
+    def mousemove_rel(self, dx, dy, clearmods=False):
+        self.calls.append(("rel", dx, dy) + _cm(clearmods))
         self.pos = (self.pos[0] + dx, self.pos[1] + dy)
 
     def seed_pointer(self, x, y):
         self.calls.append(("seed", x, y))
         self.pos = (x, y)
 
-    def button(self, btn, down):
-        self.calls.append(("button", btn, down))
+    def button(self, btn, down, clearmods=False):
+        self.calls.append(("button", btn, down) + _cm(clearmods))
 
-    def click(self, btn, repeat, delay_ms):
-        self.calls.append(("click", btn, repeat, delay_ms))
+    def click(self, btn, repeat, delay_ms, clearmods=False):
+        self.calls.append(("click", btn, repeat, delay_ms) + _cm(clearmods))
 
     def pointer(self):
         return self.pos
@@ -78,9 +96,9 @@ class FakeBackend(WindowBackend):
         self.activated.append(wid)
 
 
-def make_ctx(wins=()):
+def make_ctx(wins=(), held=()):
     ctx = Context()
-    ctx._daemon = FakeDaemon()
+    ctx._daemon = FakeDaemon(held)
     ctx._backend = FakeBackend(wins)
     return ctx
 
@@ -303,11 +321,19 @@ class TestType(unittest.TestCase):
             input_cmds.cmd_type(ctx, [])
 
     def test_clearmodifiers(self):
-        ctx = make_ctx()
+        # One request: the daemon clears, types and puts back what it was
+        # holding without letting go of its injection lock. Sending a clear
+        # call and a restore call around the injection instead would let a
+        # second wdotool process inject with the modifiers down.
+        ctx = make_ctx(held=[29])
         input_cmds.cmd_type(ctx, ["--clearmodifiers", "hi"])
-        self.assertEqual(ctx._daemon.calls[0][0], "key")
-        self.assertEqual(ctx._daemon.calls[0][2], "up")
-        self.assertEqual(ctx._daemon.calls[1], ("type", "hi", 12))
+        self.assertEqual(ctx._daemon.calls,
+                         [("type", "hi", 12, "+clearmods")])
+
+    def test_without_the_flag_nothing_is_cleared(self):
+        ctx = make_ctx(held=[29])
+        input_cmds.cmd_type(ctx, ["hi"])
+        self.assertEqual(ctx._daemon.calls, [("type", "hi", 12)])
 
     def test_no_stack_default(self):
         # unlike `key`, `type` ignores the window stack (cmd_type.c)
@@ -341,11 +367,11 @@ class TestClick(unittest.TestCase):
             input_cmds.cmd_click(ctx, [])
 
     def test_window_implies_clearmodifiers(self):
-        ctx = make_ctx([Window(id=9)])
+        ctx = make_ctx([Window(id=9)], held=[56])
         input_cmds.cmd_click(ctx, ["--window", "9", "1"])
         self.assertEqual(ctx._backend.activated, [9])
-        self.assertEqual(ctx._daemon.calls[0][2], "up")  # modifier clear
-        self.assertEqual(ctx._daemon.calls[1], ("click", 1, 1, 100))
+        self.assertEqual(ctx._daemon.calls,
+                         [("click", 1, 1, 100, "+clearmods")])
 
     def test_ignores_stack(self):
         ctx = make_ctx([Window(id=9)])
@@ -633,6 +659,40 @@ class TestStrtonum(unittest.TestCase):
         ctx = make_ctx()
         input_cmds.cmd_key(ctx, ["--delay", "0b101", "a"])
         self.assertEqual(ctx._daemon.calls[-1][3], 0)
+
+class TestClearModifiersIsOneRequest(unittest.TestCase):
+    """Every command that takes --clearmodifiers sends it *with* the
+    injection. The clear/restore pair on DaemonClient still exists (frozen
+    API) but no command uses it: as two extra round trips it leaves gaps in
+    which another wdotool process can inject, with the modifiers released or
+    across the restore."""
+
+    CASES = [
+        ("cmd_type", ["--clearmodifiers", "hi"], ("type", "hi", 12, "+clearmods")),
+        ("cmd_click", ["--clearmodifiers", "1"], ("click", 1, 1, 100, "+clearmods")),
+        ("cmd_mousedown", ["--clearmodifiers", "1"], ("button", 1, True, "+clearmods")),
+        ("cmd_mouseup", ["--clearmodifiers", "1"], ("button", 1, False, "+clearmods")),
+        ("cmd_mousemove", ["--clearmodifiers", "10", "20"], ("abs", 10, 20, "+clearmods")),
+        ("cmd_mousemove_relative", ["--clearmodifiers", "3", "4"], ("rel", 3, 4, "+clearmods")),
+    ]
+
+    def test_the_flag_travels_with_the_injection(self):
+        for name, argv, expected in self.CASES:
+            ctx = make_ctx(held=[29])
+            getattr(input_cmds, name)(ctx, list(argv))
+            calls = ctx._daemon.calls
+            self.assertIn(expected, calls, name)
+            self.assertNotIn(("clearmods",), calls, name)
+            self.assertEqual([c for c in calls if c[0] == "restoremods"], [], name)
+
+    def test_without_the_flag_the_call_is_plain(self):
+        for name, argv, expected in self.CASES:
+            ctx = make_ctx(held=[29])
+            getattr(input_cmds, name)(ctx, [a for a in argv
+                                            if a != "--clearmodifiers"])
+            self.assertIn(expected[:-1], ctx._daemon.calls, name)
+            self.assertNotIn(("clearmods",), ctx._daemon.calls, name)
+
 
 if __name__ == "__main__":
     unittest.main()

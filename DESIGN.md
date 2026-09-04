@@ -175,7 +175,8 @@ specified`.
 **Per tool.** `wdotool`, `wwmctl` and `wxrandr` exec, always. `wdotool` has no
 native X11 option worth having (no XTEST, no `XKeysymToKeycode`, no `--sync`
 on X events; uinput would inject, but `getmouselocation` would report our
-tracked pointer and `--clearmodifiers` still could not read state — the
+tracked pointer and `--clearmodifiers` could clear only what uinput
+itself holds, missing anything the X server or XTEST put there — the
 documented Wayland approximations on a platform that has none). `wxrandr`:
 the X server's RandR is the truth, and our Mutter backend on GNOME-on-Xorg is
 at best a second opinion. `wwmctl` *does* carry an X11 wire client
@@ -292,13 +293,20 @@ capability gaps in a detected backend: raise CmdError.
 class DaemonClient:
     @classmethod
     def connect_or_spawn(cls) -> "DaemonClient": ...
-    def type_text(self, text: str, delay_ms: int): ...
+    def type_text(self, text: str, delay_ms: int, clearmods: bool = False): ...
     def key(self, spec: str, direction: str, delay_ms: int, clearmods: bool): ...
         # spec "ctrl+shift+t"; direction in {"press","down","up"}
-    def mousemove_abs(self, x: int, y: int): ...
-    def mousemove_rel(self, dx: int, dy: int): ...
-    def button(self, btn: int, down: bool): ...   # 1=L 2=M 3=R 4..7=wheel 8..12=side/extra/fwd/back/task
-    def click(self, btn: int, repeat: int, delay_ms: int): ...
+        # clearmods: release the modifiers, inject, press back the ones we held
+    def clear_modifiers(self) -> list: ...      # release them; -> the ones we held
+    def restore_modifiers(self, held): ...      # press those back
+        # kept for this API; no command uses the pair -- as two extra round
+        # trips it leaves gaps another process can inject into. Every
+        # injection op below carries `clearmods` instead and the daemon does
+        # clear/inject/restore under one hold of its lock.
+    def mousemove_abs(self, x: int, y: int, clearmods: bool = False): ...
+    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False): ...
+    def button(self, btn: int, down: bool, clearmods: bool = False): ...   # 1=L 2=M 3=R 4..7=wheel 8..12=side/extra/fwd/back/task
+    def click(self, btn: int, repeat: int, delay_ms: int, clearmods: bool = False): ...
     def pointer(self) -> tuple[int, int]: ...
     def seed_pointer(self, x: int, y: int): ...   # adopt the compositor's real pointer
     def geometry(self) -> tuple[int, int]: ...    # (w, h) of the full output layout
@@ -323,8 +331,29 @@ Daemon notes (B):
   (0x10081000+code) carry their own evdev code.
 - char → keycode: static US-QWERTY table (char → keycode, shifted?) whenever the
   session's active layout *is* plain US, and the reverse of the compositor's own
-  keymap otherwise (B13). Unreachable chars: stderr warning, skip. `clearmods`:
-  inject key-up for all 8 modifier keys first.
+  keymap otherwise (B13). Unreachable chars: stderr warning, skip.
+- **`clearmods` (`--clearmodifiers`)**: inject key-up for all 8 modifier
+  keys, do the injection, then press back the ones **this daemon was holding**
+  (`self.down`), sampled with no ioctl and no re-read — clear, inject and
+  restore run under one hold of the injection lock, so there is no window in
+  which the answer can go stale and no gap for another process to inject into.
+  It is deliberately not more than that, for two kernel reasons measured live
+  on GNOME, KDE and sway: `input_handle_event()` **drops an `EV_KEY` release
+  for a code the emitting device does not hold**, so a key-up for a modifier
+  held on the user's own keyboard generates no event at all; and a key-*down*
+  we send stays ours, while Mutter and KWin reference-count key state across
+  the seat's devices, so the user's release of the same modifier leaves it
+  active with nothing left to clear it — a modifier stuck down for the rest of
+  the session. Pressing back a modifier we never held therefore restores
+  nothing and strands everything.
+  `keystate.py` (`EVIOCGKEY` on each `/dev/input/event*` that advertises
+  modifier keys and is not one of ours — `UI_GET_SYSNAME` on our own uinput
+  fds, plus a device-name check) is read **for the diagnostic only**: when a
+  foreign keyboard holds a modifier, say which, once per client connection,
+  rather than let a flag that cannot help look like it did nothing. That read
+  needs root (logind's `uaccess` ACL covers `/dev/uinput`, not keyboards);
+  without it the behaviour is identical and nothing is said.
+  `WDOTOOL_NO_KEYSTATE=1` forces that path for testing.
 - geometry: Wayland client via `wayland_mini` (wl_output geometry+mode; prefer
   zxdg_output logical size/position when advertised), with a 3s socket timeout so a
   wedged compositor falls back instead of hanging the daemon. Cache is the full
@@ -493,7 +522,11 @@ difference between "not logged in yet" and "no such window" for a script.
   Window id = node id. map/unmap = scratchpad show / move-to-scratchpad; minimize =
   move-to-scratchpad; raise/lower: warn no-op for tiled, focus for floating.
   Desktops = workspaces, 0-based for xdotool (workspace `num` - 1). `selectwindow` =
-  subscribe to window focus events, return the next focused window.
+  subscribe to window focus events, return the next focused window — knowingly
+  not xdotool's semantics (the window under the pointer at the next button
+  press): sway's IPC has no interactive picker, no pointer position and no way
+  to grab input from outside the compositor, so clicking the window that
+  already has focus does not end the wait. GNOME and KDE do click-to-select.
   `getmouselocation`'s window field: hit-test the daemon-tracked pointer against
   `list()` geometries (topmost/focused first).
 - **kwin**: `org.kde.kwin.Scripting.loadScript()` over `dbus_mini` — unprivileged
@@ -604,8 +637,15 @@ difference between "not logged in yet" and "no such window" for a script.
   MODAL warn+succeed (cosmetic, no Mutter setter); SHADED (observable, Mutter
   cannot shade), BELOW and anything else CmdError. Desktops = workspaces (dynamic
   workspaces count the trailing empty one;
-  `set_desktop_for_window -1` sticks). `selectwindow` = bridge `SelectWindow(0)`,
-  next focus change. Extras for wwmctl/wxprop: `views()` (xid, WM_CLASS
+  `set_desktop_for_window -1` sticks). `selectwindow` = bridge `SelectWindow(0)`
+  (bridge v2+, refused with a "reinstall it" message below that): a stage grab
+  in the extension, resolved by the next button press with the window under
+  the pointer, `.Cancelled` for Escape / its 5-minute cap / a caller that went
+  away, and `.Unsupported` for a second concurrent picker or a shell that is
+  already modal (the overview, a menu: `pushModal` refusing is a refusal, not
+  a reason to take a plain stage grab and hit-test against frame rects that
+  are not on screen) — all of them rc 1 with the reason. The D-Bus call has no
+  timeout — the extension always answers. Extras for wwmctl/wxprop: `views()` (xid, WM_CLASS
   instance/class, app_id, states), `workspaces()`, `x_info()` (gnome-shell's own
   DISPLAY/XAUTHORITY via the bridge, else `session.find_x_display/find_xauthority`),
   `events()` (bridge `WindowEvent` signals), `monitors()`, `real_pointer()`

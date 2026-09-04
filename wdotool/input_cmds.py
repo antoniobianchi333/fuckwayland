@@ -136,11 +136,14 @@ def _target_windows(ctx, window_arg):
     return ctx.resolve_windows(window_arg)
 
 
-_ALL_MOD_KEYSYMS = "Shift_L+Shift_R+Control_L+Control_R+Alt_L+Alt_R+Super_L+Super_R"
-
-
-def _clear_modifiers(ctx):
-    ctx.daemon().key(_ALL_MOD_KEYSYMS, "up", 0, False)
+# --clearmodifiers travels *with* the injection request (`clearmods=`), never
+# as a clear call, an injection and a restore call: the daemon does all three
+# under one hold of its injection lock, so a second wdotool process cannot
+# land an injection in between, with the modifiers down or across the
+# restore. What it can put back is what wdotool itself was holding -- see the
+# daemon's "modifiers around an injection" note for why a modifier held on a
+# physical keyboard can be neither released nor safely pressed back from
+# here; the daemon says so, once per command, when it can tell.
 
 
 # ---------------------------------------------------------------------------
@@ -307,13 +310,12 @@ def cmd_type(ctx, args):
         consumed += 1
 
     daemon = ctx.daemon()
+    clearmods = bool(opts.get("clearmodifiers"))
     for wid in _target_windows(ctx, window_arg):
         if wid is not None:
             _activate_settle(ctx, wid)
-        if opts.get("clearmodifiers"):
-            _clear_modifiers(ctx)
         for piece in data:
-            daemon.type_text(piece, delay)
+            daemon.type_text(piece, delay, clearmods=clearmods)
     return i + consumed
 
 
@@ -362,9 +364,7 @@ def cmd_click(ctx, args):
     for wid in _target_windows(ctx, window_arg):
         if wid is not None:
             _activate_settle(ctx, wid)
-        if clearmods:
-            _clear_modifiers(ctx)
-        daemon.click(button, repeat, delay)
+        daemon.click(button, repeat, delay, clearmods=clearmods)
     return i + 1
 
 
@@ -393,9 +393,7 @@ def _mouse_updown(ctx, args, default_name, down, noargs_msg):
     for wid in _target_windows(ctx, opts.get("window")):
         if wid is not None:
             _activate_settle(ctx, wid)
-        if opts.get("clearmodifiers"):
-            _clear_modifiers(ctx)
-        daemon.button(button, down)
+        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")))
     return i + 1
 
 
@@ -468,9 +466,7 @@ def cmd_mousemove(ctx, args):
         elif wid is not None:
             win = ctx.backend().find(wid)
             tx, ty = win.x + x, win.y + y
-        if opts.get("clearmodifiers"):
-            _clear_modifiers(ctx)
-        daemon.mousemove_abs(tx, ty)
+        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")))
         # --sync: our injected position is authoritative, nothing to wait for
     return i + consumed
 
@@ -510,14 +506,13 @@ def cmd_mousemove_relative(ctx, args):
         return i + 2
     if opts.get("polar"):
         x, y = _polar_to_xy(x, y, 0, 0)
-    if opts.get("clearmodifiers"):
-        _clear_modifiers(ctx)
     # B1/B6: move from where the pointer really is. On a compositor that can
     # be asked, this also decides pixel-exactness: the daemon then emits the
     # target as an absolute warp instead of REL events that libinput's
-    # acceleration curve would scale.
+    # acceleration curve would scale. Outside the clearmodifiers window: it
+    # is a query, not part of the injection.
     _pointer(ctx)
-    ctx.daemon().mousemove_rel(x, y)
+    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")))
     return i + 2
 
 

@@ -65,6 +65,10 @@ class _FakeWin:
 class _FakeSway:
     """Just enough of wdotool.backend_sway for the native plane."""
 
+    # sway waits for a focus change rather than a click; the hint follows the
+    # backend, not the tool (see wdotool.backend.WindowBackend).
+    select_window_hint = "focus the target window to select it"
+
     def __init__(self):
         self.foot = {
             "id": 6, "app_id": "footw", "name": "WL-Foot", "pid": 4242,

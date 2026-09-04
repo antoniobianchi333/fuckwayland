@@ -347,10 +347,14 @@ class Core:
                     return w
             return None
         if param_window == SELECT_WINDOW_MAGIC:
-            # real wmctrl shows a crosshair cursor; the closest we can do
-            # is say what the blocking wait (next focus change) is for
-            _warn("focus the target window to select it")
-            node = self.backend().select_window()
+            # real wmctrl shows a crosshair cursor; the closest we can do is
+            # say what the blocking wait is for -- which is not the same
+            # sentence on every backend (a click on GNOME and KDE, the next
+            # focus change on sway), so the backend supplies it.
+            b = self.backend()
+            _warn(getattr(b, "select_window_hint",
+                          "click the target window to select it"))
+            node = b.select_window()
             for w in self.windows():
                 if w.node_id == node:
                     return w
