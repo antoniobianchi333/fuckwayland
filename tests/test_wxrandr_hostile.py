@@ -156,6 +156,49 @@ class MinimumSize(FakeWlr):
         self.assertEqual(self.apply_count(), 1)
 
 
+class DryrunPrimary(FakeWlr):
+    """`--dryrun` documents itself as mutating nothing, and did mutate the
+    one thing wxrandr persists: the primary output.  cli set state.primary
+    from the stanzas *before* the dryrun branch, which then saved the state
+    file, so a dryrun's `--primary` stuck and the next --query named it."""
+
+    def state_bytes(self):
+        """What wxrandr persists, or b"" while it has had nothing to say."""
+        try:
+            with open(os.path.join(self.tmp, "wxrandr-state.json"), "rb") as f:
+                return f.read()
+        except FileNotFoundError:
+            return b""
+
+    def test_dryrun_primary_leaves_the_state_file_alone(self):
+        # a real run first, so the store exists and the comparison is about
+        # what a dryrun writes into it rather than about creating it
+        self.assertEqual(self.wxrandr("--output", "HEAD-1",
+                                      "--auto").returncode, 0)
+        before = self.state_bytes()
+        self.assertTrue(before)
+        p = self.wxrandr("--dryrun", "--output", "HEAD-1", "--primary")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.state_bytes(), before)
+        self.assertNotIn(" primary ", self.wxrandr("--query").stdout)
+
+    def test_dryrun_noprimary_leaves_it_alone_too(self):
+        self.assertEqual(self.wxrandr("--output", "HEAD-1",
+                                      "--primary").returncode, 0)
+        self.assertIn(" primary ", self.wxrandr("--query").stdout)
+        before = self.state_bytes()
+        p = self.wxrandr("--dryrun", "--noprimary")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.state_bytes(), before)
+        self.assertIn(" primary ", self.wxrandr("--query").stdout)
+
+    def test_a_real_run_still_sets_it(self):
+        self.assertEqual(self.wxrandr("--output", "HEAD-1",
+                                      "--primary").returncode, 0)
+        self.assertIn("HEAD-1 connected primary ",
+                      self.wxrandr("--query").stdout)
+
+
 class DpiFallback(FakeWlr):
     """`--dpi 0` (and nan, and a negative one) reached a plain division in
     the verbose/dryrun screen line.  Real xrandr prints a line; we aborted."""

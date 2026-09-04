@@ -1175,6 +1175,10 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
     _check_screen_size(opts, targets, dims, pos)
     if opts.verbose:
         _print_plan(opts, outputs, targets, dims, pos)
+    # --dryrun mutates nothing, the primary included: the two assignments
+    # below run first so Mutter's verify sees the primary the real call would
+    # send, and the dryrun branch puts this back before it saves.
+    primary_before = sess.state.primary
     if opts.noprimary:
         if (sess.backend == "mutter" and sess.mutter.primary
                 and not any(s.primary for s in opts.stanzas)):
@@ -1203,11 +1207,14 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
             # KWin has no verify request, and building a configuration
             # without applying it changes nothing, so this runs the plan
             # client-side only (mode resolution, the last-output refusal).
-            # Nothing is sent, so nothing is claimed about the compositor --
-            # including the primary: a --dryrun that recorded one would make
-            # the next --query name a primary KWin was never asked for.
             sess.kwin.verify(sess.state, targets)
-            sess.state.primary = sess.kwin.primary
+        # Nothing was sent, so nothing may be claimed about the compositor --
+        # including the primary: a --dryrun that recorded one would make the
+        # next --query name a primary the compositor was never asked for.
+        # (Mutter and KWin re-sync this from the compositor in snapshot(), so
+        # putting back what the run started with is not the same as clearing
+        # it -- their own primary survives, the request does not.)
+        sess.state.primary = primary_before
         sess.state.save()
         return outputs
     for cmd in filter_cmds:
