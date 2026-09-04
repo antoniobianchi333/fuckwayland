@@ -45,7 +45,10 @@ There is no X server to lie to, so wdotool goes underneath instead:
   keyboard, a relative mouse, and an absolute tablet (the same shape QEMU uses, which
   every compositor maps across the whole output layout). The compositor can't tell it
   from real hardware, so this works on GNOME, KDE, sway, anything. That's also why it
-  needs root — or, if you'd rather not: one udev rule (`sudo sh
+  needs root — on wlroots, `type` and `key` can skip that entirely through
+  `zwp_virtual_keyboard_v1` (see [Typing with no privilege at
+  all](#typing-with-no-privilege-at-all---vkbd)), but the pointer cannot — or,
+  if you'd rather not: one udev rule (`sudo sh
   gnome/install-bridge.sh --udev` installs `gnome/60-fuckwayland-uinput.rules`,
   which tags `/dev/uinput` for the logged-in user's ACL — no group, nobody
   else) and it runs as a plain user, no relogin needed. The rule lives under
@@ -592,7 +595,7 @@ Wayland forces a few honest approximations:
 |---|---|
 | `key`/`type` `--window` | activates the target first, then injects (no XSendEvent) |
 | `getmouselocation` | asks the compositor where the pointer is (GNOME, KDE); falls back to the injected position where it cannot (sway, wlroots — neither IPC has a pointer query) |
-| `--clearmodifiers` | clears and restores the modifiers **wdotool itself** holds (from `keydown`). One held on a physical keyboard cannot be cleared through uinput at all — the kernel drops a key-up from a device that does not hold the key — and pressing it back afterwards would leave it stuck, so it is left alone; wdotool names it if it may read `/dev/input/event*` (root), and is silent, with identical behaviour, if it may not |
+| `--clearmodifiers` | clears and restores the modifiers **wdotool itself** holds (from `keydown`). One held on a physical keyboard cannot be cleared through uinput at all — the kernel drops a key-up from a device that does not hold the key — and pressing it back afterwards would leave it stuck, so it is left alone; wdotool names it if it may read `/dev/input/event*` (root), and is silent, with identical behaviour, if it may not. On the virtual-keyboard path (see below) there is no such gap: modifier state there is per device, so a modifier on a real keyboard does not reach our keystrokes in the first place |
 | `type` non-US chars | typed through the session's active layout (see below); characters it cannot produce warn and skip |
 | `search --role` | roles don't exist on Wayland; matches against empty string |
 | `windowraise`/`lower` | floating windows only (tiling has no z-order) |
@@ -702,10 +705,85 @@ actually sent; `--info` summarises it (groups, active group, whether the US
 bypass takes it). For "what do I press for this character?" the documented
 command is `wdotool keys explain`, below.
 
-sway and KWin implement `zwp_virtual_keyboard_v1`, which would let wdotool
-upload a keymap of its own and skip the reverse lookup entirely on those two.
-That is a separate change and deliberately not part of this one: it needs a
-second injection path beside uinput, and it does nothing for GNOME.
+### Typing with no privilege at all (`--vkbd`)
+
+There is a Wayland protocol built for exactly the problem above:
+`zwp_virtual_keyboard_v1` lets a client upload **its own** keymap and send
+keycodes against it, so no reverse lookup is needed — the keymap that reads
+our keycodes is the one we just uploaded. wdotool uploads a captured plain-US
+keymap, which is precisely the one its built-in character table was written
+for.
+
+Two things about it are measured, not assumed:
+
+* **sway/wlroots implements it, and does not restrict it.** An ordinary
+  session client — no root, no group, no device access, no udev rule —
+  creates a virtual keyboard and types. **KWin 6.6.6 does not implement it at
+  all** (the interface appears nowhere in Plasma's libraries), and neither
+  does Mutter. So this buys nothing on GNOME or KDE, and the reverse map
+  above stays exactly where it is for both.
+* On sway that makes the whole keyboard half of wdotool — `key`, `keydown`,
+  `keyup`, `type` — need **no privilege whatsoever**, where today it needs
+  root because `/dev/uinput` there is `crw------- root root` with no `uaccess`
+  ACL. The **pointer** half does not follow: this protocol carries no pointer,
+  no buttons and no scroll, so `click`, `mousemove`, `mousemove_relative`,
+  `mousedown` and `mouseup` still go through `/dev/uinput` and still need root
+  or the udev rule. `search`, the window commands, `getdisplaygeometry` and
+  `getactivewindow` never needed either.
+
+**When it is used.** Only when the kernel keyboard cannot be opened *and* the
+compositor implements the protocol. Where `/dev/uinput` works — as root, or
+with the udev rule, or on GNOME and KDE — nothing changes at all: the same
+kernel device types the same events it always did. The protocol is not free
+where it exists (the compositor hands the focused application *our* keymap
+ahead of our first key and the session's keymap back afterwards, so each
+injection makes that application recompile its keymap twice), so it is used
+where it turns a hard failure into working keystrokes, and not to replace
+something that already works.
+
+```console
+$ wdotool type 'hello'              # as a plain user on sway: works, no root
+$ wdotool click 1                   # ... but this still says: run it as root
+$ wdotool --vkbd on type 'hello'    # force the protocol (error if absent)
+$ wdotool --vkbd off type 'hello'   # force /dev/uinput, whatever is offered
+```
+
+| | |
+|---|---|
+| `--vkbd auto` | the default: `/dev/uinput`, and the protocol only where there is no usable `/dev/uinput` |
+| `--vkbd on` | always the protocol; a compositor that does not implement it is an error, never a silent fallback |
+| `--vkbd off` | always `/dev/uinput`, including its "run it as root" error |
+| `WDOTOOL_VKBD=auto\|on\|off` | the same, for the daemon; the flag beats it |
+
+**What it costs.** The keymap wdotool uploads is a plain US one, so the
+characters this path can type are the characters a US keyboard has. On a
+German session the kernel path reaches `ü` through the reverse map and this
+one does not — it warns and skips, as it does for any character the active
+layout cannot produce. Generating a keymap that holds exactly the characters
+being typed would fix that and is not possible yet: a keymap wdotool
+synthesises itself *compiles* (the compositor hands it back to the focused
+client) and then delivers no key events at all — measured twice, unexplained.
+Until that is understood the keymap is a captured one, uploaded byte for
+byte. Where `/dev/uinput` is open, none of this applies: the kernel path and
+its reverse map are still what runs.
+
+On this path `--layout` has nothing to decide: the character table is the
+built-in US one by construction, because the keymap being read is the one
+wdotool uploaded. `--layout us` therefore describes what already happens, and
+`--layout xkb` — "use the *session's* keymap" — says so in one line and is
+ignored; use `--vkbd off` if you want the session's keymap and the kernel
+device. `--clearmodifiers` is the other way round: it is *more* honest here
+than on the kernel path, because the modifier state that applies to our keys
+is the mask we send and nothing else. A modifier held on a real keyboard
+provably does not reach these keystrokes, so there is nothing wdotool cannot
+clear and nothing to warn about.
+
+Keys held across commands still work (`keydown ctrl` then `type c` then
+`keyup ctrl`): the daemon holds one connection and one virtual keyboard for
+its life, which it has to — a compositor releases whatever a client was
+holding the moment that client disconnects. If the compositor restarts, the
+keyboard, the uploaded keymap and anything held go with it; the command in
+flight fails with one line and the next one reconnects.
 
 ### Which key was that? — `wdotool keys`
 
@@ -1088,6 +1166,9 @@ what it is, who gets it, and what is not defended against.
 **What the tools do by design.** `wdotool` injects keystrokes and pointer
 events as a kernel-level virtual device, which every application — your
 terminal, your password prompt, the lock screen — receives as real hardware.
+Keystrokes have a second route on wlroots, `zwp_virtual_keyboard_v1`, which
+reaches the same places (measured: with `swaylock` holding the session, the
+keys go to the lock surface) and is not a kernel device at all.
 `wwmctl`, `wxprop` and `wxrandr` read and change window and display state
 through the compositor. Anything you can do at the keyboard, a script running
 as you can do through these tools; that is the whole point, and it is not a
@@ -1110,7 +1191,21 @@ vulnerability.
   nobody else: no group, no standing channel. The grant is checked at
   `open()`, so the daemon re-checks it before every injection and destroys
   its devices when the seat moves to another session; a user who switches
-  away therefore stops being able to type into the session they left.
+  away therefore stops being able to type into the session they left. That is
+  about the *kernel* device, which is global to the machine — on wlroots the
+  Wayland route still works while the seat is elsewhere, because it reaches
+  only the compositor whose socket it connected to, which is your own.
+* **`zwp_virtual_keyboard_v1` on wlroots grants nothing that was not
+  already granted**, and that is the note. sway advertises the protocol to
+  **every client of your Wayland socket** and restricts it to none: any of
+  them could already upload a keymap and type as you, with or without us.
+  wdotool installs nothing to use it and asks nobody for permission — it is
+  the compositor's grant, to everything that can open your compositor's
+  socket, which is the same-uid boundary below. Two consequences worth
+  spelling out: on sway, typing needs neither root nor the udev rule (the
+  pointer still needs one of them), and the lock-screen note below applies to
+  this route as much as to the kernel one. Mutter and KWin 6.6.6 do not
+  implement the protocol, so nothing changes there.
 * **KDE needs nothing installed**, which is itself the note: any client of a
   Plasma session bus can already load a script into KWin, with or without us.
 * **Running as root** (`sudo wdotool`) is the alternative to the udev rule.

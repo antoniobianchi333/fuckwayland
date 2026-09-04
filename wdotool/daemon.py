@@ -27,7 +27,7 @@ import threading
 import time
 import traceback
 
-from wdotool import keymap, keystate, uinput, xkbmap
+from wdotool import keymap, keystate, uinput, vkbd, xkbmap
 from wdotool.ctx import CmdError
 
 # Per-euid log path: /tmp is shared, and a root-owned log must not break (or
@@ -73,19 +73,30 @@ def _text(val, what: str) -> str:
 _LAYOUT_MODES = ("us", "fixed", "auto", "xkb")
 
 
-def _layout_mode(val, what: str = "layout_mode"):
-    """Validate a request's `layout_mode`. The CLI already screens it, but the
-    socket is a trust boundary and _layout() lower-cases whatever it is given:
-    an unknown name must be a rejected request, not a silent `auto`."""
+def _mode_field(val, what: str, valid):
+    """Validate one optional mode field. The CLI already screens these, but
+    the socket is a trust boundary and the daemon lower-cases whatever it is
+    given: an unknown name must be a rejected request, not a silent default."""
     if val is None:
         return None
     if not isinstance(val, str):
         raise RuntimeError(f"invalid {what}: {val!r} (expected a string)")
     mode = val.strip().lower()
-    if mode not in _LAYOUT_MODES:
+    if mode not in valid:
         raise RuntimeError(
-            f"invalid {what}: {val!r} (valid: " + ", ".join(_LAYOUT_MODES) + ")")
+            f"invalid {what}: {val!r} (valid: " + ", ".join(valid) + ")")
     return mode
+
+
+def _layout_mode(val, what: str = "layout_mode"):
+    return _mode_field(val, what, _LAYOUT_MODES)
+
+
+def _vkbd_mode(val, what: str = "vkbd_mode"):
+    """`vkbd_mode` on the wire (VKBD_MODES, defined with the policy below).
+    WDOTOOL_VKBD is read separately and stays lenient: a typo in a shell
+    profile must not stop the tool typing, but a request is a request."""
+    return _mode_field(val, what, VKBD_MODES)
 
 
 def _mods(val, what: str) -> list:
@@ -254,6 +265,21 @@ _MOD_LABELS = {
 # Skip the key-state read (the diagnostic) entirely; for testing.
 NO_KEYSTATE_ENV = "WDOTOOL_NO_KEYSTATE"
 
+# --vkbd / WDOTOOL_VKBD: which keyboard the typing ops inject through.
+VKBD_ENV = "WDOTOOL_VKBD"
+VKBD_MODES = ("auto", "on", "off")
+
+# Said once per daemon when the policy picks the protocol: this is the case
+# where wdotool now types for a user who could not type at all before, and
+# the pointer half of the same command line still cannot, so it is worth one
+# line rather than a silent change of mechanism.
+# (no "wdotool: " prefix -- _xkb_say adds one.)
+VKBD_CHOSE_WARNING = (
+    "%s -- typing through the compositor's zwp_virtual_keyboard_v1 instead, "
+    "which needs no root and no device rule. Pointer commands (click, "
+    "mousemove, mousedown/up) have no such protocol and still need "
+    "/dev/uinput.")
+
 _UNSET = object()
 
 CGROUP_ROOT = "/sys/fs/cgroup"
@@ -378,6 +404,15 @@ class _Daemon:
         self._xkb_said: set = set()  # one-shot diagnostics already emitted
         self._xkb_degraded = None  # set while the keymap cannot be used
         self._xkb_group_said = None  # layout state the group notice was for
+        # zwp_virtual_keyboard_v1 (see vkbd.py). ONE connection and ONE
+        # keyboard object for the daemon's life: the compositor releases
+        # whatever a client was holding when it disconnects, so a keydown
+        # that has to survive until the next command cannot be a per-command
+        # connection. `_vk_error` + `_vk_backoff` keep a compositor that
+        # cannot be reached from being retried on every keystroke.
+        self._vk = None
+        self._vk_error = None
+        self._vk_backoff = 0.0
 
     def _key_gap(self, delay: float):
         """Inter-keystroke pause. Sleeps `delay` seconds but never lets the
@@ -461,6 +496,125 @@ class _Daemon:
             self.create_devices()
         if self.dev_error:
             raise RuntimeError(self.dev_error)
+
+    # -- which keyboard types (the kernel device, or the protocol) ---------
+    #
+    # THE POLICY, in one sentence: `key`/`keydown`/`keyup`/`type` go through
+    # zwp_virtual_keyboard_v1 when the kernel keyboard cannot be opened and
+    # the compositor implements the protocol, and through /dev/uinput in
+    # every other case -- `--vkbd on|off` forces either.
+    #
+    # It is deliberately that narrow. Where uinput works today it keeps
+    # working, byte for byte: the daemon tests pin that event stream, the
+    # protocol is not on GNOME or KDE at all so most sessions could not use
+    # it anyway, and it is not free where it does exist -- the compositor
+    # hands the focused application OUR keymap ahead of our first key and the
+    # session's keymap back when the real keyboard is next touched, so every
+    # injection makes that application recompile its keymap twice. What the
+    # protocol does buy is the case uinput cannot serve at all: a session
+    # where /dev/uinput is root-only (it is `crw------- root root` on stock
+    # wlroots, with no uaccess ACL) and the user is not root. There, today,
+    # `wdotool type` fails outright; through the protocol it works, with no
+    # privilege whatsoever. Turning a hard failure into the right characters
+    # is the one change that is strictly better, so it is the only one the
+    # default makes.
+
+    def _vkbd_setting(self, forced=None) -> str:
+        """`--vkbd` (per command) over WDOTOOL_VKBD (per daemon) over auto.
+        An unknown value is `auto`: the flag is screened by cli.py and the
+        request field by _vkbd_mode(), so what can still be wrong here is a
+        typo in the environment, which must not stop the tool typing."""
+        mode = (forced or os.environ.get(VKBD_ENV) or "auto").strip().lower()
+        return mode if mode in VKBD_MODES else "auto"
+
+    def _vkbd(self):
+        """The live virtual keyboard, connecting on first use. Raises
+        vkbd.VkbdError with the reason; the caller decides what that means."""
+        if self._vk is not None:
+            return self._vk
+        now = time.monotonic()
+        if now < self._vk_backoff:
+            raise vkbd.VkbdError(self._vk_error or "not available")
+        try:
+            self._vk = vkbd.VirtualKeyboard.open()
+        except vkbd.VkbdError as e:
+            self._vk_error = str(e)
+            self._vk_backoff = now + 5.0
+            raise
+        except Exception as e:   # a bug here must not be a traceback either
+            self._vk_error = repr(e)
+            self._vk_backoff = now + 60.0
+            raise vkbd.VkbdError(self._vk_error) from None
+        self._vk_error = None
+        return self._vk
+
+    def _drop_vkbd(self):
+        """Forget a virtual keyboard that failed. Nothing survives a
+        compositor restart -- not the object, not the uploaded keymap, and
+        not the keys it was holding -- so the keycodes we thought were down
+        go with it; the next command reconnects and re-uploads."""
+        vk, self._vk = self._vk, None
+        if vk is not None:
+            self.down.difference_update(vk.held)
+            vk.close()
+
+    def _keyboard(self, warnings=None, mode=None):
+        """(device, is_virtual) for one typing op -- see THE POLICY above."""
+        mode = self._vkbd_setting(mode)
+        if mode == "off":
+            self._need_devices()
+            return self.kb, False
+        if mode == "on":
+            try:
+                return self._vkbd(), True
+            except vkbd.VkbdError as e:
+                # Forced and impossible: say exactly what was asked for and
+                # what refused it, and do not quietly type through uinput.
+                raise RuntimeError(
+                    f"--vkbd on: cannot use zwp_virtual_keyboard_v1: {e}") from None
+        # auto: the kernel device unless it cannot be used at all.
+        if self._vk is not None and self._vk.held:
+            # Never change sinks under a held key: a key held on the virtual
+            # keyboard can only be released there (`--vkbd on wdotool keydown
+            # ctrl` then a plain `wdotool type c`), and a key-up sent to the
+            # other device releases nothing at all.
+            return self._vk, True
+        try:
+            self._need_devices()
+            return self.kb, False
+        except RuntimeError as e:
+            why = str(e)
+        try:
+            dev = self._vkbd()
+        except vkbd.VkbdError as e:
+            # No kernel device and no protocol: the error the user gets is
+            # the kernel device's, unchanged -- that is still the thing they
+            # have to fix. The protocol's reason goes to the daemon log.
+            self._xkb_say("vkbd", f"no virtual-keyboard protocol either: {e}")
+            raise RuntimeError(why) from None
+        self._xkb_say("vkbd", VKBD_CHOSE_WARNING % why, warnings)
+        return dev, True
+
+    @contextlib.contextmanager
+    def _vk_guard(self):
+        """A virtual keyboard that fails mid-injection is gone -- the
+        compositor restarted, or the socket died. Drop it, and with it the
+        keys it was holding (the compositor released those when we
+        disconnected, so believing we still hold them would leave the daemon
+        lying about its own state), and report the reason as an ordinary
+        error. The next command reconnects and re-uploads the keymap."""
+        try:
+            yield
+        except vkbd.VkbdError as e:
+            self._drop_vkbd()
+            raise RuntimeError(str(e)) from None
+
+    def _flush(self, dev):
+        """End of an injection: let a sink that acknowledges say so. uinput
+        writes are unacknowledged by construction and have no flush."""
+        f = getattr(dev, "flush", None)
+        if f is not None:
+            f()
 
     # -- geometry / pointer ------------------------------------------------
 
@@ -745,7 +899,8 @@ class _Daemon:
             return layout.modifier_keycodes(mask)
         return [keymap.KEY_LEFTSHIFT] if mask & xkbmap.MOD_SHIFT else []
 
-    def _press(self, keys, delay, layout=None):
+    def _press(self, keys, delay, layout=None, dev=None):
+        dev = self.kb if dev is None else dev
         for code, mask in keys:
             mask = int(mask)
             for mod in self._mod_keycodes(mask, layout):
@@ -754,22 +909,23 @@ class _Daemon:
                         continue
                 elif mod in self.down:
                     continue
-                self.kb.key(mod, True)
+                dev.key(mod, True)
                 self.down.add(mod)
-            self.kb.key(code, True)
+            dev.key(code, True)
             self.down.add(code)
             self._key_gap(delay)
 
-    def _release(self, keys, delay, layout=None):
+    def _release(self, keys, delay, layout=None, dev=None):
+        dev = self.kb if dev is None else dev
         for code, mask in keys:
             mask = int(mask)
             for mod in self._mod_keycodes(mask, layout):
                 if mod not in self.down:
                     continue
-                self.kb.key(mod, False)
+                dev.key(mod, False)
                 self.down.discard(mod)
                 self._released_mods.add(mod)
-            self.kb.key(code, False)
+            dev.key(code, False)
             self.down.discard(code)
             self._released_mods.add(code)
             self._key_gap(delay)
@@ -834,7 +990,8 @@ class _Daemon:
                 out.add(os.path.join(keystate.INPUT_DIR, name))
         return out
 
-    def _clear_mods(self, warnings=None, session=None) -> set:
+    def _clear_mods(self, warnings=None, session=None, dev=None,
+                    vkbd_path=False) -> set:
         """Release the modifier keys; return the ones to press back afterwards.
 
         That set is what *this daemon* holds. A modifier on another keyboard
@@ -842,15 +999,34 @@ class _Daemon:
         nor safe to press back (it would stick), so it is reported and left
         alone. The loop still sends all eight: a key-up for a code we do not
         hold costs one write and is dropped, and spelling out "let go of
-        every modifier" is what the flag means."""
+        every modifier" is what the flag means.
+
+        On the virtual-keyboard path both halves of that are different, and
+        better. The modifier state the compositor applies to our keys is the
+        mask WE send and nothing else -- measured: with a real keyboard
+        physically holding shift, uinput typed `Y` while the virtual keyboard
+        typed `y` -- so there is nothing foreign to warn about, and one
+        `modifiers(0,0,0,0)` says "no modifier is down" for certain. Only the
+        keycodes we actually hold are released: with no kernel filter in
+        front of it, a key-up for a key nobody pressed is a real event the
+        compositor has to make sense of.
+        """
+        dev = self.kb if dev is None else dev
         ours = {c for c in keymap.MODIFIER_KEYCODES if c in self.down}
+        if vkbd_path:
+            for code in keymap.MODIFIER_KEYCODES:
+                if code in self.down:
+                    dev.key(code, False)
+                    self.down.discard(code)
+            dev.clear_modifiers()
+            return ours
         self._warn_foreign_mods(warnings, session)
         for code in keymap.MODIFIER_KEYCODES:
-            self.kb.key(code, False)
+            dev.key(code, False)
             self.down.discard(code)
         return ours
 
-    def _restore_mods(self, held):
+    def _restore_mods(self, held, dev=None):
         """Press back what _clear_mods() released -- the modifiers this daemon
         was already holding.
 
@@ -862,9 +1038,10 @@ class _Daemon:
         impossible; the other half is in _mods_cleared(), which subtracts
         whatever the injection itself released (`keyup --clearmodifiers
         ctrl` asked for ctrl to be up, so it is not in the set we get)."""
+        dev = self.kb if dev is None else dev
         for code in keymap.MODIFIER_KEYCODES:
             if code in held:
-                self.kb.key(code, True)
+                dev.key(code, True)
                 self.down.add(code)
 
     def _foreign_mods(self):
@@ -898,18 +1075,24 @@ class _Daemon:
             warnings.append(msg)
 
     @contextlib.contextmanager
-    def _mods_cleared(self, on, warnings, session):
+    def _mods_cleared(self, on, warnings, session, dev=None, vkbd_path=False):
         """clear -> inject -> restore without letting go of the injection
         lock. The ops that carry `clearmods` themselves (`type`, `key`) do it
         inline; this is for the ones handle() wraps. Doing it as three
         requests instead would leave two gaps in which another wdotool
         process could inject with the modifiers down, or land its own
-        injection between ours and the restore."""
+        injection between ours and the restore.
+
+        `dev` is the sink the typing ops already chose; the pointer ops pass
+        none and clear on the kernel keyboard, which is the only device they
+        could be using anyway."""
         if not on:
             yield
             return
-        self._need_devices()
-        held = self._clear_mods(warnings, session)
+        if dev is None:
+            self._need_devices()
+            dev = self.kb
+        held = self._clear_mods(warnings, session, dev, vkbd_path)
         self._released_mods = set()
         try:
             yield
@@ -920,7 +1103,7 @@ class _Daemon:
             # the device holding a key can release it, so the user's own
             # keyboard could not clear it -- and the command asked for the
             # opposite of that.
-            self._restore_mods(held - self._released_mods)
+            self._restore_mods(held - self._released_mods, dev)
             self._released_mods = set()
 
     def op_clear_modifiers(self, warnings=None, session=None) -> list:
@@ -937,17 +1120,43 @@ class _Daemon:
         self._need_devices()
         self._restore_mods(held)
 
+    def _typing_layout(self, vkbd_path, warnings, layout_mode):
+        """The character table for one typing op.
+
+        On the virtual-keyboard path there is nothing to decide: the keymap
+        that interprets our keycodes is the one we uploaded, so the built-in
+        US table is right by construction and the compositor's keymap is
+        neither read nor relevant -- the reverse map, the plain-US bypass and
+        the group guess all belong to the kernel path and none of them runs
+        here. `--layout us` asks for exactly what this path already does;
+        `--layout xkb` asks for a table built from the *session's* keymap,
+        which would type through the wrong one, so it is refused in one line
+        rather than obeyed into garbage."""
+        if not vkbd_path:
+            return self._layout(warnings, layout_mode)
+        mode = (layout_mode or os.environ.get("WDOTOOL_LAYOUT")
+                or "auto").strip().lower()
+        if mode == "xkb":
+            self._xkb_say(
+                "vkbd-xkb",
+                "layout 'xkb' does not apply to the virtual-keyboard path: "
+                "the keymap that reads these keycodes is the one wdotool "
+                "uploaded, not the session's. Typing with the built-in US "
+                "table. Use --vkbd off to inject through /dev/uinput and the "
+                "session's keymap instead.", warnings)
+        return None
+
     def op_key(self, spec, direction, delay_ms, clearmods, session=None,
-               layout_mode=None):
-        self._need_devices()
+               layout_mode=None, vkbd_mode=None):
         warnings = []
+        dev, vk = self._keyboard(warnings, vkbd_mode)
         # Outside the clear/restore window: reading the compositor's keymap
         # is a query, and holding the modifiers released across it buys
         # nothing.
-        layout = self._layout(warnings, layout_mode)
+        layout = self._typing_layout(vk, warnings, layout_mode)
         # Restore even when the sequence is rejected or the injection fails:
         # the modifiers are already released by then.
-        with self._mods_cleared(clearmods, warnings, session):
+        with self._mods_cleared(clearmods, warnings, session, dev, vk):
             # ValueError on a sequence xdo rejects outright
             keys, warns = keymap.parse_keyseq(spec, layout)
             d = delay_ms / 1000
@@ -957,23 +1166,24 @@ class _Daemon:
                 # diagnostic is printed twice by the real xdotool (B12). Our own
                 # one-shot layout notice is not one of xdo's and is not doubled.
                 warns = warns * 2
-                self._press(keys, d / 2, layout)
-                self._release(keys, d / 2, layout)
+                self._press(keys, d / 2, layout, dev)
+                self._release(keys, d / 2, layout, dev)
             elif direction == "down":
-                self._press(keys, d, layout)
+                self._press(keys, d, layout, dev)
             elif direction == "up":
-                self._release(keys, d, layout)
+                self._release(keys, d, layout, dev)
             else:
                 raise RuntimeError(f"invalid key direction {direction!r}")
+        self._flush(dev)
         return warnings + warns
 
     def op_type(self, text, delay_ms, clearmods, session=None,
-                layout_mode=None):
-        self._need_devices()
+                layout_mode=None, vkbd_mode=None):
         warnings = []
-        layout = self._layout(warnings, layout_mode)   # a query: see op_key
+        dev, vk = self._keyboard(warnings, vkbd_mode)
+        layout = self._typing_layout(vk, warnings, layout_mode)  # see op_key
         lname = "US" if layout is None else layout.name
-        with self._mods_cleared(clearmods, warnings, session):
+        with self._mods_cleared(clearmods, warnings, session, dev, vk):
             # xdo_enter_text_window: delay split between down and up, down capped at 50ms
             down_d = min(delay_ms / 2, 50) / 1000
             up_d = delay_ms / 1000 - down_d
@@ -995,14 +1205,15 @@ class _Daemon:
                                     and any(s in self.down for s in _SHIFTS))
                             and m not in self.down]
                     for mod in mods:
-                        self.kb.key(mod, True)
-                    self.kb.key(code, True)
+                        dev.key(mod, True)
+                    dev.key(code, True)
                     if down_d > 0:
                         time.sleep(down_d)
-                    self.kb.key(code, False)
+                    dev.key(code, False)
                     for mod in reversed(mods):
-                        self.kb.key(mod, False)
+                        dev.key(mod, False)
                     self._key_gap(up_d)
+        self._flush(dev)
         return warnings
 
     # -- protocol ----------------------------------------------------------
@@ -1019,18 +1230,22 @@ class _Daemon:
         warnings: list[str] = []
         with self.lock:
             if op == "type":
-                warnings = self.op_type(
-                    _text(req.get("text"), "text"),
-                    _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
-                    req.get("clearmods", False), session,
-                    _layout_mode(req.get("layout_mode")))
+                with self._vk_guard():
+                    warnings = self.op_type(
+                        _text(req.get("text"), "text"),
+                        _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
+                        req.get("clearmods", False), session,
+                        _layout_mode(req.get("layout_mode")),
+                        _vkbd_mode(req.get("vkbd_mode")))
             elif op == "key":
-                warnings = self.op_key(
-                    _text(req.get("spec"), "spec"),
-                    req.get("direction", "press"),
-                    _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
-                    req.get("clearmods", False), session,
-                    _layout_mode(req.get("layout_mode")))
+                with self._vk_guard():
+                    warnings = self.op_key(
+                        _text(req.get("spec"), "spec"),
+                        req.get("direction", "press"),
+                        _num(req.get("delay_ms", 12), "delay_ms", 0, MAX_DELAY_MS),
+                        req.get("clearmods", False), session,
+                        _layout_mode(req.get("layout_mode")),
+                        _vkbd_mode(req.get("vkbd_mode")))
             elif op == "clear_modifiers":
                 held = self.op_clear_modifiers(warnings, session)
                 return {"ok": True, "held": held, "warnings": warnings}
@@ -1360,17 +1575,27 @@ class DaemonClient:
             raise CmdError(resp.get("error", "wdotool daemon error"))
         return resp
 
+    @staticmethod
+    def _modes(layout_mode, vkbd_mode) -> dict:
+        """The optional mode fields, sent only when they were given: an
+        absent flag must leave the request byte-identical to what an older
+        client sent, and every test double keeps its signature."""
+        extra = {}
+        if layout_mode:
+            extra["layout_mode"] = layout_mode
+        if vkbd_mode:
+            extra["vkbd_mode"] = vkbd_mode
+        return extra
+
     def type_text(self, text: str, delay_ms: int, clearmods: bool = False,
-                  layout_mode: str | None = None):
-        extra = {"layout_mode": layout_mode} if layout_mode else {}
+                  layout_mode: str | None = None, vkbd_mode: str | None = None):
         self._rpc(op="type", text=text, delay_ms=delay_ms, clearmods=clearmods,
-                  **extra)
+                  **self._modes(layout_mode, vkbd_mode))
 
     def key(self, spec: str, direction: str, delay_ms: int, clearmods: bool,
-            layout_mode: str | None = None):
-        extra = {"layout_mode": layout_mode} if layout_mode else {}
+            layout_mode: str | None = None, vkbd_mode: str | None = None):
         self._rpc(op="key", spec=spec, direction=direction, delay_ms=delay_ms,
-                  clearmods=clearmods, **extra)
+                  clearmods=clearmods, **self._modes(layout_mode, vkbd_mode))
 
     def clear_modifiers(self) -> list:
         """Release the modifier keys and report which ones wdotool itself was
