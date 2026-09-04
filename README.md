@@ -37,6 +37,50 @@ this repo tests in)*
 x:640 y:360 screen:0 window:5
 ```
 
+## Version 0.1
+
+The first tagged release. Everything below was measured on real desktops in
+the test rig before it was claimed here.
+
+The five tools run on **GNOME** 46 and 50, **KDE Plasma** 5.27 and 6.6,
+**sway** and the wlroots family, and on any **X11** session, where they hand
+over to the originals rather than pretending. What each one does per desktop,
+including where it differs, is the [support matrix](#desktop-support).
+
+What 0.1 contains, beyond the sway-only toolbox it started as:
+
+- **GNOME**: a Shell extension carrying the window commands, and monitor
+  configuration straight through Mutter with nothing to install.
+- **KDE**: window commands through KWin's scripting, monitor configuration
+  through the KDE output protocol, including the compositor's own clone when
+  two mirrored outputs would otherwise crop rather than copy.
+- **X11**: the tools hand over to the real `xdotool`, `wmctrl`, `xprop` and
+  `xrandr`, so an X11 session behaves exactly as it did.
+- **warandr**, an arandr clone for both worlds, which shows the backend in use
+  and lets you change it from the window.
+- **Keyboard layouts**: typing works under a non-US layout, by reading the
+  compositor's own keymap; on a plain US layout none of that code runs at all.
+  On sway typing goes through the Wayland protocol built for it, so there it
+  needs no privilege whatsoever.
+- **`wdotool keys`**: watch what your keyboard really sends, or ask how to type
+  a character on the layout you have.
+- Partial **overlap** of outputs where the compositor allows it, with what that
+  means on each one stated plainly.
+- An [install guide](#install) that was written by doing it and then re-run
+  verbatim on fresh images of four desktops, and a [threat
+  model](#threat-model) for a toolbox that deliberately injects input.
+
+Behind it: a rig of seven desktop images with monitors that can be plugged,
+resized and unplugged from outside the guest, and 1884 tests. The tools were
+stressed deliberately on each desktop, and what that found is in the history —
+roughly fifty defects, including a few that mattered: typing captured by
+another user, commands that reported success while failing, and a monitor
+placed ten pixels wrong on the wlroots backend at most fractional scales.
+
+Known limitations are listed per tool and in the support matrix; the parity
+test against the real xdotool needs that binary and an X display, so it skips
+outside the nix development shell.
+
 ## How
 
 There is no X server to lie to, so wdotool goes underneath instead:
@@ -1274,14 +1318,21 @@ nothing standing to anybody.
 
 Every line of this repo was written by AI (Claude): the design contracts, the code,
 the torture rigs, the hostile fake X servers, the byte-parity oracles, the VM demo,
-this README, and yes, the meme. Fully vibed. Also fully awesome: 1371 tests and
+this README, and yes, the meme. Fully vibed. Also fully awesome: 1884 tests and
 counting, live-compositor integration suites, byte-for-byte output parity against
 the real tools (verbatim bugs included), and every "it works" claim proven inside a
 real Ubuntu 26.04 VM before it shipped. Vibe-check the code yourself — it can take it.
 
 ## Testing
 
-Developed against a real Ubuntu 26.04 VM driving headless sway through the full
-uinput path — see `vm/` for the whole rig (`mkvm.sh`, `run.sh`, `compositor.sh`) and
-`tests/` for the suite: unit, live-compositor integration, hostile fake X servers,
-and byte-parity oracles against the real xdotool and wmctrl binaries.
+Developed against real desktops, not against a model of them. `vm/` is the rig:
+`vmctl` builds and runs seven golden images — GNOME, KDE Plasma, Xfce and sway on
+Ubuntu 24.04 and 26.04 — each with up to four virtual monitors that can be
+plugged, resized and unplugged from outside the guest, and every head
+screenshotted. `vm/selftest.sh <flavor>` is its own check; `vm/README.md`
+documents the whole thing, including what the four tools do on each flavor.
+
+The original sway rig (`mkvm.sh`, `run.sh`, `compositor.sh`) is still there and
+still works. `tests/` holds the suite: unit tests, wire-level fake compositors
+and X servers, live-compositor integration, hostile-input torture, and
+byte-parity oracles against the real xdotool, wmctrl, xprop and xrandr.
