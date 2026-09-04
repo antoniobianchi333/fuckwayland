@@ -31,6 +31,7 @@ import copy
 import dataclasses
 import fcntl
 import json
+import math
 import os
 import re
 import socket
@@ -215,13 +216,60 @@ def layout_box(outputs) -> tuple[int, int, int, int]:
             max(o.x + o.w for o in act), max(o.y + o.h for o in act))
 
 
+# -- wlroots scale arithmetic -------------------------------------------------
+#
+# Two single-precision steps, and both of them matter.  sway quantises any
+# scale it is given to 120ths -- fractional-scale-v1's unit -- in float32
+# (sway 1.9 output.c: `scale = round(scale * 120) / 120`), and
+# wlr_output_effective_resolution then divides the pixel size by that float
+# and truncates.  Modelling either step in double gets real layouts wrong.
+SCALE_STEPS = 120
+WL_FIXED_UNIT = 256
+
+
+def f32(x: float) -> float:
+    """`x` at the width wlroots keeps a scale and does its division at."""
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def round_half_away(x: float) -> int:
+    """C round(): halves go away from zero (Python's round() is banker's)."""
+    r = int(math.floor(abs(x) + 0.5))
+    return r if x >= 0 else -r
+
+
+def wlr_scale(scale: float, wire: str = "text") -> float:
+    """The scale a wlroots compositor really ends up running.
+
+    What it quantises depends on how the number reached it.  The sway IPC
+    takes it as text (`output NAME scale 1.03`, printed with %g and read back
+    with strtof); zwlr_output_management takes a wl_fixed, and wayland_mini's
+    marshaller truncates to 256ths on the way out.  So `--scale 1.03` runs as
+    1.0333 on the sway backend and as 1.025 on the wlr one, and a predicted
+    logical size has to know which it is being asked about -- placing the
+    neighbour of a fractionally scaled output against the wrong one leaves a
+    gap or an overlap of 1-10 px that nobody asked for."""
+    if wire == "fixed":
+        scale = int(scale * WL_FIXED_UNIT) / float(WL_FIXED_UNIT)
+    else:
+        scale = float("%g" % scale)
+    return f32(round_half_away(f32(scale) * SCALE_STEPS) / SCALE_STEPS)
+
+
 def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float
                  ) -> tuple[int, int]:
-    """Predict sway/wlroots logical dimensions: transform swap, then truncated
-    division by scale (observed: 1111/1.5->740, 1281/2->640, 1280/1.5->853)."""
+    """sway/wlroots logical dimensions: the transform swap, then
+    wlr_output_effective_resolution -- `*width /= output->scale` with an int
+    on the left and a C float on the right, so a single-precision division
+    truncated back to an int (observed: 1111/1.5->740, 1281/2->640,
+    1280/1.5->853, and 1920/1.6->1200 where a double division says 1199).
+
+    `scale` is what the compositor RUNS, not what was asked for: a prediction
+    passes it through wlr_scale() first."""
     if transform_swaps(sway_tf):
         px_w, px_h = px_h, px_w
-    return (int(px_w / scale), int(px_h / scale))
+    return (int(f32(f32(px_w) / f32(scale))),
+            int(f32(f32(px_h) / f32(scale))))
 
 
 # -- sway IPC -----------------------------------------------------------------
@@ -921,9 +969,12 @@ def build_targets(outputs: list, stanzas: list, state: State,
     return [targets[o.name] for o in outputs]
 
 
-def predicted_dims(t: Target, state: State) -> tuple[int, int]:
+def predicted_dims(t: Target, state: State, wire: str = "text"
+                   ) -> tuple[int, int]:
     """Pending logical size of an enabled target (for dryrun + wlr backend +
-    relative math when we cannot re-read)."""
+    relative math when we cannot re-read).  `wire` is how the scale will
+    reach the compositor -- "text" over the sway IPC, "fixed" over
+    zwlr_output_management -- because that decides which 120th it lands on."""
     mode = t.mode
     if mode is None:
         last = state.lastmodes().get(t.name)
@@ -933,7 +984,7 @@ def predicted_dims(t: Target, state: State) -> tuple[int, int]:
             mode = t.output.modes[0]
         else:
             mode = Mode(w=1280, h=720)  # sway headless default
-    return logical_size(mode.w, mode.h, t.sway_tf, t.scale)
+    return logical_size(mode.w, mode.h, t.sway_tf, wlr_scale(t.scale, wire))
 
 
 def resolve_positions(targets: list, dims: dict) -> dict:
@@ -1131,7 +1182,7 @@ def apply_wlr(wlr: WlrOutputs, state: State, targets: list):
     dims = {}
     for t in targets:
         if t.enabled:
-            dims[t.name] = predicted_dims(t, state)
+            dims[t.name] = predicted_dims(t, state, wire="fixed")
     pos = resolve_positions(targets, dims)
     wlr.apply({t.name: t for t in targets}, pos)
 

@@ -15,6 +15,21 @@ the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
   apply of whole-layout configurations, which is exactly xrandr's model. This is the
   backend that makes crazy configs atomic: build the full config, apply once, handle
   `succeeded/failed/cancelled` events.
+- **wlroots scale arithmetic** (`core.wlr_scale` / `core.logical_size`, both
+  backends above): sway quantises any scale it is handed to 120ths —
+  fractional-scale-v1's unit — in float32 (`scale = round(scale * 120) / 120`,
+  sway 1.9 `output.c`), and `wlr_output_effective_resolution` then divides the
+  pixel size by that float and truncates. **What it is handed depends on the
+  transport**: the sway IPC takes the number as text (`output NAME scale 1.03`),
+  while `zwlr_output_management` takes a `wl_fixed` that `wayland_mini`'s
+  marshaller truncates to 256ths — so `--scale 1.03` runs as 1.0333 on the sway
+  backend and as 1.025 on the wlr one, and `--query` will say so. Both steps are
+  single precision and both matter: a double division puts 1920 ÷ 1.6 at 1199
+  where the compositor has 1200. The wlr backend is one atomic call with no
+  phase-2 re-read, so a position computed from the number the user typed is the
+  position the layout keeps — measured against a live sway at 201 scales per
+  backend (`tests/test_wxrandr_unit.py::WlrootsScale` pins the captures,
+  `test_wxrandr_live.py::test_42` re-measures).
 - **--brightness**: gamma via `zwlr_gamma_control_manager_v1` (ramps computed like
   xrandr's gamma math, passed over an fd). The control dies with its client, so a
   non-1.0 brightness forks a tiny detached holder process per output (pattern: the

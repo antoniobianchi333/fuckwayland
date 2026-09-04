@@ -205,6 +205,89 @@ class ModelineMath(unittest.TestCase):
         self.assertEqual(core.screen_mm(720), 190)
 
 
+class WlrootsScale(unittest.TestCase):
+    """What sway 1.9 / wlroots 0.17 really does with a fractional scale,
+    measured on a live headless sway (1920x1080, 1.00..3.00 by 0.01, both
+    backends, 201 points each; every row below is a capture, and the model
+    reproduces all 402 of them).
+
+    Two single-precision steps: sway quantises the scale it is given to
+    120ths -- fractional-scale-v1's unit -- and wlr_output_effective_
+    resolution then divides the pixel size by that float and truncates.  What
+    it is given differs per transport: the sway IPC gets the number as text,
+    zwlr_output_management gets a wl_fixed that wayland_mini truncates to
+    256ths, which is why `--scale 1.03` runs as 1.0333 on one and 1.025 on
+    the other."""
+
+    #      asked   what sway runs        logical 1920x1080
+    FIXED = [
+        (1.03, 1.0249999761581421, (1873, 1053)),
+        (1.08, 1.0750000476837158, (1786, 1004)),
+        (1.14, 1.1333333253860474, (1694, 952)),
+        (1.20, 1.2000000476837158, (1599, 899)),
+        (1.25, 1.25, (1536, 864)),
+        (1.35, 1.3500000238418579, (1422, 800)),
+        (1.50, 1.5, (1280, 720)),
+        (1.60, 1.6000000238418579, (1200, 675)),
+        (1.75, 1.75, (1097, 617)),
+        (2.00, 2.0, (960, 540)),
+        (2.67, 2.6666667461395264, (720, 405)),
+        (3.00, 3.0, (640, 360)),
+    ]
+    TEXT = [
+        (1.03, 1.0333333015441895, (1858, 1045)),
+        (1.08, 1.0833333730697632, (1772, 996)),
+        (1.14, 1.1416666507720947, (1681, 945)),
+        (1.20, 1.2000000476837158, (1599, 899)),
+        (1.50, 1.5, (1280, 720)),
+        (1.60, 1.6000000238418579, (1200, 675)),
+        (2.67, 2.6666667461395264, (720, 405)),
+    ]
+
+    def test_quantisation_matches_the_compositor(self):
+        for wire, table in (("fixed", self.FIXED), ("text", self.TEXT)):
+            for asked, runs, _dims in table:
+                with self.subTest(wire=wire, scale=asked):
+                    self.assertEqual(core.wlr_scale(asked, wire), runs)
+
+    def test_logical_size_matches_the_compositor(self):
+        for wire, table in (("fixed", self.FIXED), ("text", self.TEXT)):
+            for asked, runs, dims in table:
+                with self.subTest(wire=wire, scale=asked):
+                    self.assertEqual(
+                        core.logical_size(1920, 1080, "normal", runs), dims)
+                    self.assertEqual(
+                        core.logical_size(1920, 1080, "normal",
+                                          core.wlr_scale(asked, wire)), dims)
+
+    def test_a_double_division_is_not_good_enough(self):
+        # 1920/1.6 is 1200 in float32 and 1199 in double: the pixel that
+        # used to leave a gap between an output and its --right-of neighbour
+        self.assertEqual(int(1920 / 1.6000000238418579), 1199)
+        self.assertEqual(core.logical_size(1920, 1080, "normal",
+                                           1.6000000238418579), (1200, 675))
+
+    def test_the_transform_swap_still_comes_first(self):
+        self.assertEqual(core.logical_size(1920, 1080, "90", 1.5), (720, 1280))
+
+    def test_right_of_is_edge_to_edge_on_the_wlr_wire(self):
+        st = mk_state()
+        for asked, _runs, dims in self.FIXED:
+            with self.subTest(scale=asked):
+                a = mk_output("A", 1920, 1080)
+                b = mk_output("B", 1920, 1080)
+                targets = build_targets(
+                    [a, b],
+                    [Stanza(name="A", scale=(asked, asked), pos=(0, 0)),
+                     Stanza(name="B", relation=("right-of", "A"))],
+                    st, False)
+                d = {t.name: core.predicted_dims(t, st, wire="fixed")
+                     for t in targets if t.enabled}
+                self.assertEqual(d["A"], dims)
+                pos = resolve_positions(targets, d)
+                self.assertEqual(pos["B"], (dims[0], 0))
+
+
 class Resolver(unittest.TestCase):
     def L(self):  # noqa: N802 - three outputs, side by side
         return [mk_output("A", 1280, 720),

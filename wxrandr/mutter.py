@@ -65,7 +65,8 @@ import struct
 from wdotool import session as wsession
 from wdotool.dbus_mini import Bus, DBusError, Variant
 from wxrandr import core
-from wxrandr.core import Fatal, Mode, OutputState, warn
+from wxrandr.core import (Fatal, Mode, OutputState,   # noqa: F401
+                          round_half_away, warn)
 
 DEST = "org.gnome.Mutter.DisplayConfig"
 PATH = "/org/gnome/Mutter/DisplayConfig"
@@ -82,12 +83,6 @@ PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the '
 
 
 # -- pure helpers (unit-tested) ----------------------------------------------
-
-def round_half_away(x: float) -> int:
-    """C roundf(): halves go away from zero (Mutter's logical-size math)."""
-    r = int(math.floor(abs(x) + 0.5))
-    return r if x >= 0 else -r
-
 
 def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
                  layout_mode: int = LAYOUT_LOGICAL) -> tuple[int, int]:

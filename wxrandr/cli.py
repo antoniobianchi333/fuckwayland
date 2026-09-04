@@ -906,7 +906,8 @@ class Session:
             return self.mutter.predicted_dims(t, self.state)
         if self.backend == "kwin":
             return self.kwin.predicted_dims(t, self.state)
-        return core.predicted_dims(t, self.state)
+        return core.predicted_dims(
+            t, self.state, wire="fixed" if self.backend == "wlr" else "text")
 
     def positions(self, targets, dims) -> dict:
         """Pending positions the way the backend will lay them out: xrandr's
