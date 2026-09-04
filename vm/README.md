@@ -69,6 +69,8 @@ against the one in the flavor before it boots anything.
 
 ## Fresh host setup
 
+The full version of this section — machine, sizing, packages, what `vmctl` needs from QEMU and how to check it, housekeeping — is [`vm/SETUP.md`](SETUP.md); `vm/setup-host.sh` does the mechanical part.
+
 Any Linux box (physical, or a VM whose hypervisor exposes KVM to it,
 so that `/dev/kvm` exists inside it) works. On Ubuntu 24.04:
 

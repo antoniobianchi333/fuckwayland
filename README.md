@@ -1877,6 +1877,8 @@ Ubuntu 24.04, 26.04 and 26.10, plus one Ubuntu 26.04 and one Ubuntu 24.04 deskto
 virtual monitors that can be plugged, resized and unplugged from outside the guest,
 and every head screenshotted. `vm/selftest.sh <flavor>` is its own check;
 `vm/README.md` documents the whole thing, including what the tools do on each flavor.
+[`vm/SETUP.md`](vm/SETUP.md) is how to set the rig up on a machine of your own,
+and `vm/setup-host.sh` does the mechanical part of that.
 
 The original sway rig (`mkvm.sh`, `run.sh`, `compositor.sh`) is still there and
 still works. `tests/` holds the suite: unit tests, wire-level fake compositors

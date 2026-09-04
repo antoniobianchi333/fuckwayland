@@ -1,0 +1,285 @@
+# Setting up the rig
+
+From a fresh Linux machine to a passing `vm/selftest.sh`. What the rig *is* — the
+flavors, the commands, what the tools do on each desktop — is `vm/README.md`; this
+is only how to get a machine to the point where that document applies.
+`vm/setup-host.sh` does the mechanical part of it and checks the rest.
+
+## The machine
+
+Any Linux machine on which `/dev/kvm` works: a physical box, or a virtual machine
+whose hypervisor passes hardware virtualization through to it.
+
+Hardware virtualization is the CPU feature KVM is built on (Intel VT-x or AMD-V;
+`vmx` or `svm` in the `flags` line of `/proc/cpuinfo`). A physical machine has it
+whenever the firmware has it switched on. Inside a virtual machine the feature is
+only there if the hypervisor underneath chooses to show it to its guests — that is
+*nested virtualization*: your rig host runs KVM, and the rig's guests run one level
+further down. Providers of virtual machines offer it on some kinds of machine and
+not on others, and some need it switched on per machine, so on a rented machine
+check before anything else:
+
+```console
+$ grep -c -E 'vmx|svm' /proc/cpuinfo      # one line per CPU when the feature is there, 0 when not
+$ ls -l /dev/kvm                          # crw-rw---- root kvm: the kvm module is loaded
+$ systemd-detect-virt                     # none on a physical machine; otherwise the hypervisor's name
+```
+
+Without it nothing here boots. `vmctl`, `build-iso-golden.sh` and `run.sh` all pass
+`-enable-kvm -cpu host`, and QEMU then stops at once —
+
+```
+Could not access KVM kernel module: Permission denied
+qemu-system-x86_64: failed to initialize kvm: Permission denied
+```
+
+(`No such file or directory` when there is no `/dev/kvm` at all) — rather than
+falling back to its software emulation, which would run these guests many times
+slower. `Permission denied` on a machine that *has* `/dev/kvm` is the other common
+case: Ubuntu's udev rule makes it `0660 root:kvm` and hands an ACL to whoever is
+logged in at the machine's own screen, which an ssh login is not, so a user who works
+over ssh needs `sudo usermod -aG kvm $USER` and a new login.
+
+## Sizing
+
+What the scripts ask for, per virtual machine (all of it changeable with `--cpus`,
+`--mem`, `--size`):
+
+| what | vCPU | memory | disk | from |
+|---|---|---|---|---|
+| a golden build (`vmctl build`) | 4 | 6 GB | 30 GB overlay, grows to the image's size | `vmctl build` defaults |
+| the ISO install (`build-iso-golden.sh`) | 2 | 4 GB | 30 GB, no backing file | its defaults |
+| a desktop instance (`vmctl start`) | 3 | 4 GB | overlay on the golden | `vmctl start` defaults |
+
+A guest's QEMU process grows towards its `--mem` as the guest touches memory, not
+beyond it: measured, 4.9 GB resident for a 6 GB build VM while the desktop was
+installing, 2.5 GB for a 4 GB GNOME instance after the self-test, 4.1 GB for the
+4 GB ISO installer. A machine with 4 CPUs and 16 GB runs one build or two desktop
+instances at a time comfortably; 8 CPUs and 32 GB run four (`vm/README.md`).
+
+Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
+
+* a golden image is **5.4 to 7.6 GB** for a cloud-image desktop flavor (GNOME the
+  smallest, Plasma the largest), **0.7 GB** for `resolute-sway`, **8.7 GB** for the
+  installer-built `resolute-gnome-iso`; all eleven together, 66 GB;
+* the base cloud images they are overlays on: 0.6 GB (24.04) and 0.9 GB (26.04) each,
+  in `~/images`; the desktop ISO, 6.5 GB, for the ISO flavor only;
+* an instance is an overlay on its golden: a few hundred kilobytes when created,
+  158 MB after one self-test, 30–350 MB after a day of use. It never has to be
+  bigger than what the guest wrote;
+* a build's working directory (`~/vm-data/build/<flavor>/`) grows to the golden's size
+  and is *renamed* into `golden/` on success — keep `~/vm-data` on one filesystem.
+
+So: 10 GB per golden image you intend to keep, plus 8 GB for the base images and the
+ISO, plus a few GB for instances. Swap is not needed for the rig itself — a 16 GB
+machine with a 10 GB swap file had used 19 MB of it after a day of builds and
+instances — but a swap file the size of one guest turns a memory shortfall into a
+slowdown rather than a killed QEMU.
+
+## Packages
+
+On Ubuntu 24.04 or 26.04 — `vm/setup-host.sh` runs exactly this, after saying so:
+
+```console
+$ sudo apt-get install -y qemu-system-x86 qemu-system-modules-opengl qemu-utils cloud-image-utils \
+      genisoimage dbus libglib2.0-bin openssh-client python3 imagemagick
+```
+
+Which program each one is there for, so the list can be translated for another
+distribution:
+
+| the rig calls | package (24.04 and 26.04) |
+|---|---|
+| `qemu-system-x86_64` | `qemu-system-x86` |
+| `ui-dbus.so`, the `-display dbus` backend | `qemu-system-modules-opengl` (`qemu-system-gui` depends on it; the module needs GLib's gio, and QEMU built with libpng for PNG screendumps) |
+| `qemu-img` | `qemu-utils` |
+| `cloud-localds` | `cloud-image-utils` (uses `genisoimage`) |
+| `isoinfo` | `genisoimage` — `build-iso-golden.sh` only |
+| `dbus-daemon` | `dbus` |
+| `gdbus` | `libglib2.0-bin` |
+| `ssh`, `scp`, `ssh-keygen` | `openssh-client` |
+| `python3` 3.10 or newer | `python3` (`vmctl` is stdlib-only) |
+| `identify` | `imagemagick` — `selftest.sh` only, to prove a screenshot is not one flat colour; without it the check is skipped, not failed |
+
+Nothing else: no libvirt, no bridge, no root after this step. The guests reach the
+network through QEMU's user-mode networking, and the host reaches them through one
+forwarded port each on `127.0.0.1` (`2400–2499` for `vmctl` instances and builds,
+`2500–2599` for an ISO build, `2222` for the old sway rig).
+
+## What vmctl needs from QEMU
+
+Four things, proven on QEMU 8.2.2 (`vm/README.md`, *The QEMU / D-Bus facts this rig
+relies on*) and each checkable without a guest:
+
+1. **The dbus display backend.** `qemu-system-x86_64 -display help` must list `dbus`.
+   This is how heads are plugged, unplugged and resized: QEMU owns `org.qemu` on a
+   private session bus and exports one `/org/qemu/Display1/Console_<N>` per head.
+2. **virtio-vga with four heads.** `qemu-system-x86_64 -device help | grep virtio-vga`;
+   `max_outputs=4` is what gives the guest `Virtual-1` … `Virtual-4`.
+3. **`SetUIInfo` on a console**, accepted before the guest has booted — that is what
+   lets `vmctl start` size every head before GDM comes up.
+4. **QMP `screendump` with `"format": "png"`** (and `"ppm"`, which `vmctl session`
+   uses to tell a painted head from a flat one without an image library). The
+   `format` argument exists since QEMU 7.1; PNG needs a QEMU built with libpng.
+
+`vm/setup-host.sh` checks all four the direct way: it starts a private
+`dbus-daemon` and a **paused, diskless** QEMU (`-S`, no KVM, 128 MB) with
+`-display dbus` and `virtio-vga,max_outputs=4`, waits for `Console_0` … `Console_3`
+to appear on the bus, calls `SetUIInfo` on `Console_1`, takes a PNG screendump of
+head 0 over QMP, and quits — about a tenth of a second. To do it by hand:
+
+```console
+$ dbus-daemon --session --fork --nopidfile --print-pid=1 --address=unix:path=/tmp/bus
+$ qemu-system-x86_64 -S -nodefaults -m 128 -display dbus,addr=unix:path=/tmp/bus,p2p=no \
+      -device virtio-vga,id=gpu0,max_outputs=4,edid=on -qmp unix:/tmp/qmp,server,nowait -daemonize
+$ gdbus introspect --address unix:path=/tmp/bus --dest org.qemu --object-path /org/qemu/Display1 | grep Console_
+$ gdbus call --address unix:path=/tmp/bus --dest org.qemu --object-path /org/qemu/Display1/Console_1 \
+      --method org.qemu.Display1.Console.SetUIInfo 0 0 0 0 1920 1080
+```
+
+and, over the QMP socket, `{"execute":"qmp_capabilities"}` then
+`{"execute":"screendump","arguments":{"filename":"/tmp/shot.png","device":"gpu0","head":0,"format":"png"}}`
+— a 640x480 PNG of a machine that has never run.
+
+## Where things go
+
+Nothing of this is in the repository. `vmctl` and the build scripts keep their state
+under `$VMDATA` (default `~/vm-data`) and look for the Ubuntu images in `$VMIMAGES`
+(default `~/images`); both are created on first use, `setup-host.sh` just does it
+earlier:
+
+```
+~/images/                          base cloud images and the desktop ISO, as downloaded
+~/vm-data/golden/<flavor>.qcow2    the golden images; a cloud-image flavor's is an overlay whose
+                                   backing file is the base image in ~/images BY ABSOLUTE PATH
+~/vm-data/golden/<flavor>-packages.txt, <flavor>.build.log
+~/vm-data/instances/<name>/        one directory per instance: disk.qcow2 (overlay on the golden),
+                                   seed.img, meta.json, qmp.sock, bus, dbus.pid, qemu.pid, serial.log
+~/vm-data/build/<flavor>/          a build in progress; removed on success, kept on failure
+~/vm-data/keys/id_ed25519[.pub]    the guest root key, generated once and used by every guest
+```
+
+Two consequences: do not move or delete `~/images` while cloud-image goldens exist
+(only the ISO flavor's golden stands on its own), and a copy of `~/images` plus
+`~/vm-data/golden` to another machine with the same home directory is a working set
+of goldens.
+
+The images the flavors expect, by the names in their `# vmctl-base:` / `# vmctl-iso:`
+headers:
+
+```console
+$ cd ~/images
+$ curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img          # the noble-* flavors
+$ curl -LO https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img   # resolute-*
+$ curl -LO https://releases.ubuntu.com/26.04/ubuntu-26.04.1-desktop-amd64.iso                    # resolute-gnome-iso only
+```
+
+`build-iso-golden.sh` checks the ISO's sha256 against the one in the flavor before it
+boots anything; the cloud images are whatever `current`/`release` points at when you
+download them, which is why every golden's package list is kept next to it.
+
+## The first golden image
+
+```console
+$ vm/vmctl build noble-gnome
+vmctl: generated guest root ssh key ~/vm-data/keys/id_ed25519
+vmctl: build noble-gnome: base noble-server-cloudimg-amd64.img, 4 vCPU/6G, ssh 127.0.0.1:2400 (root, debugging only)
+vmctl: [  20s] vmctl-build: flavor noble-gnome (gnome): Ubuntu 24.04.4 LTS, kernel 6.8.0-138-generic
+vmctl: [  50s] vmctl-build: installing ubuntu-desktop (expect 5-20 minutes)
+vmctl: [ 380s] vmctl-build: GDM: autologin of user test on Wayland, graphical.target
+vmctl: [ 390s] vmctl-build: golden image build finished
+vmctl: build noble-gnome: done in 6.6 min -> ~/vm-data/golden/noble-gnome.qcow2 (1695 packages listed in ...)
+```
+
+That run — a fresh `$VMDATA`, the default 4 vCPU / 6 GB, on a 4-CPU machine that was
+running one other build — took 6.6 minutes and produced a 5.4 GB image. The build
+logs of the other flavors put the guest's uptime at power-off between 6.3 minutes
+(`noble-xfce`) and 10.7 minutes (`resolute-kde`) for the desktop flavors, and one
+minute for `resolute-sway`; almost all of it is the desktop metapackage downloading
+and unpacking, so the network matters as much as the CPU. `build-iso-golden.sh
+resolute-gnome-iso` is 14 minutes on its default 2 vCPU / 4 GB (12.6 of them the
+installer's). Builds run one at a time per flavor and refuse to overwrite a golden
+without `--force`; two *different* flavors can build side by side on a machine with
+the memory for it.
+
+## The self-test
+
+```console
+$ vm/selftest.sh noble-gnome
+== [0s] vmctl start noble-gnome-t --flavor noble-gnome --heads 3 --fresh   (desktop gnome, native tool: GetCurrentState)
+vmctl: noble-gnome-t: ssh up after 16s
+== [16s] vmctl session noble-gnome-t
+vmctl: noble-gnome-t: wayland session 3 of user test (gnome) active after 4s
+vmctl: noble-gnome-t: desktop painted its first frame 2s later
+== [22s] GetCurrentState: expect Virtual-1..3, Virtual-1 at 0,0, no first-run window
+...
+== [35s] PASS: noble-gnome-t (noble-gnome, gnome) running, ssh port 2400, screenshots in /tmp/vmctl-selftest-noble-gnome-t
+```
+
+35 seconds for GNOME on the same machine (`vm/README.md` says roughly 40; a desktop
+that starts more slowly takes correspondingly longer). What it asserts, step by step,
+is under *Self-test* in `vm/README.md`; the two things that are easy to miss: it
+leaves the instance **running** for inspection (`vm/vmctl stop noble-gnome-t`, or
+`destroy`), and its three screenshots (1.3 MB each) stay in `/tmp/vmctl-selftest-<name>/`.
+A machine that passes it for one flavor passes it for the others once their goldens
+are built — the rig is the same; only the desktop differs.
+
+## The unit suite and the guest
+
+The suite (`tests/`, pytest) is a host-side thing: `python3 -m pytest tests -q` on the
+machine you develop on, or in the nix dev shell, with no desktop session of these
+kinds around. On such a machine it is `2024 passed, 61 skipped in 162.76s` — the 2085
+tests the repo README counts, in under three minutes.
+
+Run it *inside* a guest and it does not pass, by construction. Measured on the
+`noble-gnome` self-test instance, once as `test` in the live session and once as root
+over `vmctl ssh` with `env -i`:
+
+```console
+$ git archive HEAD | vm/vmctl ssh noble-gnome-t -- 'mkdir -p /home/test/fw && tar -x -C /home/test/fw && chown -R test:test /home/test/fw'
+$ vm/vmctl ssh noble-gnome-t -- apt-get install -y python3-pytest        # the goldens have no pytest
+$ vm/vmctl user noble-gnome-t -- sh -c 'cd /home/test/fw && python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/test_cli_parity.py'
+...
+164 failed, 1822 passed, 98 skipped, 40 warnings in 106.66s (0:01:46)
+```
+
+(162 failed, 1801 passed, 105 skipped, 16 errors as root.) The same two modules that
+carry most of the failures pass on the host in eight seconds. What fails is every test
+that asserts the *absence* of a compositor — they set `XDG_RUNTIME_DIR=/nonexistent`
+and expect an error, or drive a mock session bus — because the tools find the guest's
+real session anyway by scanning `/run/user/*`, exactly as `vm/README.md` documents for
+root over `vmctl ssh`. On a machine that *is* a running desktop, "no compositor" is
+false. `tests/test_cli_parity.py` is left out for a different reason: it compares
+against the real `xdotool` on `PATH` at import time, and the goldens carry Ubuntu's
+3.20160805.1 where parity is claimed against 4.20260303.1 (*Version note* in
+`vm/README.md`), so on a golden it fails at collection instead of skipping.
+
+So the division of labour is: the suite on the host, and the guest for what only it
+has — a real session of a real desktop. That is `vm/vmctl user <name> -- python3 -m
+wxrandr --query` and friends, the `repro/` scripts, and the per-flavor measurements
+under *What the five tools do on each flavor* in `vm/README.md`.
+
+## Housekeeping
+
+Instances are disposable and goldens are not; everything under `~/vm-data/instances`
+can be recreated in half a minute from the golden it overlays.
+
+* `vm/vmctl list` shows every instance and build directory with its state, pid, port
+  and heads; `du -sh ~/vm-data/*` shows where the space went. A stopped instance
+  still holds its directory (30–350 MB) and its ssh port; `vm/vmctl destroy <name>`
+  frees both.
+* `vm/selftest.sh` creates `<flavor>-t` every time and leaves it running; `destroy`
+  it when done, and clear `/tmp/vmctl-selftest-*` now and then.
+* A failed build leaves `~/vm-data/build/<flavor>/` (up to a golden's worth of disk)
+  for inspection; `vmctl list` shows it as `(build)`. Delete the directory once you
+  have read `serial.log`.
+* Rebuilding a golden (`build --force`) replaces the backing file of every instance
+  on it; restart those with `--fresh` (or destroy them first).
+* After a host reboot nothing needs cleaning: pidfiles are checked against `/proc`
+  and a stale one is removed on the next `vmctl` command; the private `dbus-daemon`
+  of each instance is restarted with it.
+* `~/vm-data/golden/*.build.log` and `*-packages.txt` are small (under 300 KB) and
+  worth keeping: they say what each image contains and how it was made.
+* Nothing here runs as root or leaves anything outside `$VMDATA`, `$VMIMAGES` and
+  `/tmp`, so retiring the rig is `rm -rf ~/vm-data ~/images` after `vm/vmctl destroy`
+  of whatever is running.
