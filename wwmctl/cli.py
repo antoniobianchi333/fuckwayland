@@ -365,7 +365,7 @@ def _oracle_generation() -> str:
         if real:
             import subprocess
             out = subprocess.run([real, "--help"], capture_output=True,
-                                 timeout=10).stdout
+                                 stdin=subprocess.DEVNULL, timeout=10).stdout
             if b"\n  -j " in out:
                 _GENERATION = "git"
     except Exception:

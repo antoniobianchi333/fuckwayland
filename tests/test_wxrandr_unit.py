@@ -6,10 +6,13 @@ needed."""
 
 import contextlib
 import io
+import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -697,6 +700,43 @@ class VersionAndMisc(unittest.TestCase):
         ramp = compute_ramp(4, -0.5, (1.0, 1.0, 1.0))
         self.assertEqual(st.unpack("=12H", ramp)[:4], (0, 0, 0, 0))
 
+
+
+class StateFileOwnership(unittest.TestCase):
+    """The state file decides which pid `--brightness` signals, what
+    `--newmode` lines exist and which output is primary. Under sudo it lives
+    in world-writable /tmp under a guessable name, so a file that is not
+    ours must be ignored rather than obeyed."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.path = os.path.join(self.d, "state.json")
+        with open(self.path, "w") as f:
+            json.dump({"k": {"primary": "OUT-1"}}, f)
+
+    def test_our_own_file_is_read(self):
+        self.assertEqual(State("k", path=self.path).primary, "OUT-1")
+
+    def test_a_file_owned_by_someone_else_is_ignored(self):
+        real = os.fstat
+
+        def fake(fd):
+            st = real(fd)
+            return os.stat_result((st.st_mode, st.st_ino, st.st_dev,
+                                   st.st_nlink, st.st_uid + 1, st.st_gid,
+                                   st.st_size, 0, 0, 0))
+        with mock.patch.object(os, "fstat", fake):
+            self.assertIsNone(State("k", path=self.path).primary)
+
+    def test_a_world_writable_file_is_ignored(self):
+        os.chmod(self.path, 0o666)
+        self.assertIsNone(State("k", path=self.path).primary)
+
+    def test_a_symlink_is_never_followed(self):
+        link = os.path.join(self.d, "link.json")
+        os.symlink(self.path, link)
+        self.assertIsNone(State("k", path=link).primary)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -444,7 +444,45 @@ function hookEvents() {
   on(workspace, "currentDesktopChanged", ws);
   on(workspace, "desktopsChanged", ws);                 /* 6 */
   on(workspace, "numberDesktopsChanged", ws);           /* 5.27 */
+  watchOwner();
   return {hooked: l.length};
+}
+
+/* This is the one script that stays loaded, and only the wdotool that loaded
+   it can unload it -- by a pluginName that is random per call and dies with
+   the process. A Ctrl-C, an OOM kill or a crash therefore used to leave it
+   running inside KWin for the rest of the session, connected to every
+   window's signals and sending a D-Bus call per frame of every drag, with no
+   way for anyone to name it again. So it watches its owner: a Ping every
+   WATCH_MS, and after WATCH_MISSES rounds with no answer it unloads itself.
+   The Python side answers every method call on that connection, so an owner
+   that is alive but busy just answers late (the counter resets on any
+   reply). Wrapped: without QTimer this is exactly the old behaviour. */
+var WATCH_MS = 10000;
+var WATCH_MISSES = 3;
+function watchOwner() {
+  if (!A.plugin) {
+    return;
+  }
+  var alive = true, missed = 0;
+  try {
+    var wd = new QTimer();
+    wd.interval = WATCH_MS;
+    wd.timeout.connect(function () {
+      missed = alive ? 0 : missed + 1;
+      if (missed >= WATCH_MISSES) {
+        wd.stop();
+        callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting",
+                 "unloadScript", String(A.plugin));
+        return;
+      }
+      alive = false;
+      callDBus(A.dest, A.path, A.iface, "Ping", A.token,
+               function () { alive = true; });
+    });
+    wd.start();
+    _keep.push(wd);
+  } catch (e) { }
 }
 
 /* -------------------------------------------------------------------- main */

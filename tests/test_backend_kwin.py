@@ -123,6 +123,7 @@ class FakeKWin:
         self.plugins = []               # every pluginName ever loaded
         self.loaded = set()             # pluginNames live right now
         self.runs = []                  # object paths run() was tried on
+        self.script_modes = []          # permissions each script file had
         self.unloaded = []
         self.calls = []
         self.showing_desktop = False
@@ -197,6 +198,7 @@ class FakeKWin:
     def s_loadScript(self, path, plugin):
         if self.refuse_load or plugin in self.loaded:
             return "i", (-1,)
+        self.script_modes.append(os.stat(path).st_mode & 0o777)
         with open(path) as fh:
             source = fh.read()
         head = source.split("\n", 1)[0]
@@ -956,14 +958,15 @@ class BackendTests(_Base):
 
     def test_events(self):
         it = self.b.events(timeout=3.0, workspaces=True)
-        pusher = Bus(self.mock.address)
-        self.addCleanup(pusher.close)
 
         def push():
+            # KWin's script engine calls out over KWin's own bus connection,
+            # so the events carry KWin's unique name as their sender -- which
+            # is what the backend checks (see the spoofing test below).
             self.kwin.events_ready.wait(5)
             for uuid, change in ((UU["kate"], "title"), ("", "workspace"),
                                  (UU["xterm"], "close")):
-                self.kwin.emit(pusher, uuid, change)
+                self.kwin.emit(self.kwin.bus, uuid, change)
 
         t = threading.Thread(target=push, daemon=True)
         t.start()
@@ -974,6 +977,58 @@ class BackendTests(_Base):
                                (WID["xterm"], "close")])
         # the event script is unloaded when the iteration ends
         self.assertEqual(self.kwin.loaded, set())
+
+    def test_events_from_a_foreign_connection_are_ignored(self):
+        """The token is a shared secret in a file KWin must be able to read,
+        so it is not proof of who is answering. Only the owner of
+        org.kde.KWin is: a same-uid process that read the token out of /tmp
+        must not be able to feed window facts to a (possibly root) wdotool."""
+        it = self.b.events(timeout=3.0, workspaces=True)
+        spoofer = Bus(self.mock.address)
+        self.addCleanup(spoofer.close)
+
+        def push():
+            self.kwin.events_ready.wait(5)
+            self.kwin.emit(spoofer, UU["kate"], "title")          # not KWin
+            self.kwin.emit(self.kwin.bus, UU["xterm"], "close")   # KWin
+
+        t = threading.Thread(target=push, daemon=True)
+        t.start()
+        got = list(it)
+        t.join(5)
+        self.assertEqual(got, [(WID["xterm"], "close")])
+
+    def test_the_script_file_is_not_world_readable(self):
+        """The generated script carries the reply token, the window titles
+        and the search patterns of the command. It used to be chmod 0644 in
+        /tmp for the lifetime of the call so that KWin could read it when
+        wdotool runs as root; KWin runs as us in every other case, and 0600
+        is enough. As root the file is chown()ed to the bus owner instead of
+        being opened to everybody."""
+        self.b.list()
+        self.assertTrue(self.kwin.script_modes)
+        for mode in self.kwin.script_modes:
+            self.assertEqual(mode & 0o077, 0, oct(mode))
+        src = open(os.path.join(ROOT, "wdotool", "backend_kwin.py")).read()
+        self.assertIn("if os.geteuid() == 0:", src)
+        self.assertIn("os.chown(path, owner, -1)", src)
+
+    def test_the_events_script_knows_its_own_plugin_name(self):
+        """It is the only script that stays loaded, and only the process that
+        loaded it can unload it -- so it has to be able to do that itself
+        when that process is killed (K1)."""
+        seen = {}
+        orig = self.b._load_run
+
+        def spy(plugin, source, deadline):
+            seen["plugin"], seen["source"] = plugin, source
+            return orig(plugin, source, deadline)
+
+        self.b._load_run = spy
+        self.addCleanup(lambda: self.b.__dict__.pop("_load_run", None))
+        self.assertEqual(list(self.b.events(timeout=0.3)), [])
+        self.assertIn('"plugin": "%s"' % seen["plugin"], seen["source"])
+        self.assertTrue(seen["plugin"].endswith(seen["plugin"].split("-")[-1]))
 
     def test_events_stop_after_silence(self):
         self.assertEqual(list(self.b.events(timeout=0.3)), [])
@@ -1175,6 +1230,25 @@ class ScriptTextTests(unittest.TestCase):
                         ("function writeState(", "/* The signals")):
             body = js[js.index(fn):js.index(end)]
             self.assertIn("mmode(w)", body)
+
+    def test_the_events_script_unloads_itself_when_orphaned(self):
+        # A killed wdotool (Ctrl-C, OOM, a crash) cannot unload the resident
+        # events script, and its pluginName -- the only handle KWin offers --
+        # died with it. What was left ran for the session, connected to every
+        # window's signals, sending a D-Bus call per frame of every drag. The
+        # script now watches its owner and unloads itself when the answers
+        # stop; the Python side answers every call on that connection, so a
+        # busy owner just answers late.
+        js = kwin_js.SCRIPT
+        hook = js[js.index("function hookEvents()"):js.index("var WATCH_MS")]
+        self.assertIn("watchOwner();", hook)
+        watch = js[js.index("function watchOwner()"):js.index("function main()")]
+        for token in ("new QTimer()", "wd.interval = WATCH_MS",
+                      '"Ping", A.token', "missed >= WATCH_MISSES",
+                      '"unloadScript", String(A.plugin)'):
+            self.assertIn(token, watch)
+        # no QTimer (a KWin build without it): exactly the old behaviour
+        self.assertIn("} catch (e) { }", watch)
 
     def test_a_state_write_waits_for_the_window_to_agree(self):
         # a Wayland client applies fullscreen/maximize on the configure ack,

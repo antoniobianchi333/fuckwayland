@@ -109,6 +109,9 @@ _LAYER_TYPES = {"DESKTOP", "DOCK"}
 _GAP_REASONS = {"SHADED": "Plasma 6 removed window shading"}
 
 
+_UNSET = object()   # "not resolved yet", distinct from "no answer"
+
+
 class KwinBackend(WindowBackend):
     name = "kwin"
     # wmctrl -m: what KWin writes into _NET_SUPPORTING_WM_CHECK's _NET_WM_NAME
@@ -138,6 +141,7 @@ class KwinBackend(WindowBackend):
         self.dest = _own(self.bus, BUS_NAME)
         self.script_timeout = SCRIPT_TIMEOUT
         self._seq = 0
+        self._kwin_name = _UNSET   # KWin's unique bus name, resolved once
         self._uuids: dict[int, str] = {}   # printed id -> KWin internalId
         self._screen = None                # cached screen size + work areas
         self._x = "unset"                  # lazy X11Conn for XWayland ids
@@ -172,7 +176,7 @@ class KwinBackend(WindowBackend):
         self._seq += 1
         token = "%d-%d-%s" % (os.getpid(), seq, os.urandom(4).hex())
         plugin = _plugin_name(seq)
-        source = self._source(self.dest, token, op, **kw)
+        source = self._source(self.dest, token, op, plugin=plugin, **kw)
         deadline = time.monotonic() + timeout
         self._load_run(plugin, source, deadline)
         if op == "events":
@@ -193,11 +197,25 @@ class KwinBackend(WindowBackend):
         finally:
             os.close(fd)
         # KWin reads the file as the session user; wdotool may be root (the
-        # sudo path), and mkstemp's 0600 would then be unreadable for it.
-        try:
-            os.chmod(path, 0o644)
-        except OSError:
-            pass
+        # sudo path), and mkstemp's 0600 would then be unreadable for it. Hand
+        # the file to that user rather than to everybody: it carries the reply
+        # token, and whoever reads the token can answer in KWin's place (a
+        # fabricated window list, geometry, ids), plus the window titles and
+        # search patterns of the command itself. Not root: KWin runs as us
+        # then, and 0600 is already right.
+        if os.geteuid() == 0:
+            owner = None
+            try:
+                owner = self.bus._owner_uid()
+            except Exception:
+                owner = None
+            try:
+                if owner is not None:
+                    os.chown(path, owner, -1)
+                else:
+                    os.chmod(path, 0o644)   # unreadable would break the call
+            except OSError:
+                pass
         try:
             (sid,) = self._call(SCRIPTING_PATH, SCRIPTING_IFACE, "loadScript",
                                 "ss", (path, plugin))
@@ -232,6 +250,29 @@ class KwinBackend(WindowBackend):
         except CmdError:
             pass   # best effort: the script is gone, or KWin is
 
+    def _kwin_unique_name(self):
+        """KWin's unique bus name (`:1.42`), or None when it cannot be asked.
+
+        The reply token is a shared secret written into a file KWin has to be
+        able to read, so it is not on its own proof of who is answering. The
+        bus knows: the sender of a genuine Result is whoever owns
+        org.kde.KWin. Cached -- one GetNameOwner per backend, and a name
+        cannot change owner without KWin having died."""
+        if self._kwin_name is _UNSET:
+            self._kwin_name = None
+            try:
+                self._kwin_name = self.bus.get_name_owner(KWIN_NAME)
+            except Exception:
+                pass
+        return self._kwin_name
+
+    def _from_kwin(self, m) -> bool:
+        """Was this message sent by KWin? Unknown counts as yes: a bus that
+        cannot resolve the name (or does not stamp senders) leaves us exactly
+        where we were before, and the token still has to match."""
+        owner = self._kwin_unique_name()
+        return owner is None or m.sender is None or m.sender == owner
+
     def _collect(self, bus: Bus, token: str, deadline: float) -> str:
         """The script's Result payload, already queued behind run()'s reply.
 
@@ -251,7 +292,7 @@ class KwinBackend(WindowBackend):
                         a = m.args()
                     except (ValueError, IndexError):
                         a = ()
-                    if len(a) >= 2 and a[0] == token:
+                    if len(a) >= 2 and a[0] == token and self._from_kwin(m):
                         hit = a[1]
                 if not m.flags & NO_REPLY_EXPECTED:
                     try:
@@ -611,7 +652,8 @@ class KwinBackend(WindowBackend):
             token = "%d-ev-%s" % (os.getpid(), os.urandom(4).hex())
             plugin = _plugin_name(self._seq, "ev")
             self._seq += 1
-            self._load_run(plugin, self._source(dest, token, "events"),
+            self._load_run(plugin, self._source(dest, token, "events",
+                                                plugin=plugin),
                            time.monotonic() + SCRIPT_TIMEOUT)
             while True:
                 got = False
@@ -625,6 +667,9 @@ class KwinBackend(WindowBackend):
                             return
                     if m.interface != IFACE or m.member != "Event":
                         continue
+                    if not self._from_kwin(m):
+                        continue    # window facts come from KWin, not from
+                                    # whoever else found the token
                     try:
                         tok, u, change = m.args()[:3]
                     except (ValueError, IndexError):

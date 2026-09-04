@@ -5,6 +5,7 @@ Env overrides for testing:
   WDOTOOL_FAKE_UINPUT=1  skip ioctls so a regular file can stand in for uinput
 """
 
+import errno
 import fcntl
 import os
 import struct
@@ -52,11 +53,37 @@ _EVENT_FMT = "llHHi"  # struct input_event: timeval + type,code,value (24B on LP
 _USER_DEV_FMT = "80sHHHHI64i64i64i64i"  # struct uinput_user_dev (1116 bytes)
 
 
+def dev_path() -> str:
+    return os.environ.get("WDOTOOL_UINPUT_PATH", "/dev/uinput")
+
+
+def access_ok() -> bool:
+    """Can this process still open the uinput node?
+
+    The udev rule grants access through a logind ACL on the *active* seat
+    session, and logind takes it away again at a VT switch or a fast user
+    switch. The ACL is only consulted at open(), so a daemon that opened the
+    node while its user was at the seat keeps its devices -- and would keep
+    injecting into whoever owns the seat now. Re-checking before each
+    injection gives the grant back its meaning. Root (which needs no grant)
+    and the fake-device test mode always pass; anything but a permission
+    error is somebody else's problem and is left to the real open().
+    """
+    if os.geteuid() == 0 or os.environ.get("WDOTOOL_FAKE_UINPUT") == "1":
+        return True
+    try:
+        fd = os.open(dev_path(), os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as e:
+        return e.errno not in (errno.EACCES, errno.EPERM)
+    os.close(fd)
+    return True
+
+
 class UinputDevice:
     """One virtual evdev device created through /dev/uinput."""
 
     def __init__(self, name, keys=(), rels=(), abs_axes=(), vendor=0x0627, product=0x0001):
-        path = os.environ.get("WDOTOOL_UINPUT_PATH", "/dev/uinput")
+        path = dev_path()
         self.fake = os.environ.get("WDOTOOL_FAKE_UINPUT") == "1"
         self.fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
         self._created = False

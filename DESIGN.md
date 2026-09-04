@@ -649,8 +649,9 @@ difference between "not logged in yet" and "no such window" for a script.
   `set_desktop_for_window -1` sticks). `selectwindow` = bridge `SelectWindow(0)`
   (bridge v2+, refused with a "reinstall it" message below that): a stage grab
   in the extension, resolved by the next button press with the window under
-  the pointer, `.Cancelled` for Escape / its 5-minute cap / a caller that went
-  away, and `.Unsupported` for a second concurrent picker or a shell that is
+  the pointer, `.Cancelled` for Escape / its 30-second cap / a caller that went
+  away (and `.Unsupported` for a call inside the quiet period a finished
+  selection leaves behind: the cap bounds one call, that bounds the caller), and `.Unsupported` for a second concurrent picker or a shell that is
   already modal (the overview, a menu: `pushModal` refusing is a refusal, not
   a reason to take a plain stage grab and hit-test against frame rects that
   are not on screen) — all of them rc 1 with the reason. The D-Bus call has no

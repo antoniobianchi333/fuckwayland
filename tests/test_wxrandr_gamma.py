@@ -9,6 +9,7 @@ the fd, stay alive holding it, block a second acquirer, and die on demand
 (restoring gamma = the compositor seeing the disconnect)."""
 
 import os
+import shutil
 import socket
 import struct
 import sys
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -309,6 +311,24 @@ def _alive(pid: int) -> bool:
     except OSError:
         return False
 
+
+
+class HolderOwnership(unittest.TestCase):
+    def test_a_pid_owned_by_another_user_is_never_signalled(self):
+        """Belt and braces behind the state file's ownership check: a gamma
+        holder we started runs as us, so a record naming somebody else's
+        process is not ours to SIGTERM -- least of all as root."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        st = State("k", path=os.path.join(d, "s.json"))
+        st.gamma()["HDMI-1"] = {"pid": 1, "start": "?",   # pid 1 is root's
+                                "brightness": 1.0, "gamma": [1, 1, 1]}
+        killed = []
+        with mock.patch.object(gammamod.os, "kill", lambda p, s: killed.append(p)):
+            if os.geteuid() == 0:
+                self.skipTest("as root every pid is 'ours'")
+            self.assertFalse(gammamod.stop_holder(st, "HDMI-1"))
+        self.assertEqual(killed, [])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -20,6 +20,8 @@ import hashlib
 import json
 import os
 import socket
+import stat
+import struct
 import sys
 import threading
 import time
@@ -85,13 +87,45 @@ def _mods(val, what: str) -> list:
     return out
 
 
+def _fallback_dir() -> str:
+    """A private `/tmp/wdotool-<uid>` for the socket when there is no
+    XDG_RUNTIME_DIR, created 0700 and then verified.
+
+    That fallback is not exotic: `sudo` drops XDG_RUNTIME_DIR, and so do
+    `su -`, cron and a bare container -- all documented ways to run these
+    tools. /tmp is world-writable, so a plain `/tmp/wdotool-<uid>.sock` can be
+    bound by another local user before we get there; the client never learns
+    who answered, so every request -- the text of `type` included -- would be
+    delivered to them, and they can reply {"ok":true} so the caller sees a
+    success. A directory nobody else may enter closes that, and takes the
+    `.lock` beside the socket out of reach with it. It is verified after
+    creation because an attacker may have created it first."""
+    d = "/tmp/wdotool-%d" % os.getuid()
+    try:
+        os.mkdir(d, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as e:
+        raise CmdError(f"cannot create {d}: {e}") from None
+    try:
+        st = os.lstat(d)
+    except OSError as e:
+        raise CmdError(f"cannot stat {d}: {e}") from None
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid()
+            or st.st_mode & 0o077):
+        raise CmdError(
+            f"{d} is not a private directory owned by uid {os.getuid()}; "
+            "refusing to put the wdotool socket there")
+    return d
+
+
 def socket_path() -> str:
     if os.geteuid() == 0:
         return "/run/wdotool.sock"
     rd = os.environ.get("XDG_RUNTIME_DIR")
     if rd:
         return os.path.join(rd, "wdotool.sock")
-    return f"/tmp/wdotool-{os.getuid()}.sock"
+    return os.path.join(_fallback_dir(), "wdotool.sock")
 
 
 def _bbox_of(boxes) -> tuple[int, int, int, int]:
@@ -305,6 +339,9 @@ class _Daemon:
         self.kb = self.mouse = self.tablet = None
         self.dev_error = "uinput devices not initialized"
         self.down: set[int] = set()  # keycodes we injected as down
+        # keycodes released by the op running inside _mods_cleared(); see
+        # _mods_cleared() for why the restore has to subtract them
+        self._released_mods: set[int] = set()
         self._next_ok = 0.0  # monotonic deadline for the next keystroke
         # Last (ABS_X, ABS_Y) written to the tablet; a fresh uinput device
         # starts at 0,0, which is what the kernel will compare against.
@@ -363,7 +400,42 @@ class _Daemon:
                 print(err, file=sys.stderr, flush=True)
             self.dev_error = err
 
+    def _drop_devices(self, why: str):
+        """Destroy the virtual devices and remember why, so the next request
+        gets the reason instead of a silent no-op. create_devices() rebuilds
+        them if the cause has gone away."""
+        for dev in (self.kb, self.mouse, self.tablet):
+            if dev is not None:
+                dev.close()
+        self.kb = self.mouse = self.tablet = None
+        self.down.clear()      # the kernel released them with the device
+        self._reader = _UNSET
+        if why != self.dev_error:
+            print(why, file=sys.stderr, flush=True)
+        self.dev_error = why
+
+    def _grant_gone(self) -> bool:
+        """Did the /dev/uinput grant we opened the devices under go away?
+
+        Only asked of devices that really came from the node (`fake` devices
+        and the ones the tests install by hand answer no), and only ever
+        answered yes by a permission error -- see uinput.access_ok()."""
+        if self.kb is None or getattr(self.kb, "fake", True):
+            return False
+        return not uinput.access_ok()
+
     def _need_devices(self):
+        if self._grant_gone():
+            # The grant we opened /dev/uinput under is gone: logind moved the
+            # seat to another session (a VT switch, a fast user switch). The
+            # devices we already hold would keep injecting into *their*
+            # session, which is exactly what the uaccess tag exists to
+            # prevent, so let go of them until the seat comes back.
+            self._drop_devices(
+                "/dev/uinput is no longer accessible to this user (this "
+                "session is not the active one); wdotool stops injecting "
+                "until it is")
+            raise RuntimeError(self.dev_error)
         if self.dev_error:
             # Retry: the failure may be transient (uinput module loaded after
             # boot, devices raced). Cheap when it fails again — the 600ms
@@ -678,8 +750,10 @@ class _Daemon:
                     continue
                 self.kb.key(mod, False)
                 self.down.discard(mod)
+                self._released_mods.add(mod)
             self.kb.key(code, False)
             self.down.discard(code)
+            self._released_mods.add(code)
             self._key_gap(delay)
 
     # -- modifiers around an injection (--clearmodifiers) ------------------
@@ -766,7 +840,10 @@ class _Daemon:
         `keydown ctrl; type --clearmodifiers x` ends with ctrl down, and the
         user's own `keyup ctrl` (or the daemon exiting, which destroys the
         device and releases its keys) still ends it. Nothing else is ever
-        pressed here, which is what makes a stuck modifier impossible."""
+        pressed here, which is half of what makes a stuck modifier
+        impossible; the other half is in _mods_cleared(), which subtracts
+        whatever the injection itself released (`keyup --clearmodifiers
+        ctrl` asked for ctrl to be up, so it is not in the set we get)."""
         for code in keymap.MODIFIER_KEYCODES:
             if code in held:
                 self.kb.key(code, True)
@@ -815,10 +892,18 @@ class _Daemon:
             return
         self._need_devices()
         held = self._clear_mods(warnings, session)
+        self._released_mods = set()
         try:
             yield
         finally:
-            self._restore_mods(held)
+            # Whatever the op itself released stays released: `keyup
+            # --clearmodifiers ctrl` must not have ctrl pressed back down
+            # afterwards. It would be stuck for the daemon's lifetime -- only
+            # the device holding a key can release it, so the user's own
+            # keyboard could not clear it -- and the command asked for the
+            # opposite of that.
+            self._restore_mods(held - self._released_mods)
+            self._released_mods = set()
 
     def op_clear_modifiers(self, warnings=None, session=None) -> list:
         """The clear half on its own (DaemonClient.clear_modifiers, kept for
@@ -1011,10 +1096,22 @@ class _Daemon:
 
 
 def daemon_main() -> int:
-    path = socket_path()
+    try:
+        path = socket_path()
+    except CmdError as e:
+        print(f"wdotool daemon: {e}", file=sys.stderr, flush=True)
+        return 1
     # Startup lock, held for the daemon's lifetime: losers of a concurrent
     # spawn race must never unlink the winner's freshly-bound socket.
-    lock_fd = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    # O_NOFOLLOW and a message rather than a traceback: the lock file lives
+    # beside the socket, and a socket directory can be somebody else's.
+    try:
+        lock_fd = os.open(path + ".lock",
+                          os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        print(f"wdotool daemon: cannot open {path}.lock: {e}",
+              file=sys.stderr, flush=True)
+        return 1
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -1046,6 +1143,10 @@ def daemon_main() -> int:
     old_umask = os.umask(0o177)
     try:
         srv.bind(path)
+    except OSError as e:
+        print(f"wdotool daemon: cannot bind {path}: {e}",
+              file=sys.stderr, flush=True)
+        return 1
     finally:
         os.umask(old_umask)
     os.chmod(path, 0o600)
@@ -1092,14 +1193,36 @@ class DaemonClient:
         return cls(sock)
 
     @staticmethod
+    def _peer_uid(sock):
+        """uid at the other end of a connected AF_UNIX socket, or None when
+        the kernel will not say (never on Linux)."""
+        try:
+            data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                   struct.calcsize("3i"))
+            return struct.unpack("3i", data)[1]
+        except (OSError, AttributeError, struct.error):
+            return None
+
+    @staticmethod
     def _try_connect(path):
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             sock.connect(path)
-            return sock
         except OSError:
             sock.close()
             return None
+        # Who answered? Only a process running as us may: a socket path in a
+        # shared directory can be pre-bound by another local user, and what we
+        # send down it is the text of `type` and the geometry a later click is
+        # computed from. Say so and stop, rather than typing a password into
+        # somebody else's process.
+        uid = DaemonClient._peer_uid(sock)
+        if uid is not None and uid != os.geteuid():
+            sock.close()
+            raise CmdError(
+                f"{path} belongs to uid {uid}, not to us: refusing to send "
+                "input requests to another user's process")
+        return sock
 
     @staticmethod
     def _exec_plan() -> "list[tuple[str, list[str], dict]]":
@@ -1155,10 +1278,15 @@ class DaemonClient:
             plan = DaemonClient._exec_plan()  # resolves paths before chdir
             null = os.open(os.devnull, os.O_RDONLY)
             try:
-                # O_NOFOLLOW: never append through a planted symlink in /tmp.
+                # O_NOFOLLOW: never append through a planted symlink in
+                # /tmp -- and never into a regular file somebody else made
+                # there either (the log carries session diagnostics).
                 log = os.open(LOG_PATH,
                               os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
                               0o644)
+                if os.fstat(log).st_uid != os.geteuid():
+                    os.close(log)
+                    raise OSError("log file is not ours")
             except OSError:
                 log = os.open(os.devnull, os.O_WRONLY)
             os.dup2(null, 0)

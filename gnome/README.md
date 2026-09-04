@@ -105,12 +105,26 @@ prints the extension state and any load error.
 
 ## Security note
 
-Anything that can connect to your session bus can list, move, close, kill and
-focus your windows through this bridge. That is exactly the situation on X11,
-where any client of the display can do all of that and more (read keystrokes,
-grab the screen), and it is the deliberate trade: the tools exist to give
-scripts that power back. Sandboxed applications (Flatpak/Snap) without session
-bus access cannot reach it. The bridge never evaluates code and never
+Installing the bridge grants **every process that can reach your session
+bus** — which includes a sandboxed app allowed to talk to `org.gnome.Shell`,
+because the object answers there too — the ability to
+
+1. read the title, class, pid, geometry, workspace and app-id of every
+   window, which stock GNOME withholds by sender-allowlisting
+   `org.gnome.Shell.Introspect`;
+2. move, resize, restack, close and **SIGKILL** any window;
+3. learn `DISPLAY` and the path of Mutter's Xwayland auth cookie;
+4. take the shell's modal input grab for the length of one window pick
+   (bounded at 30 s, and followed by a quiet period as long as the grab it
+   just held, so a caller in a loop cannot keep the session locked out); and
+5. confirm a pending display-configuration change — except one that would
+   leave no enabled monitor, which is refused because nothing could then
+   press Revert.
+
+There is no partial mode and no caller check. That is roughly the situation
+on X11, where any client of the display can do all of that and more (read
+keystrokes, grab the screen), and it is the deliberate trade: the tools exist
+to give scripts that power back. The bridge never evaluates code and never
 injects input; input goes through the kernel (`/dev/uinput`), not the shell.
 
 If you do not want any process on the bus to have this power, do not install
@@ -146,7 +160,7 @@ gdbus call --session --dest org.fuckwayland.Bridge --object-path /org/fuckwaylan
 | `MoveResize` | `(t, i, i, i, i)` | |
 | `SetState` | `(t, s state, s action) → b` | `state` ∈ `FULLSCREEN MAXIMIZED_HORZ MAXIMIZED_VERT MAXIMIZED HIDDEN ABOVE BELOW STICKY DEMANDS_ATTENTION SHADED SKIP_TASKBAR SKIP_PAGER MODAL`, `action` ∈ `add remove toggle`. `MAXIMIZED_HORZ`/`_VERT` are real per-axis operations on every release. Returns `false` (and does nothing) for what Mutter cannot set: `SHADED`, `SKIP_*`, `MODAL`, `BELOW`. Unknown ids still raise `NotFound`. |
 | `MoveToWorkspace` | `(t, i index)` | `change_workspace_by_index`; `index < 0` = stick to all workspaces (EWMH 0xFFFFFFFF); `NotFound` for a missing workspace |
-| `SelectWindow` | `(u timeout_ms) → t` | **v2**: takes a stage grab and resolves with the window under the pointer at the next button press (`xdotool selectwindow`, including the window that already has focus); `0` when the press landed on no window. Escape, the deadline, a caller that disconnected and a disabled extension all come back as `Cancelled`. `timeout_ms = 0` means "as long as the user takes" and is still capped at 5 minutes, as is any larger value — a grab is never held indefinitely. Set your D-Bus call timeout above it (the clients use none). v1 resolved on the next *focus change* instead. |
+| `SelectWindow` | `(u timeout_ms) → t` | **v2**: takes a stage grab and resolves with the window under the pointer at the next button press (`xdotool selectwindow`, including the window that already has focus); `0` when the press landed on no window. Escape, the deadline, a caller that disconnected and a disabled extension all come back as `Cancelled`. `timeout_ms = 0` means "as long as the user takes" and is still capped at 30 seconds, as is any larger value — a grab is never held indefinitely, and a finished selection leaves behind a quiet period as long as the grab it held, so a caller cannot re-arm in a loop (`Unsupported` until it passes). Set your D-Bus call timeout above it (the clients use none). v1 resolved on the next *focus change* instead. |
 
 There is no hit-test method on purpose: `getmouselocation`'s window is
 computed client-side from `ListWindows` (`GnomeBackend.window_at()`, looking
@@ -503,10 +517,13 @@ repo can fix; the bugs that *were* fixable have been.
   swallowed (it does not reach the application, as under an X11 pointer
   grab), keystrokes during the pick are swallowed too and **Escape cancels**
   (rc 1, `selectwindow: cancelled with Escape`), a click on no window is an
-  error rather than X11's root window, and the grab is capped at **5
-  minutes** — an input grab that outlived its client would leave the session
+  error rather than X11's root window, and the grab is capped at **30
+  seconds** — an input grab that outlived its client would leave the session
   unable to click anything, so it is bounded, released when the caller
-  disconnects (Ctrl-C), and released when the extension is disabled. The grab
+  disconnects (Ctrl-C), and released when the extension is disabled. The cap
+  bounds one call; a **quiet period as long as the grab just held** bounds
+  the caller, so a client that re-arms in a loop gets at most half the time
+  while an honest picker (a click, in a second or two) is never delayed. The grab
   is held a moment past the press (≤300 ms) for the matching button-release,
   so the application does not receive half a click it never saw the start of;
   scroll, touch and pad events during a pick are swallowed as well, while
@@ -582,7 +599,11 @@ KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uacces
   autoloads it). The `modules-load.d` file loads it at boot anyway so nothing
   depends on the autoload path.
 * Deliberately **no `MODE`/`GROUP`**: the node stays `root:root 0600` plus
-  the ACL, so only the user at the seat can inject input. An earlier
+  the ACL, so only the user at the seat can inject input. The ACL is
+  consulted at `open()` only, so the daemon re-checks it before every
+  injection and drops its virtual devices when logind hands the seat to
+  another session — otherwise a user who switched away would keep typing
+  into the session that replaced theirs. An earlier
   revision added `MODE="0660", GROUP="input"` as a fallback for sessions
   logind does not manage; that hands every member of `input` (service
   accounts included) a standing keystroke-injection channel into the seat

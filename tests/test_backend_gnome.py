@@ -90,7 +90,7 @@ class MockBridge:
 
     # The bridge's own hard cap on a window selection (extension.js
     # SELECT_MAX_MS); a test below checks the two have not drifted apart.
-    SELECT_MAX_MS = 300000
+    SELECT_MAX_MS = 30000
     VERSION = 2
 
     def __init__(self, mock, own_shell=True, own_bridge=True,
@@ -1338,6 +1338,45 @@ class ShippedFilesTests(unittest.TestCase):
         self.assertEqual(backend_gnome.GnomeBackend._SELECT_MIN_VERSION,
                          MockBridge.VERSION)
         self.assertIn("const SELECT_MAX_MS = %d;" % MockBridge.SELECT_MAX_MS, js)
+
+    def test_a_selection_may_not_hold_the_grab_back_to_back(self):
+        """The per-call cap bounds one call, not the caller: any process on
+        the session bus could start the next selection microseconds after the
+        last ended and hold the shell's input grab -- no key, no button, no
+        scroll reaching any application -- for as long as it liked. Each
+        selection is now followed by a quiet period as long as the grab it
+        held, so a loop gets at most half the time and an honest picker (a
+        click, in a second or two) is never delayed."""
+        js = self._extension_js()
+        self.assertIn("let selectCooldownUntil = 0;", js)
+        block = self._select_window_source()
+        # refused while the shell is still owed its quiet period...
+        self.assertIn("const quiet = selectCooldownUntil - Date.now();", block)
+        self.assertIn("if (quiet > 0) {", block)
+        self.assertIn("ERR_UNSUPPORTED", block)
+        # ...which is armed by the one teardown, so every way out arms it
+        end = block[block.index("    _endSelect(sel, id, errName, errMsg) {"):]
+        self.assertIn("selectCooldownUntil = Date.now() +", end)
+        self.assertIn("Math.min(Date.now() - (sel.startedAt || Date.now()), "
+                      "SELECT_MAX_MS)", end)
+        self.assertIn("startedAt: Date.now()", block)
+        # not keyed to the sender: a second bus connection would defeat that
+        self.assertNotIn("cooldownBySender", js)
+
+    def test_keep_is_refused_when_no_monitor_would_be_left(self):
+        """ApplyMonitorsConfig is reachable by any session process, but a
+        configuration that leaves nothing visible self-reverts after ~20 s
+        because nobody can press Keep. Pressing it for anyone who asks made
+        that permanent; the one state the dialog exists to prevent is now the
+        one state the bridge will not confirm."""
+        js = self._extension_js()
+        conf = js[js.index("    _confirmDisplayChange(keep) {"):]
+        conf = conf[:conf.index("\n    }\n")]
+        self.assertIn("Main.layoutManager.monitors.length, -1", conf)
+        self.assertIn("if (keep && monitors === 0) {", conf)
+        self.assertIn("ERR_UNSUPPORTED", conf)
+        # an unreadable monitor list is not a refusal, and Revert never is
+        self.assertIn(", -1)", conf)
 
     def test_embedded_xml_matches_file_and_has_no_hit_test(self):
         with open(os.path.join(self.EXT, "org.fuckwayland.Bridge1.xml")) as f:

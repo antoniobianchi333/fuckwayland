@@ -48,11 +48,23 @@ const ERR_CANCELLED = `${IFACE_NAME}.Cancelled`;
 
 // Hard cap on a window selection, and what timeout_ms 0 ("wait for the user")
 // means. A pointer grab is the one thing here that can make a desktop feel
-// broken, so it is never held indefinitely: five minutes is far longer than
+// broken, so it is never held indefinitely: thirty seconds is far longer than
 // any click takes and short enough that a forgotten picker frees the session
 // on its own. The client is also watched (see _beginSelect) and Escape
 // cancels, so this is the last of three ways out, not the first.
-const SELECT_MAX_MS = 300000;
+const SELECT_MAX_MS = 30000;
+
+// ...and the cap alone bounds each call, not the caller. Any process on the
+// session bus may ask for a selection, and nothing stopped one from starting
+// the next the microsecond the last ended: measured, that is a re-grab every
+// 5 us, which is a session-wide input lock (no key, no button, no scroll
+// reaches any application) held for as long as the process cares to. So a
+// selection is followed by a quiet period as long as the grab it just held:
+// an honest picker -- a click within a second or two -- is never delayed,
+// while a loop can hold the input at most half the time, which always leaves
+// the user a way to reach a terminal. Deliberately not keyed to the sender:
+// a second bus connection would defeat that.
+let selectCooldownUntil = 0;
 
 // How long the grab is kept after the picking press, waiting for the matching
 // release. The answer is already decided by then; this only keeps the release
@@ -796,6 +808,12 @@ export default class FuckwaylandBridge extends Extension {
                 throw new BridgeError(ERR_UNSUPPORTED,
                     'another window selection is already in progress');
             }
+            const quiet = selectCooldownUntil - Date.now();
+            if (quiet > 0) {
+                throw new BridgeError(ERR_UNSUPPORTED,
+                    `a window selection just held the input grab; the next ` +
+                    `one is refused for another ${Math.ceil(quiet / 1000)} s`);
+            }
             if (shellIsModal()) {
                 throw new BridgeError(ERR_UNSUPPORTED,
                     'the shell is already modal (the overview, a menu or a ' +
@@ -804,7 +822,7 @@ export default class FuckwaylandBridge extends Extension {
             const asked = Number(params?.[0] ?? 0) >>> 0;
             const ms = Math.min(asked || SELECT_MAX_MS, SELECT_MAX_MS);
             sel = {done: false, invocation, handlers: [], timerId: 0,
-                   watchId: 0, grab: null, pick: null};
+                   watchId: 0, grab: null, pick: null, startedAt: Date.now()};
             sel.finish = (id, errName, errMsg) =>
                 this._endSelect(sel, id, errName, errMsg);
             this._selects.add(sel.finish);
@@ -932,6 +950,10 @@ export default class FuckwaylandBridge extends Extension {
         if (sel.done)
             return;
         sel.done = true;
+        // However this one ended, the next may not start until the shell has
+        // had the input to itself for as long as this call took it away.
+        selectCooldownUntil = Date.now() +
+            Math.min(Date.now() - (sel.startedAt || Date.now()), SELECT_MAX_MS);
         this._selects?.delete(sel.finish);
         for (const [obj, hid] of sel.handlers)
             safe(() => obj.disconnect(hid));
@@ -1399,6 +1421,18 @@ export default class FuckwaylandBridge extends Extension {
     // forwarded to Mutter via global.window_manager.complete_display_change()
     // (a no-op when nothing is pending) and false is returned.
     _confirmDisplayChange(keep) {
+        // Keeping a configuration with no enabled monitor is the one outcome
+        // the dialog exists to prevent: nobody can press Revert on a screen
+        // that is not there, and the 20-second self-revert is the only way
+        // back. wxrandr never wants that state, so a caller asking for it was
+        // not helping the user. An unreadable monitor list (-1) is not a
+        // refusal -- this must not break a confirm on a shell we cannot read.
+        const monitors = safe(() => Main.layoutManager.monitors.length, -1);
+        if (keep && monitors === 0) {
+            throw new BridgeError(ERR_UNSUPPORTED,
+                'refusing to keep a display configuration with no enabled ' +
+                'monitor (nothing could press Revert afterwards)');
+        }
         const dialog = findDisplayChangeDialog();
         if (dialog) {
             if (keep)
