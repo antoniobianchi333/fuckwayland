@@ -7,7 +7,9 @@ import errno
 import io
 import json
 import os
+import shutil
 import socket
+import stat
 import struct
 import tempfile
 import threading
@@ -15,6 +17,7 @@ import unittest
 from unittest import mock
 
 from wdotool import daemon, keymap, uinput
+from wdotool.ctx import CmdError
 from wdotool.keysyms import NAME_TO_KEYSYM
 
 # The suite never hands a tool over to the real X11 one: see
@@ -408,6 +411,135 @@ class TestSwayDisplaySize(unittest.TestCase):
                 self.rect(-9999, 0, 1920, 1080, active=False)]
         self.assertEqual(self.size_for(outs), (1280, 720))
 
+
+
+class TestSocketIsPrivate(unittest.TestCase):
+    """With no XDG_RUNTIME_DIR -- every `sudo` run, `su -`, cron, a bare
+    container -- the daemon socket used to be /tmp/wdotool-<uid>.sock in a
+    world-writable directory. Another local user could bind it first and
+    receive every request, the text of `type` included, answering {"ok":true}
+    so the caller saw success."""
+
+    def setUp(self):
+        self.saved = os.environ.get("XDG_RUNTIME_DIR")
+        os.environ.pop("XDG_RUNTIME_DIR", None)
+        self.d = "/tmp/wdotool-%d" % os.getuid()
+
+    def tearDown(self):
+        if self.saved is None:
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+        else:
+            os.environ["XDG_RUNTIME_DIR"] = self.saved
+
+    def test_fallback_socket_lives_in_a_private_directory(self):
+        path = daemon.socket_path()
+        self.assertEqual(os.path.dirname(path), self.d)
+        st = os.lstat(self.d)
+        self.assertTrue(stat.S_ISDIR(st.st_mode))
+        self.assertEqual(st.st_uid, os.getuid())
+        self.assertEqual(st.st_mode & 0o077, 0)     # nobody else may enter
+        # ...and the startup lock is inside it too, out of reach of a plant
+        self.assertTrue((path + ".lock").startswith(self.d + "/"))
+
+    def test_a_directory_someone_else_could_write_is_refused(self):
+        with mock.patch.object(daemon.os, "lstat") as ls:
+            ls.return_value = os.stat_result(
+                (stat.S_IFDIR | 0o777, 0, 0, 1, os.getuid(), 0, 0, 0, 0, 0))
+            with self.assertRaises(CmdError) as cm:
+                daemon.socket_path()
+        self.assertIn("private directory", str(cm.exception))
+
+    def test_the_client_refuses_another_user_s_daemon(self):
+        """A socket we did not create is not ours to type into: SO_PEERCRED
+        says who is listening, and only our own euid may be."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, True))
+        path = os.path.join(tmp, "sock")
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(1)
+        self.addCleanup(srv.close)
+        # our own daemon: accepted
+        self.assertIsNotNone(daemon.DaemonClient._try_connect(path))
+        with mock.patch.object(daemon.DaemonClient, "_peer_uid",
+                               staticmethod(lambda s: os.geteuid() + 1)):
+            with self.assertRaises(CmdError) as cm:
+                daemon.DaemonClient._try_connect(path)
+        self.assertIn("belongs to uid", str(cm.exception))
+
+    def test_a_planted_lock_or_socket_is_an_error_not_a_traceback(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, True))
+        path = os.path.join(tmp, "sock")
+        os.symlink("/nonexistent/elsewhere", path + ".lock")   # O_NOFOLLOW
+        err = io.StringIO()
+        with mock.patch.object(daemon, "socket_path", lambda: path), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(daemon.daemon_main(), 1)
+        self.assertIn("cannot open", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+
+class TestUinputGrantIsRechecked(unittest.TestCase):
+    """logind's uaccess ACL is only consulted at open(), so a daemon that
+    opened /dev/uinput while its user was at the seat kept injecting after a
+    VT switch or a fast user switch handed the seat to somebody else."""
+
+    def _daemon(self):
+        d = daemon._Daemon()
+        d.kb = d.mouse = d.tablet = RecorderDev()
+        d.kb.fake = False          # pretend these came from the real node
+        d.dev_error = None
+        d._reader = None
+        return d
+
+    def test_the_devices_are_dropped_when_the_grant_is_gone(self):
+        d = self._daemon()
+        with mock.patch.object(uinput, "access_ok", lambda: True):
+            d._need_devices()                       # still ours: fine
+        err = io.StringIO()
+        with mock.patch.object(uinput, "access_ok", lambda: False), \
+                contextlib.redirect_stderr(err):
+            with self.assertRaises(RuntimeError) as cm:
+                d._need_devices()
+        self.assertIn("no longer accessible", str(cm.exception))
+        self.assertIsNone(d.kb)                     # devices destroyed
+        self.assertEqual(d.down, set())
+
+    def test_root_and_fake_devices_are_never_probed(self):
+        d = self._daemon()
+        d.kb.fake = True                            # the test/fake path
+        with mock.patch.object(uinput, "access_ok", lambda: False):
+            d._need_devices()                       # not probed at all
+        self.assertIsNotNone(d.kb)
+        with mock.patch.object(uinput.os, "geteuid", lambda: 0):
+            self.assertTrue(uinput.access_ok())     # root needs no grant
+
+
+class TestClearModifiersReleases(unittest.TestCase):
+    def test_keyup_clearmodifiers_leaves_the_modifier_up(self):
+        """`keyup --clearmodifiers ctrl` used to press ctrl back down after
+        releasing it -- and only the device holding a key can release it, so
+        it stayed down for the daemon's lifetime, turning every later click
+        into a ctrl-click."""
+        d = daemon._Daemon()
+        d.kb = d.mouse = d.tablet = RecorderDev()
+        d.dev_error = None
+        d._reader = None
+        d.handle({"op": "key", "spec": "ctrl", "direction": "down",
+                  "delay_ms": 0}, None)
+        self.assertIn(keymap.KEY_LEFTCTRL, d.down)
+        d.handle({"op": "key", "spec": "ctrl", "direction": "up",
+                  "delay_ms": 0, "clearmods": True}, None)
+        self.assertNotIn(keymap.KEY_LEFTCTRL, d.down)
+        last = [v for (_t, c, v) in d.kb.events if c == keymap.KEY_LEFTCTRL]
+        self.assertEqual(last[-1], 0)               # ends released
+        # a modifier the op did NOT touch is still restored
+        d.handle({"op": "key", "spec": "shift", "direction": "down",
+                  "delay_ms": 0}, None)
+        d.handle({"op": "key", "spec": "a", "direction": "press",
+                  "delay_ms": 0, "clearmods": True}, None)
+        self.assertIn(keymap.KEY_LEFTSHIFT, d.down)
 
 if __name__ == "__main__":
     unittest.main()
