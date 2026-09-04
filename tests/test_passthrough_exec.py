@@ -383,6 +383,18 @@ class BackendFlag(Tree):
                               "this session: no sway or i3 IPC socket "
                               "($SWAYSOCK)\n")
 
+    def test_the_kwin_backend_on_an_x11_session_is_refused(self):
+        """A Plasma X11 session is an X11 session: `kwin_x11` owns
+        `org.kde.KWin` on the bus, but the KDE display protocols live in
+        `kwin_wayland` and there is no socket to reach them on. Asking for
+        the backend by name is a one-line refusal, not a fallback and not a
+        traceback."""
+        p, out, err = self.run_tool("xrandr", "--backend", "kwin", "--query")
+        self.assertEqual(self.records(), [])            # nothing handed over
+        self.assertEqual((p.returncode, out), (1, ""))
+        self.assertEqual(err, "xrandr: --backend kwin is not available in "
+                              "this session: no wayland socket\n")
+
     def test_x11_on_a_wayland_session_hands_over(self):
         p, out, err = self.run_tool("xrandr", "--backend", "x11", "--query",
                                     env=self.wayland_env())
@@ -465,7 +477,65 @@ class BackendFlag(Tree):
         self.assertIn("available", rows["x11"])
         self.assertIn(os.path.join(self.bin, "xrandr"), rows["x11"])
         self.assertIn("unavailable", rows["sway"])
+        # the KDE backend is in the same boat on an X11 session, whatever
+        # the desktop drawing it: no compositor socket, so no protocol
+        self.assertIn("unavailable", rows["kwin"])
+        self.assertIn("no wayland socket", rows["kwin"])
         self.assertEqual(self.records(), [])
+
+
+class RoutedBeforeTheHandover(Tree):
+    """Four things are answered by us on an X11 session, because the real
+    xdotool has nothing to hand them to: `keys`, the hidden `__keymap`, and
+    the leading `--layout` / `--vkbd` options, which are stripped and never
+    reach the original. That ordering inside `wdotool.cli.main` is what the
+    README promises for Plasma-on-Xorg and every other X11 session, and it
+    is invisible from the outside until the original starts getting argv it
+    cannot parse -- so it is pinned here, on the same real-process rig as
+    the handover itself.
+    """
+
+    KEYMAP = os.path.join(FIXTURES, "keymaps", "de.xkb")
+
+    def test_keys_is_ours_on_an_x11_session(self):
+        p, out, err = self.run_tool("xdotool", "keys", "explain",
+                                    "--keymap", self.KEYMAP, "@")
+        self.assertEqual(p.returncode, 0, err)
+        self.assertIn("wdotool type '@'", out)
+        self.assertEqual(self.records(), [])       # nothing handed over
+
+    def test_the_hidden_keymap_dump_is_ours_on_an_x11_session(self):
+        p, out, err = self.run_tool("xdotool", "__keymap",
+                                    "--keymap", self.KEYMAP, "--chars", "@")
+        self.assertEqual(p.returncode, 0, err)
+        self.assertIn("'@': key 16+level3", out)
+        self.assertEqual(self.records(), [])
+
+    def test_the_leading_options_are_stripped_and_the_rest_hands_over(self):
+        """`--layout`/`--vkbd` are ours; what follows them is the original's,
+        and it must arrive without them -- `xdotool --layout us key a` would
+        be `unrecognized option` otherwise."""
+        for opt, val in (("--layout", "us"), ("--vkbd", "off")):
+            if os.path.exists(self.log):
+                os.remove(self.log)
+            p, out, err = self.run_tool("xdotool", opt, val, "key", "a")
+            self.assertEqual(p.returncode, 0, (opt, err))
+            recs = self.records()
+            self.assertEqual(len(recs), 1, (opt, recs))
+            self.assertEqual(recs[0]["argv"], ["key", "a"], opt)
+            self.assertEqual(recs[0]["pid"], p.pid, opt)
+
+    def test_a_bad_value_for_one_is_ours_too(self):
+        p, out, err = self.run_tool("xdotool", "--layout", "wibble", "key", "a")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("--layout: invalid argument", err)
+        self.assertEqual(self.records(), [])
+
+    def test_an_ordinary_command_still_hands_over(self):
+        """The control: nothing above widened the set of commands we keep."""
+        p, out, err = self.run_tool("xdotool", "key", "a")
+        self.assertEqual(p.returncode, 0, err)
+        self.assertEqual([r["argv"] for r in self.records()], [["key", "a"]])
 
 
 if __name__ == "__main__":
