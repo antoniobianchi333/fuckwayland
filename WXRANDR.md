@@ -265,13 +265,20 @@ hotplug or someone else's re-layout in that window, which the plan knows nothing
 about — it is `output configuration cancelled by a concurrent change; try again`.
 
 Persistence: by default the apply uses method 1 (temporary — xrandr semantics, no
-dialog; the layout lasts until the next hotplug/login). `--persistent` (a wxrandr
+dialog, nothing written to disk). The layout is gone at the next login; at a hotplug
+Mutter lays the remaining monitors out in a row, and on GNOME 50 it restores the
+layout in full the moment the original set of monitors comes back (measured both
+ways round — the rotated head unplugged, and a different one; GNOME 46 keeps the
+row, WARANDR.md). `--persistent` (a wxrandr
 option, not in xrandr's usage text) or `WXRANDR_PERSIST=1` uses method 2: the layout
 is applied and gnome-shell shows its "Keep changes?" dialog — wxrandr prints a
-one-line warning; confirming it makes Mutter write `~/.config/monitors.xml`, otherwise
-the previous layout comes back after 20 s (verified on GNOME 46: nothing is written
-before the confirmation, and there is no D-Bus call to confirm from outside the
-shell). `--dryrun` additionally submits the exact configuration with method 0 (verify
+one-line warning; confirming it makes Mutter write `~/.config/monitors.xml` at once,
+and the layout then survives a hotplug and a reboot; otherwise the previous layout
+comes back after 20 s and nothing is written (verified on GNOME 46 and 50: nothing is
+written before the confirmation, and there is no D-Bus call to confirm from outside
+the shell). What every desktop does with an applied layout, and how to get one back
+from a key, is under "Keeping a layout" in README.md.
+`--dryrun` additionally submits the exact configuration with method 0 (verify
 only) and prints `mutter verify: ok` on stderr (stdout stays xrandr's own dryrun
 lines), or Mutter's rejection as the fatal a real run would give.
 
@@ -369,13 +376,20 @@ from `applyOutputConfiguration` itself; on 5.27 `kded5 kscreen` watches the same
 libkscreen monitor and writes `~/.local/share/kscreen/<hash>`. There is no
 temporary mode and no confirmation dialog — the 15-second countdown belongs to the
 System Settings KCM, not the compositor — so `--persistent` is the only mode there
-is. Every apply that KWin actually took says so once, and prints the `xrandr …`
+is, and on Plasma 6 the file is already on disk at first login, before any command of
+ours. Clearing it needs the session stopped: deleted from inside the session it is
+simply written out again when KWin exits (measured). Every apply that KWin actually
+took says so once, and prints the `xrandr …`
 command that restores the pre-apply snapshot, which is the only undo there is; an
 apply KWin refused says neither (nothing was saved, and that command would *change*
 the live layout). Because it is the only undo, it spells every property out —
 `--mode/--rate/--pos/--rotate/--reflect/--scale`, plus `--primary`, defaults
-included — so replaying it verbatim really is the inverse (verified live: layout,
-scale, rotation and primary all come back). The one thing it cannot express is
+included — so replaying it through `wxrandr` really is the inverse (verified live,
+and again after a reboot: layout, scale, rotation and primary all come back). Through
+`wxrandr`, or a symlink of it: the line begins with the word `xrandr`, and where the
+real xrandr is installed — as it is on a stock Plasma image — pasting it verbatim
+runs that one against XWayland instead, which fails with a `BadMatch` on
+`RRSetScreenSize` and leaves the layout untouched. The one thing it cannot express is
 KDE's full output *order*: xrandr has no syntax for it, and libkscreen permutes the
 non-primary ranks the same way. `--dryrun` runs the plan client-side only (mode
 resolution, the last-output refusal) and touches nothing — not even the state

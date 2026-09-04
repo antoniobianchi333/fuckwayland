@@ -607,7 +607,9 @@ Xwayland's real root window, and every other desktop gives root the real X root.
 
 **(f)** KWin applies a layout immediately and permanently — no temporary mode, no
 confirmation dialog — and says so on stderr, together with the line that puts the
-previous layout back. `--same-as` is plainly the same position, which on KWin
+previous layout back — where it keeps that layout, and how to clear it, is under
+[Keeping a layout](#keeping-a-layout). `--same-as` is plainly the same position,
+which on KWin
 already shows identical pixels; it reaches for the compositor's own
 `set_replication_source` only when the two outputs' logical rectangles differ and
 a shared position would give a crop instead of a copy (and says which KWin
@@ -1135,8 +1137,10 @@ one-line failures in Mutter's name (`xrandr: GNOME's Mutter refused this layout:
 ...`) — nothing is refused here, so a "no" is always the compositor's — and since
 Mutter, unlike X, allows neither gaps nor overlaps, an output
 that changes size (`--rotate`, `--mode`, `--scale`, `-s`, `-o`) keeps its neighbours
-touching it, with a warning. Changes are temporary like xrandr's; `--persistent`
-writes `monitors.xml` (GNOME then asks "Keep changes?"). It finds the session from a
+touching it, with a warning. Changes are temporary like xrandr's and write nothing;
+`--persistent` makes GNOME ask "Keep changes?", and only a confirmed dialog writes
+`monitors.xml` — what each desktop then does with the layout is under [Keeping a
+layout](#keeping-a-layout). It finds the session from a
 custom keyboard shortcut, under `sudo`, or from `ssh root@` with no environment.
 
 Which backend it is using is never a guess: `--print-backend` prints the token
@@ -1224,16 +1228,124 @@ On a stock GNOME desktop (verified on Ubuntu 24.04 and 26.04, Wayland session):
 `scripts/build-pyz.sh`, copy `dist/warandr` and `dist/wxrandr` to `/usr/local/bin/`
 — warandr itself carries wxrandr inside, but the layout scripts it saves call bare
 `wxrandr`, exactly like arandr's call bare `xrandr`, so a script bound to a hotkey
-needs it on `PATH` (Save As says so in the status bar when it is missing). Bind
+needs it on `PATH` (Save As says so in the status bar when it is missing), and
+`~/.screenlayout` has to exist before `--save` will write into it. Bind
 `warandr` and `~/.screenlayout/desk.sh` to GNOME custom shortcuts on `<Super>F`-keys
 (`<Ctrl><Alt>F1`–`F12` are Mutter's VT switches); the script restores a three-head
-layout in about a second. Apply is temporary, like xrandr: Mutter drops it at the
-next hotplug or login, so the shortcut script *is* the way to keep a layout. A
+layout in about a second — though the first press after a reboot is lost while the
+session is still coming up. Apply is temporary, like xrandr: Mutter writes nothing
+and lays the monitors out afresh at the next login, while at a hotplug it puts the
+layout back once the original monitors return. A saved script on a key is how a
+layout comes back, here and on the other three desktops: the commands, and what
+each desktop does with a layout of its own accord, are under [Keeping a
+layout](#keeping-a-layout). A
 monitor plugged in while the window is open shows up after New (Ctrl+N), as in
 arandr; a layout with a gap between monitors gets Mutter's own "Logical monitors not
 adjacent" in the error dialog and stays on the canvas to be fixed. One GNOME habit
 to know: an Apply that turns a monitor off or on makes Mutter move the keyboard
 focus off the window, so click it before the next Ctrl+S.
+
+## Keeping a layout
+
+Nothing here restores a layout on its own. There is no daemon, no service and no
+autostart entry: `wxrandr` and `warandr` change the screen when you run them and
+then exit, and nothing in the toolbox watches for a monitor being plugged in. (The
+only resident process it ever leaves behind is `wdotool`'s input daemon, which owns
+input devices and has nothing to do with outputs.) What becomes of a layout after
+that is the desktop's business, and the four desktops do not agree.
+
+Measured on GNOME 50 (Mutter), Plasma 6 (KWin), sway 1.11 (wlroots) and Xfce 4.20
+on X11, on three heads with one of them rotated:
+
+| | a head unplugged and plugged back in | reboot | where the desktop keeps a layout |
+|---|---|---|---|
+| **GNOME** (Mutter) | comes back in full: Mutter lays the *remaining* monitors out in a row while the set is short, and puts the layout back when the original set returns | lost, unless a `--persistent` apply was confirmed | `~/.config/monitors.xml`, written by GNOME Settings or a confirmed `--persistent` and by nothing else; a fresh install has none |
+| **KDE Plasma** (KWin) | comes back in full | **kept** | `~/.config/kwinoutputconfig.json`, written by every apply KWin takes |
+| **sway** (wlroots) | comes back in full, every output | lost | nothing on disk; only `~/.config/sway/config` makes a layout stick |
+| **Xfce** (X11) | **lost**: the head comes back at the end of a plain row, unrotated, and `primary` is cleared | lost, `primary` with it | nothing; `displays.xml` is byte-identical after an apply |
+
+Restarting the compositor is a third event, and it splits the same way: `swaymsg
+reload` puts sway's outputs back in its own enumeration order, while `xfwm4
+--replace` changes nothing, because on X11 the layout belongs to the X server and
+not to the window manager. Xfce's forgetting at hotplug is `xfsettingsd`'s doing —
+it is what re-enables the returning head, in a row, and it clears `primary` when it
+starts.
+
+**KDE saves whether you want it to or not.** KWin has no temporary mode: every apply
+it takes lands in `~/.config/kwinoutputconfig.json` in the same second, the file is
+there before you run anything, and `--persistent` is accepted but means nothing.
+Every such apply also prints, once, the command that puts the previous layout back;
+replay it with `wxrandr` (`WXRANDR.md`). To clear what KDE remembers, delete that
+file with the session stopped — deleting it from inside the session achieves
+nothing, because KWin writes it out again on the way out.
+
+**On GNOME an apply is temporary, like xrandr's**, and writes nothing. `wxrandr
+--persistent` applies the layout and lets gnome-shell ask *Keep these display
+settings?* for 20 seconds: ignored, the layout reverts and nothing is written;
+confirmed, `monitors.xml` appears at once and the layout then survives both a
+hotplug and a reboot. The dialog and the switch are GNOME's alone: on KDE
+`--persistent` is accepted and changes nothing, and on sway and X11 nothing is
+written either way.
+
+### A layout script on a key
+
+The way to get a layout back is to save it as a script and put that script on a
+key. It is arandr's habit, it reads the same on all four desktops, and it runs when
+you press it rather than when something guesses you wanted it.
+
+```console
+$ mkdir -p ~/.screenlayout                   # --save fails if it is not there
+$ warandr --save ~/.screenlayout/desk.sh     # or Save As, from the window
+$ sh ~/.screenlayout/desk.sh                 # run it once before binding it
+```
+
+The saved script calls bare `wxrandr` (bare `xrandr` on an X11 session), so that
+has to be on `PATH`: install `dist/wxrandr` as `/usr/local/bin/wxrandr`. An output
+the script has to switch back on needs `--auto` in its line, not only a position.
+
+Then bind it:
+
+- **GNOME** — Settings ▸ Keyboard ▸ Custom Shortcuts, or from a terminal:
+
+  ```console
+  $ K=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/
+  $ S=org.gnome.settings-daemon.plugins.media-keys
+  $ gsettings set $S custom-keybindings "['$K']"
+  $ gsettings set $S.custom-keybinding:$K name 'restore desk layout'
+  $ gsettings set $S.custom-keybinding:$K command "$HOME/.screenlayout/desk.sh"
+  $ gsettings set $S.custom-keybinding:$K binding '<Super>F8'
+  ```
+
+  Bind a chord Mutter does not own: `<Ctrl><Alt>F1`–`F12` are its VT switches.
+
+- **sway** — one line in `~/.config/sway/config`, then a reload:
+
+  ```console
+  $ echo 'bindsym $mod+F8 exec ~/.screenlayout/desk.sh' >> ~/.config/sway/config
+  $ swaymsg reload
+  ```
+
+  The reload itself drops the current layout, so press the key afterwards.
+
+- **Xfce** — Settings ▸ Keyboard ▸ Application Shortcuts, or live, with no restart:
+
+  ```console
+  $ xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/<Super>F8" \
+      -n -t string -s "$HOME/.screenlayout/desk.sh"
+  ```
+
+- **KDE Plasma** — System Settings ▸ Shortcuts, as a custom shortcut. This is the
+  one desktop where the shortcut cannot be set up from the command line: an entry
+  written into `kglobalshortcutsrc` does register, and running it over D-Bus does
+  start the script, but the key never fires it. KDE is also the desktop that needs
+  the script least, since KWin already has the layout after a reboot.
+
+Test it by pressing the key and reading the screen back with `wxrandr --query`.
+Two things to expect. The shortcut is dead until the session is up: the first press
+after a reboot is silently lost on GNOME and on Xfce (about 24 s from `reboot` on
+the test rig), while sway ran the script on the first press. And the script itself
+is quick — 0.13–0.76 s for three heads across the four desktops, 0.7 s to 2 s
+end to end from the key press.
 
 ## Threat model
 
