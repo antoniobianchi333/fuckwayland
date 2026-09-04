@@ -193,18 +193,43 @@ def _runtime_dir_of(uid: int | None) -> str | None:
     return None
 
 
+#: session processes whose own environment names the session's X plane
+#: ($DISPLAY, $XAUTHORITY), best first. Matched against /proc/<pid>/comm, so
+#: every name has to fit its 15-character limit -- "startplasma-x11" is
+#: exactly 15, and a longer one would silently never match.
+_SESSION_LEADERS = ("gnome-shell", "startplasma-x11", "kwin_x11",
+                    "kwin_wayland", "plasmashell", "ksmserver",
+                    "xfce4-session", "sway")
+
+
 def _shell_environ(uid: int | None) -> dict[str, str]:
-    """Environment of the session's gnome-shell (readable as root or as that
-    user), {} when not found/readable."""
+    """Environment of the session's own compositor or session leader
+    (readable as root or as that user), {} when not found/readable.
+
+    More than gnome-shell, because a display manager may keep the X cookie
+    where no search can find it: SDDM writes /tmp/xauth_<random>, which is
+    neither ~/.Xauthority nor anything in a runtime directory, so on a
+    Plasma X11 session one of the session's own processes is the only place
+    a root shell (`ssh root@box`, cron) can learn the cookie path at all --
+    without it the original we hand over to dies with `Authorization
+    required, but no authorization protocol specified` where it should have
+    worked. The scan is uid-qualified, exactly as before, so it never reads
+    another user's session; what it trusts is a process of the target user,
+    the same trust ~/.Xauthority already gets."""
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
     except OSError:
         return {}
+    best, best_rank = {}, len(_SESSION_LEADERS)
     for p in pids:
         try:
             with open(f"/proc/{p}/comm") as f:
-                if f.read().strip() != "gnome-shell":
-                    continue
+                comm = f.read().strip()
+            if comm not in _SESSION_LEADERS:
+                continue
+            rank = _SESSION_LEADERS.index(comm)
+            if rank >= best_rank:
+                continue
             if uid is not None and os.stat(f"/proc/{p}").st_uid != uid:
                 continue
             with open(f"/proc/{p}/environ", "rb") as f:
@@ -217,8 +242,10 @@ def _shell_environ(uid: int | None) -> dict[str, str]:
             if sep:
                 env[k.decode("utf-8", "replace")] = v.decode("utf-8", "replace")
         if env:
-            return env
-    return {}
+            best, best_rank = env, rank
+            if rank == 0:
+                break
+    return best
 
 
 def xwayland_running(uid: int | None = None) -> bool:
@@ -288,7 +315,9 @@ def find_x_display(uid: int | None = None) -> str | None:
 
 def find_xauthority(uid: int | None = None) -> str | None:
     """Cookie file for the session's X server, or None: $XAUTHORITY when it
-    exists; gnome-shell's own XAUTHORITY; the newest
+    exists; the session leader's own XAUTHORITY (gnome-shell, Plasma's
+    startplasma/kwin/plasmashell, xfce4-session, sway -- the only route to
+    SDDM's /tmp/xauth_<random>); the newest
     <runtime dir>/.mutter-Xwaylandauth.* (Mutter) or xauth_* (GDM);
     ~/.Xauthority of the session user."""
     p = os.environ.get("XAUTHORITY", "")

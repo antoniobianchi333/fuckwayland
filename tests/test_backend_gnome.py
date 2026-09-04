@@ -1471,6 +1471,51 @@ class SessionTests(unittest.TestCase):
                  SUDO_UID=None, PKEXEC_UID=None):
             self.assertEqual(session.find_xauthority(os.getuid()), cookie_new)
 
+    def test_find_xauthority_reads_the_session_leader(self):
+        """A display manager may keep the cookie where no search can find it:
+        SDDM writes /tmp/xauth_<random>, which is in nobody's runtime
+        directory and is not ~/.Xauthority, so on a Plasma X11 session the
+        session's own leader is the only thing that knows where it is -- and
+        that leader is not gnome-shell.
+
+        The stand-in is a real process whose /proc/<pid>/comm is one of the
+        names we look for: `startplasma-x11` is exactly the 15 characters
+        comm holds, so a copy of /bin/sleep under that name is the honest
+        test of the length limit as well."""
+        import subprocess
+
+        cookie_dir = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(cookie_dir, exist_ok=True)
+        cookie = os.path.join(cookie_dir, "xauth_sddm")
+        with open(cookie, "w"):
+            pass
+        leader = os.path.join(self.tmp, "startplasma-x11")
+        shutil.copy(shutil.which("sleep") or "/bin/sleep", leader)
+        proc = subprocess.Popen([leader, "60"],
+                                env={"XAUTHORITY": cookie, "DISPLAY": ":7"})
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        for _ in range(500):        # comm is set by execve, not by fork
+            try:
+                with open("/proc/%d/comm" % proc.pid) as f:
+                    if f.read().strip() == "startplasma-x11":
+                        break
+            except OSError:
+                pass
+            time.sleep(0.01)
+        else:
+            self.skipTest("the stand-in process never reached comm=startplasma-x11")
+        # XDG_RUNTIME_DIR holds no cookie, so a hit can only come from /proc
+        with env(XAUTHORITY=None, DISPLAY=None, XDG_RUNTIME_DIR=self.tmp,
+                 SUDO_UID=None, PKEXEC_UID=None):
+            self.assertEqual(session.find_xauthority(os.getuid()), cookie)
+            self.assertEqual(session.find_x_display(uid=os.getuid()), ":7")
+        # ...and never another user's: the scan is uid-qualified
+        with env(XAUTHORITY=None, DISPLAY=None, XDG_RUNTIME_DIR=self.tmp,
+                 SUDO_UID=None, PKEXEC_UID=None):
+            self.assertNotEqual(session.find_xauthority(os.getuid() + 4242),
+                                cookie)
+
     def test_find_x_display_env(self):
         with env(DISPLAY=":424242"):
             # no socket for it -> not trusted; falls through to the scan
