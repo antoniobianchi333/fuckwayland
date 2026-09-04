@@ -120,7 +120,14 @@ class FakeKWin:
         self.min_desktops = min_desktops   # KWin keeps at least one
         self.desktops = [(0, "d-one", "Desktop 1"), (1, "d-two", "Desktop 2")]
         self.current = 0
-        self.scripts = {}               # id -> (plugin, args)
+        # KWin's own bookkeeping, modelled exactly: `script_list` is
+        # m_scripts (an id is its index at load time, so the ids come round
+        # when a lower one is unloaded) and `objects` is the D-Bus object
+        # registry, where a second registration at a live path is refused
+        # and the older script keeps the path.
+        self.script_list = []           # [{"id", "plugin", "args"}], in order
+        self.objects = {}               # id -> the entry that owns the path
+        self.last_args = None           # newest script's A, after unload
         self.plugins = []               # every pluginName ever loaded
         self.loaded = set()             # pluginNames live right now
         self.runs = []                  # object paths run() was tried on
@@ -188,9 +195,31 @@ class FakeKWin:
         except Exception:  # noqa: BLE001 -- socket shut down by close()
             pass
 
+    _INTRO = ('<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object '
+              'Introspection 1.0//EN" "http://www.freedesktop.org/standards/'
+              'dbus/1.0/introspect.dtd">\n<node>\n%s</node>\n')
+
+    def _introspect(self, path):
+        """Child nodes, the way QDBusConnection generates them: Plasma 6
+        registers /Scripting/Script<n>, 5.27 /<n> under the root."""
+        names = []
+        if self.plasma >= 6:
+            if path == SCRIPTING_PATH:
+                names = ["Script%d" % i for i in sorted(self.objects)]
+            elif path == "/":
+                names = ["Scripting", "KWin", "VirtualDesktopManager"]
+        else:
+            if path == "/":
+                names = (["Scripting", "KWin", "VirtualDesktopManager"]
+                         + [str(i) for i in sorted(self.objects)])
+        return "s", (self._INTRO % "".join(
+            '  <node name="%s"/>\n' % n for n in names),)
+
     def _dispatch(self, m):
         a = m.args()
         self.calls.append((m.path, m.member, a))
+        if m.interface == "org.freedesktop.DBus.Introspectable":
+            return self._introspect(m.path)
         if m.interface == dbus_mini.PROPS_IFACE and m.member == "Get":
             return self._prop(*a)
         if m.path == SCRIPTING_PATH and m.interface == SCRIPTING_IFACE:
@@ -213,8 +242,12 @@ class FakeKWin:
             source = fh.read()
         head = source.split("\n", 1)[0]
         args = json.loads(head[len(backend_kwin.HEADER):-len(" */")])
-        sid = len(self.scripts)         # KWin: scripts.size(), reused
-        self.scripts[sid] = (plugin, args)
+        sid = len(self.script_list)     # KWin: scripts.size(), reused
+        entry = {"id": sid, "plugin": plugin, "args": args}
+        self.last_args = args
+        self.script_list.append(entry)
+        # registerObject fails when the path is taken, and says nothing
+        self.objects.setdefault(sid, entry)
         self.plugins.append(plugin)
         self.loaded.add(plugin)
         return "i", (sid,)
@@ -222,6 +255,11 @@ class FakeKWin:
     def s_unloadScript(self, plugin):
         self.unloaded.append(plugin)
         self.loaded.discard(plugin)
+        for entry in list(self.script_list):
+            if entry["plugin"] == plugin:
+                self.script_list.remove(entry)
+                if self.objects.get(entry["id"]) is entry:
+                    del self.objects[entry["id"]]
         return "b", (True,)
 
     def s_isScriptLoaded(self, plugin):
@@ -238,9 +276,9 @@ class FakeKWin:
         if not want:
             raise DBusError(ERR + "UnknownObject", "no object at %s" % path)
         sid = int(want.group(1))
-        if sid not in self.scripts:
+        if sid not in self.objects:
             raise DBusError(ERR + "UnknownObject", "no script %d" % sid)
-        _plugin, args = self.scripts[sid]
+        args = self.objects[sid]["args"]
         if not self.silent:
             if self.decoy:
                 self._send(args, "stale-token", json.dumps({"ok": True, "v": []}))
@@ -510,9 +548,16 @@ class TransportTests(_Base):
         self.assertEqual([w.id for w in wins],
                          [WID["desktop"], WID["kate"], WID["konsole"],
                           WID["xterm"]])
-        # loadScript -> run -> unloadScript, nothing else, no sleep
+        # Introspect (whose script ids are live? -- the ownership check that
+        # stops us running somebody else's script) -> loadScript -> run ->
+        # unloadScript, nothing else, no sleep. The second Introspect is the
+        # 5.27 path shape, asked for once and then remembered.
         members = [c[1] for c in self.kwin.calls]
-        self.assertEqual(members, ["loadScript", "run", "unloadScript"])
+        self.assertEqual(members, ["Introspect", "Introspect", "loadScript",
+                                   "run", "unloadScript"])
+        b.list()
+        self.assertEqual([c[1] for c in self.kwin.calls][5:],
+                         ["Introspect", "loadScript", "run", "unloadScript"])
 
     def test_negative_load_script_is_fatal(self):
         b = self.backend(refuse_load=True)
@@ -622,6 +667,111 @@ class TransportTests(_Base):
                          (1, 2, 3, 4))
         self.assertTrue(rest.startswith("var A = {"))
         self.assertIn(kwin_js.SCRIPT.strip()[:40], src)
+
+
+class ScriptIdRaceTests(_Base):
+    """loadScript answers with m_scripts.size(), so an id comes round the
+    moment a lower-numbered script is unloaded while a higher-numbered one is
+    still alive -- and KWin then refuses the second registration at that path
+    without saying so, leaving run() pointed at the OTHER script.
+
+    Measured on Plasma 6.6: A->0, B->1, unload A, C->1, and
+    /Scripting/Script1 is still B. Seven of ten concurrent windowmoves died
+    that way, some of them by running a stranger's command twice."""
+
+    def test_the_fake_reproduces_kwins_id_reuse(self):
+        """The premise. Without this the rest of the file proves nothing."""
+        k = FakeKWin(self.mock.address, own_name=False)
+        self.addCleanup(k.close)
+        js = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
+        js.write(backend_kwin.HEADER.encode() + b'{} */\n')
+        js.close()
+        self.addCleanup(os.unlink, js.name)
+        a = k.s_loadScript(js.name, "A")[1][0]
+        b = k.s_loadScript(js.name, "B")[1][0]
+        self.assertEqual((a, b), (0, 1))
+        k.s_unloadScript("A")
+        c = k.s_loadScript(js.name, "C")[1][0]
+        self.assertEqual(c, 1)                       # the id came round
+        self.assertEqual(k.objects[1]["plugin"], "B")  # ...and B keeps it
+        d = k.s_loadScript(js.name, "D")[1][0]
+        self.assertEqual(d, 2)                       # the next one is free
+
+    def _wedge(self, b):
+        """Leave one live script sitting on the id KWin will hand out next --
+        exactly the state another wdotool's in-flight command leaves."""
+        js = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
+        js.write(backend_kwin.HEADER.encode() + b'{} */\n')
+        js.close()
+        self.addCleanup(os.unlink, js.name)
+        self.kwin.s_loadScript(js.name, "stranger-A")
+        self.kwin.s_loadScript(js.name, "stranger-B")
+        self.kwin.s_unloadScript("stranger-A")
+        self.assertEqual(sorted(self.kwin.objects), [1])
+
+    def test_a_command_does_not_run_a_strangers_script(self):
+        b = self.backend()
+        self._wedge(b)
+        wins = b.list()
+        self.assertEqual([w.id for w in wins],
+                         [WID["desktop"], WID["kate"], WID["konsole"],
+                          WID["xterm"]])
+        # the stranger's script was never run
+        self.assertNotIn("/Scripting/Script1", self.kwin.runs)
+        # ...and it is still loaded: we must not unload another client's
+        self.assertIn("stranger-B", self.kwin.loaded)
+
+    def test_the_padding_is_cleaned_up(self):
+        b = self.backend()
+        self._wedge(b)
+        before = set(self.kwin.loaded)
+        b.list()
+        self.assertEqual(set(self.kwin.loaded), before)
+
+    def test_two_backends_interleaving_both_get_their_own_answer(self):
+        """The concurrency shape of the live repro, deterministically: each
+        of ten commands must come back with its own payload."""
+        b = self.backend()
+        for _ in range(10):
+            self._wedge(b)
+            self.assertEqual(len(b.list()), 4)
+            for name in [p for p in list(self.kwin.loaded)
+                         if p.startswith("stranger")]:
+                self.kwin.s_unloadScript(name)
+
+    def test_it_gives_up_rather_than_spinning(self):
+        """A scripting client churning as fast as we are: bounded, and it
+        says what happened instead of running a stranger's script."""
+        b = self.backend()
+        # every index a load could be handed is already a live object
+        for i in range(64):
+            self.kwin.objects[i] = {"id": i, "plugin": "stranger", "args": {}}
+        with self.assertRaises(CmdError) as cm:
+            b.list()
+        self.assertIn("already taken", str(cm.exception))
+        self.assertNotIn("/Scripting/Script0", self.kwin.runs)
+
+    def test_a_compositor_that_will_not_introspect_still_works(self):
+        """The check is best effort: an answer we cannot get is not a reason
+        to refuse the command."""
+        b = self.backend()
+
+        def no_introspect(path):
+            raise DBusError(ERR + "UnknownMethod", "no")
+
+        self.kwin._introspect = no_introspect
+        self.assertEqual(len(b.list()), 4)
+
+    def test_the_events_script_keeps_the_name_it_ended_up_with(self):
+        """_script returns the pluginName for the caller to unload later; an
+        id race renames it, and unloading the old name would leak a resident
+        script for the rest of the session."""
+        b = self.backend()
+        self._wedge(b)
+        plugin = b._script("events", timeout=2.0)
+        self.assertIn(plugin, self.kwin.loaded)
+        b.unload(plugin)
+        self.assertNotIn(plugin, self.kwin.loaded)
 
 
 class BackendTests(_Base):
@@ -829,7 +979,8 @@ class BackendTests(_Base):
 
     def test_set_state_asks_the_script_to_wait(self):
         self.b.set_state(WID["kate"], "FULLSCREEN", 1)
-        args = self.kwin.scripts[max(self.kwin.scripts)][1]
+        args = self.kwin.script_list[-1]["args"] if self.kwin.script_list \
+            else self.kwin.last_args
         self.assertEqual(args["op"], "state")
         self.assertEqual(args["settle"], backend_kwin.SETTLE_MS)
         self.assertGreater(args["settle"], 0)

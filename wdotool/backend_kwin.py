@@ -63,8 +63,11 @@ KWin caps the number of virtual desktops (20 on 5.27, 25 on 6), which
 set_num_desktops reports rather than looping against.
 """
 
+import contextlib
+import fcntl
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -107,6 +110,8 @@ _WINDOW_TYPES = {
 _LAYER_TYPES = {"DESKTOP", "DOCK"}
 # _NET_WM_STATE atoms KWin has no setter for at all
 _GAP_REASONS = {"SHADED": "Plasma 6 removed window shading"}
+# How many times a load may lose the id race before it is called a fight
+_LOAD_ATTEMPTS = 8
 
 
 _UNSET = object()   # "not resolved yet", distinct from "no answer"
@@ -142,6 +147,7 @@ class KwinBackend(WindowBackend):
         self.script_timeout = SCRIPT_TIMEOUT
         self._seq = 0
         self._kwin_name = _UNSET   # KWin's unique bus name, resolved once
+        self._path_shape = ""              # "scripting" (6) / "root" (5.27)
         self._uuids: dict[int, str] = {}   # printed id -> KWin internalId
         self._screen = None                # cached screen size + work areas
         self._x = "unset"                  # lazy X11Conn for XWayland ids
@@ -176,9 +182,13 @@ class KwinBackend(WindowBackend):
         self._seq += 1
         token = "%d-%d-%s" % (os.getpid(), seq, os.urandom(4).hex())
         plugin = _plugin_name(seq)
-        source = self._source(self.dest, token, op, plugin=plugin, **kw)
         deadline = time.monotonic() + timeout
-        self._load_run(plugin, source, deadline)
+        # The pluginName is in the source (the events script unloads itself by
+        # it), so the text is built per attempt: an id race renames the load.
+        plugin = self._load_run(
+            plugin,
+            lambda name: self._source(self.dest, token, op, plugin=name, **kw),
+            deadline)
         if op == "events":
             # the script stays loaded; the caller unloads it when it is done
             return plugin
@@ -188,8 +198,78 @@ class KwinBackend(WindowBackend):
             self.unload(plugin)
         return _payload(raw)
 
-    def _load_run(self, plugin: str, source: str, deadline: float):
-        """loadScript + run(), trying both Plasma object-path shapes."""
+    def _live_script_ids(self):
+        """The script ids that own a D-Bus object right now, read off the
+        child nodes of the scripting object; None when neither shape answered.
+
+        Plasma 6 registers `/Scripting/Script<n>`, 5.27 `/<n>` among KWin's
+        other root objects, and the shape is remembered once a run() has
+        landed so the second introspection is paid for at most once."""
+        out, got = set(), False
+        if self._path_shape != "root":
+            try:
+                xml = self.bus.introspect(KWIN_NAME, SCRIPTING_PATH,
+                                          timeout=CALL_TIMEOUT)
+                out |= {int(n) for n in
+                        re.findall(r'<node name="Script(\d+)"', xml)}
+                got = True
+            except DBusError:
+                pass
+        if self._path_shape != "scripting":
+            try:
+                xml = self.bus.introspect(KWIN_NAME, "/", timeout=CALL_TIMEOUT)
+                out |= {int(n) for n in
+                        re.findall(r'<node name="(\d+)"', xml)}
+                got = True
+            except DBusError:
+                pass
+        return frozenset(out) if got else None
+
+    def _load_run(self, plugin: str, make_source, deadline: float) -> str:
+        """loadScript + run(); returns the pluginName the script that ran is
+        loaded under, which is `plugin` unless an id race renamed it.
+
+        `make_source(name)` builds the script text for a given pluginName --
+        a callable rather than a string because the name is baked into the
+        source (the resident events script unloads itself by it) and a race
+        changes it.
+
+        `loadScript` answers with `m_scripts.size()`, so an id comes back
+        round the moment a *lower*-numbered script is unloaded while a
+        higher-numbered one is still alive: the count lands back on a live
+        index, KWin fails to register the new object at that path (silently --
+        the id is still returned), and run() there drives the OTHER script.
+        Measured on Plasma 6.6: load A -> 0, B -> 1, unload A, load C -> 1,
+        and /Scripting/Script1 is still B. Ten concurrent windowmoves lost
+        seven that way.
+
+        So the id is checked against the objects that existed before the load
+        -- one round trip, next to a file read and a JS evaluation. On a
+        collision the colliding script is left LOADED as padding (unloading it
+        would hand the same index straight back) and another is loaded, which
+        lands on the next index up; the padding goes away with the files."""
+        padding: list[str] = []
+        files: list[str] = []
+        try:
+            # Held across load+run only. Two wdotools sharing a runtime dir
+            # cannot then interleave a load with an unload at all, which is
+            # the whole of the reproducible case; the id check is what covers
+            # a foreign scripting client, and a wdotool running as another
+            # user.
+            with _script_lock():
+                return self._load_run_locked(plugin, make_source, deadline,
+                                             padding, files)
+        finally:
+            for name in padding:
+                self.unload(name)
+            for path in files:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    def _write_source(self, source: str) -> str:
+        """The script text in a file KWin can read; returns its path."""
         fd, path = tempfile.mkstemp(prefix="wdotool-kwin-", suffix=".js",
                                     dir="/tmp")
         try:
@@ -216,9 +296,17 @@ class KwinBackend(WindowBackend):
                     os.chmod(path, 0o644)   # unreadable would break the call
             except OSError:
                 pass
-        try:
+        return path
+
+    def _load_run_locked(self, plugin: str, make_source, deadline: float,
+                         padding: list, files: list) -> str:
+        name = plugin
+        for attempt in range(_LOAD_ATTEMPTS):
+            path = self._write_source(make_source(name))
+            files.append(path)
+            live = self._live_script_ids()
             (sid,) = self._call(SCRIPTING_PATH, SCRIPTING_IFACE, "loadScript",
-                                "ss", (path, plugin))
+                                "ss", (path, name))
             sid = int(sid)
             if sid < 0:
                 # -1: a script with that pluginName is already loaded. Never
@@ -226,22 +314,29 @@ class KwinBackend(WindowBackend):
                 # else's script (the bug this backend used to have).
                 raise CmdError("kwin backend: KWin already has a script named "
                                "%s loaded (loadScript returned %d)"
-                               % (plugin, sid))
+                               % (name, sid))
+            if live is not None and sid in live:
+                padding.append(name)
+                name = _plugin_name(self._seq, "r%d" % attempt)
+                self._seq += 1
+                continue
             last = None
             for objpath in ("%s/Script%d" % (SCRIPTING_PATH, sid), "/%d" % sid):
                 try:
                     self._call(objpath, SCRIPT_IFACE, "run",
                                timeout=max(0.1, deadline - time.monotonic()))
-                    return
+                    self._path_shape = ("scripting"
+                                        if objpath.startswith(SCRIPTING_PATH + "/")
+                                        else "root")
+                    return name
                 except CmdError as e:
                     last = e
-            self.unload(plugin)
+            self.unload(name)
             raise last
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        raise CmdError(
+            "kwin backend: every script id KWin handed out was already taken "
+            "(%d tries); another scripting client is loading and unloading "
+            "scripts as fast as we are" % _LOAD_ATTEMPTS)
 
     def unload(self, plugin: str):
         try:
@@ -680,9 +775,10 @@ class KwinBackend(WindowBackend):
             token = "%d-ev-%s" % (os.getpid(), os.urandom(4).hex())
             plugin = _plugin_name(self._seq, "ev")
             self._seq += 1
-            self._load_run(plugin, self._source(dest, token, "events",
-                                                plugin=plugin),
-                           time.monotonic() + SCRIPT_TIMEOUT)
+            plugin = self._load_run(
+                plugin,
+                lambda name: self._source(dest, token, "events", plugin=name),
+                time.monotonic() + SCRIPT_TIMEOUT)
             while True:
                 got = False
                 for m in bus.messages(timeout):
@@ -822,6 +918,38 @@ def _plugin_name(seq: int, tag: str = "") -> str:
     "loadScript returned -1" stay a hard error."""
     return "wdotool-%d-%d%s-%s" % (os.getpid(), seq, "-" + tag if tag else "",
                                    os.urandom(4).hex())
+
+
+@contextlib.contextmanager
+def _script_lock():
+    """An advisory lock over the whole load->run window, shared by every
+    wdotool with the same runtime dir.
+
+    KWin reuses a script id as soon as a lower-numbered script is unloaded
+    (see _load_run), and two of our own processes racing was the way to see
+    it: with this held, one wdotool's unload can never land between another's
+    load and its run. Best effort -- no runtime dir, a read-only one or a
+    lock we cannot take is not a reason to refuse the command, because the
+    id check in _load_run_locked is what makes it correct."""
+    rt = os.environ.get("XDG_RUNTIME_DIR") or ""
+    fd = None
+    if rt and os.path.isdir(rt):
+        try:
+            fd = os.open(os.path.join(rt, "wdotool-kwin-script.lock"),
+                         os.O_WRONLY | os.O_CREAT, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            if fd is not None:
+                os.close(fd)
+            fd = None
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
 
 def _own(bus: Bus, name: str) -> str:
