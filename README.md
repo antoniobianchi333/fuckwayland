@@ -73,7 +73,8 @@ Three routes:
 
 Whichever you pick, your desktop wants a piece of its own — a GNOME Shell
 extension on [GNOME](#gnome), the real X11 tools on an [X11](#x11) session,
-nothing at all on [KDE Plasma](#kde-plasma) — and injecting input needs
+nothing at all on [KDE Plasma](#kde-plasma), the GTK bindings on a minimal
+[sway](#sway-and-other-wlroots-compositors) — and injecting input needs
 [access to `/dev/uinput`](#input-access). Then
 [check it worked](#check-it-worked).
 
@@ -117,8 +118,10 @@ Four things in those lines are not obvious:
   packages unless it is told not to, and then `warandr` exits 1 with
   `warandr: GTK 3 for Python is not available (No module named 'gi') - on
   Ubuntu/Debian: sudo apt install python3-gi gir1.2-gtk-3.0`. The other four
-  tools are stdlib-only and never notice. (A minimal sway install has
-  `python3-gi` but not `gir1.2-gtk-3.0`; install both.)
+  tools are stdlib-only and never notice. The same line, with
+  `(Namespace Gtk not available)` in the parentheses, is what a machine that
+  has `python3-gi` but not the GTK 3 typelib says — see
+  [sway](#sway-and-other-wlroots-compositors).
 * **Why `-e`, and keep the clone.** pip installs the five commands and nothing
   else — not `gnome/install-bridge.sh`, not the udev rule, not
   `warandr.desktop`. Those are used from the clone, so keep it where it is and
@@ -295,6 +298,33 @@ on a Wayland client, applied when it acks the configure) is waited for before
 the command returns, so `windowstate` never reports a state it merely has not
 seen land yet, and the next command sees a settled window.
 
+### sway and other wlroots compositors
+
+Stock sway (1.11 on Ubuntu 26.04) is supported with **nothing to install** for
+the four command-line tools: they speak sway's own IPC, and `wxrandr
+--print-backend` answers `sway`. Input needs
+[`/dev/uinput`](#input-access), exactly as on any other Wayland session.
+
+The GUI is the exception, and it is the one place a sway install differs from
+a GNOME/KDE/Xfce one: a minimal sway install has `python3-gi` but **not** the GTK 3
+typelib, so `warandr` exits 1 with
+
+```
+warandr: GTK 3 for Python is not available (Namespace Gtk not available) - on Ubuntu/Debian: sudo apt install python3-gi gir1.2-gtk-3.0
+```
+
+`sudo apt install python3-gi gir1.2-gtk-3.0` is the whole fix — the four
+command-line tools never notice either way, and with a
+`--system-site-packages` venv the GUI picks the bindings up with no further
+step. Two smaller differences, both cosmetic: a minimal image has no `acl`
+package either, so `install-bridge.sh --udev --check` says
+`uinput ACL users: yes, not listed here (apt install acl)` where a desktop
+with `getfacl` lists the user by name (the answer on the line below it,
+`uinput usable by <you>`, is the same either way); and `windowmove` on a
+*tiled* window warns and does not move it — float it first
+(`swaymsg floating enable`). See the [support matrix](#desktop-support) for
+the rest.
+
 ### Input access
 
 Injecting input goes through the kernel's `/dev/uinput`, which is
@@ -370,11 +400,12 @@ sudo rm -f /usr/local/bin/xdotool /usr/local/bin/wmctrl \
 
 Two cautions. A venv under `$HOME` is only readable by you and root (Ubuntu
 homes are `0750`), so symlinks into `/usr/local/bin` that point into it break
-for *other* users with `sudo: unable to execute /usr/local/bin/wdotool:
-Permission denied`; for a machine-wide drop-in use the
-[`/opt` venv](#other-ways-to-install). And a symlink left behind after the venv
-is deleted just says `No such file or directory` — remove the links when you
-remove the install.
+for *other* users, and the message they get does not say why: `sudo` reports
+`unable to execute /usr/local/bin/wdotool: Permission denied` on 24.04 and
+`sudo: '/usr/local/bin/wdotool': command not found` on 26.04. For a
+machine-wide drop-in use the [`/opt` venv](#other-ways-to-install). And a
+symlink left behind after the venv is deleted just says `No such file or
+directory` — remove the links when you remove the install.
 
 ### Without installing: the single-file builds
 
@@ -444,10 +475,17 @@ own session reports. `wwmctl -l` on GNOME is the one that needs the
 [bridge extension](#gnome) — if it says so instead of listing windows, that is
 the step still missing, and `wxrandr` above will have worked anyway.
 
-On an **X11** session the tools are the originals: `wdotool --version` prints
-the version of the `xdotool` that is actually installed there, not ours, and
-`warandr --print-backend` says `x11`. That is the handover working. If instead
-you get exit 127 and a line about no real xdotool on `PATH`, install them:
+On an **X11** session that block is not what you get, and that is the handover
+working: `wdotool`, `wwmctl`, `wxprop` and `wxrandr` *are* the originals there,
+so they print the versions installed on your machine rather than ours. On a
+stock Ubuntu 26.04 Xfce, for instance, `wdotool --version` says `xdotool
+version 3.20160805.1`, `wxprop -version` says `xprop 1.2.7` and `wxrandr
+--version` says `1.5.3`, where ours — the same commands on the same box under
+Wayland — say `4.20260303.1`, `1.2.8` and `1.5.4`. (`wwmctl --version` says
+`1.07` either way: that is the wmctrl release we clone.) `warandr` is the
+fifth and never hands over; it drives the real `xrandr`, and
+`warandr --print-backend` says `x11`. If instead you get exit 127 and a line
+about no real xdotool on `PATH`, install them:
 `sudo apt install xdotool wmctrl`.
 
 If something did not work, the first thing to try:

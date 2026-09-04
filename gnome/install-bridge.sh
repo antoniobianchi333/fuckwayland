@@ -319,13 +319,39 @@ seat_user() {
     loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" && $4 ~ /^seat/ {print $3; exit}'
 }
 
+# Is there an ACL on the node? `getfacl` lives in the `acl` package, which
+# is not part of every desktop (a minimal sway install has none), but ls
+# marks a file that carries one with a trailing '+' on the mode.
+node_has_acl() {
+    [ -e /dev/uinput ] || return 1
+    [ "$(ls -ld /dev/uinput 2>/dev/null | cut -c11)" = '+' ]
+}
+
+# Can $1 write to /dev/uinput? Asked directly, so that the answer does not
+# need the acl package: as that user when we are it, through runuser/sudo
+# when we are root, and "do not know" (2) otherwise. Always a *shell*
+# `test -w`, never /usr/bin/test: Ubuntu 26.04's /usr/bin/test is uutils'
+# Rust reimplementation, and its -w answers from the mode bits alone -- it
+# says "no" on a node an ACL has opened, which is exactly this case.
+can_write_uinput() {
+    if [ "$1" = "$(id -un 2>/dev/null)" ]; then
+        test -w /dev/uinput
+    elif [ "$(id -u)" = 0 ] && have runuser; then
+        runuser -u "$1" -- sh -c 'test -w /dev/uinput' 2>/dev/null
+    elif [ "$(id -u)" = 0 ] && have sudo; then
+        sudo -n -u "$1" sh -c 'test -w /dev/uinput' 2>/dev/null
+    else
+        return 2
+    fi
+}
+
 udev_status() {
     if [ -f "$UDEV_DEST" ]; then u=yes; else u=no; fi
     if [ -f "$MODLOAD_DEST" ]; then m=yes; else m=no; fi
     if [ -e /dev/uinput ]; then
         n=$(stat -c '%U:%G %a' /dev/uinput 2>/dev/null || echo '?')
         # with an ACL on the node the group bits of the mode are the ACL mask
-        if have getfacl && getfacl -p /dev/uinput 2>/dev/null | grep -q '^mask::'; then n="$n (group bits = ACL mask)"; fi
+        if node_has_acl; then n="$n (group bits = ACL mask)"; fi
     else n=missing; fi
     if grep -qw '^uinput' /proc/modules 2>/dev/null; then l='module loaded'
     elif [ "$(modinfo -n uinput 2>/dev/null)" = '(builtin)' ]; then l='driver built into the kernel'
@@ -333,19 +359,31 @@ udev_status() {
     echo "udev rule:        $u ($UDEV_DEST)"
     echo "modules-load:     $m ($MODLOAD_DEST)"
     echo "/dev/uinput:      $n, $l"
-    if have getfacl && [ -e /dev/uinput ]; then
+    [ -e /dev/uinput ] || return 0
+    su=$(seat_user)
+    if have getfacl; then
         acl=$(getfacl -p /dev/uinput 2>/dev/null | sed -n 's/^user:\([^:][^:]*\):\(...\).*/\1:\2/p' | tr '\n' ' ')
         echo "uinput ACL users: ${acl:-none}"
-        su=$(seat_user)
-        [ -n "$su" ] || return 0
-        case " $acl" in
-            *" $su:rw"*) echo "uinput usable by $su: yes (logind ACL)" ;;
-            *) if id -nG "$su" 2>/dev/null | grep -qw "$(stat -c %G /dev/uinput)" && [ "$(stat -c %a /dev/uinput)" = 660 ]; then
-                   echo "uinput usable by $su: yes (member of group $(stat -c %G /dev/uinput), mode 660 -- set by some other rule, not $UDEV_RULE)"
-               else
-                   echo "uinput usable by $su: no (run: sudo sh $0 --udev)"
-               fi ;;
-        esac
+    elif node_has_acl; then
+        # no `acl` package: ls can see that there is an ACL, not who is in it
+        echo "uinput ACL users: yes, not listed here (apt install acl)"
+    else
+        echo "uinput ACL users: none"
+    fi
+    [ -n "$su" ] || return 0
+    case " ${acl-}" in
+        *" $su:rw"*) echo "uinput usable by $su: yes (logind ACL)"; return 0 ;;
+    esac
+    if can_write_uinput "$su"; then
+        if node_has_acl; then echo "uinput usable by $su: yes (logind ACL)"
+        else echo "uinput usable by $su: yes (member of group $(stat -c %G /dev/uinput), mode $(stat -c %a /dev/uinput) -- set by some other rule, not $UDEV_RULE)"
+        fi
+    elif [ $? = 2 ]; then
+        echo "uinput usable by $su: unknown from here (run this with sudo)"
+    elif id -nG "$su" 2>/dev/null | grep -qw "$(stat -c %G /dev/uinput)" && [ "$(stat -c %a /dev/uinput)" = 660 ]; then
+        echo "uinput usable by $su: yes (member of group $(stat -c %G /dev/uinput), mode 660 -- set by some other rule, not $UDEV_RULE)"
+    else
+        echo "uinput usable by $su: no (run: sudo sh $0 --udev)"
     fi
 }
 
@@ -356,9 +394,38 @@ udev_status() {
 # settings on the trigger that follows.
 restore_uinput_node() {
     [ -e /dev/uinput ] || return 0
-    if have setfacl; then setfacl -b /dev/uinput 2>/dev/null || true; fi
+    # The ACL has to go, not merely be masked off by the 0600 below. A
+    # left-over `user:<you>:rw-` entry is not cosmetic: udev's uaccess
+    # builtin only *adds* entries, so on the next --udev it finds the entry
+    # already there, does nothing, and the node keeps the 0600 mask that
+    # denies it -- the rule would be installed and input still broken.
+    # setfacl lives in the `acl` package, which is not part of every desktop
+    # (a minimal sway install has none), so fall back to removing the ACL
+    # xattr with python3 -- which is what these tools run on anyway.
+    if have setfacl; then
+        setfacl -b /dev/uinput 2>/dev/null || true
+    elif have python3; then
+        python3 - <<'PY' 2>/dev/null || true
+import os
+try:
+    os.removexattr("/dev/uinput", "system.posix_acl_access")
+except OSError:
+    pass
+PY
+    fi
     chown root:root /dev/uinput 2>/dev/null || true
     chmod 0600 /dev/uinput 2>/dev/null || true
+}
+
+# Say what restore_uinput_node was actually able to do. With neither setfacl
+# nor python3 the ACL entry survives; the 0600 mask denies it, but a later
+# --udev would not re-grant it, so the message has to name the problem.
+restored_note() {
+    if node_has_acl; then
+        echo "; /dev/uinput is root:root 0600 again, but the uaccess ACL entry could not be removed (no setfacl and no python3 here): the 0600 mask denies it now, and a later --udev will not re-grant it until you clear the ACL (apt install acl; setfacl -b /dev/uinput)"
+    else
+        echo "; /dev/uinput is root:root 0600 again, ACL cleared"
+    fi
 }
 
 # udev tags are sticky in its database: with the rule merely deleted, the
@@ -391,7 +458,7 @@ do_udev() {
         have udevadm && { udevadm control --reload 2>/dev/null || true; }
         forget_uinput_tags
         restore_uinput_node
-        echo "install-bridge.sh: removed $UDEV_DEST and $MODLOAD_DEST; /dev/uinput is root:root 0600 again, ACL cleared"
+        echo "install-bridge.sh: removed $UDEV_DEST and $MODLOAD_DEST$(restored_note)"
         return 0
     fi
     if [ ! -f "$HERE/$UDEV_RULE" ] || [ ! -f "$HERE/$MODLOAD_SRC" ]; then
