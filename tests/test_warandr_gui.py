@@ -172,6 +172,7 @@ class GuiSession(XvfbCase):
 
     def launch(self):
         after = len(self.dumps())      # a relaunch must not match old dumps
+        self.mark = after              # where this run's dumps start
         self.app = subprocess.Popen([sys.executable, "-m", "warandr"],
                                     env=self.env, stdout=self.app_log,
                                     stderr=subprocess.STDOUT)
@@ -192,11 +193,19 @@ class GuiSession(XvfbCase):
     # -- helpers ------------------------------------------------------------
 
     def dumps(self):
+        out = []
         try:
             with open(self.dump) as f:
-                return [json.loads(ln) for ln in f if ln.strip()]
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except ValueError:
+                        pass     # a line the editor is still writing
         except OSError:
-            return []
+            pass
+        return out
 
     def wait_dump(self, kind, pred=lambda d: True, timeout=15, after=0):
         deadline = time.time() + timeout
@@ -588,8 +597,12 @@ class GuiDrive(GuiSession):
         self.app.terminate()
         self.app.wait(5)
         lay, n = self.launch()
-        d, n = self.backend_dump(lambda d: d["available"], after=n)
+        # the identify answer and the first layout land in whichever order
+        # the two startup reads finish, so look from the relaunch, not from
+        # the layout dump
+        d, n = self.backend_dump(lambda d: d["available"], after=self.mark)
         self.assertEqual(d["indicator"], "backend: xrandr (X11)")
+        n = max(n, len(self.dumps()))
         menu, n = self.open_backend_menu(n)
         self.click(menu["items"]["GNOME (mutter)"])
         d, n = self.backend_dump(lambda d: not d["ok"], after=n)
@@ -779,6 +792,29 @@ class GuiProbe(XvfbCase):
                          (4, [4]), res)
         self.assertEqual((res["zoom_out_factor"], res["zoom_out_radio"]),
                          (16, [16]), res)
+        # a redraw arriving while the Outputs drop-down is open leaves it
+        # alone (destroying a mapped menu strands the X pointer grab) and
+        # rebuilds it when it closes
+        self.assertTrue(res["outputs_menu_mapped"], res)
+        self.assertTrue(res["menu_kept_while_open"], res)
+        self.assertTrue(res["menu_still_mapped"], res)
+        self.assertTrue(res["menu_rebuilt_on_close"], res)
+        self.assertEqual(res["menu_rebuilt_items"], ["DP-1", "HDMI-1"], res)
+        # a backend read runs off the main loop too, not only Apply: Ctrl+N
+        # returns at once against a backend that takes 1.5 s to answer, the
+        # window keeps ticking, and the toolbar says so
+        self.assertLess(res["reload_returned_s"], 0.5, res)
+        self.assertTrue(res["reload_busy"], res)
+        self.assertEqual(res["reload_status"],
+                         "reading the screen configuration...")
+        self.assertTrue(res["reload_finished"], res)
+        self.assertLess(res["reload_longest_gap_s"], 0.5, res)
+        self.assertEqual(res["reload_snapshots"], 1, res)
+        # and one that fails keeps the layout that is on screen
+        self.assertEqual(res["reload_fail_dialog"],
+                         "Cannot read the screen configuration:\n"
+                         "stub: cannot open display")
+        self.assertTrue(res["reload_fail_keeps_layout"], res)
         # per-output menu shape
         self.assertEqual(res["menu_x11"],
                          ["Active", "Primary", "Resolution", "Orientation",

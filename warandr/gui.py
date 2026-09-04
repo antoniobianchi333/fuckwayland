@@ -281,7 +281,10 @@ class Application:
         self.selected = None
         self.layout = None
         self._popup = None       # the one popup menu that can be open
-        self._busy = False       # an Apply is running on the worker thread
+        self._busy = False       # a read or an Apply is on the worker thread
+        self._read_serial = 0    # a newer read supersedes one in flight
+        self._identified_once = False   # `which backend is this really?`
+        self.exit_code = 0       # non-zero when there was nothing to edit
         self._dump_serial = 0    # a newer redraw supersedes a pending dump
         self.window = Gtk.Window(title=TITLE)
         self.window.set_default_size(720, 520)
@@ -351,11 +354,13 @@ class Application:
         self.window.connect("configure-event",
                             lambda *_: self._schedule_dump())
 
+        # Both of the startup reads are off the main loop; identify follows
+        # the layout read (it patches the layout it finds) and is kicked off
+        # from there, so the window is up and answering either way.
         if filename:
             self.load_file(filename)
         else:
             self.do_new()
-        self._identify_async()
 
     # -- chrome ---------------------------------------------------------------
 
@@ -532,6 +537,12 @@ class Application:
                                         for k, v in self.backends.items()},
                           "ok": True})
 
+    def _identify_once(self):
+        """The startup identify, kicked off by whichever read lands first."""
+        if not self._identified_once:
+            self._identified_once = True
+            self._identify_async()
+
     def _identify_async(self):
         """`--print-backend --verbose` (which backend is this, really?) and
         `--backends` (what else could it be?) run off the main loop: the
@@ -555,29 +566,79 @@ class Application:
                 self.layout.overlap_refusal = backend.overlap_refusal()
         return False
 
+    def _read_async(self, read, done, status):
+        """Run a blocking backend read off the main loop.
+
+        Every read warandr does is an `xrandr --query` — on Wayland a
+        `wxrandr --query` against a compositor that may be busy
+        reconfiguring outputs, or wedged — and the backend allows one up to
+        30 s.  Run on the main loop that is 30 s in which the window does
+        not redraw, resize, scroll or close, on startup as much as on
+        Ctrl+N, Ctrl+O or a backend switch.  Same shape as Apply: the work
+        on a thread, the result back through idle_add, the toolbar greyed
+        meanwhile, and a result that a newer read has already superseded
+        dropped.
+        """
+        self._read_serial += 1
+        serial = self._read_serial
+        self._set_busy(True)
+        self.show_status(status)
+
+        def finish(result, error):
+            if serial != self._read_serial:
+                return False
+            self._set_busy(False)
+            done(result, error)
+            return False
+
+        def work():
+            try:
+                result, error = read(), None
+            except (randr.RandrError, LayoutError, OSError) as e:
+                result, error = None, e
+            GLib.idle_add(finish, result, error)
+
+        threading.Thread(target=work, name="warandr-read",
+                         daemon=True).start()
+
+    def _nothing_to_edit(self, error):
+        """The first read failed and there is no layout to fall back on: say
+        it the way the command line would, and keep warandr's exit status."""
+        sys.stderr.write("warandr: %s\n" % error)
+        self.exit_code = 1
+        Gtk.main_quit()
+
     def set_backend(self, name):
         """Switch the tool that talks to the screen: re-read the layout
         through it, redraw, and from then on Apply, the command in the
         status bar and a saved script are that backend's.  One that cannot
         be reached keeps the previous choice — the window is never left
         empty — and says why in an Apply-shaped dialog."""
+        if self._busy:
+            return False
         previous = self.backend
-        try:
+
+        def read():
             backend = randr.choose(forced=name)
             backend.set_display(self.display)
-            layout = backend.snapshot()
-        except (randr.RandrError, LayoutError, OSError) as e:
-            _dump("backend", {"name": previous.name, "wanted": name,
-                              "forced": previous.forced, "ok": False,
-                              "error": str(e)})
-            _msg(self.window, Gtk.MessageType.ERROR,
-                 "Cannot use the %s backend:\n%s" % (name, e))
-            self._sync_backend_menu()     # the radio goes back
-            return False
-        self.backend = backend
-        self._refresh_backend()
-        self.set_layout(layout)
-        self._identify_async()
+            return backend, backend.snapshot()
+
+        def done(result, error):
+            if error is not None:
+                _dump("backend", {"name": previous.name, "wanted": name,
+                                  "forced": previous.forced, "ok": False,
+                                  "error": str(error)})
+                _msg(self.window, Gtk.MessageType.ERROR,
+                     "Cannot use the %s backend:\n%s" % (name, error))
+                self._sync_backend_menu()     # the radio goes back
+                return
+            backend, layout = result
+            self.backend = backend
+            self._refresh_backend()
+            self.set_layout(layout)
+            self._identify_async()
+
+        self._read_async(read, done, "switching to the %s backend..." % name)
         return True
 
     # -- state ----------------------------------------------------------------
@@ -650,13 +711,20 @@ class Application:
         self.redraw()
 
     def reload(self):
-        try:
-            self.set_layout(self.backend.snapshot())
-        except randr.RandrError as e:
+        if self._busy:
+            return
+        self._read_async(self.backend.snapshot, self._reloaded,
+                         "reading the screen configuration...")
+
+    def _reloaded(self, layout, error):
+        if error is not None:
             _msg(self.window, Gtk.MessageType.ERROR,
-                 "Cannot read the screen configuration:\n%s" % e)
+                 "Cannot read the screen configuration:\n%s" % error)
             if self.layout is None:
-                raise
+                self._nothing_to_edit(error)
+            return
+        self.set_layout(layout)
+        self._identify_once()
 
     def select(self, name):
         self.selected = name
@@ -672,6 +740,8 @@ class Application:
 
     def redraw(self):
         lay = self.layout
+        if lay is None:          # the first read has not landed yet
+            return
         wanted = [o for o in lay.outputs if o.connected or o.active]
         for n in list(self.boxes):
             if not any(o.name == n for o in wanted):
@@ -888,6 +958,8 @@ class Application:
         self.set_factor(ZOOMS[min(i + 1, len(ZOOMS) - 1)])
 
     def zoom_fit(self):
+        if self.layout is None:
+            return
         x0, y0, x1, y1 = self.layout.bounding_box()
         a = self.scroller.get_allocation()
         aw, ah = max(a.width - 2 * MARGIN - 40, 100), \
@@ -934,7 +1006,7 @@ class Application:
         return False
 
     def _canvas_press(self, _w, ev):
-        if ev.button == 3:
+        if ev.button == 3 and self.layout is not None:
             menu = Gtk.Menu()
             for o in self.layout.outputs:
                 it = Gtk.MenuItem.new_with_label(o.name)
@@ -1061,13 +1133,24 @@ class Application:
         self.reload()
 
     def load_file(self, filename):
-        try:
-            self.set_layout(cli.load_layout(self.backend, filename))
-        except (LayoutError, OSError, randr.RandrError) as e:
+        # loading a script also reads the screen behind it (to know which
+        # outputs and modes the script is talking about), so this blocks for
+        # as long as a plain reload does
+        if self._busy:
+            return
+        self._read_async(lambda: cli.load_layout(self.backend, filename),
+                         lambda lay, err: self._loaded(filename, lay, err),
+                         "loading %s..." % filename)
+
+    def _loaded(self, filename, layout, error):
+        if error is not None:
             _msg(self.window, Gtk.MessageType.ERROR,
-                 "Cannot load %s:\n%s" % (filename, e))
+                 "Cannot load %s:\n%s" % (filename, error))
             if self.layout is None:
                 self.reload()
+            return
+        self.set_layout(layout)
+        self._identify_once()
 
     def _file_dialog(self, title, action, button):
         d = Gtk.FileChooserDialog(title=title, transient_for=self.window,
@@ -1096,6 +1179,8 @@ class Application:
             self.load_file(fn)
 
     def do_save_as(self):
+        if self.layout is None:
+            return
         fn = os.environ.get("WARANDR_TEST_SAVE_AS")
         if not fn:
             d = self._file_dialog("Save Layout", Gtk.FileChooserAction.SAVE,
@@ -1123,7 +1208,7 @@ class Application:
         _dump("saved", {"path": path})
 
     def do_apply(self):
-        if self._busy:
+        if self._busy or self.layout is None:
             return
         if not self.layout.active_outputs():
             r = _msg(self.window, Gtk.MessageType.WARNING,
@@ -1174,6 +1259,8 @@ class Application:
         return False
 
     def do_properties(self):
+        if self.layout is None:
+            return
         d = Gtk.Dialog(title="Script Properties", transient_for=self.window,
                        modal=True)
         d.add_button("_Close", Gtk.ResponseType.CLOSE)
@@ -1221,7 +1308,7 @@ class Application:
 
     def run(self):
         Gtk.main()
-        return 0
+        return self.exit_code
 
 
 def run(backend, filename=None, display=None):

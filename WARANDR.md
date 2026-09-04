@@ -256,6 +256,17 @@ timeout; Apply is greyed meanwhile); a non-zero exit shows stderr in an
 re-reading the screen); on success the screen is re-read. The status bar
 shows the command Apply would run.
 
+**Every backend read runs there too** — startup, New, Open and a backend
+switch — for the same reason: a read is an `xrandr --query`, on Wayland a
+`wxrandr --query` against a compositor that may be busy reconfiguring
+outputs or wedged, and the backend allows one up to 30 s. So the window is
+up and answering before the first layout is, the toolbar is greyed and the
+status bar says what is being read, and a read whose result a newer one has
+already superseded is dropped. A read that fails keeps the layout on screen
+and says so in a dialog; when there is no layout at all — the first read of
+all — warandr prints the same one `warandr:` line the command line would and
+exits 1.
+
 ## Layout scripts
 
 ```
