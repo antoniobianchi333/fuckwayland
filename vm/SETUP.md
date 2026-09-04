@@ -14,10 +14,10 @@ Hardware virtualization is the CPU feature KVM is built on (Intel VT-x or AMD-V;
 `vmx` or `svm` in the `flags` line of `/proc/cpuinfo`). A physical machine has it
 whenever the firmware has it switched on. Inside a virtual machine the feature is
 only there if the hypervisor underneath chooses to show it to its guests — that is
-*nested virtualization*: your rig host runs KVM, and the rig's guests run one level
-further down. Providers of virtual machines offer it on some kinds of machine and
-not on others, and some need it switched on per machine, so on a rented machine
-check before anything else:
+KVM *nested* inside a virtual machine: your rig host runs KVM, and the rig's guests
+run one level further down. Providers of virtual machines offer it on some kinds of
+machine and not on others, and some need it switched on per machine, so on a rented
+machine check before anything else:
 
 ```console
 $ grep -c -E 'vmx|svm' /proc/cpuinfo      # one line per CPU when the feature is there, 0 when not
@@ -72,7 +72,7 @@ Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
 
 So: 10 GB per golden image you intend to keep, plus 8 GB for the base images and the
 ISO, plus a few GB for instances. Swap is not needed for the rig itself — a 16 GB
-machine with a 10 GB swap file had used 19 MB of it after a day of builds and
+machine with a swap file had used 19 MB of it after a day of builds and
 instances — but a swap file the size of one guest turns a memory shortfall into a
 slowdown rather than a killed QEMU.
 

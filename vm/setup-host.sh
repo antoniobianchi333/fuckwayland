@@ -53,9 +53,9 @@ case ${virt:-none} in
     none) note "this is a physical machine (systemd-detect-virt: none)" ;;
     *)    note "this machine is itself a virtual machine (systemd-detect-virt: $virt)"
           if [ -n "$kvm_ok" ]; then
-              note "and its hypervisor exposes virtualization to it: nested virtualization works here"
+              note "and its hypervisor exposes virtualization to it: KVM nested in a VM works here"
           else
-              note "(nested virtualization): it is not enabled for this machine, or not offered on this"
+              note "(KVM nested in a VM): it is not enabled for this machine, or not offered on this"
               note "kind of machine; the machine's own settings or its provider's documentation say which."
           fi ;;
 esac
