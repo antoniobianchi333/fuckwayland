@@ -7,7 +7,7 @@
 #
 # Inputs (written by the flavor yaml to /etc/vmctl-build.env):
 #   FLAVOR       flavor name (also the hostname)
-#   DESKTOP      gnome | kde | xfce | sway  (default gnome): which display
+#   DESKTOP      gnome | kde | kde-x11 | xfce | sway  (default gnome): which display
 #                manager / session set-up below applies
 #   DESKTOP_PKG  the desktop metapackage(s), e.g. ubuntu-desktop, or
 #                "kubuntu-desktop plasma-workspace-wayland"
@@ -161,26 +161,43 @@ done
 hide_autostart gnome-initial-setup-first-login update-notifier ubuntu-report-on-upgrade
 ;;
 
-kde)
+kde|kde-x11)
 # Plasma 5.27 (24.04): the Wayland session is plasmawayland.desktop from
 # plasma-workspace-wayland (NOT a dependency of kubuntu-desktop there, so the
 # flavor lists it); Plasma 6 (26.04): plasma.desktop from plasma-session-wayland.
+# The X11 session (DESKTOP=kde-x11) is plasma.desktop from plasma-workspace on
+# 5.27 and plasmax11.desktop from plasma-workspace-x11 on 6.
 sess=""
-for f in /usr/share/wayland-sessions/plasma.desktop /usr/share/wayland-sessions/plasmawayland.desktop; do
-  [ -f "$f" ] && { sess=${f##*/}; break; }
-done
-[ -n "$sess" ] || fail "no Plasma Wayland session file in /usr/share/wayland-sessions: $(ls /usr/share/wayland-sessions 2>/dev/null | tr '\n' ' ')"
-say "SDDM: autologin of user test into the Plasma Wayland session ($sess), graphical.target"
+if [ "$DESKTOP" = kde-x11 ]; then
+  for f in /usr/share/xsessions/plasmax11.desktop /usr/share/xsessions/plasma.desktop; do
+    [ -f "$f" ] && { sess=${f##*/}; break; }
+  done
+  [ -n "$sess" ] || fail "no Plasma X11 session file in /usr/share/xsessions: $(ls /usr/share/xsessions 2>/dev/null | tr '\n' ' ')"
+  # SDDM's autologin resolves the session NAME against the Wayland directory
+  # first (Display::attemptAutologin), so a name present in both directories
+  # would quietly start the Wayland session -- the one thing this flavor must
+  # never do.  Refuse to build an image whose session type is ambiguous.
+  [ -f "/usr/share/wayland-sessions/$sess" ] && \
+    fail "$sess exists in /usr/share/xsessions AND /usr/share/wayland-sessions; SDDM would autologin into the Wayland one"
+  kind="X11 (Xorg + kwin_x11)"
+else
+  for f in /usr/share/wayland-sessions/plasma.desktop /usr/share/wayland-sessions/plasmawayland.desktop; do
+    [ -f "$f" ] && { sess=${f##*/}; break; }
+  done
+  [ -n "$sess" ] || fail "no Plasma Wayland session file in /usr/share/wayland-sessions: $(ls /usr/share/wayland-sessions 2>/dev/null | tr '\n' ' ')"
+  kind="Wayland"
+fi
+say "SDDM: autologin of user test into the Plasma $kind session ($sess), graphical.target"
 install -d /etc/sddm.conf.d
 cat > /etc/sddm.conf.d/autologin.conf <<EOF
-# Written by vmctl (vm/build-image.sh): autologin the test user into Plasma on Wayland.
+# Written by vmctl (vm/build-image.sh): autologin the test user into Plasma on $kind.
 [Autologin]
 User=test
 Session=$sess
 Relogin=false
 EOF
-# SDDM 0.20 still defaults DisplayServer=x11 for its greeter; the autologin session
-# itself is started straight from wayland-sessions, no Xorg involved.
+# SDDM 0.20 still defaults DisplayServer=x11 for its greeter; the session itself
+# is started from the directory the name was found in (see above).
 install -d -m 0755 /var/lib/AccountsService/users
 cat > /var/lib/AccountsService/users/test <<EOF
 [User]
@@ -430,7 +447,7 @@ chown test:test /home/test/.config/sway/config
 sway -C -c /home/test/.config/sway/config >/dev/null 2>&1 || say "warning: sway -C could not validate the config here (no display); check in the guest"
 ;;
 
-*) fail "unknown DESKTOP=$DESKTOP (gnome|kde|xfce|sway)" ;;
+*) fail "unknown DESKTOP=$DESKTOP (gnome|kde|kde-x11|xfce|sway)" ;;
 esac
 
 systemctl set-default graphical.target

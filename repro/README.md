@@ -15,6 +15,7 @@ a machine with no Plasma 6.7 on it.
 | `kde-1-script-id-race.sh` | the same, through concurrent wdotool commands | any KDE |
 | `kde-5-pointer-no-uinput.sh` | `getmouselocation` needed /dev/uinput for a pure query | any KDE |
 | `kde-tools-3-argv0-oracle.sh` | what the real wmctrl/xprop print as their program name | any |
+| `kdex11-1-sddm-x-cookie.sh` | Plasma on X11: SDDM keeps the X cookie in `/tmp/xauth_*`, so from a root shell the handover found no cookie at all (run as **root**) | `noble-kde-x11` |
 | `kde5-verify.sh` | SHADED on a native window, the X-plane state fallback, WM_CLASS case, `-l -G` | `noble-kde` |
 | `kde6-before.sh`, `kde6-verify-a.sh`, `kde6-verify-b.sh` | the Plasma 6.6 sweep | `resolute-kde` |
 | `kde-outreg-conformance.py` | every wire constant in `wxrandr/kwin.py` against the upstream protocol XML — run it when a new Plasma lands | none (host, needs network) |

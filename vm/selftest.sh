@@ -9,6 +9,7 @@
 # Native tool per desktop (`# vmctl-desktop:` in the flavor yaml):
 #   gnome  mutter's org.gnome.Mutter.DisplayConfig.GetCurrentState (logical monitors, primary)
 #   kde    kscreen-doctor -o  (Plasma 5.27 prints one line per output, Plasma 6 a block)
+#   kde-x11  the same: libkscreen's XRandR backend answers in the same format on Xorg
 #   xfce   xrandr --listmonitors (the X server's enabled outputs)
 #   sway   swaymsg -t get_outputs
 # Leaves the VM running.   usage: vm/selftest.sh <flavor> [name]
@@ -29,6 +30,8 @@ case $desktop in
     gnome) tool="GetCurrentState";       logind_type=wayland; session_type=wayland
            heads_differ="the primary head carries the top bar and the dock" ;;
     kde)   tool="kscreen-doctor -o";     logind_type=wayland; session_type=wayland
+           heads_differ="the panel is on the primary output only" ;;
+    kde-x11) tool="kscreen-doctor -o";   logind_type=x11;     session_type=x11
            heads_differ="the panel is on the primary output only" ;;
     xfce)  tool="xrandr --listmonitors"; logind_type=x11;     session_type=x11
            heads_differ="xfce4-panel is on the first monitor only" ;;
@@ -52,6 +55,18 @@ monitors() {
     kde)   # "Output: 1 Virtual-1 ..." (ANSI-coloured; disabled outputs say "disabled")
         "$VM" user "$name" -- kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
             | grep -E '^Output: [0-9]+ Virtual-[0-9]+' | grep -o 'Virtual-[0-9]*' | sort -u ;;
+    kde-x11)  # same tool -- but libkscreen's XRandR backend lists every CONNECTOR the
+              # X server has, disconnected ones included ("Output: 69 Virtual-4 disabled
+              # disconnected"), where KWin on Wayland exports only the plugged ones. So
+              # count the enabled+connected ones, per output BLOCK: 5.27 puts the whole
+              # state on the "Output:" line and 6.x on the indented lines under it.
+        "$VM" user "$name" -- kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
+            | python3 -c '
+import re, sys
+for chunk in re.split(r"(?m)^Output: ", sys.stdin.read())[1:]:
+    m = re.match(r"\d+\s+(\S+)", chunk)
+    if m and re.search(r"\benabled\b", chunk) and re.search(r"\bconnected\b", chunk):
+        print(m.group(1))' | grep '^Virtual-' | sort -u ;;
     xfce)  # " 0: +*Virtual-1 1920/487x1080/274+0+0  Virtual-1"
         "$VM" user "$name" -- xrandr --listmonitors | awk 'NR > 1 { print $NF }' | grep '^Virtual-' | sort -u ;;
     sway)
@@ -81,7 +96,7 @@ p = subprocess.run(["pgrep", "-a", "-f", "gnome-initial-setup"], capture_output=
 print("initial-setup: %s" % (p.stdout.strip().replace("\n", "; ") or "none"))
 PY
         ;;
-    kde)   # Virtual-1's block: "priority 1" (Plasma >= 5.26: the primary output) and "Geometry: x,y WxH"
+    kde|kde-x11)   # Virtual-1's block: "priority 1" (Plasma >= 5.26: the primary output) and "Geometry: x,y WxH"
         "$VM" user "$name" -- python3 - <<'PY'
 import re, subprocess
 out = subprocess.run(["kscreen-doctor", "-o"], capture_output=True, text=True).stdout
@@ -155,7 +170,7 @@ expect_monitors() {   # the compositor needs a moment after a hotplug event
 }
 diagnose_heads() {   # what the guest thinks the connectors are, and (on X11) what X kept
     "$VM" heads "$name" | sed 's/^/   drm: /' || true
-    [ "$desktop" = xfce ] || return 0
+    case $desktop in xfce|kde-x11) ;; *) return 0 ;; esac
     "$VM" user "$name" -- xrandr --query 2>/dev/null | grep -E '^Virtual-' | sed 's/^/   xrandr: /' || true
     echo "   (an output listed by xrandr as \"disconnected\" but with a mode/position is one the"
     echo "    X server has not let go of: the connector is gone, the CRTC is still scanning it out)"
@@ -169,7 +184,7 @@ step "$tool: expect Virtual-1..3, Virtual-1 at 0,0, no first-run window"
 expect_monitors 3
 lay=$(layout); echo "   $lay" | tr '\n' ' '; echo
 case $desktop in
-    gnome|kde) echo "$lay" | grep -q '^primary Virtual-1 at 0,0$' || { echo "FAIL: primary is not Virtual-1 at 0,0"; exit 1; } ;;
+    gnome|kde|kde-x11) echo "$lay" | grep -q '^primary Virtual-1 at 0,0$' || { echo "FAIL: primary is not Virtual-1 at 0,0"; exit 1; } ;;
     *)         echo "$lay" | grep -Eq '^(primary|output) Virtual-1 at 0,0$' || { echo "FAIL: Virtual-1 is not at 0,0"; exit 1; } ;;
 esac
 echo "$lay" | grep -q '^initial-setup: none$' || { echo "FAIL: a first-run window is running in the session"; exit 1; }
@@ -182,7 +197,7 @@ step "vmctl user: session id/type (logind Type $logind_type, XDG_SESSION_TYPE $s
 "$VM" user "$name" -- sh -c '[ "$XDG_SESSION_TYPE" = '"$session_type"' ]' || { echo "FAIL: vmctl user does not export XDG_SESSION_TYPE=$session_type"; exit 1; }
 case $desktop in
     gnome|kde) "$VM" user "$name" -- sh -c '[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && xdpyinfo >/dev/null' || { echo "FAIL: no WAYLAND_DISPLAY socket / working Xwayland DISPLAY in vmctl user"; exit 1; } ;;
-    xfce)      "$VM" user "$name" -- sh -c '[ -z "$WAYLAND_DISPLAY" ] && xdpyinfo >/dev/null' || { echo "FAIL: vmctl user is not a working X11 environment"; exit 1; } ;;
+    xfce|kde-x11) "$VM" user "$name" -- sh -c '[ -z "$WAYLAND_DISPLAY" ] && xdpyinfo >/dev/null' || { echo "FAIL: vmctl user is not a working X11 environment"; exit 1; } ;;
     sway)      "$VM" user "$name" -- sh -c '[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && [ -S "$SWAYSOCK" ] && xdpyinfo >/dev/null' || { echo "FAIL: no WAYLAND_DISPLAY/SWAYSOCK sockets / working Xwayland DISPLAY in vmctl user"; exit 1; } ;;
 esac
 echo "   ok: $session_type session, display sockets present, X (xdpyinfo) reachable"

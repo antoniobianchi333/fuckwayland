@@ -66,6 +66,10 @@ DESKTOPS = {
                   dm="gdm", compositor="gnome-shell", shell=(), splash=None),
     "kde":   dict(label="KDE Plasma on Wayland (SDDM)", session="wayland", logind=("wayland",),
                   dm="sddm", compositor="kwin_wayland", shell=("plasmashell",), splash="ksplashqml"),
+    # Same Plasma, same packages, started from /usr/share/xsessions instead: the
+    # X server owns the scanout and kwin_x11 is a plain X client on top of it.
+    "kde-x11": dict(label="KDE Plasma on X11 (SDDM)", session="x11", logind=("x11",),
+                  dm="sddm", compositor="Xorg", shell=("plasmashell",), splash="ksplashqml"),
     "xfce":  dict(label="Xfce on X11 (LightDM)", session="x11", logind=("x11",),
                   dm="lightdm", compositor="Xorg", shell=("xfce4-panel", "xfdesktop"), splash=None),
     "sway":  dict(label="sway on Wayland (greetd)", session="wayland", logind=("wayland", "tty"),
@@ -433,7 +437,7 @@ class Instance:
         return sorted(i for i, v in self.heads().items() if v != "off")
 
     def desktop(self):
-        """gnome|kde|xfce|sway: from meta.json (recorded by `start`), else the flavor yaml."""
+        """gnome|kde|kde-x11|xfce|sway: from meta.json (recorded by `start`), else the flavor yaml."""
         d = self.meta.get("desktop")
         if d in DESKTOPS:
             return d
@@ -511,7 +515,7 @@ def flavor_base(flavor):
 
 
 def flavor_desktop(flavor):
-    """The flavor's `# vmctl-desktop: gnome|kde|xfce|sway` header (default gnome)."""
+    """The flavor's `# vmctl-desktop: gnome|kde|kde-x11|xfce|sway` header (default gnome)."""
     text = flavor_file(flavor).read_text()
     m = re.search(r"^#\s*vmctl-desktop:\s*(\S+)", text, re.M)
     d = m[1] if m else "gnome"
@@ -1002,7 +1006,7 @@ def cmd_shot(a):
 
 
 SESSION_SCRIPT = r"""
-# DESKTOP=gnome|kde|xfce|sway and KIND=wayland|x11 are prepended by cmd_session.
+# DESKTOP=gnome|kde|kde-x11|xfce|sway and KIND=wayland|x11 are prepended by cmd_session.
 # The desktop is there once logind shows user test's SEAT session active with the
 # expected Type and the session's sockets exist in XDG_RUNTIME_DIR.
 RT=/run/user/1000
@@ -1226,7 +1230,7 @@ def cmd_session(a):
 
 
 USER_WRAPPER = r"""
-# VMCTL_DESKTOP=gnome|kde|xfce|sway and VMCTL_SESSION=wayland|x11 come from the host.
+# VMCTL_DESKTOP=gnome|kde|kde-x11|xfce|sway and VMCTL_SESSION=wayland|x11 come from the host.
 # Session variables are imported first-wins, in this order: what the session
 # exported to the systemd user manager (gnome-session, startplasma, the X
 # session's dbus-update-activation-environment, sway's exec line), then the
@@ -1244,7 +1248,7 @@ imp() {   # import plain-valued session variables from "K=V" words, never overri
   done
 }
 imp $(systemctl --user show-environment 2>/dev/null)
-case "$VMCTL_DESKTOP" in kde) comp=kwin_wayland ;; xfce) comp=xfce4-session ;; sway) comp=sway ;; *) comp=gnome-shell ;; esac
+case "$VMCTL_DESKTOP" in kde) comp=kwin_wayland ;; kde-x11) comp=kwin_x11 ;; xfce) comp=xfce4-session ;; sway) comp=sway ;; *) comp=gnome-shell ;; esac
 p=$(pgrep -u "$(id -u)" -x "$comp" 2>/dev/null | head -1)
 # 2> before < : a kwin_wayland that carries file capabilities has an environ
 # only root may read, and the shell's own "Permission denied" would go to the
@@ -1260,10 +1264,10 @@ if [ "$VMCTL_DESKTOP" = sway ] && [ -z "$SWAYSOCK" ]; then
   [ -n "$s" ] && export SWAYSOCK=$s
 fi
 [ -z "$DISPLAY" ] && [ -S /tmp/.X11-unix/X0 ] && export DISPLAY=:0
-# LightDM writes the X cookie to ~/.Xauthority (user-authority-in-system-dir=false)
+# LightDM (user-authority-in-system-dir=false) and SDDM both write the X cookie to ~/.Xauthority
 [ -z "$XAUTHORITY" ] && [ "$VMCTL_SESSION" = x11 ] && [ -f "$HOME/.Xauthority" ] && export XAUTHORITY=$HOME/.Xauthority
 if [ -z "$XDG_CURRENT_DESKTOP" ]; then
-  case "$VMCTL_DESKTOP" in kde) export XDG_CURRENT_DESKTOP=KDE ;; xfce) export XDG_CURRENT_DESKTOP=XFCE ;;
+  case "$VMCTL_DESKTOP" in kde|kde-x11) export XDG_CURRENT_DESKTOP=KDE ;; xfce) export XDG_CURRENT_DESKTOP=XFCE ;;
     sway) export XDG_CURRENT_DESKTOP=sway ;; gnome) export XDG_CURRENT_DESKTOP=ubuntu:GNOME ;; esac
 fi
 # XDG_SESSION_ID is not in the user manager's environment: logind's "display"
