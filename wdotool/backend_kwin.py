@@ -382,11 +382,13 @@ class KwinBackend(WindowBackend):
             maximized_h=bool(mm & 2),
             maximized_v=bool(mm & 1),
             above=bool(d.get("ka")),
+            below=bool(d.get("kb")),
             sticky=bool(d.get("st")),
             urgent=bool(d.get("at")),
             minimized=bool(d.get("m")),
             hidden=bool(d.get("m") or d.get("hi")),
             skip_taskbar=bool(d.get("sk")),
+            skip_pager=bool(d.get("sp")),
             floating=True,
             ws_name=ws_name,
             window_type=_WINDOW_TYPES.get(int(d.get("ty", 0)), "NORMAL"),
@@ -463,9 +465,19 @@ class KwinBackend(WindowBackend):
                 # the window's change signal, so a Wayland client that had
                 # simply not acked the configure yet is not reported here
                 # (`settled: false` means it could not be checked at all).
-                _warn("windowstate %s: KWin did not apply it to window %d "
-                      "(a window rule, or the window's size hints)"
-                      % (state, wid))
+                if state == "SHADED" and not out.get("xid"):
+                    # KWin shades X11 windows only: the `shade` property
+                    # exists on every window on 5.27 and writing it to a
+                    # native one is accepted and ignored. Blaming a window
+                    # rule sent people looking through kcmshell5 for a rule
+                    # that was never there.
+                    _warn("windowstate SHADED: KWin can only shade X11 "
+                          "windows; window %d is a native Wayland window"
+                          % wid)
+                else:
+                    _warn("windowstate %s: KWin did not apply it to window %d "
+                          "(a window rule, or the window's size hints)"
+                          % (state, wid))
         except CmdError as e:
             kind = getattr(e, "kwin_error", "")
             if kind in ("nostate", "noshade"):
@@ -476,6 +488,22 @@ class KwinBackend(WindowBackend):
                 err.unsupported = True
                 raise err from None
             raise
+
+    def pointer(self) -> "tuple[int, int] | None":
+        """The compositor's real pointer (B6), from workspace.cursorPos.
+
+        Without this, `getmouselocation` fell back to the input daemon's
+        model of the last position it injected: it needed /dev/uinput open
+        for what is a pure query, it answered "0 0" after a daemon restart,
+        and it knew nothing about a physical mouse. GNOME has had this since
+        B6; KWin exports the same thing and it was simply never asked."""
+        try:
+            d = self._script("cursor")
+        except CmdError:
+            return None
+        if not isinstance(d, dict) or "x" not in d or "y" not in d:
+            return None
+        return int(d["x"]), int(d["y"])
 
     def window_desktop(self, wid: int) -> int:
         return int(self._info(wid).get("d", -1))

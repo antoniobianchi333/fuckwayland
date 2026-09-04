@@ -17,6 +17,17 @@ class CmdError(Exception):
     exit_code = 1
 
 
+class SoftCmdError(CmdError):
+    """"The compositor cannot do this to *this* window" -- not a failure of
+    the request, a shape of the desktop. sway refusing to move or resize a
+    tiled container is the case that exists.
+
+    A command that swallows one warns on stderr and carries on with rc 0;
+    every other CmdError is a real failure and must reach the driver, which
+    is the difference between "sway tiles this window" and "there is no such
+    window" (both used to exit 0 out of windowmove)."""
+
+
 class NoSessionError(CmdError):
     """No Wayland session / window-management backend could be found at all
     (B5). Distinct from "the session is fine but nothing matched", which

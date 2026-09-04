@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -131,6 +132,7 @@ class FakeKWin:
         self.events_ready = threading.Event()
         self.size = (1920, 1080)
         self.work_area = (0, 32, 1920, 1048)
+        self.cursor = (640, 480)        # workspace.cursorPos; None = no query
         if own_name:
             assert self.bus.request_name(KWIN_NAME) == 1
         self.thread = threading.Thread(target=self._serve, daemon=True)
@@ -267,6 +269,10 @@ class FakeKWin:
         if op == "screen":
             return {"w": self.size[0], "h": self.size[1],
                     "areas": [list(self.work_area) for _ in self.desktops]}
+        if op == "cursor":
+            if self.cursor is None:
+                raise _ScriptError("nocursor")
+            return {"x": self.cursor[0], "y": self.cursor[1]}
         if op == "events":
             self.event_args = (a["dest"], a["token"])
             self.events_ready.set()
@@ -299,6 +305,7 @@ class FakeKWin:
             w["m"] = w["hi"] = False
             return {}
         if op == "raise":
+            w["kb"] = False          # as the script does: undo a keepBelow lower
             self.windows.remove(w)
             self.windows.append(w)
             w["so"] = max(d["so"] for d in self.windows) + 1
@@ -318,7 +325,8 @@ class FakeKWin:
             return {k: w[k] for k in ("x", "y", "w", "h")}
         if op == "state":
             applied, settled = self._state(w, a["state"], a["action"])
-            return {"applied": applied, "settled": settled}
+            return {"applied": applied, "settled": settled,
+                    "xid": w.get("xid") or 0}
         if op == "desktop":
             n = a["n"]
             if n < 0:
@@ -358,6 +366,10 @@ class FakeKWin:
         if state == "SHADED":
             if w["sh"] is None:
                 raise _ScriptError("noshade")
+            if w.get("refuse"):
+                # 5.27: `shade` exists on every window and a write to a
+                # native one is accepted and ignored
+                return w["sh"], True
             w["sh"] = (not w["sh"]) if action == 2 else bool(action)
             return w["sh"], True
         key = self._STATES.get(state)
@@ -700,6 +712,52 @@ class BackendTests(_Base):
             self.b.lower(WID["kate"])
         self.assertTrue(self.kwin.find(UU["kate"])["kb"])
         self.assertIn("keep-below", err.getvalue())
+
+    def test_raise_clears_the_keep_below_a_lower_set(self):
+        """windowlower on a non-active window is approximated with keepBelow,
+        and nothing used to clear it: the window stayed pinned to the bottom
+        for the rest of the session, across processes, with `raise` unable to
+        undo it and no wdotool command able to show it."""
+        err = _capture_stderr()
+        with err:
+            self.b.lower(WID["kate"])
+        self.assertTrue(self.kwin.find(UU["kate"])["kb"])
+        self.b.raise_(WID["kate"])
+        self.assertFalse(self.kwin.find(UU["kate"])["kb"])
+
+    def test_raise_clears_keep_below_on_5_27_too(self):
+        b = self.backend(plasma=5)
+        err = _capture_stderr()
+        with err:
+            b.lower(WID["kate"])
+            self.assertTrue(self.kwin.find(UU["kate"])["kb"])
+            b.raise_(WID["kate"])
+        self.assertFalse(self.kwin.find(UU["kate"])["kb"])
+
+    def test_shaded_on_a_native_window_does_not_blame_a_window_rule(self):
+        """5.27 has a `shade` property on every window and ignores a write to
+        a native one. Sending people to look for a window rule that does not
+        exist was the wrong diagnosis; the backend knows the window has no X
+        id."""
+        b = self.backend(plasma=5)
+        w = self.kwin.find(UU["konsole"])       # native: xid 0 in the fixture
+        self.assertFalse(w.get("xid"))
+        w["refuse"] = True
+        err = _capture_stderr()
+        with err:
+            b.set_state(WID["konsole"], "SHADED", 1)
+        self.assertIn("can only shade X11 windows", err.getvalue())
+        self.assertNotIn("window rule", err.getvalue())
+
+    def test_a_refused_state_on_an_x11_window_still_blames_the_rule(self):
+        b = self.backend(plasma=5)
+        w = self.kwin.find(UU["xterm"])
+        self.assertTrue(w.get("xid"))
+        w["refuse"] = True
+        err = _capture_stderr()
+        with err:
+            b.set_state(WID["xterm"], "SHADED", 1)
+        self.assertIn("window rule", err.getvalue())
 
     def test_raise_on_5_27_warns_that_it_activates(self):
         b = self.backend(plasma=5)
@@ -1173,6 +1231,67 @@ class PayloadShapeTests(_Base):
             self.assertEqual(wid & 0xFFFFFFFF, wid, u)
 
 
+class PointerTests(_Base):
+    """B6 on KWin: getmouselocation used to fall through to the input
+    daemon's model of the last position it injected -- which needs
+    /dev/uinput open for a pure query and answers 0 0 after a restart."""
+
+    def setUp(self):
+        self.b = self.backend()
+
+    def test_pointer_reads_the_compositor(self):
+        self.kwin.cursor = (137, 42)
+        self.assertEqual(self.b.pointer(), (137, 42))
+
+    def test_pointer_is_the_hook_input_cmds_looks_for(self):
+        from wdotool import input_cmds
+
+        ctx = types.SimpleNamespace(backend=lambda: self.b)
+        self.kwin.cursor = (11, 22)
+        self.assertEqual(input_cmds._backend_pointer(ctx), (11, 22))
+
+    def test_a_compositor_with_no_cursor_query_falls_back(self):
+        """None, not an exception: the caller's fallback is the daemon."""
+        self.kwin.cursor = None
+        self.assertIsNone(self.b.pointer())
+
+    def test_no_script_is_left_loaded(self):
+        self.b.pointer()
+        loaded = [c[2][0] for c in self.kwin.calls if c[1] == "loadScript"]
+        self.assertEqual(len(self.kwin.unloaded), len(loaded))
+
+
+class ViewStateTests(_Base):
+    """States KWin reports that the View used to drop on the floor: BELOW is
+    what `windowlower` leaves behind, so it has to be readable."""
+
+    def setUp(self):
+        self.b = self.backend()
+
+    def _view(self, uuid):
+        for v in self.b.views():
+            if v.window.id == backend_kwin._wid(uuid):
+                return v
+        self.fail("no view for %s" % uuid)
+
+    def test_below_and_skip_pager_reach_the_view(self):
+        w = self.kwin.find(UU["kate"])
+        w["kb"], w["sp"] = True, True
+        v = self._view(UU["kate"])
+        self.assertTrue(v.below)
+        self.assertTrue(v.skip_pager)
+        self.assertFalse(v.above)
+        other = self._view(UU["xterm"])
+        self.assertFalse(other.below)
+        self.assertFalse(other.skip_pager)
+
+    def test_a_lowered_window_reads_back_as_below(self):
+        err = _capture_stderr()
+        with err:
+            self.b.lower(WID["kate"])
+        self.assertTrue(self._view(UU["kate"]).below)
+
+
 class ScriptTextTests(unittest.TestCase):
     """The one script has to cover both Plasma generations by itself."""
 
@@ -1195,6 +1314,23 @@ class ScriptTextTests(unittest.TestCase):
                      ("raiseWindow", "slotWindowRaise")):
             for token in pair:
                 self.assertIn(token, js)
+
+    def test_raise_clears_keep_below(self):
+        """The Python fake mirrors the JS; this is the JS itself."""
+        js = kwin_js.SCRIPT
+        body = js[js.index('if (op === "raise")'):js.index('if (op === "lower")')]
+        self.assertIn("w.keepBelow = false;", body)
+
+    def test_the_state_answer_carries_the_x_id(self):
+        js = kwin_js.SCRIPT
+        self.assertIn("function xnum(w)", js)
+        body = js[js.index('if (op === "state")'):js.index('if (op === "desktop")')]
+        self.assertEqual(body.count("xid: xnum(w)"), 2)
+
+    def test_the_cursor_op_uses_the_property_both_releases_have(self):
+        js = kwin_js.SCRIPT
+        self.assertIn("workspace.cursorPos", js)
+        self.assertIn('if (op === "cursor")', js)
 
     def test_never_uses_the_globals_kwin_does_not_have(self):
         # print() is gone from KWin's script globals in 5.27 and 6 alike

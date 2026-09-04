@@ -11,7 +11,7 @@ import sys
 
 from wdotool import session
 from wdotool.backend import Window, WindowBackend
-from wdotool.ctx import CmdError
+from wdotool.ctx import CmdError, SoftCmdError
 
 _MAGIC = b"i3-ipc"
 RUN_COMMAND = 0
@@ -198,7 +198,7 @@ class SwayBackend(WindowBackend):
     def move_window(self, wid: int, x: int, y: int):
         node, _w, floating, _ws = self._node(wid)
         if not floating:
-            raise CmdError(
+            raise SoftCmdError(
                 "sway: cannot move a tiled window to an absolute position "
                 "(floating enable it first)"
             )
@@ -208,15 +208,23 @@ class SwayBackend(WindowBackend):
 
     def resize(self, wid: int, w: int, h: int):
         node, win, floating, _ws = self._node(wid)
+        if not floating:
+            # `resize set` on a tiled container moves the split ratio: the
+            # window ends up some other size on the axis the layout owns and
+            # unchanged on the other, which read as a silent partial success.
+            # Refuse it the way a tiled move is refused.
+            raise SoftCmdError(
+                "sway: cannot resize a tiled window to an absolute size "
+                "(floating enable it first)"
+            )
         self._refuse_fullscreen(node, "resize")
         self.run("[con_id=%d] resize set %d px %d px"
                  % (wid, w, h + self._deco_h(node)))
-        if floating:
-            # sway resizes floating windows around their center; xdotool (X11)
-            # keeps the top-left corner fixed. Move it back where it was.
-            node2 = self._node(wid)[0]
-            self.run("[con_id=%d] move absolute position %d %d"
-                     % (wid, win.x, win.y - self._deco_h(node2)))
+        # sway resizes floating windows around their center; xdotool (X11)
+        # keeps the top-left corner fixed. Move it back where it was.
+        node2 = self._node(wid)[0]
+        self.run("[con_id=%d] move absolute position %d %d"
+                 % (wid, win.x, win.y - self._deco_h(node2)))
 
     def minimize(self, wid: int):
         self.unmap(wid)

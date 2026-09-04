@@ -181,7 +181,9 @@ def _node_from_view(v) -> dict:
         "focused": bool(w.focused),
         "maximized_h": bool(v.maximized_h),
         "maximized_v": bool(v.maximized_v),
-        "above": bool(v.above), "skip_taskbar": bool(v.skip_taskbar),
+        "above": bool(v.above), "below": bool(v.below),
+        "skip_taskbar": bool(v.skip_taskbar),
+        "skip_pager": bool(v.skip_pager),
         "window_type": v.window_type or "NORMAL",
         "transient_for": int(v.transient_for or 0),
         "client_type": v.client_type, "instance": v.instance, "class": v.cls,
@@ -341,7 +343,8 @@ _EXTENDED_ATOMS = (
     "_NET_NUMBER_OF_DESKTOPS", "_NET_DESKTOP_NAMES",
     # what a views() backend (GNOME) additionally knows
     "_NET_WM_STATE_MAXIMIZED_HORZ", "_NET_WM_STATE_MAXIMIZED_VERT",
-    "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_SKIP_TASKBAR",
+    "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_BELOW",
+    "_NET_WM_STATE_SKIP_TASKBAR", "_NET_WM_STATE_SKIP_PAGER",
     "_NET_WM_STATE_DEMANDS_ATTENTION", "_NET_WM_WINDOW_TYPE_DESKTOP",
     "_NET_WM_WINDOW_TYPE_DOCK", "_NET_WM_WINDOW_TYPE_DIALOG",
     "_NET_WM_WINDOW_TYPE_TOOLBAR", "_NET_WM_WINDOW_TYPE_MENU",
@@ -552,6 +555,8 @@ class NativeViewTarget(NativeTarget):
         # Mutter's own _NET_WM_STATE order (window-x11.c set_net_wm_state),
         # so native and XWayland windows on GNOME print alike; the sway
         # subset (FULLSCREEN, HIDDEN, STICKY) keeps its relative order
+        if rich and node.get("skip_pager"):
+            states.append("_NET_WM_STATE_SKIP_PAGER")
         if rich and node.get("skip_taskbar"):
             states.append("_NET_WM_STATE_SKIP_TASKBAR")
         if rich and node.get("maximized_h"):
@@ -564,6 +569,8 @@ class NativeViewTarget(NativeTarget):
             states.append("_NET_WM_STATE_HIDDEN")
         if rich and node.get("above"):
             states.append("_NET_WM_STATE_ABOVE")
+        if rich and node.get("below"):
+            states.append("_NET_WM_STATE_BELOW")
         if rich and node.get("urgent"):
             states.append("_NET_WM_STATE_DEMANDS_ATTENTION")
         if node.get("sticky"):

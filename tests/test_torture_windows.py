@@ -171,10 +171,18 @@ class SwayResizeRestoreTest(unittest.TestCase):
             "[con_id=7] move absolute position 100 50",
         ])
 
-    def test_tiled_resize_does_not_move(self):
+    def test_tiled_resize_is_refused(self):
+        """`resize set` on a tiled container moves the split ratio instead of
+        sizing the window: one axis lands somewhere else, the other does not
+        move at all, and nothing said so. Refused now, like a tiled move --
+        and softly, so windowsize warns and exits 0."""
+        from wdotool.ctx import SoftCmdError
+
         b = self._backend(floating=False)
-        b.resize(7, 500, 400)
-        self.assertEqual(b.commands, ["[con_id=7] resize set 500 px 400 px"])
+        with self.assertRaises(SoftCmdError) as cm:
+            b.resize(7, 500, 400)
+        self.assertIn("floating enable", str(cm.exception))
+        self.assertEqual(b.commands, [])
 
 
 class SwayFullscreenGuardTest(unittest.TestCase):

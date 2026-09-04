@@ -54,6 +54,15 @@ function _ev(u, c) {
 }
 var SIX = (typeof workspace.windowList === "function");
 
+function xnum(w) {
+  /* The X11 window id, and 0 for a native Wayland toplevel: `windowId` is a
+     property of X11Window only, so 5.27 answers with a number and 6 with
+     undefined for a native window. Whether a window is on the X plane is
+     what decides which of KWin's capability gaps apply to it (shading). */
+  var x = w.windowId;
+  return (typeof x === "number" && x > 0) ? x : 0;
+}
+
 function wins() {
   var l = SIX ? workspace.windowList() : workspace.clientList();
   return l ? l : [];
@@ -173,7 +182,7 @@ function mmode(w) {
 }
 function info(w) {
   var g = w.frameGeometry || {};
-  var xid = w.windowId;                       /* X11Window, Plasma 5.27 only */
+  var xid = xnum(w);
   var tf = w.transientFor;
   /* SIX: on 5.27 `output` is a KWin::Output*, a datatype QJSEngine has no
      converter for -- merely reading it logs "QMetaProperty::read: Unable to
@@ -191,7 +200,7 @@ function info(w) {
     nb: !!w.noBorder, sh: (typeof w.shade === "boolean") ? w.shade : null,
     ty: num(w.windowType), ly: num(w.layer), so: num(w.stackingOrder),
     tf: tf ? uuid(tf) : "", df: str(w.desktopFileName), ro: str(w.windowRole),
-    xid: (typeof xid === "number" && xid > 0) ? xid : 0,
+    xid: xid,
     o: (out && out.name) ? str(out.name) : ""
   };
 }
@@ -221,6 +230,17 @@ function screenInfo() {
                  : [0, 0, 0, 0]);
   }
   return {w: num(s.width), h: num(s.height), areas: areas};
+}
+
+function cursorPos() {
+  /* workspace.cursorPos: a QPoint in global layout coordinates, on 5.27 and
+     6 alike -- the compositor's own pointer, wherever it was last moved from
+     (our tablet, a REL event, a physical mouse, another daemon). */
+  var c = workspace.cursorPos;
+  if (!c || typeof c.x !== "number" || typeof c.y !== "number") {
+    throw new Error("nocursor");
+  }
+  return {x: num(c.x), y: num(c.y)};
 }
 
 /* ----------------------------------------------------------------- actions */
@@ -351,7 +371,8 @@ function later(w, s, want) {
   var sigs = _WATCH[s] || [], armed = false, t = null;
   function reply(settled) {
     try {
-      _ret({ok: true, v: {applied: readState(w, s), settled: !!settled}});
+      _ret({ok: true, v: {applied: readState(w, s), settled: !!settled,
+                          xid: xnum(w)}});
     } catch (e) {
       _ret({ok: false, err: (e && e.message) ? String(e.message) : String(e)});
     }
@@ -497,6 +518,9 @@ function main() {
   if (op === "events") {
     return hookEvents();
   }
+  if (op === "cursor") {
+    return cursorPos();
+  }
   var w = find(A.uuid);
   if (!w) {
     throw new Error("nowindow");
@@ -526,6 +550,12 @@ function main() {
     return {};
   }
   if (op === "raise") {
+    /* A lower of a non-active window is approximated with keepBelow, and
+       that flag outlives the process: without clearing it here a raise
+       could not undo a lower, and the window stayed pinned to the bottom
+       for the rest of the session with nothing saying so. Mirrors lower's
+       own `w.keepAbove = false`. */
+    w.keepBelow = false;
     if (typeof workspace.raiseWindow === "function") {
       workspace.raiseWindow(w);                         /* 6: a real raise */
       return {how: "raise"};
@@ -554,12 +584,13 @@ function main() {
     writeState(w, A.state, want);
     var got = readState(w, A.state);
     if (got === want) {
-      return {applied: got, settled: true};        /* synchronous, as X11 is */
+      return {applied: got, settled: true, xid: xnum(w)};  /* sync, as X11 is */
     }
     if (later(w, A.state, want)) {
       return DEFER;
     }
-    return {applied: got, settled: false};   /* unverifiable: do not warn on it */
+    /* unverifiable: do not warn on it */
+    return {applied: got, settled: false, xid: xnum(w)};
   }
   if (op === "desktop") {
     toDesktop(w, A.n);

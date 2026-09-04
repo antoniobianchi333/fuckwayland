@@ -51,11 +51,13 @@ class View:
     maximized_h: bool = False
     maximized_v: bool = False
     above: bool = False
+    below: bool = False
     sticky: bool = False
     urgent: bool = False
     minimized: bool = False
     hidden: bool = False
     skip_taskbar: bool = False
+    skip_pager: bool = False
     floating: bool = True  # tiling compositors only; GNOME windows all float
     ws_name: str = ""
     window_type: str = "NORMAL"
