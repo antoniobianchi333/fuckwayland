@@ -1,7 +1,12 @@
 """Layout model: outputs with their configuration, arandr's edge snapping,
-overlap rejection (clones — same origin — excepted), origin normalisation,
-the xrandr command line, and the ``#!/bin/sh`` layout-script format arandr
-reads."""
+origin normalisation, the xrandr command line, and the ``#!/bin/sh``
+layout-script format arandr reads.
+
+Overlapping outputs are the *backend's* business, not ours: two active
+outputs may intersect freely (arandr allows it and X11 has always drawn it),
+and a layout is refused here only when the backend in use refuses one -- the
+caller sets ``Layout.overlap_refusal`` to that backend's own sentence, which
+then becomes the error, so the user reads whose limit it is."""
 
 import math
 import re
@@ -19,8 +24,9 @@ DEFAULT_TEMPLATE = [SHEBANG, PLACEHOLDER]        # arandr's DEFAULTTEMPLATE
 
 
 class LayoutError(Exception):
-    """A configuration the model refuses (overlap, off-screen, unknown
-    output/mode) — the caller reverts and tells the user."""
+    """A configuration the model refuses (off-screen, unknown output/mode,
+    or an overlap on a backend that refuses one) — the caller reverts and
+    tells the user."""
 
 
 def fmt_rate(hz):
@@ -134,21 +140,28 @@ def _intersects(a, b):
 
 class Layout:
     def __init__(self, hidpi=False, screen_max=(32767, 32767),
-                 screen_min=(8, 8), command_word="xrandr"):
+                 screen_min=(8, 8), command_word="xrandr",
+                 overlap_refusal=None):
         self.hidpi = hidpi
         self.screen_max = screen_max
         self.screen_min = screen_min
         self.command_word = command_word
+        #: None when the backend takes overlapping outputs (X11, KWin,
+        #: wlroots/sway: all three draw the shared region on both screens);
+        #: otherwise the backend's own reason, raised as the LayoutError.
+        self.overlap_refusal = overlap_refusal
         self.outputs = []
         self.template = list(DEFAULT_TEMPLATE)
 
     # -- construction -------------------------------------------------------
 
     @classmethod
-    def from_screen(cls, screen, hidpi=False, command_word="xrandr"):
+    def from_screen(cls, screen, hidpi=False, command_word="xrandr",
+                    overlap_refusal=None):
         """Build a layout from a parsed ``xrandr --query``/``--verbose``."""
         lay = cls(hidpi=hidpi, screen_max=screen.max, screen_min=screen.min,
-                  command_word=command_word)
+                  command_word=command_word,
+                  overlap_refusal=overlap_refusal)
         for po in screen.outputs:
             modes = []
             for pm in po.modes:
@@ -268,11 +281,12 @@ class Layout:
             o.mirror_of = t.name
             o.x, o.y = t.x, t.y
 
-    def check(self):
-        """Raise LayoutError for overlapping outputs — two active outputs may
-        intersect only as clones, i.e. with the same origin (what xrandr's
-        ``--same-as`` makes, whatever their sizes) — and for outputs beyond
-        the server's maximum screen size."""
+    def overlaps(self):
+        """Pairs of active outputs that intersect at *different* origins — a
+        partial overlap, i.e. a region two screens both draw.  Outputs at the
+        same origin are a clone (xrandr's ``--same-as``, whatever their
+        sizes) and are not one."""
+        pairs = []
         act = self.active_outputs()
         for i, a in enumerate(act):
             for b in act[i + 1:]:
@@ -281,7 +295,17 @@ class Layout:
                     continue
                 if (ra[0], ra[1]) == (rb[0], rb[1]):
                     continue
-                raise LayoutError("%s overlaps %s" % (a.name, b.name))
+                pairs.append((a.name, b.name))
+        return pairs
+
+    def check(self):
+        """Raise LayoutError for outputs beyond the server's maximum screen
+        size, and — only where the backend refuses one, `overlap_refusal`
+        holding its reason — for a partial overlap.  arandr allows overlaps
+        and X11 has always drawn them, so refusing one is never our own
+        policy: the sentence names the compositor that says no."""
+        if self.overlap_refusal and self.overlaps():
+            raise LayoutError(self.overlap_refusal)
         x0, y0, x1, y1 = self.bounding_box()
         if x1 - x0 > self.screen_max[0] or y1 - y0 > self.screen_max[1]:
             raise LayoutError(
@@ -488,17 +512,21 @@ class Layout:
 
     # -- scripts ------------------------------------------------------------
 
-    def to_script(self, word=None, note=None):
-        """The layout script.  `note` is warandr's one comment about a
-        *forced* backend; it goes only into the default template, because a
-        loaded file's own template is written back untouched (arandr's
-        rule), and it is only ever a comment: `sh script.sh` on a plain X11
-        box must not care which backend the window used."""
+    def to_script(self, word=None, notes=None):
+        """The layout script.  `notes` is warandr's comment header — one
+        line per note, about a *forced* backend and about what an overlap in
+        this layout means on it.  It goes only into the default template,
+        because a loaded file's own template is written back untouched
+        (arandr's rule), and it is only ever a comment: `sh script.sh` on a
+        plain X11 box must not care which backend the window used."""
         lines = list(self.template)
         if PLACEHOLDER not in lines:
             lines.append(PLACEHOLDER)
-        if note and lines == list(DEFAULT_TEMPLATE):
-            lines.insert(1, "# " + note)
+        if isinstance(notes, str):
+            notes = [notes]
+        if notes and lines == list(DEFAULT_TEMPLATE):
+            for i, note in enumerate(notes):
+                lines.insert(1 + i, "# " + note)
         cmd = self.command_line(word)
         return "\n".join(cmd if ln == PLACEHOLDER else ln
                          for ln in lines) + "\n"

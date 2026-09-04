@@ -1115,14 +1115,34 @@ class Apply(KwinCase):
         self.assertEqual(err, "xrandr: KWin keeps a primary output; keeping "
                               "DP-1\n")
 
-    def test_failure_reason_is_surfaced_verbatim(self):
+    def test_failure_reason_is_surfaced_in_kwins_name(self):
+        """KWin's own words, said in KWin's name: we never refuse a layout
+        of our own accord, so a refusal has to point at the compositor."""
         self.svc.fail_next = "The driver rejected the output configuration: ENOSPC"
         code, out, err = self.run_cli("--output", "DP-1", "--mode",
                                       "1920x1200")
         self.assertEqual((code, out), (1, ""))
         self.assertEqual(self.strip_save(err),
-                         "xrandr: The driver rejected the output "
+                         "xrandr: KWin rejected the output configuration: "
+                         "The driver rejected the output "
                          "configuration: ENOSPC\n")
+
+    def test_an_overlapping_position_is_sent_and_kept(self):
+        """The XML's "no gaps or overlaps" sentence is not enforced by the
+        code and we add no rule of our own: an overlapping --pos goes on the
+        wire exactly as asked and KWin keeps it.  Measured on Plasma 6 at
+        two overlap widths: the shared region comes back byte-identical on
+        both heads, KWin rendering each output as a view onto one scene."""
+        code, _out, err = self.run_cli("--output", "DP-1", "--pos", "960x0")
+        self.assertEqual((code, self.strip_save(err)), (0, ""))
+        self.assertEqual(self.svc.applied[-1],
+                         [("position", "DP-1", (960, 0))])
+        self.assertEqual([(h["name"], h["x"], h["y"])
+                          for h in self.svc.heads],
+                         [("eDP-1", 0, 0), ("DP-1", 960, 0)])
+        # ...and it reads back as the overlap it is
+        code, out, _err = self.run_cli("--listmonitors")
+        self.assertIn("+960+0", out)
 
     def test_failure_without_a_reason_on_527(self):
         self.svc = two_heads(dev_version=2, mgmt_version=3)

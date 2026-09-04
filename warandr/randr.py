@@ -43,6 +43,31 @@ WAYLAND_BACKENDS = ("sway", "wlr", "mutter", "kwin")
 BACKENDS = ("auto", "x11") + WAYLAND_BACKENDS
 ALIASES = {"gnome": "mutter", "kde": "kwin"}
 
+#: What a *partial* overlap (two active outputs intersecting at different
+#: origins) means per backend: whether the backend takes one, and the one
+#: sentence the window says about it.  Measured on two 1920x1080 heads with
+#: the second at x=960 -- see WARANDR.md, "What an overlap means"; on X11,
+#: KWin and wlroots the shared region came back byte-identical on both
+#: heads, and Mutter answered every non-adjacent layout, overlap and gap
+#: alike, with the message quoted here.
+OVERLAP = {
+    "x11": (True, "X11 draws both outputs from one framebuffer, so the "
+                  "shared region shows the same pixels on both."),
+    "sway": (True, "sway draws every output as a viewport onto one scene, so "
+                   "the shared region shows the same pixels on both; only "
+                   "which workspace a window opens on stays per-output."),
+    "wlr": (True, "wlroots draws every output as a viewport onto one scene, "
+                  "so the shared region shows the same pixels on both."),
+    "kwin": (True, "KWin draws every output as a view onto one shared scene, "
+                   "so the shared region shows the same pixels on both."),
+    "mutter": (False, "GNOME's Mutter refuses monitors that are not "
+                      "edge-adjacent, overlapping ones included "
+                      "(\"Logical monitors not adjacent\")."),
+}
+#: a Wayland backend nobody has identified yet (and any future one)
+OVERLAP_UNKNOWN = (True, "this backend has not been measured here; Apply "
+                         "reports whatever the compositor makes of it.")
+
 
 class RandrError(Exception):
     pass
@@ -113,6 +138,21 @@ class Backend:
         """The always-visible status-bar text."""
         return "backend: " + self.label
 
+    def overlap(self):
+        """``(taken, sentence)`` for a partial overlap on this backend."""
+        return OVERLAP.get(self.name, OVERLAP_UNKNOWN)
+
+    def overlap_note(self):
+        """The one sentence about what an overlap does here."""
+        return self.overlap()[1]
+
+    def overlap_refusal(self):
+        """The reason this backend refuses an overlap, or None when it takes
+        one.  It is what ``Layout.check()`` raises, so a refused drop is
+        reported in the compositor's name and never in ours."""
+        taken, why = self.overlap()
+        return None if taken else why
+
     def command(self):
         return " ".join(shlex.quote(a) for a in self.argv)
 
@@ -133,6 +173,10 @@ class Backend:
         for ln in self.info[1:]:
             if ln.strip() and ln.split(":", 1)[0] not in seen:
                 lines.append(ln)
+        # what a partial overlap means here: the window has to say it
+        # somewhere, and this paragraph is the one that already explains
+        # the backend (indicator tooltip, About, Script Properties)
+        lines.append("overlap: %s" % self.overlap_note())
         return lines
 
     def detail(self):
@@ -220,7 +264,8 @@ class Backend:
         if not screen.outputs and "Screen" not in text:
             raise RandrError("no RandR output from %s" % self.word)
         return Layout.from_screen(screen, hidpi=self.wayland,
-                                  command_word=self.word)
+                                  command_word=self.word,
+                                  overlap_refusal=self.overlap_refusal())
 
     def apply(self, layout):
         """Run the layout's command line; (rc, stdout, stderr)."""

@@ -10,7 +10,6 @@ test clicks real pixels:
   hover HDMI-1 -> its description in the status bar; leave -> the command
   right-click HDMI-1 -> arandr's menu order, no Scale on X11
                      -> Orientation -> left
-  drag DP-2 onto DP-1 -> refused, snapped back, "not moved" in the status bar
   drag DP-2 next to the (now portrait) HDMI-1; it snaps to its right edge
   Apply -> the recorded argv is exactly the arandr-shaped command
   Save As (WARANDR_TEST_SAVE_AS) -> arandr's two-line layout script
@@ -331,22 +330,8 @@ class GuiDrive(XvfbCase):
                           "--rotate", "left"])
         self.shot("warandr-3-rotated")
 
-        # dropping DP-2 onto DP-1 is refused: it snaps back and the status
-        # bar says why — even though the pointer now rests inside DP-1 (the
-        # message outranks the hover text; the command line comes back with
-        # the next redraw)
-        dp2 = lay["boxes"]["DP-2"]
-        self.drag(dp2, *self.centre(lay["boxes"]["DP-1"]))
-        lay, n = self.wait_dump(
-            "layout", lambda d: d["boxes"]["DP-2"][:2] == dp2[:2]
-            and d["status"].startswith("DP-2 not moved"), after=n)
-        self.assertEqual(lay["status"],
-                         "DP-2 not moved: DP-1 overlaps DP-2")
-        self.assertEqual(lay["command"][lay["command"].index("DP-2") + 4],
-                         "3200x0")
-        self.shot("warandr-3b-rejected")
-
         # drag DP-2 leftwards so it lands right of the portrait HDMI-1
+        dp2 = lay["boxes"]["DP-2"]
         # (its right edge is now at layout x 2944 = screen 12 + 368);
         # dropping 3px short and 2px low snaps to (2944, 0)
         hdmi = lay["boxes"]["HDMI-1"]
@@ -396,6 +381,61 @@ class GuiDrive(XvfbCase):
         with open(path) as fh:
             text = fh.read()
         self.assertEqual(text, "#!/bin/sh\nxrandr %s\n" % " ".join(EXPECTED))
+
+    def test_an_overlapping_drop_is_taken_and_explained(self):
+        """arandr allows overlaps and X11 has always drawn them, so a drop
+        that lands DP-2 on top of DP-1 is taken — and because what the
+        overlap *means* differs per desktop, the status bar says it at the
+        moment of the drop and the saved script keeps it in its header.
+
+        Measured on Xorg: `xrandr --pos 960x0` is accepted silently and the
+        shared region comes back byte-identical on both heads."""
+        lay = self.layout()
+        n = len(self.dumps())
+        dp1, dp2 = lay["boxes"]["DP-1"], lay["boxes"]["DP-2"]
+        note = ("DP-2 overlaps DP-1. X11 draws both outputs from one "
+                "framebuffer, so the shared region shows the same pixels "
+                "on both.")
+        # DP-2's centre onto DP-1's centre: the snap puts it on DP-1's
+        # centre lines, 320,180 in layout pixels — a half overlap
+        self.drag(dp2, *self.centre(dp1))
+        lay, n = self.wait_dump(
+            "layout", lambda d: d["status"] == note, after=n)
+        self.assertTrue(lay["settled"], lay)
+        i = lay["command"].index("DP-2")
+        self.assertEqual(lay["command"][i:i + 5],
+                         ["DP-2", "--mode", "1280x720", "--pos", "320x180"])
+        self.assertEqual(lay["boxes"]["DP-2"][:2],
+                         [dp1[0] + 320 // 8, dp1[1] + 180 // 8])
+        self.shot("warandr-6-overlap")
+
+        # the backend the window displays is also the one that says what an
+        # overlap does here: the same sentence, from the same place
+        b, n = self.backend_dump(after=0)
+        self.assertEqual(b["overlap"], note.split(". ", 1)[1])
+
+        # Apply sends it, unrefused, and the fake keeps it
+        self.click(lay["buttons"]["apply"])
+        applied, n = self.wait_dump("applied", after=n)
+        self.assertEqual((applied["rc"], applied["stderr"]), (0, ""))
+        self.assertIn("320x180", self.calls()[-1])
+        lay, n = self.wait_dump("layout", lambda d: not d["busy"], after=n)
+        self.assertEqual(lay["command"][lay["command"].index("DP-2") + 4],
+                         "320x180")
+
+        # ...and the saved script carries the header: what overlaps, and
+        # what that means on the backend that wrote it
+        self.click(lay["buttons"]["save_as"])
+        saved, n = self.wait_dump("saved", after=n)
+        with open(saved["path"]) as fh:
+            lines = fh.read().rstrip("\n").split("\n")
+        self.assertEqual(lines[0], "#!/bin/sh")
+        self.assertEqual(lines[1],
+                         "# warandr: partial overlap (DP-2 over DP-1)")
+        self.assertEqual(lines[2], "# " + note.split(". ", 1)[1])
+        self.assertTrue(lines[3].startswith("xrandr --output "))
+        self.assertIn("--pos 320x180", lines[3])
+        self.assertEqual(len(lines), 4)
 
     def test_clicking_the_indicator_opens_the_backend_menu(self):
         """The indicator is not just a readout: an indicator that shows a

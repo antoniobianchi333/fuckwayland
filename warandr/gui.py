@@ -255,15 +255,19 @@ class OutputBox(Gtk.EventBox):
         out = self.app.layout.get(self.name)
         pos = out.tentative
         out.tentative = None
-        rejected = None
+        rejected = note = None
         if pos is not None and pos != (out.x, out.y):
             try:
                 self.app.layout.move(self.name, *pos)
             except LayoutError as e:
                 rejected = e
+            else:
+                note = self.app.overlap_message(self.name)
         self.app.redraw()          # redraw resets the status bar first ...
         if rejected is not None:   # ... then the message goes on top
             self.app.show_message("%s not moved: %s" % (self.name, rejected))
+        elif note is not None:
+            self.app.show_message(note)
         return True
 
 
@@ -522,6 +526,7 @@ class Application:
         _dump("backend", {"name": self.backend.name,
                           "forced": self.backend.forced,
                           "indicator": self.backend.indicator(),
+                          "overlap": self.backend.overlap_note(),
                           "word": self.backend.run_word,
                           "available": {k: v["available"]
                                         for k, v in self.backends.items()},
@@ -545,6 +550,9 @@ class Application:
             self.backends = info
         if self.backend is backend:
             self._refresh_backend()
+            if self.layout is not None:
+                # identify() may have turned "wayland" into a real name
+                self.layout.overlap_refusal = backend.overlap_refusal()
         return False
 
     def set_backend(self, name):
@@ -620,7 +628,22 @@ class Application:
     def command_text(self):
         return self.layout.command_line(self.backend.run_word)
 
+    def overlap_message(self, name):
+        """What a drop that landed `name` on top of another output means on
+        the backend in use — the status bar's one sentence at the moment of
+        the drop.  None when this output overlaps nothing (an exact overlap
+        is a clone, not this)."""
+        others = [b if a == name else a
+                  for a, b in self.layout.overlaps() if name in (a, b)]
+        if not others:
+            return None
+        return "%s overlaps %s. %s" % (name, ", ".join(others),
+                                       self.backend.overlap_note())
+
     def set_layout(self, layout):
+        # whether an overlapping layout is refused, and in whose name, is
+        # the live backend's answer -- never our own geometry policy
+        layout.overlap_refusal = self.backend.overlap_refusal()
         self.layout = layout
         if self.selected and not layout.has(self.selected):
             self.selected = None
@@ -1039,7 +1062,8 @@ class Application:
                 return
         try:
             path = cli.write_script(self.layout, fn, self.backend.word,
-                                    self.backend.script_note())
+                                    cli.script_notes(self.layout,
+                                                     self.backend))
         except OSError as e:
             _msg(self.window, Gtk.MessageType.ERROR, "Cannot save:\n%s" % e)
             return
@@ -1112,7 +1136,7 @@ class Application:
         tv.set_editable(False)
         tv.set_monospace(True)
         tv.get_buffer().set_text(self.layout.to_script(
-            self.backend.word, self.backend.script_note()))
+            self.backend.word, cli.script_notes(self.layout, self.backend)))
         sw = Gtk.ScrolledWindow()
         sw.add(tv)
         nb = Gtk.Notebook()

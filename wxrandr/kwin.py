@@ -62,10 +62,13 @@ kde_output_*).
 - KWin validates at apply: every ENABLED output needs x >= 0 and y >= 0
   ("Position of enabled output %1 is negative"), you may not disable every
   output, and an output may not mirror itself. The XML's "no gaps or overlaps"
-  sentence is not enforced by the code, so xrandr's gaps and `--same-as`
-  overlaps survive. We normalise the layout to the origin before sending and
-  refuse the last-output disable client-side, with our own xrandr-shaped
-  message.
+  sentence is not enforced by the code, so xrandr's gaps and every overlap
+  survive -- measured on Plasma 6 at two overlap widths: KWin takes the
+  geometry and renders each output as a view onto one shared scene, so the
+  shared region comes out byte-identical on both heads. We normalise the
+  layout to the origin before sending and refuse the last-output disable
+  client-side, with our own xrandr-shaped message; every rejection KWin does
+  send is relayed in KWin's name.
 - There is no temporary mode and no confirmation dialog. KWin persists every
   applied configuration itself (Plasma 6: OutputConfigurationStore::storeConfig
   -> ~/.config/kwinoutputconfig.json, marked Source::User; 5.27: kded5 kscreen
@@ -849,7 +852,8 @@ class KwinOutputs:
                 # evidence, and it is the same evidence on 6.x.
                 raise _Invalidated(reason or "the outputs changed")
             if reason:
-                raise Fatal("%s\n" % reason)
+                raise Fatal("KWin rejected the output configuration: %s\n"
+                            % reason)
             if self.mgmt_version < REASON_MGMT:
                 raise Fatal("KWin rejected the output configuration (this "
                             "KWin is too old to report why)\n")

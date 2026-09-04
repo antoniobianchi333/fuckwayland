@@ -1,6 +1,8 @@
-"""wxrandr unit tests: option-parse byte parity, the pending-layout resolver,
-transform mapping (against the XWayland-verified table), modeline math, and
-query rendering against oracle capture bytes. No compositor needed."""
+"""wxrandr unit tests: option-parse byte parity, the pending-layout resolver
+(which has no overlap rule: overlapping layouts are the compositor's call,
+not ours), transform mapping (against the XWayland-verified table), modeline
+math, and query rendering against oracle capture bytes. No compositor
+needed."""
 
 import contextlib
 import io
@@ -293,6 +295,27 @@ class Resolver(unittest.TestCase):
         pos = resolve_positions(ts, self.dims(ts, st))
         self.assertEqual(pos["A"], (0, 0))
         self.assertEqual(pos["B"], (1480, 100))
+
+    def test_an_overlap_survives_the_resolver_untouched(self):
+        """wxrandr has no geometry policy of its own: an overlapping --pos
+        is resolved, normalised and pinned exactly as asked.  On sway and
+        wlroots that is genuine partial mirroring -- both outputs are
+        viewports onto one scene, and the shared region came back
+        byte-identical on both heads (measured, sway 1.11)."""
+        outs = self.L()
+        st = mk_state()
+        ts = build_targets(outs, [Stanza(name="B", pos=(640, 0))], st)
+        pos = resolve_positions(ts, self.dims(ts, st))
+        self.assertEqual(pos, {"A": (0, 0), "B": (640, 0), "C": (2304, 0)})
+        self.assertEqual(core.position_commands(ts, pos),
+                         ["output A position 0 0", "output B position 640 0",
+                          "output C position 2304 0"])
+        # a full overlap (--same-as) and a rotation into a neighbour are the
+        # same story: nothing here objects
+        ts = build_targets(outs, [Stanza(name="B", pos=(0, 0)),
+                                  Stanza(name="C", pos=(100, 100))], st)
+        pos = resolve_positions(ts, self.dims(ts, st))
+        self.assertEqual(pos, {"A": (0, 0), "B": (0, 0), "C": (100, 100)})
 
     def test_unknown_output_stanza_warns_not_fatal(self):
         outs = self.L()
