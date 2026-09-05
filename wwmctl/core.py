@@ -18,9 +18,10 @@ Dual-plane design per WWMCTL.md:
 
 Listing sources, in order: backend.views() (typed View records: GNOME),
 the sway-private _nodes() tree, the generic backend.list(). Desktops come
-from backend.workspaces() (GNOME: names + work areas) or the sway workspace
-list; -k/-n reach the backend's show_desktop()/set_num_desktops() when it
-has them (GNOME) and warn otherwise.
+from backend.workspaces() (GNOME: names + work areas; sway: one row per
+workspace) or are synthesized from get_desktop()/num_desktops(); -k/-n reach
+the backend's show_desktop()/set_num_desktops() when it has them (GNOME) and
+warn otherwise.
 
 Output strings below are byte-parity copies of wmctrl 1.07 (main.c)."""
 
@@ -397,11 +398,7 @@ class Core:
             # which also works when the focused workspace is named (no
             # number — get_desktop() would return -1 and the numeric route
             # would mis-file the window on a workspace called "0").
-            run = getattr(backend, "run", None)
-            if run is not None and getattr(backend, "_nodes", None):
-                backend.window_desktop(w.node_id)  # gone -> CmdError, exit 1
-                run("[con_id=%d] move container to workspace current"
-                    % w.node_id)
+            if backend.move_to_current_desktop(w.node_id):
                 return 0
             desktop = backend.get_desktop()
         if desktop < 0:
@@ -415,7 +412,7 @@ class Core:
 
     def to_current_and_activate(self, w: UWindow) -> int:  # -R
         self.to_desktop(w, -1)
-        if getattr(self.backend(), "_nodes", None) is None:
+        if self.backend().name != "sway":
             # wmctrl sleeps to give an asynchronous WM time to move the
             # window; the sway IPC round-trip above is synchronous, so
             # only non-sway backends need the grace period
@@ -808,9 +805,9 @@ class Core:
     def _desktop_rows(self):
         """[(id, current?, dg, vp, wa, name)]. backend.workspaces() when the
         backend has it (GNOME: index, name, work area -- what wmctrl reads
-        from _NET_DESKTOP_NAMES/_NET_WORKAREA); sway: one row per workspace
-        (id = num-1, same mapping as wdotool's desktop commands); otherwise
-        synthesized from the generic backend API."""
+        from _NET_DESKTOP_NAMES/_NET_WORKAREA; sway: one row per workspace,
+        index num-1, the same mapping wdotool's desktop commands use);
+        otherwise synthesized from the generic backend API."""
         backend = self.backend()
         size_fn = getattr(backend, "display_size", None)
         try:
@@ -830,40 +827,11 @@ class Core:
                              "%d,%d %dx%d" % (wx, wy, ww, wh),
                              ws.name or "%d" % ws.index))
             return rows
-        workspaces = None
-        msg = getattr(backend, "_msg", None)
-        if msg is not None:
-            try:
-                from wdotool.backend_sway import GET_WORKSPACES
-                workspaces = msg(GET_WORKSPACES)
-            except Exception:
-                workspaces = None
-        if workspaces is not None:
-            # sway answers GET_WORKSPACES in creation order; real wmctrl -d
-            # is always ascending and positionally indexed, which is what a
-            # caller reading "the third line is desktop 2" relies on.
-            workspaces = sorted(
-                workspaces, key=lambda ws: (ws.get("num", -1) < 0,
-                                            ws.get("num", -1),
-                                            ws.get("name") or ""))
-            here = next((i for i, ws in enumerate(workspaces)
-                         if ws.get("focused")), -1)
-            vps = self._viewports(len(workspaces), here)
-            for i, ws in enumerate(workspaces):
-                num = ws.get("num", -1)
-                rect = ws.get("rect") or {}
-                wa = "%d,%d %dx%d" % (rect.get("x", 0), rect.get("y", 0),
-                                      rect.get("width", 0),
-                                      rect.get("height", 0))
-                rows.append((num - 1 if num > 0 else -1,
-                             bool(ws.get("focused")), dg, vps[i], wa,
-                             ws.get("name") or "N/A"))
-        else:
-            cur = backend.get_desktop()
-            n = backend.num_desktops()
-            vps = self._viewports(n, cur)
-            for i in range(n):
-                rows.append((i, i == cur, dg, vps[i], "N/A", "N/A"))
+        cur = backend.get_desktop()
+        n = backend.num_desktops()
+        vps = self._viewports(n, cur)
+        for i in range(n):
+            rows.append((i, i == cur, dg, vps[i], "N/A", "N/A"))
         return rows
 
     def _viewports(self, n: int, cur: int) -> list[str]:

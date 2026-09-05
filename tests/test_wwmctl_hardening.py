@@ -536,6 +536,9 @@ class NoSleepOnSwayTest(unittest.TestCase):
                 return [Window(id=9, title="FootWin", class_="app", pid=3,
                                x=1, y=2, w=3, h=4, desktop=0)]
 
+            def move_to_current_desktop(self, wid):
+                return False  # not sway: move it by number
+
             def get_desktop(self):
                 return 2
 

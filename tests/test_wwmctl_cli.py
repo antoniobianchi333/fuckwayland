@@ -25,6 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from wdotool.backend import Window  # noqa: E402
+from wdotool.backend_sway import SwayBackend  # noqa: E402
 from wdotool.ctx import CmdError  # noqa: E402
 from wwmctl import cli, core  # noqa: E402
 from wwmctl.cli import WMCTRL_VERSION  # noqa: E402
@@ -45,10 +46,13 @@ class FakeSwayBackend:
 
     name = "sway"
 
+    # the real backend's mapping, over this fake's raw GET_WORKSPACES rows
+    workspaces = SwayBackend.workspaces
+
     def __init__(self, specs, workspaces=None, current=0):
         self.specs = specs
         self.calls = []
-        self.workspaces = workspaces or [
+        self.ws_rows = workspaces or [
             {"num": 1, "name": "1", "focused": True,
              "rect": {"x": 0, "y": 0, "width": 1280, "height": 720}},
         ]
@@ -82,7 +86,12 @@ class FakeSwayBackend:
 
     def _msg(self, mtype):
         assert mtype == 1  # GET_WORKSPACES
-        return self.workspaces
+        return self.ws_rows
+
+    def move_to_current_desktop(self, wid):
+        # no run(): like every backend but sway this says "move it by
+        # number", and the caller falls back to get_desktop()
+        return False
 
     def display_size(self):
         return (1280, 720)
@@ -108,7 +117,7 @@ class FakeSwayBackend:
         self.calls.append(("set_desktop", n))
 
     def num_desktops(self):
-        return len(self.workspaces)
+        return len(self.ws_rows)
 
     def set_window_desktop(self, wid, n):
         self._spec(wid)

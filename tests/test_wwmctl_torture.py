@@ -29,6 +29,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_wwmctl_cli import SPECS, FakeSwayBackend, FakeX11, run
+from wdotool.backend_sway import SwayBackend
 from wdotool.ctx import CmdError
 from wwmctl import cli
 
@@ -167,6 +168,8 @@ class NegativeDesktopTest(unittest.TestCase):
 
 class RunCapableFake(FakeSwayBackend):
     """Sway-shaped fake that, like the real SwayBackend, offers run()."""
+
+    move_to_current_desktop = SwayBackend.move_to_current_desktop
 
     def run(self, command):
         self.calls.append(("run", command))

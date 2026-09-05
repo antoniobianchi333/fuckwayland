@@ -10,7 +10,7 @@ import socket
 import struct
 
 from wdotool import session
-from wdotool.backend import Window, WindowBackend, warn
+from wdotool.backend import Window, WindowBackend, Workspace, warn
 from wdotool.ctx import CmdError, SoftCmdError
 
 _MAGIC = b"i3-ipc"
@@ -314,6 +314,34 @@ class SwayBackend(WindowBackend):
     def set_window_desktop(self, wid: int, n: int):
         self._node(wid)
         self.run("[con_id=%d] move container to workspace number %d" % (wid, n + 1))
+
+    def workspaces(self) -> "list[Workspace]":
+        """One record per workspace, ascending. sway answers GET_WORKSPACES
+        in creation order and numbers only the numbered ones, so the sort
+        is on the raw `num` with the nameless-number workspaces last; the
+        index is the desktop number the tools use (workspace number N+1 is
+        desktop N), and a named workspace with no number is -1."""
+        rows = sorted(self._msg(GET_WORKSPACES) or [],
+                      key=lambda ws: (ws.get("num", -1) < 0,
+                                      ws.get("num", -1),
+                                      ws.get("name") or ""))
+        out = []
+        for ws in rows:
+            num = ws.get("num", -1)
+            rect = ws.get("rect") or {}
+            out.append(Workspace(
+                index=num - 1 if num > 0 else -1,
+                name=ws.get("name") or "",
+                active=bool(ws.get("focused")),
+                work_area=(rect.get("x", 0), rect.get("y", 0),
+                           rect.get("width", 0), rect.get("height", 0)),
+            ))
+        return out
+
+    def move_to_current_desktop(self, wid: int) -> bool:
+        self.window_desktop(wid)  # gone -> CmdError, exit 1
+        self.run("[con_id=%d] move container to workspace current" % wid)
+        return True
 
     def get_desktop(self) -> int:
         for ws in self._msg(GET_WORKSPACES):
