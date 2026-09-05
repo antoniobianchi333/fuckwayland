@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -246,7 +247,9 @@ def iframe(mtype, payload):
 
 
 class FakeSway(_Server):
-    """`mode` is "gone" (answer once, then the session ends) or "badjson"."""
+    """`mode` is "gone" (answer once, then the session ends), "badjson", or
+    "wedged" (accept the connection and then never answer -- a compositor
+    stuck in its own event loop; the kernel accepts for it)."""
 
     def __init__(self, mode):
         self.mode = mode
@@ -254,6 +257,9 @@ class FakeSway(_Server):
 
     def _serve(self, c):
         n, buf = 0, b""
+        if self.mode == "wedged":
+            while True:
+                time.sleep(0.5)
         while True:
             data = c.recv(65536)
             if not data:
@@ -301,6 +307,39 @@ class SwayWireGuards(unittest.TestCase):
         with self.assertRaises(CmdError) as cm:
             b.get_desktop()
         self.assertIn("sway backend: lost the connection", str(cm.exception))
+
+    def test_a_compositor_that_never_answers_does_not_hang(self):
+        """The command socket had no deadline at all, so every tool waited on
+        a wedged sway for ever -- no timeout, no message, nothing to Ctrl-C
+        out of but the tool itself."""
+        srv = FakeSway("wedged")
+        self.addCleanup(srv.close)
+        from wdotool import backend_sway
+        with mock.patch.object(backend_sway, "IPC_TIMEOUT", 0.4):
+            b = backend_sway.SwayBackend(sockpath=srv.path)
+            self.addCleanup(b.sock.close)
+            self.assertEqual(b.sock.gettimeout(), 0.4)
+            start = time.monotonic()
+            with self.assertRaises(CmdError) as cm:
+                b.get_desktop()
+            waited = time.monotonic() - start
+        self.assertIn("no answer from the compositor", str(cm.exception))
+        self.assertIn("not responding", str(cm.exception))
+        self.assertLess(waited, 5.0)
+
+    def test_the_deadline_is_the_command_sockets_alone(self):
+        """select_window() and wxprop's -spy subscribe on their own socket
+        from _connect() and wait there for an event that may be minutes away:
+        giving that one a deadline would break both."""
+        srv = FakeSway("wedged")
+        self.addCleanup(srv.close)
+        from wdotool import backend_sway
+        b = backend_sway.SwayBackend(sockpath=srv.path)
+        self.addCleanup(b.sock.close)
+        self.assertEqual(b.sock.gettimeout(), backend_sway.IPC_TIMEOUT)
+        s = b._connect()
+        self.addCleanup(s.close)
+        self.assertIsNone(s.gettimeout())
 
 
 # -- D-Bus -----------------------------------------------------------------

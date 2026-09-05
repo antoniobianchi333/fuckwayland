@@ -24,11 +24,23 @@ EVENT_WINDOW = _EVENT_BIT | 3
 
 SCRATCHPAD_WS = "__i3_scratch"
 
+# Deadline for the command socket only (see __init__). Generous: every reply
+# is built in the compositor's own event loop, and GET_TREE on a busy desktop
+# is the slow one.
+IPC_TIMEOUT = 10.0
+
 
 def _lost(e) -> CmdError:
     """Any wire-level failure of the i3/sway IPC socket, as one clear line."""
     return CmdError("sway backend: lost the connection to the compositor (%s)"
                     % e)
+
+
+def _wedged() -> CmdError:
+    """Connected, and not answering: a compositor stuck in its own event loop
+    accepts on the IPC socket (the kernel does that) and then says nothing."""
+    return CmdError("sway backend: no answer from the compositor within %gs "
+                    "(it is not responding)" % IPC_TIMEOUT)
 
 
 class SwayBackend(WindowBackend):
@@ -42,6 +54,13 @@ class SwayBackend(WindowBackend):
                 "no sway-ipc.* socket in any runtime dir)"
             )
         self.sock = self._connect()
+        # Only the command socket gets a deadline, and only here: everything
+        # it ever waits for is the answer to a request we have just sent, so
+        # silence means the compositor is wedged -- which used to hang every
+        # tool for ever. _connect() itself stays blocking on purpose;
+        # select_window() and wxprop's -spy share it and wait on their own
+        # socket for an event that may be minutes away.
+        self.sock.settimeout(IPC_TIMEOUT)
 
     # -- wire ---------------------------------------------------------------
 
@@ -73,6 +92,8 @@ class SwayBackend(WindowBackend):
         try:
             sock.sendall(_MAGIC + struct.pack("<II", len(payload), mtype)
                          + payload)
+        except TimeoutError:
+            raise _wedged() from None
         except OSError as e:
             raise _lost(e) from None
 
@@ -82,7 +103,8 @@ class SwayBackend(WindowBackend):
         # a session that ends mid-chain gives ECONNRESET on the read and EPIPE
         # on the next write, and a compositor that answers with something that
         # is not JSON gives ValueError. All three are the same event to the
-        # user -- one line, not a traceback (B5).
+        # user -- one line, not a traceback (B5). A compositor that is still
+        # there but not answering is a different event, and says so.
         try:
             hdr = cls._read_exact(sock, 14)
             if hdr[:6] != _MAGIC:
@@ -90,6 +112,10 @@ class SwayBackend(WindowBackend):
             length, mtype = struct.unpack("<II", hdr[6:])
             payload = cls._read_exact(sock, length) if length else b"null"
             return mtype, json.loads(payload.decode("utf-8", "replace"))
+        except TimeoutError:
+            # TimeoutError is an OSError: this arm has to come first, or a
+            # compositor that is merely wedged reads as one that has gone.
+            raise _wedged() from None
         except (OSError, struct.error, ValueError) as e:
             raise _lost(e) from None
 
