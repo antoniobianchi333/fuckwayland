@@ -315,7 +315,7 @@ chmod 700 "$VMDATA/keys"
 ok "\$VMDATA   $VMDATA  (golden/ instances/ build/ keys/)"
 ok "\$VMIMAGES $VMIMAGES"
 avail=$(df -k --output=avail "$VMDATA" | tail -1)
-note "free space there: $((avail / 1048576)) GB (a golden image is 0.7-8.7 GB, see vm/SETUP.md)"
+note "free space there: $((avail / 1048576)) GB (a golden image is 0.7-10 GB, see vm/SETUP.md)"
 if [ "$(df --output=target "$VMDATA" | tail -1)" != "$(df --output=target "$VMIMAGES" | tail -1)" ]; then
     note "(different filesystems: fine; a golden refers to its base image by absolute path)"
 fi
@@ -327,12 +327,17 @@ for b in $(sed -n 's/^#[[:space:]]*vmctl-base:[[:space:]]*//p' "$HERE"/flavors/*
     if [ -s "$VMIMAGES/$b" ]; then ok "$b ($(du -h "$VMIMAGES/$b" | cut -f1))"; else
         note "missing: $b"; imgs_missing="$imgs_missing $b"; fi
 done
-iso=$(sed -n 's/^#[[:space:]]*vmctl-iso:[[:space:]]*//p' "$HERE"/flavors/*.yaml | sort -u | head -1)
-iso_url=$(sed -n 's/^#[[:space:]]*vmctl-iso-url:[[:space:]]*//p' "$HERE"/flavors/*.yaml | sort -u | head -1)
-if [ -n "$iso" ]; then
+# one desktop ISO per installer-built flavor, with the URL that flavor names
+seen_isos=
+for f in "$HERE"/flavors/*.yaml; do
+    iso=$(sed -n 's/^#[[:space:]]*vmctl-iso:[[:space:]]*//p' "$f" | head -1)
+    [ -n "$iso" ] || continue
+    case " $seen_isos " in *" $iso "*) continue ;; esac
+    seen_isos="$seen_isos $iso"
+    iso_url=$(sed -n 's/^#[[:space:]]*vmctl-iso-url:[[:space:]]*//p' "$f" | head -1)
     if [ -s "$VMIMAGES/$iso" ]; then ok "$iso ($(du -h "$VMIMAGES/$iso" | cut -f1); ISO flavor)"; else
         note "missing: $iso (ISO flavor only; ${iso_url:-see releases.ubuntu.com})"; fi
-fi
+done
 if [ -n "$imgs_missing" ]; then
     note "cloud images come from https://cloud-images.ubuntu.com/ -- e.g."
     note "    cd $VMIMAGES && curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"

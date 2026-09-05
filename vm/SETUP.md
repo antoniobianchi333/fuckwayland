@@ -100,11 +100,12 @@ Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
 * a golden image is **5.4 to 7.6 GB** for a flavor built from a distro desktop
   metapackage (`noble-gnome` the smallest, `resolute-kde-x11` the largest), **3.5 GB**
   for `stonking-kde` (the bare Plasma session, no metapackage), **0.7 GB** for
-  `resolute-sway`, **8.7 GB** for the installer-built `resolute-gnome-iso`; all eleven
-  together, 66 GB;
+  `resolute-sway`, and **8.7 GB** (`resolute-gnome-iso`) and **10 GB**
+  (`noble-gnome-iso`) for the two the Ubuntu installer builds; all twelve together,
+  76 GB;
 * the base cloud images they are overlays on: 0.6 GB (24.04), 0.8 GB (26.04) and
-  0.8 GB (26.10, `stonking-kde` only), in `~/images`; the desktop ISO, 6.1 GB, for the
-  ISO flavor only;
+  0.8 GB (26.10, `stonking-kde` only), in `~/images`; and a desktop ISO per installer
+  flavor, 6.1 GB (26.04) and 6.2 GB (24.04);
 * an instance is an overlay on its golden: a few hundred kilobytes when created,
   173 MB after one self-test, tens to a few hundred MB after a day of use. It never
   has to be bigger than what the guest wrote;
@@ -112,8 +113,8 @@ Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
   and is moved into `golden/` on success — a rename when `build/` and `golden/` share
   a filesystem, a copy otherwise.
 
-So: 10 GB per golden image you intend to keep, plus 8 GB for the base images and the
-ISO, plus a few GB for instances. Swap is not needed for the rig itself — a host with
+So: 10 GB per golden image you intend to keep, plus 2 GB for the three base cloud
+images and 6 GB for each desktop ISO you build from, plus a few GB for instances. Swap is not needed for the rig itself — a host with
 enough memory for the guests it runs barely touches it, tens of MB over days of
 builds and instances — but a swap file the size of one guest turns a memory
 shortfall into a slowdown rather than a killed QEMU.
@@ -208,7 +209,7 @@ earlier:
 ```
 
 Two consequences: do not move or delete `~/images` while cloud-image goldens exist
-(only the ISO flavor's golden stands on its own), and a copy of `~/images` plus
+(only the two installer-built goldens stand on their own), and a copy of `~/images` plus
 `~/vm-data/golden` to another machine with the same home directory is a working set
 of goldens.
 
@@ -220,6 +221,7 @@ $ cd ~/images
 $ curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img          # the noble-* flavors
 $ curl -LO https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img   # resolute-*
 $ curl -LO https://releases.ubuntu.com/26.04/ubuntu-26.04.1-desktop-amd64.iso                    # resolute-gnome-iso only
+$ curl -LO https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso                    # noble-gnome-iso only
 $ curl -LO https://cloud-images.ubuntu.com/stonking/current/stonking-server-cloudimg-amd64.img    # stonking-kde only (26.10, a development release: this image moves)
 ```
 
@@ -247,8 +249,9 @@ power-off) put a distro desktop metapackage between 6.3 minutes (`noble-xfce`, 3
 and 10.7 minutes (`resolute-kde`, 641 s) — the GNOME builds at the default 4 vCPU / 6 GB,
 the others at 3 vCPU / 5 GB — with `stonking-kde` at 3.2 minutes and `resolute-sway` at
 one minute; almost all of it is the desktop packages downloading and unpacking, so the
-network matters as much as the CPU. `build-iso-golden.sh resolute-gnome-iso` is 14
-minutes on its default 2 vCPU / 4 GB (12.6 of them the installer's). Builds run one at
+network matters as much as the CPU. `build-iso-golden.sh` is 14 minutes for
+`resolute-gnome-iso` and 21 for `noble-gnome-iso`, both on its default 2 vCPU / 4 GB
+(12.6 of the 14 are the installer's). Builds run one at
 a time per flavor and refuse to overwrite a golden without `--force`; two *different*
 flavors can build side by side on a machine with the memory for it.
 
