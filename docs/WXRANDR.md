@@ -286,6 +286,30 @@ comes back after 20 s and nothing is written (verified on GNOME 46 and 50: nothi
 written before the confirmation, and there is no D-Bus call to confirm from outside
 the shell). What every desktop does with an applied layout, and how to get one back
 from a key, is [Keeping a layout](#keeping-a-layout) below.
+
+That file is **all or nothing**, which is worth knowing before you keep anything in
+it. It holds one entry per monitor set you have ever saved, and Mutter's reader
+verifies every one of them: a single bad entry makes it discard the whole file, at
+every login, with nothing said on any screen — the layouts are simply not applied any
+more. Nothing wxrandr does can put a bad entry there (every layout goes through the
+D-Bus call, which validates first, and Mutter writes the file only when you confirm
+its dialog), but something else can, so `--persistent`:
+
+- reads the file first and tells you when GNOME has already discarded it, since the
+  save you are about to confirm rewrites it *whole* — after a discarded read that means
+  the layout you are saving and nothing else;
+- copies what was there to `~/.config/monitors.xml.wxrandr-backup` once Mutter has
+  accepted the layout (a refused apply copies nothing). GNOME keeps one generation of
+  its own in `monitors.xml~`, but every save overwrites that, this one's included;
+- says so when the layout you are saving is one that a later settings change will
+  break: with **Fractional Scaling off** the positions are saved in physical pixels and
+  the file records no layout mode, so turning that setting on re-reads them as logical
+  pixels, a scaled monitor is narrower than the gap its neighbour was saved at, and
+  GNOME refuses the whole file. Measured on 24.04 with a `--scale 2` head at the left
+  of a row: `Failed to read monitors config file … Logical monitors not adjacent`, both
+  saved monitor sets gone. The layout was valid, Mutter accepted it and Mutter wrote
+  it; what changed is what the numbers mean.
+
 `--dryrun` additionally submits the exact configuration with method 0 (verify
 only) and prints `mutter verify: ok` on stderr (stdout stays xrandr's own dryrun
 lines), or Mutter's rejection as the fatal a real run would give.
@@ -514,7 +538,7 @@ X11, on three heads with one of them rotated:
 
 | | a head unplugged and plugged back in | reboot | where the desktop keeps a layout |
 |---|---|---|---|
-| **GNOME** (Mutter) | comes back in full: Mutter lays the *remaining* monitors out in a row while the set is short, and puts the layout back when the original set returns | lost, unless a `--persistent` apply was confirmed | `~/.config/monitors.xml`, written by GNOME Settings or a confirmed `--persistent` and by nothing else; a fresh install has none |
+| **GNOME** (Mutter) | comes back in full: Mutter lays the *remaining* monitors out in a row while the set is short, and puts the layout back when the original set returns | lost, unless a `--persistent` apply was confirmed | `~/.config/monitors.xml`, written by GNOME Settings or a confirmed `--persistent` and by nothing else; a fresh install has none; one bad entry discards the file whole (above) |
 | **KDE Plasma** (KWin) | comes back in full | **kept** | `~/.config/kwinoutputconfig.json`, written by every apply KWin takes |
 | **sway** (wlroots) | comes back in full, every output | lost | nothing on disk; only `~/.config/sway/config` makes a layout stick |
 | **Xfce** (X11) | **lost**: the head comes back at the end of a plain row, unrotated, and `primary` is cleared | lost, `primary` with it | nothing; `displays.xml` is byte-identical after an apply |
