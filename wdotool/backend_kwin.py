@@ -455,7 +455,7 @@ class KwinBackend(WindowBackend):
                 title = ("" if d.get("t") else
                          (x.get_prop_string(xid, "_NET_WM_NAME")
                           or x.get_prop_string(xid, "WM_NAME")))
-            except Exception:  # noqa: BLE001 -- a window that just died
+            except Exception:  # a window that just died
                 continue
             if cls:
                 d["c"] = cls
@@ -799,7 +799,7 @@ class KwinBackend(WindowBackend):
         uid = None
         try:
             uid = self.bus._owner_uid()
-        except Exception:  # noqa: BLE001 -- diagnostics only
+        except Exception:  # diagnostics only
             uid = None
         display = session.find_x_display(uid) or ""
         xauth = session.find_xauthority(uid) or ""
@@ -907,7 +907,7 @@ class KwinBackend(WindowBackend):
             return {}
         try:
             clients = self._x_clients(x)
-        except Exception:  # noqa: BLE001 -- any X failure: no ids, no crash
+        except Exception:  # any X failure: no ids, no crash
             self._x = None
             return {}
         return _match_xids(raw, clients)
@@ -919,7 +919,7 @@ class KwinBackend(WindowBackend):
         uid = None
         try:
             uid = self.bus._owner_uid()
-        except Exception:  # noqa: BLE001
+        except Exception:
             uid = None
         if not session.xwayland_running(uid):
             return None
@@ -928,7 +928,7 @@ class KwinBackend(WindowBackend):
             from wwmctl import x11_mini
             self._x = x11_mini.X11Conn(info[0] or None,
                                        xauthority=info[1] or None)
-        except Exception:  # noqa: BLE001 -- no X plane: xid stays 0
+        except Exception:  # no X plane: xid stays 0
             self._x = None
         return self._x
 
@@ -945,7 +945,7 @@ class KwinBackend(WindowBackend):
                         or x.get_prop_string(xid, "WM_NAME"))
                 geo = x.get_geometry(xid)
                 pid = x.get_pid(xid)
-            except Exception:  # noqa: BLE001 -- a window that just died
+            except Exception:  # a window that just died
                 continue
             out.append({"xid": int(xid), "pid": int(pid), "inst": inst,
                         "cls": cls, "name": name, "geo": geo})

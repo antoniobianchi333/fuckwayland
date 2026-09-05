@@ -572,7 +572,7 @@ class GnomeBackend(WindowBackend):
         uid = None
         try:
             uid = self.bus._owner_uid()
-        except Exception:  # noqa: BLE001 -- diagnostics only
+        except Exception:  # diagnostics only
             uid = None
         display = display or session.find_x_display(uid) or ""
         xauth = xauth or session.find_xauthority(uid) or ""

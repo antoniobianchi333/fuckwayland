@@ -18,3 +18,25 @@ wmirror = "wmirror.cli:main"
 
 [tool.setuptools]
 packages = ["wdotool", "wwmctl", "wxprop", "wxrandr", "warandr", "wmirror"]
+
+# Lint only: no `ruff format` and no other formatter. Measured at 120 columns,
+# `ruff format` rewrites 45 of 59 files, makes the tree 520 lines LONGER and
+# flattens 338 hand-aligned comment columns. Wrapping here is done by hand,
+# and by a token joiner that asserts the AST is unchanged.
+[tool.ruff]
+line-length = 120
+# 4300 lines of generated keysym tables; nothing to say about them.
+exclude = ["wdotool/keysyms.py"]
+
+[tool.ruff.lint]
+# Real defects and the two whitespace rules, not style opinions: E4 imports,
+# E7 statement shape, E9 syntax/IO, F pyflakes, W trailing whitespace.
+select = ["E4", "E7", "E9", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated keymap data: one long line per key, tabs inside the XKB text.
+"wdotool/us_keymap.py" = ["E501", "W191"]
+# xdotool's own usage strings carry a trailing space; byte parity keeps it.
+"wdotool/input_cmds.py" = ["W291"]
+# gi.require_version() has to run before the GTK imports it guards.
+"warandr/gui.py" = ["E402"]

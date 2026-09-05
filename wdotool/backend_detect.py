@@ -58,7 +58,7 @@ def reset():
     if _bus is not None:
         try:
             _bus.close()
-        except Exception:  # noqa: BLE001 -- best effort on teardown
+        except Exception:  # best effort on teardown
             pass
     _bus, _names, _probed = None, None, False
 

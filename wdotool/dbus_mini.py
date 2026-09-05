@@ -825,7 +825,7 @@ def connect_as_uid(addr: str, uid: int, timeout: float = 10.0):
             fds = [s.fileno()]
         except DBusError as e:
             status = json.dumps({"ok": False, "name": e.name, "error": e.message}).encode()
-        except BaseException as e:  # noqa: BLE001 - report everything to the parent
+        except BaseException as e:  # report everything to the parent
             status = json.dumps({"ok": False, "name": ERR + "Failed",
                                  "error": f"{type(e).__name__}: {e}"}).encode()
         try:
@@ -1335,7 +1335,7 @@ def main(argv=None) -> int:
     except BrokenPipeError:
         try:  # keep the interpreter's exit-time flush from raising again
             os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         return 1
 
