@@ -1,0 +1,7 @@
+fuckwayland (0.2.0) unstable; urgency=medium
+
+  * Initial packaging: the six tools in /usr/bin, the GNOME Shell bridge
+    extension, the /dev/uinput udev rule and the warandr desktop entry, in one
+    architecture-independent package that installs on Ubuntu 24.04 and 26.04.
+
+ -- Antonio Bianchi <antonio.bianchi.333@gmail.com>  Sat, 05 Sep 2026 09:00:00 +0000

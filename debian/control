@@ -1,0 +1,42 @@
+Source: fuckwayland
+Section: x11
+Priority: optional
+Maintainer: Antonio Bianchi <antonio.bianchi.333@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               pybuild-plugin-pyproject,
+               python3-all,
+               python3-setuptools
+Standards-Version: 4.6.2
+Homepage: https://github.com/antoniobianchi333/fuckwayland
+Rules-Requires-Root: no
+
+Package: fuckwayland
+Architecture: all
+Depends: ${python3:Depends},
+         ${misc:Depends},
+         gir1.2-gtk-3.0,
+         python3-gi
+Suggests: wmctrl,
+          xdotool
+Description: X11 power tools as drop-in clones for Wayland
+ Six commands that behave like the X11 tools they clone -- same commands, same
+ flags, same output bytes -- on a Wayland session:
+ .
+   * wdotool  - xdotool: key/type/click/mousemove and the window commands
+   * wwmctl   - wmctrl: list and act on windows, desktops and workspaces
+   * wxprop   - xprop: properties of native and XWayland windows
+   * wxrandr  - xrandr: query and reshape the monitor layout
+   * warandr  - arandr: the drag-your-monitors GUI, on Wayland and on X11
+   * wmirror  - mirror a region or an odd-shaped output on wlroots
+ .
+ On an X11 session the first four hand over to the real xdotool, wmctrl, xprop
+ and xrandr with execve, argv untouched, so one script runs on both session
+ types.  The originals are never replaced: these commands are installed under
+ their own names only, and nothing in this package overwrites a file owned by
+ xdotool, wmctrl, x11-utils or x11-xserver-utils.
+ .
+ Also installed: the GNOME Shell bridge extension that the window commands
+ need on GNOME (system-wide, enabled for each user at their next login), a
+ udev rule that lets the user at the active seat open /dev/uinput without
+ root, and the warandr application-menu entry.

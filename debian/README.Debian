@@ -1,0 +1,90 @@
+fuckwayland for Debian/Ubuntu
+=============================
+
+One package, both releases
+--------------------------
+
+The package is Architecture: all and every module it ships is pure Python
+standard library, installed into the version-independent
+/usr/lib/python3/dist-packages.  The same .deb therefore installs on Ubuntu
+24.04 (Python 3.12) and 26.04 (Python 3.14); nothing in it is compiled against
+one of them.  The .pyc files are made on your machine, by your python3, when
+the package is configured.
+
+What is installed where
+-----------------------
+
+  /usr/bin/{wdotool,wwmctl,wxprop,wxrandr,warandr,wmirror}
+        the six commands.  Under their own names only: no file of xdotool,
+        wmctrl, x11-utils or x11-xserver-utils is touched or replaced, which
+        is what keeps the X11 handover working.
+  /usr/lib/python3/dist-packages/{wdotool,wwmctl,wxprop,wxrandr,warandr,wmirror}/
+        the code.
+  /usr/share/gnome-shell/extensions/fuckwayland-bridge@fuckwayland/
+        the GNOME Shell bridge extension, system-wide.
+  /etc/xdg/autostart/fuckwayland-enable-bridge.desktop
+  /usr/lib/fuckwayland/enable-bridge
+        the once-per-user helper that enables the extension (see below).
+  /usr/lib/udev/rules.d/60-fuckwayland-uinput.rules
+  /usr/lib/modules-load.d/fuckwayland-uinput.conf
+        /dev/uinput for the user at the active seat.
+  /usr/share/applications/warandr.desktop
+        the menu entry for the GUI.
+
+The GNOME extension, and why a re-login is the one manual step
+--------------------------------------------------------------
+
+gnome-shell scans extension directories only when a session starts, and
+whether an extension is enabled is a per-user dconf setting.  dpkg runs as
+root, possibly with no user session on the machine at all, so it can do
+neither of those things itself.  What the package does instead:
+
+  * installs the extension where gnome-shell will find it at the next login
+    (the system directory -- no user's home is written to);
+  * ships an autostart entry that runs /usr/lib/fuckwayland/enable-bridge
+    inside each user's first GNOME session after the install.  That script
+    adds the uuid to org.gnome.shell enabled-extensions once, writes a stamp
+    in ~/.config/fuckwayland, and never touches the setting again -- so if you
+    later disable the extension, it stays disabled.
+
+So: install, log out, log back in, and the window commands work.  Before that
+relogin wxrandr, warandr and wdotool's input commands already work, and the
+window commands say the bridge is not running.
+
+  gnome-extensions list --enabled | grep fuckwayland   # is it on for me?
+  sh gnome/install-bridge.sh --check                   # the full report
+
+If you had previously installed the extension per user with
+gnome/install-bridge.sh (no --system), that copy lives in
+~/.local/share/gnome-shell/extensions and shadows the packaged one.  Remove it
+with `sh gnome/install-bridge.sh --uninstall` to use the package's copy.
+
+/dev/uinput
+-----------
+
+The rule tags the node `uaccess`, so systemd-logind hands the user of the
+active seat an ACL on it at every login; postinst applies it to the running
+system as well, so no reboot is needed.  The node itself stays root:root 0600
+-- no `input` group, no standing grant to anyone who is not at the seat.
+Removing the package puts the node back to root:root 0600 with no ACL.
+
+Anyone who can open /dev/uinput can type as you.  That is the trade these
+tools exist to make, and it is spelled out in the threat model in
+/usr/share/doc/fuckwayland/README.md.gz.  If it is the wrong trade on this
+machine, remove the rule and run the input commands under sudo instead:
+
+  sudo rm /usr/lib/udev/rules.d/60-fuckwayland-uinput.rules
+  sudo udevadm control --reload-rules
+
+Installing over the originals
+-----------------------------
+
+Deliberately not done by the package.  /usr/local/bin comes first on Ubuntu's
+PATH, so it is one symlink per tool and no packaged file is disturbed:
+
+  sudo ln -sfn /usr/bin/wdotool /usr/local/bin/xdotool
+  sudo ln -sfn /usr/bin/wwmctl  /usr/local/bin/wmctrl
+  sudo ln -sfn /usr/bin/wxprop  /usr/local/bin/xprop
+  sudo ln -sfn /usr/bin/wxrandr /usr/local/bin/xrandr
+
+ -- Antonio Bianchi <antonio.bianchi.333@gmail.com>

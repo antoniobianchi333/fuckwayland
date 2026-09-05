@@ -1,0 +1,5 @@
+gnome/60-fuckwayland-uinput.rules                                usr/lib/udev/rules.d
+gnome/fuckwayland-bridge@fuckwayland/extension.js                usr/share/gnome-shell/extensions/fuckwayland-bridge@fuckwayland
+gnome/fuckwayland-bridge@fuckwayland/metadata.json               usr/share/gnome-shell/extensions/fuckwayland-bridge@fuckwayland
+gnome/fuckwayland-bridge@fuckwayland/org.fuckwayland.Bridge1.xml usr/share/gnome-shell/extensions/fuckwayland-bridge@fuckwayland
+warandr.desktop                                                  usr/share/applications

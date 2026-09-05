@@ -161,20 +161,55 @@ There is no X server to lie to, so wdotool goes underneath instead:
 
 ## Install
 
-Three routes:
+Four routes:
 
-1. **[pip, from a clone](#from-a-clone-with-pip)** — the normal one: one apt
+1. **[the .deb](#the-deb)** — Ubuntu 24.04 and 26.04: one package, and the
+   extension, the udev rule and the menu entry come with it.
+2. **[pip, from a clone](#from-a-clone-with-pip)** — the normal one: one apt
    package, one venv, one pip line.
-2. **[the single-file builds](#without-installing-the-single-file-builds)** — no
+3. **[the single-file builds](#without-installing-the-single-file-builds)** — no
    install at all, six self-contained executables.
-3. **[nix](#nix)** — `nix build`, if that is your world.
+4. **[nix](#nix)** — `nix build`, if that is your world.
 
 Whichever you pick, your desktop wants a piece of its own — a GNOME Shell
 extension on [GNOME](#gnome), the real X11 tools on an [X11](#x11) session,
 nothing at all on [KDE Plasma](#kde-plasma), the GTK bindings on a minimal
 [sway](#sway-and-other-wlroots-compositors) — and injecting input needs
 [access to `/dev/uinput`](#input-access). Then
-[check it worked](#check-it-worked).
+[check it worked](#check-it-worked). The .deb is the one route that brings the
+extension and the udev rule along with it; the other three leave both to you.
+
+### The .deb
+
+```sh
+sh scripts/build-deb.sh                              # -> dist/fuckwayland_0.2.0_all.deb
+sudo apt install ./dist/fuckwayland_0.2.0_all.deb
+```
+
+**One** `Architecture: all` package for **both** Ubuntu 24.04 and 26.04: every
+module here is pure standard library, so it lands in the version-independent
+`/usr/lib/python3/dist-packages` and your own `python3` byte-compiles it at
+install time — 3.12 on 24.04, 3.14 on 26.04, same file. In the box: the six
+tools in `/usr/bin`, the [GNOME bridge extension](#gnome) system-wide, the
+[udev rule](#input-access) (applied at once, no reboot), and the `warandr`
+menu entry.
+
+It does **not** replace the real `xdotool`, `wmctrl`, `xprop` or `xrandr`: not
+one path it ships is owned by their packages, so the [X11
+handover](#x11) keeps finding them and the
+[symlinks over the originals](#installing-over-the-originals) stay your choice.
+
+The one manual step is the one the desktop itself forces — **log out and back
+in once**, because gnome-shell scans extension directories only at login. The
+package enables the extension for you in that first session (a once-per-user
+autostart helper, which never touches the setting again), and says so while it
+installs. `apt remove` puts `/dev/uinput` back to `root:root 0600`.
+
+`scripts/build-deb.sh` installs its own build tools from the Ubuntu archive on
+first run — `dpkg-dev debhelper dh-python pybuild-plugin-pyproject python3-all
+python3-setuptools`, nothing from a PPA — or `--no-deps` and do it yourself.
+What goes where, and why the extension and the rule are handled the way they
+are, is in `debian/README.Debian`.
 
 ### From a clone, with pip
 
