@@ -971,6 +971,19 @@ class Bus:
         s = _connect_socket(self.address, timeout)
         try:
             self.guid, self.fds_ok, self._buf = authenticate(s, None, timeout, want_fds)
+        except OSError as e:
+            # authenticate() speaks to the socket with plain sendall/recv, so
+            # a bus that goes away mid-handshake used to escape as a bare
+            # OSError -- past Bus() and past backend_detect.session_bus(),
+            # which catches DBusError only, and out of wwmctl/wdotool as a
+            # traceback. Closing without draining our AUTH line gives
+            # ECONNRESET on the read and EPIPE on the next write; a peer that
+            # stops reading gives TimeoutError (also an OSError). All of them
+            # are the same event as a hangup after OK, and get its name --
+            # which is also one of the three the euid-0 retry acts on.
+            s.close()
+            raise DBusError(ERR + "Disconnected",
+                            f"lost the connection during authentication: {e}") from None
         except BaseException:
             s.close()
             raise

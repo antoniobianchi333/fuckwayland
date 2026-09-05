@@ -186,8 +186,12 @@ def find_helper(path=None):
 def helper_version(binary: str):
     """`wl-mirror --version`'s first line, or None. Never raises."""
     try:
+        # errors="replace" is what makes "never raises" true: text=True
+        # decodes strict, so a helper whose banner is not the locale's
+        # encoding (or is not text at all) raised UnicodeDecodeError out of
+        # subprocess.run, past the except below, and out of `wmirror --check`.
         out = subprocess.run([binary, "--version"], capture_output=True,
-                             timeout=5, text=True)
+                             timeout=5, text=True, errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
     text = (out.stdout or "") + (out.stderr or "")

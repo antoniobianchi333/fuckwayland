@@ -1053,6 +1053,22 @@ class BackendTests(_Base):
         with self.assertRaises(CmdError):
             self.b.set_desktop(7)
 
+    def test_an_argument_the_wire_cannot_carry_is_one_line(self):
+        """B8: _call let the marshaller's ValueError out, so `wwmctl -s
+        4294967296` was a traceback on KDE where GNOME printed a message
+        (test_backend_gnome.test_invalid_window_id_is_one_line_not_a_marshal_
+        traceback). The two backends answer alike now."""
+        with self.assertRaises(CmdError) as cm:
+            self.b.set_desktop(2 ** 32)
+        self.assertIn("kwin backend: setCurrentDesktop: invalid argument",
+                      str(cm.exception))
+        for bad in (-(2 ** 40), 2 ** 64):
+            with self.assertRaises(CmdError) as cm:
+                self.b._call(KWIN_PATH, KWIN_IFACE, "setCurrentDesktop", "i", (bad,))
+            self.assertIn("invalid argument", str(cm.exception))
+        # nothing reached KWin: a refused argument is not a half-done command
+        self.assertNotIn("setCurrentDesktop", [c[1] for c in self.kwin.calls])
+
     def test_set_num_desktops(self):
         self.b.set_num_desktops(4)
         self.assertEqual(self.b.num_desktops(), 4)

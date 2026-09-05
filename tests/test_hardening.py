@@ -196,6 +196,23 @@ class TestServeClient(unittest.TestCase):
         self.assertTrue(json.loads(rfile.readline())["ok"])
         self.assertEqual((d.px, d.py), (10, 20))
 
+    def test_a_request_line_that_is_not_utf8_keeps_serving(self):
+        """The connection's makefile decoded strict, so a byte that is not
+        UTF-8 raised UnicodeDecodeError out of readline() -- where only
+        OSError is caught. The connection thread died with a traceback in the
+        daemon log and the client's next request got EPIPE."""
+        d = make_daemon()
+        sock, rfile = self.serve(d)
+        sock.sendall(b'{"op": "type", "text": "\xff\xfe"}\n')
+        resp = json.loads(rfile.readline())
+        self.assertTrue(resp["ok"])
+        self.assertTrue(any("\ufffd" in w for w in resp.get("warnings", [])),
+                        resp)
+        sock.sendall(b'{"op": "ping"\xff}\n')               # not JSON either
+        self.assertFalse(json.loads(rfile.readline())["ok"])
+        sock.sendall(b'{"op": "ping"}\n')                  # still serving
+        self.assertTrue(json.loads(rfile.readline())["ok"])
+
     def test_dos_bounds(self):
         d = make_daemon()
         sock, rfile = self.serve(d)

@@ -333,6 +333,21 @@ class Detection(Base):
         self.assertIn("wl-mirror is not installed", lines[0])
         self.assertIn("apt install wl-mirror", lines[1])
 
+    def test_helper_version_never_raises(self):
+        """It says so in the docstring, but text=True decodes strict: a
+        banner that is not the locale's encoding raised UnicodeDecodeError
+        out of subprocess.run, past the except, and out of `wmirror --check`.
+        """
+        binpath = os.path.join(self.tmp, "bin2")
+        os.makedirs(binpath)
+        stub = os.path.join(binpath, core.HELPER)
+        with open(stub, "wb") as f:
+            f.write(b"#!/bin/sh\nprintf 'wl-mirror \\303(0.19.0\\n'\n")
+        os.chmod(stub, 0o755)
+        self.assertEqual(core.helper_version(stub), "wl-mirror \ufffd(0.19.0")
+        _rc, out, _err = run(["--check"], helper=stub)
+        self.assertIn("helper:   %s (wl-mirror \ufffd(0.19.0)" % stub, out)
+
     def test_capture_globals_are_read_from_the_registry(self):
         conn = mock.Mock()
         conn.find_global.side_effect = lambda i: (7, 3) if i == \

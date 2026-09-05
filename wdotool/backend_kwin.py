@@ -68,6 +68,7 @@ import fcntl
 import json
 import os
 import re
+import struct
 import sys
 import tempfile
 import time
@@ -176,6 +177,14 @@ class KwinBackend(WindowBackend):
                                  timeout=timeout, flags=flags)
         except DBusError as e:
             raise _map_error(member, e) from None
+        except (ValueError, OverflowError, struct.error) as e:
+            # An argument the wire format cannot carry (a desktop number or a
+            # window id that is negative or wider than its D-Bus type): one
+            # line, rc 1, never a marshalling traceback (B8). backend_gnome
+            # has answered this way all along; `wwmctl -s 4294967296` was a
+            # traceback on KDE and a message on GNOME.
+            raise CmdError("kwin backend: %s: invalid argument: %s"
+                           % (member, e)) from None
 
     def _script(self, op: str, timeout: float | None = None, **kw):
         """Run one operation inside KWin and return its `v` payload."""
