@@ -78,10 +78,10 @@ Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
   a filesystem, a copy otherwise.
 
 So: 10 GB per golden image you intend to keep, plus 8 GB for the base images and the
-ISO, plus a few GB for instances. Swap is not needed for the rig itself — a 16 GB
-machine with a swap file had used 35 MB of it after three days of builds and
-instances — but a swap file the size of one guest turns a memory shortfall into a
-slowdown rather than a killed QEMU.
+ISO, plus a few GB for instances. Swap is not needed for the rig itself — a host with
+enough memory for the guests it runs barely touches it, tens of MB over days of
+builds and instances — but a swap file the size of one guest turns a memory
+shortfall into a slowdown rather than a killed QEMU.
 
 ## Packages
 
@@ -199,8 +199,8 @@ vmctl: [ 390s] vmctl-build: golden image build finished
 vmctl: build noble-gnome: done in 6.6 min -> ~/vm-data/golden/noble-gnome.qcow2 (1695 packages listed in ...)
 ```
 
-That run — a fresh `$VMDATA`, the default 4 vCPU / 6 GB, on a 4-CPU machine that was
-running one other build — took 6.6 minutes and produced a 5.4 GB image. The build
+That run — a fresh `$VMDATA`, the default 4 vCPU / 6 GB, with another build running
+beside it on the same cores — took 6.6 minutes and produced a 5.4 GB image. The build
 logs of the other flavors (`golden/<flavor>.build.log`, the guest's uptime at
 power-off) put a distro desktop metapackage between 6.3 minutes (`noble-xfce`, 376 s)
 and 10.7 minutes (`resolute-kde`, 641 s) — the GNOME builds at the default 4 vCPU / 6 GB,
@@ -226,9 +226,9 @@ vmctl: noble-gnome-t: desktop painted its first frame 6s later
 == [52s] PASS: noble-gnome-t (noble-gnome, gnome) running, ssh port 2403, screenshots in /tmp/vmctl-selftest-noble-gnome-t
 ```
 
-52 seconds for GNOME on a 4-CPU machine that had three other instances running at the
-time, 35 seconds on the same machine idle (`vm/README.md` says roughly 40; a desktop
-that starts more slowly takes correspondingly longer). What it asserts, step by step,
+52 seconds for GNOME with three other instances competing for the same cores, 35
+seconds on an idle host (`vm/README.md` says roughly 40; a desktop that starts more
+slowly takes correspondingly longer). What it asserts, step by step,
 is under *Self-test* in `vm/README.md`; the two things that are easy to miss: it
 leaves the instance **running** for inspection (`vm/vmctl stop noble-gnome-t`, or
 `destroy`), and its three screenshots (1.3 MB each) stay in `/tmp/vmctl-selftest-<name>/`.
