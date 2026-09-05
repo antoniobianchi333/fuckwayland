@@ -166,8 +166,8 @@ def _cmd_check() -> int:
                 _out(("capture:  " if i == 0 else "          ") + line)
         try:
             outputs = core.read_outputs(conn)
-            on = [o for o in outputs if o.enabled]
-            off = [o.name for o in outputs if not o.enabled]
+            on = [o for o in outputs if o.active]
+            off = [o.name for o in outputs if not o.active]
             _out("outputs:  %s" % (", ".join("%s %s" % (o.name, o.geom())
                                              for o in on) or "none"))
             if off:
@@ -249,7 +249,7 @@ def _start_locked(args, source, target, region, outputs, helper) -> int:
         err = supervise.start(recs, source, target, argv, region=region,
                               scaling=args.scaling,
                               wayland_socket=hit[2] if hit else None,
-                              src_rect=src.rect if src else None)
+                              src_rect=src.rect() if src else None)
     finally:
         # even a Ctrl-C in the second this blocks for must leave the mirror
         # written down: the supervisor names itself before it can fail, and

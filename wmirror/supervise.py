@@ -475,7 +475,7 @@ def _supervise(proc, stderr, source, target, wayland_socket, region=None,
                     return      # compositor gone: the helper goes with it
                 if wlr.serial != serial:
                     serial = wlr.serial
-                    if core.watch_reason(core.outputs_from_heads(wlr),
+                    if core.watch_reason(wxcore.snapshot_wlr(wlr),
                                          source, target, region=region,
                                          src_rect=src_rect):
                         return

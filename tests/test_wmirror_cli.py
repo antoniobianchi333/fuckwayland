@@ -23,6 +23,7 @@ from wdotool import passthrough                                  # noqa: E402
 from wdotool import session                                      # noqa: E402
 from wmirror import cli, core                                    # noqa: E402
 from wmirror import supervise                                    # noqa: E402
+from wxrandr import core as wxcore                               # noqa: E402
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -30,7 +31,7 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 
 def out(name, enabled=True, x=0, y=0, w=1920, h=1080):
-    return core.Output(name=name, enabled=enabled, x=x, y=y, w=w, h=h)
+    return wxcore.OutputState(name=name, active=enabled, x=x, y=y, w=w, h=h)
 
 
 SOCKET = "/run/user/1000/wayland-0"
@@ -399,21 +400,27 @@ class OutputModel(Base):
     def test_logical_size_follows_transform_and_scale(self):
         """The same arithmetic wxrandr's wlr backend uses, so wmirror and
         `wxrandr --query` can never disagree about a rectangle."""
+        def head(name, enabled, x, y, transform, scale, modes, current):
+            return dict(name=name, enabled=enabled, x=x, y=y,
+                        transform=transform, scale=scale, current=current,
+                        modes=modes, mm_w=0, mm_h=0, make="", model="",
+                        serial="", id=1)
+
+        def mode(mid, w, h):
+            return {"id": mid, "w": w, "h": h, "refresh": 60000,
+                    "preferred": False}
+
         wlr = mock.Mock()
         wlr.live_heads.return_value = [
-            {"name": "A", "enabled": True, "x": 0, "y": 0, "transform": 0,
-             "scale": 1.0, "current": 1,
-             "modes": [{"id": 1, "w": 1920, "h": 1080}]},
-            {"name": "B", "enabled": True, "x": 1920, "y": 0, "transform": 1,
-             "scale": 2.0, "current": 2,
-             "modes": [{"id": 2, "w": 2560, "h": 1440}]},
-            {"name": "C", "enabled": False, "x": 0, "y": 0, "transform": 0,
-             "scale": 1.0, "current": None, "modes": []},
+            head("A", True, 0, 0, 0, 1.0, [mode(1, 1920, 1080)], 1),
+            head("B", True, 1920, 0, 1, 2.0, [mode(2, 2560, 1440)], 2),
+            head("C", False, 0, 0, 0, 1.0, [], None),
         ]
-        outs = core.outputs_from_heads(wlr)
+        with mock.patch.object(wxcore, "WlrOutputs", return_value=wlr):
+            outs = core.read_outputs(mock.Mock())
         self.assertEqual(outs[0].geom(), "1920x1080+0+0")
         self.assertEqual(outs[1].geom(), "720x1280+1920+0")   # 90deg, scale 2
-        self.assertFalse(outs[2].enabled)
+        self.assertFalse(outs[2].active)
         self.assertEqual(outs[2].geom(), "0x0+0+0")
 
 

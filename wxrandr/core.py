@@ -231,6 +231,15 @@ class OutputState:
     #                               WxH is achievable via a custom mode
     primary: bool = False         # the compositor's own primary flag (Mutter)
 
+    def rect(self) -> tuple[int, int, int, int]:
+        """The logical rectangle as (x, y, w, h), layout coordinates."""
+        return (self.x, self.y, self.w, self.h)
+
+    def geom(self) -> str:
+        """The same rectangle as X11 geometry, `WxH+X+Y` -- the form --query
+        prints it in, and the one `--fb`, `--pos` and slurp all speak."""
+        return "%dx%d+%d+%d" % (self.w, self.h, self.x, self.y)
+
 
 def layout_box(outputs) -> tuple[int, int, int, int]:
     """(min_x, min_y, max_x, max_y) over enabled outputs; zeros when none."""
@@ -834,8 +843,11 @@ def snapshot_sway(ipc: SwayIPC, state: State, wlr=None) -> list:
     return outs
 
 
-def snapshot_wlr(wlr: WlrOutputs, state: State) -> list:
-    """OutputState list from zwlr head events alone (generic wlroots)."""
+def snapshot_wlr(wlr: WlrOutputs, state: State | None = None) -> list:
+    """OutputState list from zwlr head events alone (generic wlroots).
+
+    `state` may be None for a caller that wants the live layout and nothing
+    else: the state file only ever adds custom modes to the lists."""
     outs = []
     for i, h in enumerate(wlr.live_heads()):
         st = OutputState(
@@ -860,7 +872,8 @@ def snapshot_wlr(wlr: WlrOutputs, state: State) -> list:
             if st.current:
                 st.w, st.h = logical_size(st.current.w, st.current.h,
                                           st.transform, st.scale)
-        customs = state.modes_for_output(h["name"])
+        customs = ([] if state is None
+                   else state.modes_for_output(h["name"]))
         if st.current is not None and not st.current.name:
             for m in customs:
                 if (m.w, m.h) == (st.current.w, st.current.h) and abs(

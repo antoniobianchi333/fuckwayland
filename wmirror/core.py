@@ -58,49 +58,11 @@ class Refusal(Exception):
 
 
 # -- output model -------------------------------------------------------------
-
-@dataclasses.dataclass
-class Output:
-    """One head, in the layout coordinates wxrandr and slurp both use."""
-    name: str
-    enabled: bool
-    x: int = 0
-    y: int = 0
-    w: int = 0                    # logical (transformed, scaled), like sway
-    h: int = 0
-
-    @property
-    def rect(self) -> tuple:
-        return (self.x, self.y, self.w, self.h)
-
-    def geom(self) -> str:
-        return "%dx%d+%d+%d" % (self.w, self.h, self.x, self.y)
-
-
-def outputs_from_heads(wlr) -> list:
-    """Output list from zwlr_output_manager head state -- the same events
-    wxrandr's wlr backend reads, so the geometry here is the geometry
-    `wxrandr --query` prints."""
-    outs = []
-    for h in wlr.live_heads():
-        o = Output(name=h["name"], enabled=bool(h["enabled"]))
-        if o.enabled:
-            tf = wxcore.WL_TRANSFORM_NAME.get(h["transform"], "normal")
-            scale = h["scale"] or 1.0
-            o.x, o.y = h["x"], h["y"]
-            mode = None
-            for m in h["modes"]:
-                if m["id"] == h["current"]:
-                    mode = m
-                    break
-            if mode is None and h["modes"]:
-                mode = h["modes"][0]
-            if mode:
-                o.w, o.h = wxcore.logical_size(mode["w"], mode["h"], tf,
-                                               scale)
-        outs.append(o)
-    return outs
-
+#
+# There is no model here. An output is a wxcore.OutputState, read by
+# wxcore.snapshot_wlr from the zwlr_output_manager events -- the very call
+# `wxrandr --query` renders -- so the two can never disagree about a
+# rectangle, and `.geom()` prints the same words on both sides.
 
 def by_name(outputs, name):
     for o in outputs:
@@ -109,12 +71,12 @@ def by_name(outputs, name):
     return None
 
 
-def rects_overlap(a: Output, b: Output) -> bool:
+def rects_overlap(a, b) -> bool:
     return not (a.x + a.w <= b.x or b.x + b.w <= a.x
                 or a.y + a.h <= b.y or b.y + b.h <= a.y)
 
 
-def rect_inside(region, o: Output) -> bool:
+def rect_inside(region, o) -> bool:
     x, y, w, h = region
     return (x >= o.x and y >= o.y
             and x + w <= o.x + o.w and y + h <= o.y + o.h)
@@ -272,7 +234,7 @@ def read_outputs(conn) -> list:
                        "cannot read the output layout" % OUTPUT_MANAGER])
     except OSError as e:
         raise Refusal(["lost the compositor connection: %s" % e])
-    return outputs_from_heads(wlr)
+    return wxcore.snapshot_wlr(wlr)
 
 
 # -- policy -------------------------------------------------------------------
@@ -312,7 +274,7 @@ def decide(outputs, source: str, target: str, region=None,
             return Decision(REFUSE, ["no output named %s (the %s)"
                                      % (name, role),
                                      "outputs here: %s" % known])
-        if not o.enabled:
+        if not o.active:
             return Decision(REFUSE, ["%s (the %s) is off" % (name, role),
                                      "turn it on first: wxrandr --output "
                                      "%s --auto" % name])
@@ -329,7 +291,7 @@ def decide(outputs, source: str, target: str, region=None,
     # fullscreen on the target lands on the source too and wl-mirror ends up
     # capturing its own picture.
     if rects_overlap(src, dst):
-        if src.rect == dst.rect and region is None:
+        if src.rect() == dst.rect() and region is None:
             return Decision(DONE, [
                 "%s already shows %s: both are %s, and a shared rectangle "
                 "on wlroots is a complete mirror" % (target, source,
@@ -389,15 +351,15 @@ def watch_reason(outputs, source: str, target: str, region=None,
         return "source output %s is gone" % source
     if dst is None:
         return "target output %s is gone" % target
-    if not src.enabled:
+    if not src.active:
         return "source output %s was turned off" % source
-    if not dst.enabled:
+    if not dst.active:
         return "target output %s was turned off" % target
     if rects_overlap(src, dst):
         return ("%s and %s now share pixels; the mirror would capture "
                 "itself" % (source, target))
     if region is not None:
-        if src_rect is not None and tuple(src_rect) != src.rect:
+        if src_rect is not None and tuple(src_rect) != src.rect():
             return ("%s moved or changed size (%dx%d+%d+%d -> %s); the "
                     "region %s no longer names the pixels this mirror was "
                     "started on"

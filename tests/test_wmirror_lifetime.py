@@ -31,6 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from wmirror import cli, core, supervise                         # noqa: E402
+from wxrandr import core as wxcore                               # noqa: E402
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -348,9 +349,15 @@ class Watching(Base):
 
     @staticmethod
     def head(name, x=0, w=1920, enabled=True):
-        return {"name": name, "enabled": enabled, "x": x, "y": 0,
-                "transform": 0, "scale": 1.0, "current": 1,
-                "modes": [{"id": 1, "w": w, "h": 1080}]}
+        """One zwlr head as WlrOutputs.live_heads() hands it over: every
+        field the wire sets, because the snapshot reads every field."""
+        return {"id": 1, "name": name, "description": name,
+                "enabled": enabled, "x": x, "y": 0, "transform": 0,
+                "scale": 1.0, "current": 1, "gone": False,
+                "mm_w": 0, "mm_h": 0, "make": "Unknown", "model": "Unknown",
+                "serial": "Unknown",
+                "modes": [{"id": 1, "w": w, "h": 1080, "refresh": 60000,
+                           "preferred": True}]}
 
     def supervise_in_thread(self, watch, life="30", **kw):
         with mock.patch.dict(os.environ, {"WMIRROR_STUB_LIFE": life}):
@@ -473,8 +480,8 @@ class FakeCompositor:
     underneath. Not a TestCase: mixed into the ones below."""
 
     def outputs(self):
-        return [core.Output("A", True, 0, 0, 1920, 1080),
-                core.Output("B", True, 1920, 0, 1280, 1024)]
+        return [wxcore.OutputState("A", True, 0, 0, 1920, 1080),
+                wxcore.OutputState("B", True, 1920, 0, 1280, 1024)]
 
     def invoke(self, argv):
         conn = mock.Mock()
