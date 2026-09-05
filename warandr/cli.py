@@ -11,6 +11,7 @@ import argparse
 import os
 import stat
 import sys
+import tempfile
 
 from wdotool import stdio
 
@@ -110,11 +111,52 @@ def script_notes(layout, backend):
 
 
 def write_script(layout, path, word=None, notes=None):
+    """Write the layout as a script -- all of it, or none of it.
+
+    `open(path, "w")` truncates first, so a disk that filled up or a
+    quota that ran out halfway through left a *runnable* half-layout
+    where a working one had been: the file warandr exists to keep, now
+    naming three outputs out of four.  A sibling temporary renamed over
+    the target cannot do that -- a reader sees the old file or the new
+    one, and a failure leaves the old one exactly as it was.
+
+    Details that matter:
+
+    * `realpath` first, and the rename goes to *that*: `~/.screenlayout/
+      desk.sh` is often a symlink into a dotfiles repo, and os.replace
+      replaces the name it is given -- it would leave a regular file
+      where the link was and never touch the file the user keeps.
+    * `fchmod` on the descriptor, because mkstemp makes 0600 and
+      arandr's scripts are 0700, and doing it before the rename means
+      the file is never briefly visible with the wrong mode.
+    * the temporary is removed on any failure, and `e.filename` is set
+      to the name the user typed: "Cannot save: [Errno 28] No space left
+      on device: '/tmp/.desk.sh.7f3x'" names a file they never asked
+      for and cannot find.
+
+    The one thing this gives up: writing needs permission on the
+    *directory*, not just on the file.  A read-only directory holding a
+    writable script used to save and now refuses -- which is the usual
+    price of an atomic save, and cheap next to a truncated layout."""
     if not path.endswith(".sh"):
         path += ".sh"
-    with open(path, "w") as f:
-        f.write(layout.to_script(word, notes))
-    os.chmod(path, stat.S_IRWXU)
+    text = layout.to_script(word, notes)
+    real = os.path.realpath(path)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real) or ".",
+                               prefix=".%s."
+                               % os.path.basename(real)[:64])
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), stat.S_IRWXU)
+            f.write(text)
+        os.replace(tmp, real)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        e.filename = path
+        raise
     return path
 
 

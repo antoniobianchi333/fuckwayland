@@ -5,6 +5,8 @@ not), origin normalisation, the xrandr command line (arandr's shape, --off,
 a genuine arandr-saved script, backend selection and the --save/--command
 CLI against the fake xrandr.  No display needed."""
 
+import builtins
+import errno
 import os
 import shutil
 import stat
@@ -1260,6 +1262,141 @@ class NonTextScript(unittest.TestCase):
         self.assertEqual((rc, err), (0, ""))
         with open(target + ".sh", "rb") as f:
             self.assertEqual(f.read(), text.encode("utf-8"))
+
+
+class _Script:
+    """Stands in for a Layout: write_script only asks it for the text."""
+
+    def __init__(self, text="#!/bin/sh\nxrandr --output DP-1 --auto\n"):
+        self.text = text
+
+    def to_script(self, word=None, notes=None):
+        return self.text
+
+
+class _NoSpace:
+    """A file object whose write fails the way a full disk does, after the
+    file has been created and chmodded."""
+
+    def __init__(self, fd=None):
+        if fd is not None:
+            os.close(fd)
+
+    def fileno(self):
+        return 0                       # os.fchmod on stdin's fd: harmless
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def write(self, data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+class AtomicSave(unittest.TestCase):
+    """`write_script` truncated the target and then wrote into it, so a disk
+    that filled up mid-save left a runnable half-layout where the working
+    one had been.  It writes a sibling temporary and renames now."""
+
+    OLD = "#!/bin/sh\n# the layout that works\nxrandr --output DP-1 --auto\n"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="warandr-atomic-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.target = os.path.join(self.tmp, "desk.sh")
+        with open(self.target, "w") as f:
+            f.write(self.OLD)
+        os.chmod(self.target, 0o700)
+
+    def contents(self, path=None):
+        with open(path or self.target) as f:
+            return f.read()
+
+    def test_a_normal_save_still_writes_the_script_0700(self):
+        path = cli.write_script(_Script(), os.path.join(self.tmp, "new"))
+        self.assertEqual(path, os.path.join(self.tmp, "new.sh"))
+        self.assertEqual(self.contents(path), _Script().text)
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o700)
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["desk.sh", "new.sh"])
+
+    def test_a_failed_write_leaves_the_old_layout_untouched(self):
+        # the disk fills up whichever way the implementation opens the file:
+        # through os.fdopen on the temporary, or -- as it used to -- through
+        # open(target, "w"), which truncates the layout before writing a byte
+        real_fdopen, real_open = os.fdopen, builtins.open
+
+        def truncating_open(path, mode="r", *args, **kw):
+            if "w" not in mode:
+                return real_open(path, mode, *args, **kw)
+            real_open(path, mode, *args, **kw).close()      # what "w" does
+            return _NoSpace()
+        os.fdopen = lambda fd, mode: _NoSpace(fd)
+        builtins.open = truncating_open
+        self.addCleanup(setattr, os, "fdopen", real_fdopen)
+        self.addCleanup(setattr, builtins, "open", real_open)
+        try:
+            with self.assertRaises(OSError) as cm:
+                cli.write_script(_Script(), self.target)
+        finally:
+            os.fdopen, builtins.open = real_fdopen, real_open
+        # the layout that was there still is, byte for byte -- it used to be
+        # a truncated one, and a truncated layout script still runs
+        self.assertEqual(self.contents(), self.OLD)
+        self.assertEqual(os.listdir(self.tmp), ["desk.sh"])
+        self.assertEqual(cm.exception.errno, errno.ENOSPC)
+        # the message the GUI and the CLI print names the file the user
+        # asked for, not the temporary
+        self.assertEqual(cm.exception.filename, self.target)
+        self.assertIn(self.target, "%s" % cm.exception)
+
+    def test_a_failed_rename_leaves_no_temporary_behind(self):
+        real_replace = os.replace
+
+        def boom(src, dst):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        os.replace = boom
+        self.addCleanup(setattr, os, "replace", real_replace)
+        with self.assertRaises(OSError) as cm:
+            cli.write_script(_Script(), self.target)
+        os.replace = real_replace
+        self.assertEqual(cm.exception.filename, self.target)
+        self.assertEqual(self.contents(), self.OLD)
+        self.assertEqual(os.listdir(self.tmp), ["desk.sh"])
+
+    def test_a_symlink_is_followed_not_replaced(self):
+        """~/.screenlayout/desk.sh is often a link into a dotfiles repo;
+        os.replace would have left a regular file where the link was."""
+        store = os.path.join(self.tmp, "store")
+        os.makedirs(store)
+        real = os.path.join(store, "kept.sh")
+        with open(real, "w") as f:
+            f.write(self.OLD)
+        link = os.path.join(self.tmp, "linked.sh")
+        os.symlink(real, link)
+        path = cli.write_script(_Script(), link)
+        self.assertEqual(path, link)                  # what the caller asked
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.readlink(link), real)
+        self.assertEqual(self.contents(real), _Script().text)
+        self.assertEqual(os.listdir(store), ["kept.sh"])
+
+    def test_the_target_is_never_seen_half_written(self):
+        """The rename is the only moment the name changes meaning: while the
+        text is being written the old file is still whole."""
+        seen = []
+        real_replace = os.replace
+
+        def watch(src, dst):
+            seen.append(self.contents())
+            return real_replace(src, dst)
+        os.replace = watch
+        self.addCleanup(setattr, os, "replace", real_replace)
+        cli.write_script(_Script(), self.target)
+        os.replace = real_replace
+        self.assertEqual(seen, [self.OLD])
+        self.assertEqual(self.contents(), _Script().text)
 
 
 class BuildScript(unittest.TestCase):
