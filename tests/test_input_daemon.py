@@ -7,12 +7,17 @@ import json
 import os
 import signal
 import socket
+import sys
 import tempfile
 import time
 import unittest
 from unittest import mock
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
 from fwcommon import session
+from support import FakeEvdev, RecorderDev, abs_report, key_bitmap
 from wdotool import daemon, keymap, keystate, uinput
 from wdotool.ctx import CmdError
 
@@ -28,23 +33,6 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 # type through it, and every keycode assertion here would be wrong.
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
-
-
-class RecorderDev:
-    def __init__(self):
-        self.events = []
-
-    def emit(self, etype, code, value):
-        self.events.append((etype, code, value))
-
-    def syn(self):
-        self.events.append(("SYN",))
-
-    def key(self, code, down):
-        self.events.append(("KEY", code, 1 if down else 0))
-
-    def close(self):
-        pass
 
 
 class KernelDev(RecorderDev):
@@ -87,70 +75,6 @@ OURS_PATH = "/dev/input/event9"     # our own uinput keyboard's node
 MODS = tuple(keymap.MODIFIER_KEYCODES)
 CTRL, SHIFT, ALT = (keymap.KEY_LEFTCTRL, keymap.KEY_LEFTSHIFT,
                     keymap.KEY_LEFTALT)
-
-
-def _bitmap(codes):
-    """A kernel key bitmap (EVIOCGKEY / EVIOCGBIT shape)."""
-    buf = bytearray((keystate.KEY_MAX + 8) // 8)
-    for c in codes:
-        buf[c >> 3] |= 1 << (c & 7)
-    return bytes(buf)
-
-
-class FakeEvdev:
-    """keystate.Evdev over scripted devices: (path, name, caps, held).
-
-    `unreadable` paths raise EACCES on open, which is what an
-    /dev/input/event* looks like to a uid that may not read it (the normal
-    case for a desktop user -- see the module docstring of keystate.py).
-    `before_read(self, nth)` runs before every key-state read, which is how a
-    test makes the user let go of a key mid-sequence."""
-
-    def __init__(self, devices=(), unreadable=(), before_read=None):
-        self.devices = {p: [name, set(caps), set(held)]
-                        for p, name, caps, held in devices}
-        self.unreadable = set(unreadable)
-        self.before_read = before_read
-        self.reads = []          # paths whose key state was read, in order
-        self.opened = []
-        self._fds = {}
-        self._next_fd = 10
-
-    # -- keystate.Evdev interface
-    def paths(self):
-        return sorted(set(self.devices) | self.unreadable)
-
-    def open(self, path):
-        if path not in self.devices:
-            raise PermissionError(13, "Permission denied", path)
-        self.opened.append(path)
-        fd = self._next_fd
-        self._next_fd += 1
-        self._fds[fd] = path
-        return fd
-
-    def close(self, fd):
-        self._fds.pop(fd, None)
-
-    def name(self, fd):
-        return self.devices[self._fds[fd]][0]
-
-    def key_caps(self, fd):
-        return _bitmap(self.devices[self._fds[fd]][1])
-
-    def key_state(self, fd):
-        path = self._fds[fd]
-        self.reads.append(path)
-        if self.before_read:
-            self.before_read(self, len(self.reads))
-        return _bitmap(self.devices[path][2])
-
-    # -- test helpers
-    def press(self, path, *codes):
-        self.devices[path][2].update(codes)
-
-    def release(self, path, *codes):
-        self.devices[path][2].difference_update(codes)
 
 
 def fake_evdev(held=(), devices=None, **kw):
@@ -200,15 +124,6 @@ def _close_quietly(fd):
 def _kill_quietly(pid):
     with contextlib.suppress(OSError):
         os.kill(pid, signal.SIGTERM)
-
-
-def abs_report(dev):
-    """(ABS_X, ABS_Y) of the last report a recorder tablet emitted."""
-    vals = {}
-    for ev in dev.events:
-        if ev[0] == uinput.EV_ABS:
-            vals[ev[1]] = ev[2]
-    return vals[uinput.ABS_X], vals[uinput.ABS_Y]
 
 
 
@@ -678,7 +593,7 @@ class TestKeyStateReader(unittest.TestCase):
         self.assertEqual(ev.opened, [])
 
     def test_bitmap_helper(self):
-        bits = _bitmap([0, 7, 8, keymap.KEY_RIGHTMETA])
+        bits = key_bitmap([0, 7, 8, keymap.KEY_RIGHTMETA])
         self.assertTrue(keystate.bit(bits, 0) and keystate.bit(bits, 7))
         self.assertTrue(keystate.bit(bits, 8))
         self.assertTrue(keystate.bit(bits, keymap.KEY_RIGHTMETA))

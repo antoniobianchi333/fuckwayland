@@ -15,20 +15,20 @@ it claimed.
 """
 
 import contextlib
-import errno
 import io
 import os
 import shlex
 import sys
 import unittest
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 # Never hand this process over to the real X11 tools (see tests/conftest.py).
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-from wdotool import (cli, commands, daemon, keymap, keys_cmds,  # noqa: E402
+from support import FakeEvdev, MOUSE_CAPS, env
+from wdotool import (cli, commands, daemon, keymap, keys_cmds,
                      keystate, xkbmap)
 
 KEYMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -39,82 +39,8 @@ def km(name):
     return os.path.join(KEYMAPS, name + ".xkb")
 
 
-@contextlib.contextmanager
-def env(**kw):
-    old = {k: os.environ.get(k) for k in kw}
-    try:
-        for k, v in kw.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        yield
-    finally:
-        for k, v in old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
-
 # ---------------------------------------------------------------------------
 # the device layer, faked
-
-
-def caps_bitmap(codes):
-    buf = bytearray(keystate._KEY_BYTES)
-    for c in codes:
-        buf[c >> 3] |= 1 << (c & 7)
-    return bytes(buf)
-
-
-KEYBOARD_CAPS = caps_bitmap([1, 30, 42, 100])     # Esc, a, shift, right alt
-MOUSE_CAPS = caps_bitmap([0x110, 0x111])          # BTN_LEFT/RIGHT only
-
-
-class FakeEvdev:
-    """keystate.Evdev's five calls plus read(), over a dict of fake nodes."""
-
-    def __init__(self, nodes):
-        self.nodes = dict(nodes)   # path -> dict(name=, caps=, data=, denied=)
-        self.open_fds = {}
-        self._next = 10
-
-    def paths(self):
-        return sorted(self.nodes)
-
-    def open(self, path):
-        node = self.nodes.get(path)
-        if node is None:
-            raise FileNotFoundError(errno.ENOENT, "no such device")
-        if node.get("denied"):
-            raise PermissionError(errno.EACCES, "Permission denied")
-        fd = self._next
-        self._next += 1
-        self.open_fds[fd] = path
-        return fd
-
-    def close(self, fd):
-        self.open_fds.pop(fd, None)
-
-    def _node(self, fd):
-        return self.nodes[self.open_fds[fd]]
-
-    def name(self, fd):
-        return self._node(fd)["name"]
-
-    def key_caps(self, fd):
-        return self._node(fd).get("caps", KEYBOARD_CAPS)
-
-    def key_state(self, fd):
-        return caps_bitmap(())
-
-    def read(self, fd, n):
-        node = self._node(fd)
-        if node.get("gone"):
-            raise OSError(errno.ENODEV, "No such device")
-        data, node["data"] = node.get("data", b"")[:n], node.get("data", b"")[n:]
-        return data
 
 
 class PollableDevices(keys_cmds.Devices):

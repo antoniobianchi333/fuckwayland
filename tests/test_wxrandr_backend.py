@@ -26,8 +26,8 @@ sys.path.insert(0, ROOT)
 # not loaded, and it reaches every subprocess a test spawns.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-from fwcommon import passthrough                                # noqa: E402
-from wxrandr import cli                                         # noqa: E402
+from fwcommon import passthrough
+from wxrandr import cli
 
 #: a GNOME session, as the probes would find it
 GNOME = {

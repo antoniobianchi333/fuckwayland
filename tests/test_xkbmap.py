@@ -14,8 +14,13 @@ import contextlib
 import io
 import os
 import re
+import sys
 import unittest
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from support import RecorderDev, env
 from wdotool import cli, daemon, xkbmap
 
 # The suite never hands a tool over to the real X11 one: see
@@ -37,42 +42,6 @@ def text(name: str) -> str:
 
 def rmap(name: str, group: int = 1) -> xkbmap.ReverseMap:
     return xkbmap.build(text(name), group)
-
-
-@contextlib.contextmanager
-def env(**kw):
-    """Set WDOTOOL_* variables for one block, restoring what was there."""
-    old = {k: os.environ.get(k) for k in kw}
-    try:
-        for k, v in kw.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        yield
-    finally:
-        for k, v in old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
-
-class RecorderDev:
-    def __init__(self):
-        self.events = []
-
-    def emit(self, etype, code, value):
-        self.events.append((etype, code, value))
-
-    def syn(self):
-        self.events.append(("SYN",))
-
-    def key(self, code, down):
-        self.events.append(("KEY", code, 1 if down else 0))
-
-    def close(self):
-        pass
 
 
 def make_daemon():

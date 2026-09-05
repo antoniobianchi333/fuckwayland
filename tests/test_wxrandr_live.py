@@ -31,7 +31,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import unittest
 
@@ -44,6 +43,8 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from support import HeadlessSway
+
 
 @unittest.skipUnless(shutil.which("sway"), "sway not on PATH (nix develop)")
 class WxrandrLiveTest(unittest.TestCase):
@@ -51,51 +52,9 @@ class WxrandrLiveTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.rtdir = tempfile.mkdtemp(prefix="wxrandr-live-")
-        os.chmod(cls.rtdir, 0o700)
-        conf = os.path.join(cls.rtdir, "sway.conf")
-        with open(conf, "w") as f:
-            f.write(
-                "output HEADLESS-1 mode 1280x720\n"
-                "xwayland enable\n"
-                "default_border none\n"
-                "exec sh -c 'echo \"$DISPLAY\" > %s/display'\n" % cls.rtdir
-            )
-        env = dict(
-            os.environ,
-            XDG_RUNTIME_DIR=cls.rtdir,
-            WLR_BACKENDS="headless",
-            WLR_LIBINPUT_NO_DEVICES="1",
-            WLR_RENDERER="pixman",
-            DBUS_SESSION_BUS_ADDRESS=f"unix:path={cls.rtdir}/no-bus",
-        )
-        cls.sway = subprocess.Popen(
-            ["sway", "-c", conf], env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        cls.sock = None
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            socks = [n for n in os.listdir(cls.rtdir)
-                     if n.startswith("sway-ipc.") and n.endswith(".sock")]
-            if socks:
-                cls.sock = os.path.join(cls.rtdir, socks[0])
-                break
-            if cls.sway.poll() is not None:
-                raise unittest.SkipTest("sway exited at startup")
-            time.sleep(0.2)
-        if cls.sock is None:
-            cls.sway.kill()
-            raise unittest.SkipTest("sway did not create an IPC socket")
-        cls.display = ""
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not cls.display:
-            try:
-                with open(os.path.join(cls.rtdir, "display")) as f:
-                    cls.display = f.read().strip()
-            except OSError:
-                pass
-            time.sleep(0.2)
+        cls.rig = HeadlessSway("wxrandr-live-", need_display=False)
+        cls.rtdir, cls.sock = cls.rig.rtdir, cls.rig.sock
+        cls.display, cls.sway = cls.rig.display, cls.rig.proc
         # X oracle available? (needs xrandr AND an XWayland that answers)
         cls.have_oracle = bool(cls.display) and bool(shutil.which("xrandr"))
         if cls.have_oracle:
@@ -113,19 +72,14 @@ class WxrandrLiveTest(unittest.TestCase):
             time.sleep(0.2)
         names = [o["name"] for o in cls.outs_cls()]
         if len(names) != 4:
-            cls.sway.terminate()
+            cls.rig.stop()
             raise unittest.SkipTest("could not grow to 4 headless outputs")
         cls.n1, cls.n2, cls.n3, cls.n4 = names
 
     @classmethod
     def tearDownClass(cls):
         cls._kill_daemon()
-        cls.sway.send_signal(signal.SIGTERM)
-        try:
-            cls.sway.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            cls.sway.kill()
-        shutil.rmtree(cls.rtdir, ignore_errors=True)
+        cls.rig.stop()
 
     # -- helpers -------------------------------------------------------------
 

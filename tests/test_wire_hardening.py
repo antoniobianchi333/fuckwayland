@@ -24,8 +24,10 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from fwcommon.wayland_mini import Cursor, WlConn       # noqa: E402
-from wdotool.ctx import CmdError                       # noqa: E402
+from fwcommon.wayland_mini import Cursor, WlConn
+from wl_fake import msg, wstr
+from wdotool import backend_sway
+from wdotool.ctx import CmdError
 
 
 def _tmpsock(prefix):
@@ -75,16 +77,7 @@ class _Server:
 
 # -- wayland --------------------------------------------------------------
 
-def wmsg(oid, op, body=b""):
-    return struct.pack("<II", oid, ((8 + len(body)) << 16) | op) + body
-
-
-def wstr(s):
-    b = s.encode() + b"\0"
-    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
-
-
-class FakeCompositor(_Server):
+class BrokenCompositor(_Server):
     """Enough of wl_display/wl_registry for WlrBackend's constructor.
 
     `mode` picks the failure: "silent" (accept, then never answer), "closes"
@@ -126,9 +119,9 @@ class FakeCompositor(_Server):
                 elif oid == 1 and op == 1:     # wl_display.get_registry
                     registry = struct.unpack_from("<I", pay)[0]
                     c.sendall(
-                        wmsg(registry, 0, struct.pack("<I", 1)
+                        msg(registry, 0, struct.pack("<I", 1)
                              + wstr("wl_output") + struct.pack("<I", 2))
-                        + wmsg(registry, 0, struct.pack("<I", 2)
+                        + msg(registry, 0, struct.pack("<I", 2)
                                + wstr("zwlr_foreign_toplevel_manager_v1")
                                + struct.pack("<I", 3)))
                     announced = True
@@ -138,15 +131,15 @@ class FakeCompositor(_Server):
                         c.close()
                         return
                     if self.mode == "shortmode" and output_oid:
-                        c.sendall(wmsg(output_oid, 1, b""))
-                    c.sendall(wmsg(cb, 0, struct.pack("<I", 0)))
+                        c.sendall(msg(output_oid, 1, b""))
+                    c.sendall(msg(cb, 0, struct.pack("<I", 0)))
 
 
 class WlConnDeadline(unittest.TestCase):
     def test_a_compositor_that_never_answers_does_not_hang(self):
         """WlConn used to leave the socket blocking, so roundtrip() waited
         forever with no message and no exit code."""
-        srv = FakeCompositor("silent")
+        srv = BrokenCompositor("silent")
         self.addCleanup(srv.close)
         c = WlConn(srv.path, timeout=0.4)
         self.addCleanup(c.close)
@@ -156,7 +149,7 @@ class WlConnDeadline(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 5.0)
 
     def test_the_default_is_a_deadline_not_blocking(self):
-        srv = FakeCompositor("silent")
+        srv = BrokenCompositor("silent")
         self.addCleanup(srv.close)
         c = WlConn(srv.path)
         self.addCleanup(c.close)
@@ -165,7 +158,7 @@ class WlConnDeadline(unittest.TestCase):
     def test_dispatch_restores_the_callers_timeout(self):
         """dispatch() used to restore None, leaving the connection blocking
         for every later read -- which kwin.py had to work around by hand."""
-        srv = FakeCompositor("silent")
+        srv = BrokenCompositor("silent")
         self.addCleanup(srv.close)
         c = WlConn(srv.path)
         self.addCleanup(c.close)
@@ -188,7 +181,7 @@ class CursorBounds(unittest.TestCase):
 
 class WlrBackendGuards(unittest.TestCase):
     def _backend(self, mode):
-        srv = FakeCompositor(mode)
+        srv = BrokenCompositor(mode)
         self.addCleanup(srv.close)
         old = os.environ.get("WAYLAND_DISPLAY")
         os.environ["WAYLAND_DISPLAY"] = srv.path
@@ -342,9 +335,161 @@ class SwayWireGuards(unittest.TestCase):
         self.assertIsNone(s.gettimeout())
 
 
+class EventSway(_Server):
+    """A sway that takes a subscription and then pushes events at it.
+
+    `events` are (i3-ipc message type, payload) pushed straight after the
+    subscribe reply; `reply` is what the subscribe itself is answered with,
+    and `reply_type` lets a test answer it with an *event* instead of a
+    reply, which is the other way a subscription can fail."""
+
+    def __init__(self, events=(), reply=b'{"success": true}',
+                 reply_type=backend_sway.SUBSCRIBE):
+        self.events = list(events)
+        self.reply = reply
+        self.reply_type = reply_type
+        self.subscriptions = []      # the payload of every SUBSCRIBE seen
+        super().__init__(self._serve)
+
+    def _serve(self, c):
+        buf = b""
+        while True:
+            try:
+                data = c.recv(65536)
+            except OSError:
+                return
+            if not data:
+                return
+            buf += data
+            while len(buf) >= 14:
+                ln, mt = struct.unpack("<II", buf[6:14])
+                if len(buf) < 14 + ln:
+                    break
+                payload, buf = buf[14:14 + ln], buf[14 + ln:]
+                if mt == backend_sway.SUBSCRIBE:
+                    self.subscriptions.append(payload)
+                    c.sendall(iframe(self.reply_type, self.reply))
+                    for t, p in self.events:
+                        c.sendall(iframe(t, json.dumps(p).encode()))
+                else:
+                    c.sendall(iframe(mt, b"[]"))
+
+
+def wev(change, wid=None):
+    node = {} if wid is None else {"container": {"id": wid}}
+    return (backend_sway.EVENT_WINDOW, dict(node, change=change))
+
+
+def wsev(change="focus"):
+    return (backend_sway.EVENT_WORKSPACE, {"change": change})
+
+
+class SwayEventStream(unittest.TestCase):
+    """SwayBackend.events(): the stream `wdotool selectwindow`, `wwmctl
+    -a :SELECT:` and `wxprop -spy` all sit on, and the one method of the
+    backend with no test at all. Its contract is four sentences, and each
+    is a way it has gone wrong: a connection of its own, sway's own change
+    words passed through untranslated, workspace changes folded in as node
+    0 only when asked, and a timeout that ends the iteration instead of
+    waiting for ever."""
+
+    def backend(self, **kw):
+        srv = EventSway(**kw)
+        self.addCleanup(srv.close)
+        b = backend_sway.SwayBackend(sockpath=srv.path)
+        self.addCleanup(b.sock.close)
+        return srv, b
+
+    def test_window_events_come_out_in_sways_own_words(self):
+        srv, b = self.backend(events=[wev("new", 5), wev("title", 5),
+                                      wev("close", 7)])
+        self.assertEqual(list(b.events(timeout=0.5)),
+                         [(5, "new"), (5, "title"), (7, "close")])
+        self.assertEqual(srv.subscriptions, [b'["window"]'])
+
+    def test_workspace_events_are_dropped_unless_asked_for(self):
+        _srv, b = self.backend(events=[wsev(), wev("focus", 5)])
+        self.assertEqual(list(b.events(timeout=0.5)), [(5, "focus")])
+
+    def test_workspaces_fold_in_as_node_zero(self):
+        srv, b = self.backend(events=[wsev(), wev("focus", 5), wsev("init")])
+        self.assertEqual(list(b.events(timeout=0.5, workspaces=True)),
+                         [(0, "workspace"), (5, "focus"), (0, "workspace")])
+        self.assertEqual(srv.subscriptions, [b'["window","workspace"]'])
+
+    def test_an_event_with_no_container_is_skipped(self):
+        # sway sends window events for containers it is no longer describing
+        _srv, b = self.backend(events=[wev("close"), wev("focus", 9)])
+        self.assertEqual(list(b.events(timeout=0.5)), [(9, "focus")])
+
+    def test_a_payload_that_is_not_an_object_is_skipped(self):
+        srv = EventSway(events=[(backend_sway.EVENT_WINDOW, [1, 2])])
+        self.addCleanup(srv.close)
+        b = backend_sway.SwayBackend(sockpath=srv.path)
+        self.addCleanup(b.sock.close)
+        self.assertEqual(list(b.events(timeout=0.5)), [])
+
+    def test_it_subscribes_on_a_connection_of_its_own(self):
+        """A subscription and the command socket cannot share one: every
+        reply the command socket waits for would arrive behind an unbounded
+        queue of events."""
+        srv, b = self.backend(events=[wev("focus", 5)])
+        self.assertTrue(_eventually(lambda: len(srv.conns) == 1))
+        self.assertEqual(list(b.events(timeout=0.5)), [(5, "focus")])
+        self.assertTrue(_eventually(lambda: len(srv.conns) == 2))
+        # and the command socket still answers afterwards
+        self.assertEqual(b.num_desktops(), 0)
+
+    def test_the_stream_socket_is_closed_when_the_iteration_ends(self):
+        srv, b = self.backend(events=[wev("focus", 5)])
+        it = b.events(timeout=5)
+        self.assertEqual(next(it), (5, "focus"))
+        it.close()                                   # the finally arm
+        self.assertTrue(_eventually(
+            lambda: srv.conns[1].recv(1, socket.MSG_DONTWAIT) == b""))
+
+    def test_silence_ends_the_stream(self):
+        _srv, b = self.backend()
+        start = time.monotonic()
+        self.assertEqual(list(b.events(timeout=0.3)), [])
+        self.assertLess(time.monotonic() - start, 3.0)
+
+    def test_a_refused_subscription_is_one_line(self):
+        _srv, b = self.backend(reply=b'{"success": false}')
+        with self.assertRaises(CmdError) as cm:
+            list(b.events(timeout=0.5))
+        self.assertIn("subscribe to window events failed", str(cm.exception))
+
+    def test_an_event_where_the_reply_should_be_is_refused(self):
+        """The first frame back has to be the subscribe *reply*. A stream
+        that opened with an event would leave every later frame off by one."""
+        _srv, b = self.backend(reply_type=backend_sway.EVENT_WINDOW,
+                               reply=b'{"success": true}')
+        with self.assertRaises(CmdError) as cm:
+            list(b.events(timeout=0.5))
+        self.assertIn("subscribe to window events failed", str(cm.exception))
+
+    def test_select_window_returns_the_first_focus_change(self):
+        _srv, b = self.backend(events=[wev("title", 5), wev("new", 6),
+                                       wev("focus", 7), wev("focus", 8)])
+        self.assertEqual(b.select_window(), 7)
+
+
+def _eventually(pred, seconds=2.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            if pred():
+                return True
+        except OSError:
+            pass
+        time.sleep(0.02)
+    return False
+
+
 # -- D-Bus -----------------------------------------------------------------
 
-from fwcommon import dbus_mini as D                     # noqa: E402
+from fwcommon import dbus_mini as D
 
 
 def _raw_bus():

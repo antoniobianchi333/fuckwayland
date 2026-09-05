@@ -19,26 +19,15 @@ import socket
 import struct
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from wl_fake import marshal, pad
+
 SOCK, MODE = sys.argv[1], sys.argv[2]
 LOG = sys.argv[3] if len(sys.argv) > 3 else None
 
 HEAD_ID = 0xFF000001
 MODE_ID = 0xFF000002
-
-
-def marshal(args):
-    out = b""
-    for kind, v in args:
-        if kind == "u":
-            out += struct.pack("<I", v & 0xFFFFFFFF)
-        elif kind == "i":
-            out += struct.pack("<i", v)
-        elif kind == "f":
-            out += struct.pack("<i", int(v * 256))
-        elif kind == "s":
-            b = v.encode() + b"\0"
-            out += struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
-    return out
 
 
 class Peer:
@@ -76,7 +65,7 @@ def rd_u32(p, i):
 def rd_str(p, i):
     n, i = rd_u32(p, i)
     s = p[i:i + n - 1].decode()
-    return s, i + ((n + 3) & ~3)
+    return s, i + n + pad(n)
 
 
 def note(what):

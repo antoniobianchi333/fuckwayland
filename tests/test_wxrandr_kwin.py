@@ -30,10 +30,11 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from fwcommon import session as wsession                       # noqa: E402
-from fwcommon.wayland_mini import Cursor                       # noqa: E402
-from wxrandr import cli, core, kwin, mutter                    # noqa: E402
-from wxrandr.core import Mode, State                           # noqa: E402
+from fwcommon import session as wsession
+from fwcommon.wayland_mini import Cursor
+from wl_fake import msg, wstr
+from wxrandr import cli, core, kwin, mutter
+from wxrandr.core import Mode, State
 
 # The suite never hands a tool over to the real X11 one: see tests/conftest.py
 # (which covers pytest). This line covers `python3 tests/<file>.py`.
@@ -145,15 +146,6 @@ def HDMI(**kw):
 
 # ---------------------------------------------------------------- wire helpers
 
-def _s(v: str) -> bytes:
-    b = v.encode() + b"\0"
-    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
-
-
-def _msg(obj: int, op: int, payload: bytes = b"") -> bytes:
-    return struct.pack("<II", obj, ((8 + len(payload)) << 16) | op) + payload
-
-
 MGMT_GNAME, REG_GNAME, GAMMA_GNAME, ORDER_GNAME = 100, 99, 98, 97
 
 
@@ -222,7 +214,7 @@ class _Client(threading.Thread):
 
     def _request(self, obj, op, cur):
         if obj == 1 and op == 0:                     # wl_display.sync
-            self.send(_msg(cur.u32(), 0, struct.pack("<I", 0)))
+            self.send(msg(cur.u32(), 0, struct.pack("<I", 0)))
         elif obj == 1 and op == 1:                   # wl_display.get_registry
             self.registry = cur.u32()
             for gname, iface, ver in self.svc.globals():
@@ -240,8 +232,8 @@ class _Client(threading.Thread):
             self._config(obj, op, cur)
 
     def _global(self, gname, iface, ver):
-        self.send(_msg(self.registry, 0,
-                       struct.pack("<I", gname) + _s(iface)
+        self.send(msg(self.registry, 0,
+                       struct.pack("<I", gname) + wstr(iface)
                        + struct.pack("<I", ver)))
 
     def _bind(self, gname, iface, ver, nid):
@@ -252,9 +244,9 @@ class _Client(threading.Thread):
                 # OutputDeviceRegistryV2Private::..._bind_resource():
                 # wl_resource_post_error(error_unsupported_version,
                 #                        "unsupported version")
-                self.send(_msg(1, 0, struct.pack("<II", nid,
+                self.send(msg(1, 0, struct.pack("<II", nid,
                                                  REG_ERR_UNSUPPORTED_VERSION)
-                               + _s("unsupported version")))
+                               + wstr("unsupported version")))
                 self.dead = True
                 return
             self.reg_obj, self.dev_bound = nid, ver
@@ -264,7 +256,7 @@ class _Client(threading.Thread):
                 # the zero-argument `finished` (opcode 0), which a client
                 # that keys on the opcode index alone would take for an
                 # output announcement with a truncated payload
-                self.send(_msg(nid, REG_EV_FINISHED))
+                self.send(msg(nid, REG_EV_FINISHED))
         elif iface == ORDER:
             self.order_obj = nid
             self.send_order()
@@ -283,8 +275,8 @@ class _Client(threading.Thread):
             return
         out = b""
         for name in self.svc.output_order():
-            out += _msg(self.order_obj, 0, _s(name))
-        self.send(out + _msg(self.order_obj, 1))
+            out += msg(self.order_obj, 0, wstr(name))
+        self.send(out + msg(self.order_obj, 1))
 
     def _offer(self, h):
         """kde_output_device_registry_v2's `output` event: a new_id of
@@ -292,7 +284,7 @@ class _Client(threading.Thread):
         oid = self.alloc()
         self.devs[oid] = h
         self.dev_of[h["gname"]] = oid
-        self.send(_msg(self.reg_obj, self.svc.registry_opcode,
+        self.send(msg(self.reg_obj, self.svc.registry_opcode,
                        struct.pack("<I", oid)))
         self._burst(oid, h, full=True)
 
@@ -312,26 +304,26 @@ class _Client(threading.Thread):
         if name == "geometry":
             return (struct.pack("<iiiii", h["x"], h["y"], h["mm"][0],
                                 h["mm"][1], h["subpixel"])
-                    + _s(h["make"]) + _s(h["model"])
+                    + wstr(h["make"]) + wstr(h["model"])
                     + struct.pack("<i", h["transform"]))
         if name == "scale":
             return struct.pack("<i", kwin.to_fixed(h["scale"]))
         if name == "enabled":
             return struct.pack("<i", 1 if h["enabled"] else 0)
         if name == "edid":
-            return _s(h["edid"])
+            return wstr(h["edid"])
         if name == "uuid":
-            return _s(h["uuid"])
+            return wstr(h["uuid"])
         if name == "serial_number":
-            return _s(h["serial"])
+            return wstr(h["serial"])
         if name == "eisa_id":
-            return _s(h["eisa"])
+            return wstr(h["eisa"])
         if name == "name":
-            return _s(h["name"])
+            return wstr(h["name"])
         if name == "capabilities":
             return struct.pack("<I", h["caps"])
         if name == "replication_source":
-            return _s(h["repl"])
+            return wstr(h["repl"])
         if name == "priority":
             return struct.pack("<I", h["priority"] or 0)
         types = [t for _o, n, _si, t in DEVICE_EVENTS if n == name][0]
@@ -339,7 +331,7 @@ class _Client(threading.Thread):
         for c in types.replace(" ", ""):
             if c == "-":
                 continue
-            out += _s("") if c == "s" else struct.pack("<I", 0)
+            out += wstr("") if c == "s" else struct.pack("<I", 0)
         return out
 
     def _burst(self, oid, h, full):
@@ -355,20 +347,20 @@ class _Client(threading.Thread):
                     mid = self.alloc()
                     self.modes[mid] = (h["gname"], j)
                     self.mode_of[(h["gname"], j)] = mid
-                    out += _msg(oid, DEVICE_OP["mode"], struct.pack("<I", mid))
-                    out += _msg(mid, 0, struct.pack("<ii", m[0], m[1]))
+                    out += msg(oid, DEVICE_OP["mode"], struct.pack("<I", mid))
+                    out += msg(mid, 0, struct.pack("<ii", m[0], m[1]))
                     if m[2]:
-                        out += _msg(mid, 1, struct.pack("<i", m[2]))
+                        out += msg(mid, 1, struct.pack("<i", m[2]))
                     if m[3]:
-                        out += _msg(mid, 2)
+                        out += msg(mid, 2)
                     if ver >= 19:                     # mode `flags`, since 19
-                        out += _msg(mid, 4, struct.pack("<I", 0))
+                        out += msg(mid, 4, struct.pack("<I", 0))
                 continue
             if step == "@current":
                 if h["enabled"]:
                     mid = self.mode_of.get((h["gname"], h["current"]))
                     if mid is not None:
-                        out += _msg(oid, DEVICE_OP["current_mode"],
+                        out += msg(oid, DEVICE_OP["current_mode"],
                                     struct.pack("<I", mid))
                 continue
             if ver < DEVICE_SINCE[step]:
@@ -377,7 +369,7 @@ class _Client(threading.Thread):
                 continue
             if step == "priority" and h["priority"] is None:
                 continue
-            out += _msg(oid, DEVICE_OP[step], self._dev_payload(step, h))
+            out += msg(oid, DEVICE_OP[step], self._dev_payload(step, h))
         self.send(out)
 
     def refresh(self):
@@ -425,16 +417,16 @@ class _Client(threading.Thread):
 
     def _fail(self, cid, reason):
         if reason and self.mgmt_bound >= kwin.REASON_MGMT:
-            self.send(_msg(cid, 2, _s(reason)))       # failure_reason
-        self.send(_msg(cid, 1))                       # failed
+            self.send(msg(cid, 2, wstr(reason)))       # failure_reason
+        self.send(msg(cid, 1))                       # failed
 
     def _apply(self, cid, cfg):
         svc = self.svc
         if cfg["applied"]:
             # already_applied (code 0) is a fatal protocol error: the whole
             # connection goes down, exactly as KWin does it.
-            self.send(_msg(1, 0, struct.pack("<II", cid, 0)
-                           + _s("output configuration already applied")))
+            self.send(msg(1, 0, struct.pack("<II", cid, 0)
+                           + wstr("output configuration already applied")))
             self.dead = True
             return
         cfg["applied"] = True
@@ -491,13 +483,13 @@ class _Client(threading.Thread):
                                % h["name"])
                     return
             svc.heads = [pend[h["gname"]] for h in svc.heads]
-        self.send(_msg(cid, 0))                       # applied
+        self.send(msg(cid, 0))                       # applied
         self.refresh()
         for c in list(svc.clients):
             c.send_order()
 
 
-class FakeKWin:
+class KwinOutputServer:
     """KWin's two output protocols on a real unix socket."""
 
     def __init__(self, heads, dev_version=20, mgmt_version=19,
@@ -635,28 +627,28 @@ class FakeKWin:
                         # send each mode object its `removed`. The comment
                         # upstream says why that order: a client must never
                         # see an output with no modes.
-                        c.send(_msg(oid, DEVICE_OP["removed"]))
+                        c.send(msg(oid, DEVICE_OP["removed"]))
                         for j in range(len(h["modes"])):
                             mid = c.mode_of.pop((h["gname"], j), None)
                             if mid is not None:
-                                c.send(_msg(mid, 3))   # mode `removed`
+                                c.send(msg(mid, 3))   # mode `removed`
                 elif c.registry is not None:
-                    c.send(_msg(c.registry, 1, struct.pack("<I", h["gname"])))
+                    c.send(msg(c.registry, 1, struct.pack("<I", h["gname"])))
                 c.send_order()
 
 
 # ---------------------------------------------------------------- fixtures
 
 def one_head(**kw):
-    return FakeKWin([EDP()], **kw)
+    return KwinOutputServer([EDP()], **kw)
 
 
 def two_heads(**kw):
-    return FakeKWin([EDP(), DP()], **kw)
+    return KwinOutputServer([EDP(), DP()], **kw)
 
 
 def three_heads(hdmi_on=False, **kw):
-    return FakeKWin([EDP(), DP(), HDMI(enabled=hdmi_on, x=4480)], **kw)
+    return KwinOutputServer([EDP(), DP(), HDMI(enabled=hdmi_on, x=4480)], **kw)
 
 
 # ---------------------------------------------------------------- harness
@@ -1034,7 +1026,7 @@ class Discovery(KwinCase):
         self.assertEqual([o.name for o in outs], ["eDP-1"])
 
     def test_scale_round_trip(self):
-        self.svc = FakeKWin([EDP(scale=1.3), DP(scale=1.5)])
+        self.svc = KwinOutputServer([EDP(scale=1.3), DP(scale=1.5)])
         outs = self.outputs().snapshot(self.state())
         # the wl_fixed alone would read back 1.30078125 and make every run
         # look like a change; quantising to 1/120 recovers KWin's own value
@@ -1051,7 +1043,7 @@ class Discovery(KwinCase):
 
     def test_no_management_global_is_one_line(self):
         self.svc.close()
-        self.svc = FakeKWin([EDP()])
+        self.svc = KwinOutputServer([EDP()])
         self.svc.globals = lambda: [(1, DEV, 20)]
         with self.assertRaises(core.Fatal) as cm:
             self.outputs()
@@ -1088,7 +1080,7 @@ class Query(KwinCase):
             "   1024x768      60.00  \n"))
 
     def test_query_shows_rotation_and_scale(self):
-        self.svc = FakeKWin([EDP(transform=1, scale=1.5)])
+        self.svc = KwinOutputServer([EDP(transform=1, scale=1.5)])
         code, out, err = self.run_cli()
         self.assertEqual((code, err), (0, ""))
         # transform 1 is xrandr `left`, and the logical size is the swapped
@@ -1612,7 +1604,7 @@ class Apply(KwinCase):
         """K6: management present, not one device published. Printing an
         empty screen and calling every apply a success hides a real
         failure."""
-        for svc in (FakeKWin([]),
+        for svc in (KwinOutputServer([]),
                     two_heads(registry_path=True, registry_version=20)):
             self.svc.close()
             self.svc = svc
@@ -1629,7 +1621,7 @@ class Apply(KwinCase):
         # also what a wrong guess about the 6.7 protocol would look like --
         # names the path it came up empty on, and the version it bound
         self.svc.close()
-        self.svc = FakeKWin([], registry_path=True, mgmt_version=21)
+        self.svc = KwinOutputServer([], registry_path=True, mgmt_version=21)
         code, out, err = self.run_cli()
         self.assertEqual((code, out), (1, ""))
         self.assertEqual(err, "xrandr: kde_output_management_v2 announced no"
@@ -1643,7 +1635,7 @@ class Apply(KwinCase):
         short of it is an overlap KWin silently keeps."""
         for mgmt, dev, w, h in ((19, 20, 1372, 772), (3, 2, 1371, 771)):
             self.svc.close()
-            self.svc = FakeKWin([EDP(scale=1.4), DP(x=4000)],
+            self.svc = KwinOutputServer([EDP(scale=1.4), DP(x=4000)],
                                 dev_version=dev, mgmt_version=mgmt)
             code, out, _err = self.run_cli()
             self.assertIn("eDP-1 connected primary %dx%d+0+0 " % (w, h), out)
@@ -1735,7 +1727,7 @@ class Mirroring(KwinCase):
     and only replication turns that into a copy."""
 
     def mirrored(self):
-        return FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid")])
+        return KwinOutputServer([EDP(), DP(repl="d0a1b-eDP-1-uuid")])
 
     def reqs(self, kinds=None):
         return [r for r in self.svc.applied[-1]
@@ -1799,7 +1791,7 @@ class Mirroring(KwinCase):
         the 1920x1080 one at scale 1: same rectangle, so the plain shared
         position is the clone and no replication is sent."""
         self.svc.close()
-        self.svc = FakeKWin([EDP(), head("DP-1", "DEL", "U", "S", "uhd-uuid",
+        self.svc = KwinOutputServer([EDP(), head("DP-1", "DEL", "U", "S", "uhd-uuid",
                                         (597, 373),
                                         [(3840, 2160, 60000, True)], x=1920)])
         self.addCleanup(self.svc.close)
@@ -1918,7 +1910,7 @@ class Mirroring(KwinCase):
 
     def test_re_enabling_an_output_clears_a_stale_replication(self):
         self.svc.close()
-        self.svc = FakeKWin([EDP(), DP(enabled=False,
+        self.svc = KwinOutputServer([EDP(), DP(enabled=False,
                                        repl="d0a1b-eDP-1-uuid")])
         self.addCleanup(self.svc.close)
         code, _out, err = self.run_cli("--output", "DP-1", "--auto",
@@ -1934,7 +1926,7 @@ class Mirroring(KwinCase):
         still creates no configuration at all, even though the query reports
         the replica at its source's position rather than its stored one."""
         self.svc.close()
-        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=900, y=400)])
+        self.svc = KwinOutputServer([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=900, y=400)])
         self.addCleanup(self.svc.close)
         code, _out, err = self.run_cli("--output", "eDP-1", "--mode",
                                        "1680x1050")
@@ -1976,7 +1968,7 @@ class Mirroring(KwinCase):
         neighbour at x=1280, 640 px inside its source, two panels overlapping
         on a desktop meant to be a row."""
         self.svc.close()
-        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
+        self.svc = KwinOutputServer([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
                              HDMI(x=4480)])
         self.addCleanup(self.svc.close)
         code, _out, err = self.run_cli("--output", "HDMI-1", "--right-of",
@@ -2012,7 +2004,7 @@ class Mirroring(KwinCase):
         kept its last frame across a window move that repainted every other
         head."""
         self.svc.close()
-        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
+        self.svc = KwinOutputServer([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
                              HDMI(x=4480)])
         self.addCleanup(self.svc.close)
         code, _out, err = self.run_cli("--output", "HDMI-1", "--same-as",
@@ -2042,7 +2034,7 @@ class Mirroring(KwinCase):
         both leave kde_output_order_v1 and neither is painted again). We never
         build one, and we do not mirror onto one either."""
         self.svc.close()
-        self.svc = FakeKWin([EDP(repl="del-dp1-uuid"),
+        self.svc = KwinOutputServer([EDP(repl="del-dp1-uuid"),
                              DP(repl="d0a1b-eDP-1-uuid"),
                              HDMI(enabled=True, x=4480)])
         self.addCleanup(self.svc.close)
@@ -2059,7 +2051,7 @@ class Mirroring(KwinCase):
         showing its source's rectangle: it keeps the geometry KWin stores for
         it, and the state is said out loud rather than listed as a mirror."""
         self.svc.close()
-        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
+        self.svc = KwinOutputServer([EDP(), DP(repl="d0a1b-eDP-1-uuid"),
                              HDMI(x=4480, repl="del-dp1-uuid")])
         self.addCleanup(self.svc.close)
         code, out, err = self.run_cli()
@@ -2078,7 +2070,7 @@ class Mirroring(KwinCase):
         position it comes back at is the one --query was reporting for it,
         not whatever it had stored before the mirror."""
         self.svc.close()
-        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=900, y=400),
+        self.svc = KwinOutputServer([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=900, y=400),
                              HDMI(x=4480)])
         self.addCleanup(self.svc.close)
         code, _out, err = self.run_cli("--output", "eDP-1", "--off")
@@ -2128,7 +2120,7 @@ class Mirroring(KwinCase):
         the layout without the mirror."""
         self.svc.close()
         # the shared position `--same-as` itself leaves behind
-        self.svc = FakeKWin([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=0)])
+        self.svc = KwinOutputServer([EDP(), DP(repl="d0a1b-eDP-1-uuid", x=0)])
         self.addCleanup(self.svc.close)
         before = (self.svc.layout(), self.svc.mirrors())
         code, _out, err = self.run_cli("--output", "DP-1", "--right-of",

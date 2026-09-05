@@ -16,7 +16,6 @@ runs on:
   unset, and which `wxrandr -d wayland-1` never sets at all.
 """
 
-import contextlib
 import os
 import shutil
 import sys
@@ -24,35 +23,17 @@ import tempfile
 import unittest
 from unittest import mock
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
-from fwcommon import passthrough                  # noqa: E402
-from fwcommon import session                      # noqa: E402
-from wxrandr import cli as wxrandr_cli            # noqa: E402
+from fwcommon import passthrough
+from support import env
+from fwcommon import session
+from wxrandr import cli as wxrandr_cli
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
-
-
-@contextlib.contextmanager
-def env(**kw):
-    """Set (str) / unset (None) environment variables for the block."""
-    saved = {k: os.environ.get(k) for k in kw}
-    try:
-        for k, v in kw.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        yield
-    finally:
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
 
 
 class Tree(unittest.TestCase):

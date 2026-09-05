@@ -21,15 +21,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-from fwcommon import dbus_mini, session                              # noqa: E402
-from fwcommon.dbus_mini import Bus, DBusError, Message, Variant      # noqa: E402
-from test_dbus_mini import MockBus                                   # noqa: E402
-from wdotool import backend_detect, backend_gnome                    # noqa: E402
-from wdotool.backend import (View, Window, WindowBackend, Workspace,   # noqa: E402
+from fwcommon import dbus_mini, session
+from fwcommon.dbus_mini import Bus, DBusError, Message, Variant
+from support import env
+from test_dbus_mini import MockBus
+from wdotool import backend_detect, backend_gnome
+from wdotool.backend import (View, Window, WindowBackend, Workspace,
                              hit_test, state_steps)
-from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,        # noqa: E402
+from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,
                                    OBJECT_PATH, SHELL_NAME, GnomeBackend)
-from wdotool.ctx import CmdError, NoSessionError                       # noqa: E402
+from wdotool.ctx import CmdError, NoSessionError
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -527,25 +528,6 @@ def no_bus():
         yield
     finally:
         session.find_user_bus = orig
-
-
-@contextlib.contextmanager
-def env(**kw):
-    """Temporarily set (value) / unset (None) environment variables."""
-    old = {k: os.environ.get(k) for k in kw}
-    try:
-        for k, v in kw.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        yield
-    finally:
-        for k, v in old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
 
 
 class _Base(unittest.TestCase):

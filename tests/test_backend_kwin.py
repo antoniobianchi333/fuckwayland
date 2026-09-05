@@ -29,17 +29,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-from fwcommon import dbus_mini, session                               # noqa: E402
-from fwcommon.dbus_mini import ERR, Bus, DBusError, Message, Variant  # noqa: E402
-from test_dbus_mini import MockBus                                    # noqa: E402
-from wdotool import backend_detect, backend_kwin, kwin_js             # noqa: E402
-from wdotool.backend import View, Window, Workspace, hit_test         # noqa: E402
-from wdotool.backend_kwin import (BUS_NAME, IFACE, KWIN_IFACE,        # noqa: E402
+from fwcommon import dbus_mini, session
+from fwcommon.dbus_mini import ERR, Bus, DBusError, Message, Variant
+from test_dbus_mini import MockBus
+from wdotool import backend_detect, backend_kwin, kwin_js
+from wdotool.backend import View, Window, Workspace, hit_test
+from wdotool.backend_kwin import (BUS_NAME, IFACE, KWIN_IFACE,
                                   KWIN_NAME, KWIN_PATH, OBJECT_PATH,
                                   SCRIPTING_IFACE, SCRIPTING_PATH,
                                   SCRIPT_IFACE, VD_IFACE, VD_PATH,
                                   KwinBackend)
-from wdotool.ctx import CmdError, NoSessionError                      # noqa: E402
+from wdotool.ctx import CmdError, NoSessionError
 
 # See tests/conftest.py: no test process ever hands itself to the real xdotool.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
@@ -97,7 +97,7 @@ def fixture_windows(six=True):
     ]
 
 
-class FakeKWin:
+class KwinScriptingService:
     """org.kde.KWin on a Bus of its own: /Scripting, the per-script object,
     /KWin and /VirtualDesktopManager. `plasma` picks the object-path shape
     (6: /Scripting/Script<id>, 5.27: /<id>) and the payload flavour."""
@@ -530,7 +530,7 @@ class _Base(unittest.TestCase):
             # up without waiting for that answers the next RequestName 3, not
             # 1, which is what made this file fail under load.
             old.close(self.mock)
-        self.kwin = FakeKWin(self.mock.address, **kw)
+        self.kwin = KwinScriptingService(self.mock.address, **kw)
         # with the mock, so the cleanup of one test cannot race the setUp of
         # the next: a new TestCase instance has no `kwin` to close itself
         self.addCleanup(self.kwin.close, self.mock)
@@ -683,7 +683,7 @@ class ScriptIdRaceTests(_Base):
 
     def test_the_fake_reproduces_kwins_id_reuse(self):
         """The premise. Without this the rest of the file proves nothing."""
-        k = FakeKWin(self.mock.address, own_name=False)
+        k = KwinScriptingService(self.mock.address, own_name=False)
         self.addCleanup(k.close)
         js = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
         js.write(backend_kwin.HEADER.encode() + b'{} */\n')
@@ -1200,6 +1200,9 @@ class BackendTests(_Base):
     def test_workspaces_degrade_when_the_script_fails(self):
         b = self.backend(silent=True)
         b._screen = None
+        # what is being measured is the degradation, not the wait: the real
+        # SCRIPT_TIMEOUT is 10s and this test paid all of it
+        b.script_timeout = 0.3
         ws = b.workspaces()          # the work-area script answers nothing
         self.assertEqual([w.index for w in ws], [0, 1])
         self.assertEqual(ws[0].work_area, (0, 0, 0, 0))
@@ -1262,7 +1265,7 @@ class BackendTests(_Base):
             session.find_x_display, session.find_xauthority = orig
 
     def test_events(self):
-        it = self.b.events(timeout=3.0, workspaces=True)
+        it = self.b.events(timeout=1.0, workspaces=True)
 
         def push():
             # KWin's script engine calls out over KWin's own bus connection,
@@ -1288,7 +1291,7 @@ class BackendTests(_Base):
         so it is not proof of who is answering. Only the owner of
         org.kde.KWin is: a same-uid process that read the token out of /tmp
         must not be able to feed window facts to a (possibly root) wdotool."""
-        it = self.b.events(timeout=3.0, workspaces=True)
+        it = self.b.events(timeout=1.0, workspaces=True)
         spoofer = Bus(self.mock.address)
         self.addCleanup(spoofer.close)
 
@@ -1845,7 +1848,7 @@ class DetectTests(_Base):
         backend_detect.reset()
 
     def test_kwin_is_detected_and_reuses_the_connection(self):
-        kwin = FakeKWin(self.mock.address)
+        kwin = KwinScriptingService(self.mock.address)
         self.addCleanup(kwin.close)
         b = backend_detect.detect()
         self.addCleanup(backend_detect.reset)
@@ -1855,7 +1858,7 @@ class DetectTests(_Base):
         self.assertEqual(self.wlr_calls, [])
 
     def test_a_kwin_failure_never_falls_through_to_wlr(self):
-        kwin = FakeKWin(self.mock.address, refuse_load=True)
+        kwin = KwinScriptingService(self.mock.address, refuse_load=True)
         self.addCleanup(kwin.close)
         b = backend_detect.detect()
         with self.assertRaises(CmdError) as cm:
@@ -1864,7 +1867,7 @@ class DetectTests(_Base):
         self.assertEqual(self.wlr_calls, [])
 
     def test_a_constructor_failure_is_the_error_the_user_sees(self):
-        kwin = FakeKWin(self.mock.address)
+        kwin = KwinScriptingService(self.mock.address)
         self.addCleanup(kwin.close)
         real = backend_detect._kwin
 
@@ -1880,7 +1883,7 @@ class DetectTests(_Base):
         self.assertEqual(self.wlr_calls, [])
 
     def test_no_kwin_name_is_a_session_error(self):
-        kwin = FakeKWin(self.mock.address, own_name=False)
+        kwin = KwinScriptingService(self.mock.address, own_name=False)
         self.addCleanup(kwin.close)
         bus = Bus(self.mock.address)
         self.addCleanup(bus.close)
@@ -1890,7 +1893,7 @@ class DetectTests(_Base):
         self.assertIn("org.kde.KWin", str(cm.exception))
 
     def test_env_override_reaches_the_kwin_backend(self):
-        kwin = FakeKWin(self.mock.address)
+        kwin = KwinScriptingService(self.mock.address)
         self.addCleanup(kwin.close)
         os.environ["WDOTOOL_BACKEND"] = "kwin"
         try:

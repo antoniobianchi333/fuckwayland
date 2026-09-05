@@ -1,7 +1,7 @@
 """zwlr_virtual_pointer_v1: the wire, the coordinates, and the policy.
 
 Everything here runs against a **real Wayland socket** served by a fake
-compositor that speaks the wire format (`FakeCompositor` below): the client is
+compositor that speaks the wire format (`PointerCompositor` below): the client is
 `fwcommon/wayland_mini.py` unmodified, and every assertion is about the bytes
 the compositor received. A mock of our own client would have proved only that
 we can call our own methods.
@@ -23,8 +23,6 @@ import os
 import socket
 import struct
 import sys
-import tempfile
-import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,7 +32,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
-from wdotool import daemon, uinput, vptr  # noqa: E402
+import wl_fake
+from support import RecorderDev, abs_report
+from wdotool import daemon, uinput, vptr
 
 # What a daemon that could not open /dev/uinput says today, and must keep
 # saying when there is no protocol to fall back to either.
@@ -57,26 +57,13 @@ BBOX = (-1920, -540, 5120, 1620)
 # a compositor, on the wire
 
 
-def _pad(n):
-    return -n % 4
-
-
-def _unpack_bind(body):
-    name = struct.unpack_from("<I", body)[0]
-    n = struct.unpack_from("<I", body, 4)[0]
-    iface = body[8:8 + n - 1].decode()
-    off = 8 + n + _pad(n)
-    ver, new_id = struct.unpack_from("<II", body, off)
-    return name, iface, ver, new_id
-
-
-class FakeCompositor:
+class PointerCompositor(wl_fake.Server):
     """Enough of a wlroots compositor to be a virtual pointer's peer.
 
-    Serves wl_display.sync/get_registry, wl_registry.bind, wl_seat, three
-    wl_outputs with their zxdg_output_v1 logical geometry, and
-    zwlr_virtual_pointer_manager_v1 + zwlr_virtual_pointer_v1, recording every
-    request made on the pointer. Knobs:
+    On top of wl_fake.Server's wl_display/wl_registry: a wl_seat, the three
+    wl_outputs of HEADS with their zxdg_output_v1 logical geometry, and
+    zwlr_virtual_pointer_manager_v1 + zwlr_virtual_pointer_v1, recording
+    every request made on the pointer. Knobs:
 
       manager_version  None -> the global is not advertised at all (Mutter and
                        KWin: measured, they implement neither protocol)
@@ -87,159 +74,44 @@ class FakeCompositor:
                        geometry falls back to wl_output, whose scale lies)
     """
 
+    MANAGER = vptr.MANAGER
+    PREFIX = "wdotool-vp-"
+    BACKLOG = 8
+
     def __init__(self, manager_version=2, refuse_create=False, with_seat=True,
                  with_xdg_output=True):
-        self.manager_version = manager_version
         self.refuse_create = refuse_create
         self.with_seat = with_seat
         self.with_xdg_output = with_xdg_output
-        self.dir = tempfile.mkdtemp(prefix="wdotool-vp-")
-        self.path = os.path.join(self.dir, "wayland-fake")
-        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.srv.bind(self.path)
-        self.srv.listen(8)
-        # A blocking accept() is not woken by close() on Linux, so poll
-        # instead: the suite creates one of these per test and must not pay a
-        # join timeout for each.
-        self.srv.settimeout(0.05)
-        self.connections = 0
-        self.mgr_name = None     # registry name the manager was advertised as
-        self._registries = []    # (conn, registry id) per live client
-        self.binds = []          # (interface, version)
         self.created = []        # (seat_id, pointer object id)
         self.with_output = []    # create_virtual_pointer_with_output (never)
-        self.events = []         # every pointer request, in order
-        self.destroyed = 0
-        self._clients = []
-        self._stop = False
-        self._lock = threading.Lock()
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
+        super().__init__(manager_version)
 
-    # -- lifecycle
-    def close(self):
-        self._stop = True
-        try:
-            self.srv.close()
-        except OSError:
-            pass
-        self._thread.join(timeout=5)
-        self.drop_clients()
-        try:
-            os.unlink(self.path)
-        except OSError:
-            pass
-        try:
-            os.rmdir(self.dir)
-        except OSError:
-            pass
+    def advertise(self):
+        out = [("wl_seat", 7)] if self.with_seat else []
+        out += [("wl_output", 4)] * len(HEADS)
+        if self.with_xdg_output:
+            out.append(("zxdg_output_manager_v1", 3))
+        return out
 
-    def withdraw_manager(self):
-        """wl_registry.global_remove for the manager, on every live
-        connection -- a compositor withdrawing the protocol mid-session."""
-        with self._lock:
-            regs = list(self._registries)
-        for conn, reg in regs:
-            self._send(conn, reg, 1, struct.pack("<I", self.mgr_name or 0))
+    def new_state(self):
+        return {"seat": None, "mgr": None, "vp": None,
+                "outputs": {}, "xdg": None}
 
-    def drop_clients(self):
-        """Hang up on everyone -- what a compositor restart looks like to a
-        client that was holding a virtual pointer."""
-        with self._lock:
-            socks = list(self._clients)
-        for s in socks:
-            try:
-                s.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                s.close()
-            except OSError:
-                pass
+    def on_bind(self, conn, state, name, iface, version, new_id):
+        if iface == "wl_seat":
+            state["seat"] = new_id
+            self._send(conn, new_id, 0, struct.pack("<I", 3))  # caps
+        elif iface == "wl_output":
+            head = HEADS[self.names[name][1]]
+            state["outputs"][new_id] = head
+            self._output_events(conn, new_id, head)
+        elif iface == "zxdg_output_manager_v1":
+            state["xdg"] = new_id
+        elif iface == self.MANAGER:
+            state["mgr"] = new_id
 
-    # -- the server
-
-    def _serve(self):
-        while not self._stop:
-            try:
-                conn, _ = self.srv.accept()
-            except TimeoutError:
-                continue
-            except OSError:
-                return
-            with self._lock:
-                self._clients.append(conn)
-            self.connections += 1
-            threading.Thread(target=self._client, args=(conn,),
-                             daemon=True).start()
-
-    def _client(self, conn):
-        buf = b""
-        state = {"registry": None, "seat": None, "mgr": None, "vp": None,
-                 "outputs": {}, "xdg": None}
-        try:
-            while not self._stop:
-                data = conn.recv(65536)
-                if not data:
-                    return
-                buf += data
-                while len(buf) >= 8:
-                    oid, sizeop = struct.unpack_from("<II", buf)
-                    size, opcode = sizeop >> 16, sizeop & 0xFFFF
-                    if size < 8 or len(buf) < size:
-                        break
-                    body, buf = buf[8:size], buf[size:]
-                    self._request(conn, state, oid, opcode, body)
-        except OSError:
-            return
-        finally:
-            try:
-                conn.close()
-            except OSError:
-                pass
-
-    # -- one request
-    def _request(self, conn, state, oid, opcode, body):
-        if oid == 1 and opcode == 0:            # wl_display.sync(callback)
-            (cb,) = struct.unpack_from("<I", body)
-            self._send(conn, cb, 0, struct.pack("<I", 0))   # callback.done
-            self._send(conn, 1, 1, struct.pack("<I", cb))   # delete_id
-            return
-        if oid == 1 and opcode == 1:            # wl_display.get_registry
-            (reg,) = struct.unpack_from("<I", body)
-            state["registry"] = reg
-            name = 1
-            if self.with_seat:
-                self._global(conn, reg, name, "wl_seat", 7)
-                name += 1
-            for _head in HEADS:
-                self._global(conn, reg, name, "wl_output", 4)
-                name += 1
-            if self.with_xdg_output:
-                self._global(conn, reg, name, "zxdg_output_manager_v1", 3)
-                name += 1
-            if self.manager_version is not None:
-                self.mgr_name = name
-                self._global(conn, reg, name, vptr.MANAGER,
-                             self.manager_version)
-            with self._lock:
-                self._registries.append((conn, reg))
-            return
-        if oid == state["registry"] and opcode == 0:   # wl_registry.bind
-            name, iface, ver, new_id = _unpack_bind(body)
-            self.binds.append((iface, ver))
-            if iface == "wl_seat":
-                state["seat"] = new_id
-                self._send(conn, new_id, 0, struct.pack("<I", 3))  # caps
-            elif iface == "wl_output":
-                head = HEADS[name - (2 if self.with_seat else 1)]
-                state["outputs"][new_id] = head
-                self._output_events(conn, new_id, head)
-            elif iface == "zxdg_output_manager_v1":
-                state["xdg"] = new_id
-            elif iface == vptr.MANAGER:
-                state["mgr"] = new_id
-            return
+    def on_request(self, conn, state, oid, opcode, body, fds):
         if oid == state["xdg"] and opcode == 1:  # get_xdg_output(id, output)
             new_id, out = struct.unpack_from("<II", body)
             head = state["outputs"].get(out)
@@ -292,38 +164,15 @@ class FakeCompositor:
             self.destroyed += 1
             self.events.append(("destroy",))
 
-    # -- wire helpers
-    def _send(self, conn, oid, opcode, body=b""):
-        msg = struct.pack("<II", oid, ((8 + len(body)) << 16) | opcode) + body
-        try:
-            conn.sendall(msg)
-        except OSError:
-            pass
-
-    def _global(self, conn, reg, name, iface, version):
-        b = iface.encode() + b"\0"
-        body = (struct.pack("<I", name) + struct.pack("<I", len(b)) + b
-                + b"\0" * _pad(len(b)) + struct.pack("<I", version))
-        self._send(conn, reg, 0, body)
-
     def _output_events(self, conn, oid, head):
         _name, lx, ly, _lw, _lh, scale, mw, mh = head
-        make = b"wdotool\0"
-        model = b"fake\0"
         body = (struct.pack("<iiiii", lx, ly, 300, 200, 0)
-                + struct.pack("<I", len(make)) + make + b"\0" * _pad(len(make))
-                + struct.pack("<I", len(model)) + model
-                + b"\0" * _pad(len(model)) + struct.pack("<i", 0))
+                + wl_fake.wstr("wdotool") + wl_fake.wstr("fake")
+                + struct.pack("<i", 0))
         self._send(conn, oid, 0, body)                       # geometry
         # mode(flags=current, width, height, refresh)
         self._send(conn, oid, 1, struct.pack("<Iiii", 1, mw, mh, 60000))
         self._send(conn, oid, 3, struct.pack("<i", scale))   # scale
-
-    def _error(self, conn, oid, code, msg):
-        b = msg.encode() + b"\0"
-        body = (struct.pack("<II", oid, code) + struct.pack("<I", len(b)) + b
-                + b"\0" * _pad(len(b)))
-        self._send(conn, 1, 0, body)
 
     # -- readers used by the tests
     def of(self, *kinds):
@@ -374,34 +223,6 @@ def _over_the_socket(d, req):
         a.close()
 
 
-class RecorderDev:
-    """A uinput device, recording (the same double as test_input_daemon)."""
-
-    def __init__(self):
-        self.events = []
-
-    def key(self, code, down):
-        self.events.append(("KEY", code, 1 if down else 0))
-
-    def emit(self, *a):
-        self.events.append(("EMIT",) + a)
-
-    def syn(self):
-        self.events.append(("SYN",))
-
-    def close(self):
-        pass
-
-
-def abs_report(dev):
-    """(ABS_X, ABS_Y) of the last report a recorder tablet emitted."""
-    vals = {}
-    for ev in dev.events:
-        if ev[0] == "EMIT" and ev[1] == uinput.EV_ABS:
-            vals[ev[2]] = ev[3]
-    return vals[uinput.ABS_X], vals[uinput.ABS_Y]
-
-
 class VptrTest(unittest.TestCase):
     """Base: a fake compositor, and the environment pointed at it."""
 
@@ -409,7 +230,7 @@ class VptrTest(unittest.TestCase):
     comp_kw: dict = {}
 
     def setUp(self):
-        self.comp = FakeCompositor(manager_version=self.manager_version,
+        self.comp = PointerCompositor(manager_version=self.manager_version,
                                    **self.comp_kw)
         self.addCleanup(self.comp.close)
         self._env = {k: os.environ.get(k) for k in
@@ -538,7 +359,7 @@ class TheLayout(VptrTest):
         prefers xdg_output and is right; this pins that it does, by showing
         what the wl_output-only fallback would have said."""
         self.assertEqual(daemon._wayland_bbox(), BBOX)
-        comp = FakeCompositor(with_xdg_output=False)
+        comp = PointerCompositor(with_xdg_output=False)
         self.addCleanup(comp.close)
         os.environ["XDG_RUNTIME_DIR"] = comp.dir
         os.environ["WAYLAND_DISPLAY"] = os.path.basename(comp.path)

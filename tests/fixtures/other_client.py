@@ -7,7 +7,7 @@ import sys
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk                                    # noqa: E402
+from gi.repository import Gtk
 
 w = Gtk.Window(title="OtherClient")
 w.set_default_size(200, 80)

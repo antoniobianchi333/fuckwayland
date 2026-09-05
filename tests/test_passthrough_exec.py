@@ -32,10 +32,10 @@ import unittest
 # not loaded, and it reaches every subprocess a test spawns.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
-FIXTURES = os.path.join(REPO, "tests", "fixtures")
+FIXTURES = os.path.join(ROOT, "tests", "fixtures")
 SHIM = os.path.join(FIXTURES, "fw_shim.py")
 FAKE = os.path.join(FIXTURES, "fake_real_tool.py")
 TOOLS = ("xdotool", "wmctrl", "xprop", "xrandr")
@@ -343,7 +343,7 @@ class Recursion(Tree):
                "open(%r, 'a').write('x')\n"
                "sys.path.insert(0, %r)\n"
                "mod = __import__('wdo' 'tool.cli', fromlist=['main'])\n"
-               "sys.exit(mod.main())\n" % (counter, REPO))
+               "sys.exit(mod.main())\n" % (counter, ROOT))
         with open(path, "w") as f:
             f.write(src)
         os.chmod(path, 0o755)
