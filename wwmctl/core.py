@@ -707,8 +707,7 @@ class Core:
                                     machine,
                                     w.title if w.title is not None else "N/A")
 
-    def list_one_window(self, w: UWindow, show_pid: bool,
-                        show_geometry: bool, show_class: bool) -> int:  # -L
+    def list_one_window(self, w: UWindow, show_pid: bool, show_geometry: bool, show_class: bool) -> int:  # -L
         """1.07+git's `-r <WIN> -L`: the window's own `-l` row. Its machine
         column is sized from that one window (display_window's
         `max_client_machine_len == 0` branch), so nothing is padded."""
@@ -871,8 +870,7 @@ class Core:
             # that knows what its WM calls itself (GNOME: the same string
             # Mutter puts on the X check window) says so
             backend = self.backend()
-            name = getattr(backend, "wm_name", None) \
-                or getattr(backend, "name", None)
+            name = getattr(backend, "wm_name", None) or getattr(backend, "name", None)
         if name is None:
             self.vprint("Cannot get name of the window manager "
                         "(_NET_WM_NAME).\n")
