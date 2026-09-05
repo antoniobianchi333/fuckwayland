@@ -37,6 +37,8 @@ import os
 import pwd
 
 X11_SOCKET_DIR = "/tmp/.X11-unix"
+#: test seam (production value): the per-user runtime directories
+RUN_USER_DIR = "/run/user"
 
 
 def _owner(path: str) -> int | None:
@@ -76,9 +78,9 @@ def runtime_dir_candidates() -> list[tuple[int, str]]:
     target = _sudo_uid()
     dirs = []
     try:
-        for name in os.listdir("/run/user"):
+        for name in os.listdir(RUN_USER_DIR):
             if name.isdigit():
-                dirs.append((int(name), os.path.join("/run/user", name)))
+                dirs.append((int(name), os.path.join(RUN_USER_DIR, name)))
     except OSError:
         pass
     dirs.sort(key=lambda t: (t[0] != target, t[0] < 1000, t[0]))
@@ -102,13 +104,32 @@ def _scan(match) -> tuple[int, str] | None:
 
 
 def find_wayland_socket() -> tuple[int, str, str] | None:
-    """(uid, runtime_dir, socket_path) of the graphical session, or None."""
+    """(uid, runtime_dir, socket_path) of the graphical session, or None.
+
+    $WAYLAND_DISPLAY alone names the socket. It used to be honoured only
+    together with $XDG_RUNTIME_DIR, and the two do not always travel
+    together: under `sudo` XDG_RUNTIME_DIR is root's own (or unset) while
+    WAYLAND_DISPLAY survives, and a display named on the command line
+    (`wxrandr -d wayland-1`, which sets WAYLAND_DISPLAY and nothing else)
+    sets only the one variable. Requiring both dropped the named display on
+    the floor and scanned up whichever socket sorted first instead -- so
+    `sudo wxrandr -d wayland-1` answered about wayland-0. The name is
+    therefore looked for in $XDG_RUNTIME_DIR first (the in-session case,
+    unchanged) and then in the candidate runtime dirs; only a name that
+    exists nowhere falls through to the scan."""
     rd = os.environ.get("XDG_RUNTIME_DIR")
     wd = os.environ.get("WAYLAND_DISPLAY")
-    if rd and wd:
-        sock = wd if wd.startswith("/") else os.path.join(rd, wd)
-        if os.path.exists(sock):
-            return os.stat(sock).st_uid, rd, sock
+    if wd and wd.startswith("/"):
+        uid = _owner(wd)
+        if uid is not None:
+            return uid, rd or os.path.dirname(wd), wd
+    elif wd:
+        dirs = ([rd] if rd else []) + [d for _u, d in runtime_dir_candidates()]
+        for d in dirs:
+            sock = os.path.join(d, wd)
+            uid = _owner(sock)
+            if uid is not None:
+                return uid, d, sock
     hit = _scan(lambda n: n.startswith("wayland-") and not n.endswith(".lock"))
     if hit:
         uid, sock = hit
