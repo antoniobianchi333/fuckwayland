@@ -312,6 +312,16 @@ class ActionTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("xdo_window_property reported an error on window 22\n", err)
 
+    def test_windowstate_last_option_wins_like_xdotool(self):
+        """Two --adds do not set two states: xdotool's cmd_windowstate.c has
+        one action/arg_property pair and overwrites both in every getopt arm,
+        so only the last option is applied. Pinned so a later reader does not
+        `fix` it into a divergence."""
+        _rc, _o, _e, ctx = run(["windowstate", "--add", "FULLSCREEN", "--add", "HIDDEN", "22"])
+        self.assertEqual([c for c in ctx._backend.calls if c[0] == "state"], [("state", 22, "HIDDEN", 1)])
+        _rc, _o, _e, ctx = run(["windowstate", "--add", "FULLSCREEN", "--remove", "HIDDEN", "22"])
+        self.assertEqual([c for c in ctx._backend.calls if c[0] == "state"], [("state", 22, "HIDDEN", 0)])
+
     def test_windowstate_requires_action(self):
         rc, _o, err, _ = run(["windowstate", "22"])
         self.assertEqual(rc, 1)

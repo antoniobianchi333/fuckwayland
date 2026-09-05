@@ -486,11 +486,12 @@ both want scheduling:
    `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` maximizes horizontally only, and
    `--add MAXIMIZED_VERT --remove SHADED` attempts the `SHADED` remove alone. The cause is
    plain in `wdotool/window_cmds.py` `cmd_windowstate()`, whose option loop overwrites
-   `action`/`prop` on every iteration. Whether that is a *defect* or faithful parity is the
-   open question and it cannot be settled on this rig: both goldens carry `xdotool
-   3.20160805.1`, which has no `windowstate` at all, and parity is claimed against
-   4.20260303.1. Settle it against a 4.x binary first; if upstream applies each option, fix
-   the loop, and either way say which in the README, because the current text says nothing.
+   `action`/`prop` on every iteration. **Settled since, and it is parity, not a defect:**
+   xdotool 4.20260303.1's own `cmd_windowstate.c` keeps one `action`/`arg_property` pair
+   and overwrites both in every arm of its `getopt_long_only` switch, so the real tool drops
+   the earlier options too. Nothing to fix; the loop now carries the reason, README's
+   Compatibility section names the quirk beside `windowmove`'s percent-y one, and
+   `tests/test_windows_cmds.py` pins it so nobody `fixes` it into a divergence.
 
 **The second default install** (`noble-gnome-iso`)
 
@@ -701,9 +702,10 @@ infrastructure branch deliberately does not touch, and all three want scheduling
    calls, not anything about the desktop.
 2. **`wdotool windowstate` honours only the last `--add`/`--remove`/`--toggle` on the line** —
    also identical here: `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` gives `66 150 1854 600`,
-   horizontal only. Still unsettled for the same reason (both 24.04 goldens carry `xdotool
-   3.20160805.1`, which has no `windowstate`; parity is claimed against 4.20260303.1), and
-   still needs a 4.x binary to settle it against.
+   horizontal only. Settled against the 4.20260303.1 source rather than a binary, and the
+   answer is that this is faithful: upstream's `cmd_windowstate.c` overwrites its single
+   `action`/`arg_property` pair in every getopt arm, so it keeps the last option too. See
+   the resolution under the 26.04 run above.
 3. **The locked-screen message hides the "extension not installed" one, on the exact path a
    first-time reader takes.** New here, and only a default install can show it. On
    `noble-gnome-iso`, with the extension not yet installed *and* the screen locked after the

@@ -803,10 +803,36 @@ class TestUsLayoutNeverReachesTheNewCode(unittest.TestCase):
             xkbmap.build("anything")
 
 
+class TestOneLayoutDecision(unittest.TestCase):
+    """daemon._layout, keys_cmds.Layout.load and the __keymap diagnostic used
+    to spell the same two questions three ways, and the diagnostic got one of
+    them wrong. They ask xkbmap now."""
+
+    def test_layout_mode_normalizes(self):
+        with env(WDOTOOL_LAYOUT=None):
+            self.assertEqual(xkbmap.layout_mode(), "auto")
+            self.assertEqual(xkbmap.layout_mode("US"), "us")
+            self.assertEqual(xkbmap.layout_mode(" fixed "), "us")
+            self.assertEqual(xkbmap.layout_mode("XKB"), "xkb")
+            self.assertEqual(xkbmap.layout_mode("nonsense"), "auto")
+
+    def test_a_client_layout_flag_outranks_the_environment(self):
+        with env(WDOTOOL_LAYOUT="xkb"):
+            self.assertEqual(xkbmap.layout_mode(), "xkb")
+            self.assertEqual(xkbmap.layout_mode("us"), "us")
+
+    def test_decide_is_the_bypass(self):
+        de, us = text("de"), text("us")
+        self.assertTrue(xkbmap.decide(de, 1, "us"))    # asked for outright
+        self.assertFalse(xkbmap.decide(de, 1, "auto"))  # German is not US
+        self.assertTrue(xkbmap.decide(us, 1, "auto"))   # this one is
+        self.assertFalse(xkbmap.decide(us, 1, "xkb"))   # asked against
+
+
 class TestDiagnosticSubcommand(unittest.TestCase):
     def run_it(self, *args, mode=None):
-        """`__keymap` is a CLI: it sets WDOTOOL_XKB_* for its own process.
-        Keep that inside the test."""
+        """`__keymap` takes --keymap/--group as arguments; the environment it
+        reads as a fallback is set here and nowhere else."""
         out, err = io.StringIO(), io.StringIO()
         with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=None,
                  WDOTOOL_LAYOUT=mode):
@@ -867,6 +893,50 @@ class TestDiagnosticSubcommand(unittest.TestCase):
         rc, out, _ = self.run_it("--keymap", os.path.join(KEYMAPS, "us_de.xkb"),
                                  "--group", "2", "--chars", "z")
         self.assertEqual(rc, 0)
+        self.assertIn("'z': key 21", out)
+
+    def test_layout_us_makes_it_agree_with_what_type_sends(self):
+        """WDOTOOL_LAYOUT=us is a promise that no layout code runs, and the
+        diagnostic used to be the one place that ignored it: on a German
+        keymap it named the reverse map's key 21 for 'z' while `type z` sent
+        the fixed table's key 44. Both say 44 now."""
+        de = os.path.join(KEYMAPS, "de.xkb")
+        rc, out, _ = self.run_it("--keymap", de, "--info", "--chars", "z",
+                                 mode="us")
+        self.assertEqual(rc, 0)
+        self.assertIn("us bypass:     yes -- WDOTOOL_LAYOUT=us asks for it", out)
+        self.assertIn("US bypass is in effect", out)
+        self.assertIn("'z': key 44", out)
+        self.assertNotIn("level shifts", out)   # nothing was reversed at all
+        d = make_daemon()
+        with env(WDOTOOL_XKB_KEYMAP=de, WDOTOOL_XKB_GROUP=None,
+                 WDOTOOL_LAYOUT="us"):
+            d.op_type("z", 0, False)
+        self.assertEqual(taps(d.kb), [(44, 1), (44, 0)])
+
+    def test_the_options_are_arguments_not_exports(self):
+        """--keymap/--group reach fetch() as arguments, so a process that
+        runs the diagnostic does not find its environment rewritten."""
+        out, err = io.StringIO(), io.StringIO()
+        with env(WDOTOOL_XKB_KEYMAP="/somewhere/else", WDOTOOL_XKB_GROUP="3",
+                 WDOTOOL_LAYOUT=None):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cli.main(["wdotool", "__keymap", "--keymap",
+                               os.path.join(KEYMAPS, "us_de.xkb"),
+                               "--group", "2", "--chars", "z"])
+            self.assertEqual((rc, os.environ["WDOTOOL_XKB_KEYMAP"],
+                              os.environ["WDOTOOL_XKB_GROUP"]),
+                             (0, "/somewhere/else", "3"))
+        self.assertIn("'z': key 21", out.getvalue())
+
+    def test_the_keymap_is_reversed_once_for_info_and_chars_together(self):
+        real = xkbmap.reverse
+        calls = []
+        self.addCleanup(setattr, xkbmap, "reverse", real)
+        xkbmap.reverse = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+        rc, out, _ = self.run_it("--keymap", os.path.join(KEYMAPS, "de.xkb"),
+                                 "--info", "--chars", "z")
+        self.assertEqual((rc, len(calls)), (0, 1))
         self.assertIn("'z': key 21", out)
 
     def test_help_and_bad_option(self):

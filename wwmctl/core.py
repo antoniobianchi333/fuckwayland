@@ -34,6 +34,7 @@ import time
 
 from wdotool import backend_detect, session
 from wdotool.backend import warn as _warn
+from wdotool.cnum import atoi as _atoi
 from wdotool.ctx import CmdError
 from wdotool.x11_mini import XUnavailable, hostname
 
@@ -1277,12 +1278,6 @@ def _parse_win_id(s: str) -> int | None:
     if m:
         return int(m.group(1))
     return None
-
-
-def _atoi(s: str) -> int:
-    """C atoi(): leading whitespace + optional sign + digits, else 0."""
-    m = re.match(r"[ \t\n\r\f\v]*([+-]?\d+)", s or "")
-    return int(m.group(1)) if m else 0
 
 
 def _parse_two_uints(s: str):

@@ -6,13 +6,13 @@ command name), raise CmdError to abort the chain.
 """
 
 import math
-import re
 import sys
 import time
 
 from wdotool import backend as _backend
 from wdotool import commands
-from wdotool.cli import ChainAbort
+from wdotool.cli import ChainAbort, _opts
+from wdotool.cnum import atoi as _atoi, strtol as _strtonum
 from wdotool.ctx import CmdError
 
 # ---------------------------------------------------------------------------
@@ -20,71 +20,16 @@ from wdotool.ctx import CmdError
 
 
 def _parse(cmdname, args, usage, shortopts, longopts, shortmap=None):
-    """Parse a command's leading options with cli.py's getopt_long_only clone.
-
-    longopts: [(name, takes_arg), ...]; shortmap maps short chars to the long
-    name used in the returned dict. Returns (opts dict, tokens consumed,
-    help_requested). Mirrors the C loops: a --help seen before any bad option
-    wins; a bad option raises CmdError carrying getopt's message + usage."""
-    from wdotool import cli
-
-    shortmap = shortmap or {}
-
-    def convert(pairs):
-        opts = {}
-        for name, val in pairs:
-            name = shortmap.get(name, name)
-            if name == "help":
-                return opts, True
-            opts[name] = True if val is None else val
-        return opts, False
-
-    try:
-        pairs, i = cli.getopt_long_only(cmdname, args, shortopts, longopts)
-    except cli.GetoptError as e:
-        _opts, want_help = convert(e.opts)
-        if want_help:
-            return {}, len(args), True
-        raise CmdError(f"{e}\n" + usage.rstrip("\n")) from None
-    opts, want_help = convert(pairs)
-    return opts, i, want_help
-
-
-def _atoi(s) -> int:
-    """C atoi: leading whitespace, optional sign, leading digits, else 0."""
-    s = str(s).strip()
-    n = ""
-    for idx, ch in enumerate(s):
-        if ch in "+-" and idx == 0:
-            n += ch
-        elif ch.isdigit():
-            n += ch
-        else:
-            break
-    try:
-        return int(n)
-    except ValueError:
-        return 0
-
-
-_STRTOUL_RE = re.compile(
-    r"[ \t\n\r\f\v]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)")
-
-
-def _strtonum(s) -> int:
-    """C strtoul(s, NULL, 0): optional sign, then 0x-hex / 0-octal / decimal,
-    stopping at the first character that does not fit the base.
-
-    Python's int(s, 0) is a different function and got two cases wrong
-    (B14): it rejects C's octal `0755` (we then fell back to atoi and read
-    755) and accepts `0b101` as binary where strtoul stops at the 'b' and
-    returns 0."""
-    m = _STRTOUL_RE.match(str(s))
-    if not m:
-        return 0
-    sign, digits = m.group(1), m.group(2)
-    base = 16 if digits[:2].lower() == "0x" else 8 if digits.startswith("0") else 10
-    return int(sign + digits, base)
+    """cli._opts with the options as a dict, which is how the input commands
+    read them: longopts is [(name, takes_arg), ...] and shortmap maps short
+    chars to the long name used in the dict. Returns (opts, tokens consumed,
+    help_requested); when help was requested, usage has already been printed
+    and opts is empty."""
+    parsed = _opts(cmdname, args, shortopts, longopts, usage, shortmap)
+    if parsed is None:
+        return {}, len(args), True
+    pairs, i = parsed
+    return {name: True if val is None else val for name, val in pairs}, i, False
 
 
 def _activate_settle(ctx, wid):
@@ -198,7 +143,6 @@ def _key_common(ctx, args, default_name, direction):
         {"c": "clearmodifiers", "d": "delay", "h": "help", "w": "window"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     delay = _strtonum(opts.get("delay", 12))
     repeat = _atoi(opts.get("repeat", 1))
@@ -242,8 +186,7 @@ def _key_common(ctx, args, default_name, direction):
                         raise
                     for _ in range(passes):
                         print(e, file=sys.stderr)
-                        print("Failure converting key sequence '%s' to keycodes"
-                              % seq, file=sys.stderr)
+                        print("Failure converting key sequence '%s' to keycodes" % seq, file=sys.stderr)
                     print(f"xdo_send_keysequence_window reported an error for string '{seq}'",
                           file=sys.stderr)
                     failed += passes
@@ -338,7 +281,6 @@ def cmd_type(ctx, args):
         {"c": "clearmodifiers", "d": "delay", "h": "help", "w": "window"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     delay = _strtonum(opts.get("delay", 12))
     window_arg = opts.get("window")
@@ -381,8 +323,7 @@ def cmd_type(ctx, args):
         if wid is not None:
             _activate_settle(ctx, wid)
         for piece in data:
-            daemon.type_text(piece, delay, clearmods=clearmods,
-                             **_mode_kw(ctx))
+            daemon.type_text(piece, delay, clearmods=clearmods, **_mode_kw(ctx))
     return i + consumed
 
 
@@ -412,7 +353,6 @@ def cmd_click(ctx, args):
         {"c": "clearmodifiers", "w": "window", "h": "help"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     clearmods = bool(opts.get("clearmodifiers"))
     window_arg = opts.get("window")
@@ -421,8 +361,7 @@ def cmd_click(ctx, args):
     delay = _strtonum(opts.get("delay", 100))
     repeat = _atoi(opts.get("repeat", 1))
     if "repeat" in opts and repeat <= 0:
-        raise CmdError(f"Invalid repeat value '{opts['repeat']}' (must be >= 1)\n"
-                       + usage.rstrip("\n"))
+        raise CmdError(f"Invalid repeat value '{opts['repeat']}' (must be >= 1)\n" + usage.rstrip("\n"))
     if i >= len(args):
         raise CmdError(usage.rstrip("\n") + "\nYou specified the wrong number of args.")
     button = _atoi(args[i])
@@ -431,8 +370,7 @@ def cmd_click(ctx, args):
     for wid in _target_windows(ctx, window_arg):
         if wid is not None:
             _activate_settle(ctx, wid)
-        daemon.click(button, repeat, delay, clearmods=clearmods,
-                     **_vkbd_kw(ctx))
+        daemon.click(button, repeat, delay, clearmods=clearmods, **_vkbd_kw(ctx))
     return i + 1
 
 
@@ -451,7 +389,6 @@ def _mouse_updown(ctx, args, default_name, down, noargs_msg):
         {"c": "clearmodifiers", "h": "help", "w": "window"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     if i >= len(args):
         raise CmdError(usage.rstrip("\n") + "\n" + noargs_msg)
@@ -461,8 +398,7 @@ def _mouse_updown(ctx, args, default_name, down, noargs_msg):
     for wid in _target_windows(ctx, opts.get("window")):
         if wid is not None:
             _activate_settle(ctx, wid)
-        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")),
-                      **_vkbd_kw(ctx))
+        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")), **_vkbd_kw(ctx))
     return i + 1
 
 
@@ -484,8 +420,7 @@ _USAGE_MOUSEMOVE = """Usage: %s [options] <x> <y>
 
 def _polar_to_xy(angle, distance, origin_x, origin_y):
     radians = ((360 - angle) + 90) * math.pi / 180
-    return (int(origin_x + math.cos(radians) * distance),
-            int(origin_y + -math.sin(radians) * distance))
+    return (int(origin_x + math.cos(radians) * distance), int(origin_y + -math.sin(radians) * distance))
 
 
 def cmd_mousemove(ctx, args):
@@ -499,7 +434,6 @@ def cmd_mousemove(ctx, args):
          "d": "_delay"},  # short -d parses (and is ignored) like the C code
     )
     if want_help:
-        print(usage, end="")
         return len(args)
 
     if i >= len(args) or (args[i] != "restore" and len(args) - i < 2):
@@ -524,7 +458,7 @@ def cmd_mousemove(ctx, args):
         if wid is None:
             # `mousemove restore` needs this; the move itself does not, so a
             # compositor that cannot be asked must not fail it (_pointer_opt).
-            ctx._last_mouse = _pointer_opt(ctx)  # noqa: SLF001 — restore state
+            ctx._last_mouse = _pointer_opt(ctx)  # restore state
         tx, ty = x, y
         if opts.get("polar"):
             if wid is not None:
@@ -537,8 +471,7 @@ def cmd_mousemove(ctx, args):
         elif wid is not None:
             win = ctx.backend().find(wid)
             tx, ty = win.x + x, win.y + y
-        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")),
-                             **_vkbd_kw(ctx))
+        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")), **_vkbd_kw(ctx))
         # --sync: our injected position is authoritative, nothing to wait for
     return i + consumed
 
@@ -569,7 +502,6 @@ def cmd_mousemove_relative(ctx, args):
         {"c": "clearmodifiers", "p": "polar", "h": "help"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     if len(args) - i < 2:
         raise CmdError(usage.rstrip("\n") + "\nYou specified the wrong number of args (expected 2).")
@@ -586,8 +518,7 @@ def cmd_mousemove_relative(ctx, args):
     # nothing can answer it (sway, no /dev/uinput), the delta still moves the
     # cursor the compositor is holding.
     _pointer_opt(ctx)
-    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")),
-                               **_vkbd_kw(ctx))
+    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")), **_vkbd_kw(ctx))
     return i + 2
 
 
@@ -618,7 +549,6 @@ def cmd_getmouselocation(ctx, args):
         {"h": "help"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     x, y = _pointer(ctx)
     window = _window_under_pointer(ctx, x, y)
@@ -649,8 +579,7 @@ edge-or-corner can be any of:
 The action is any valid xdotool command (chains OK here)
 """
 
-_EDGES = {"left", "top-left", "top", "top-right", "right",
-          "bottom-right", "bottom", "bottom-left"}
+_EDGES = {"left", "top-left", "top", "top-right", "right", "bottom-right", "bottom", "bottom-left"}
 
 
 def cmd_behave_screen_edge(ctx, args):
@@ -662,7 +591,6 @@ def cmd_behave_screen_edge(ctx, args):
         {"h": "help"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     if len(args) - i < 2:
         raise CmdError("Invalid number of arguments (minimum is 2)\n" + usage.rstrip("\n"))

@@ -38,8 +38,7 @@ from wdotool.ctx import CmdError
 
 # Per-euid log path: /tmp is shared, and a root-owned log must not break (or
 # leak into) another user's daemon spawn.
-LOG_PATH = ("/tmp/wdotool-daemon.log" if os.geteuid() == 0
-            else f"/tmp/wdotool-daemon-{os.geteuid()}.log")
+LOG_PATH = "/tmp/wdotool-daemon.log" if os.geteuid() == 0 else f"/tmp/wdotool-daemon-{os.geteuid()}.log"
 FALLBACK_GEOMETRY = (0, 0, 1920, 1080)  # (min_x, min_y, width, height)
 
 # Per-request sanity bounds: one malicious/buggy request must not hold the
@@ -97,8 +96,7 @@ def _mode_field(val, what: str, valid):
         raise RuntimeError(f"invalid {what}: {val!r} (expected a string)")
     mode = val.strip().lower()
     if mode not in valid:
-        raise RuntimeError(
-            f"invalid {what}: {val!r} (valid: " + ", ".join(valid) + ")")
+        raise RuntimeError(f"invalid {what}: {val!r} (valid: " + ", ".join(valid) + ")")
     return mode
 
 
@@ -393,8 +391,7 @@ def _escape_transient_scope():
 def clean_env(env=None) -> dict:
     """The environment a spawned daemon keeps (B10)."""
     src = os.environ if env is None else env
-    out = {k: v for k, v in src.items()
-           if k in _KEEP_ENV or k.startswith("WDOTOOL_")}
+    out = {k: v for k, v in src.items() if k in _KEEP_ENV or k.startswith("WDOTOOL_")}
     if not out.get("PATH"):
         out["PATH"] = _DEFAULT_PATH
     return out
@@ -773,8 +770,7 @@ class _Daemon:
             except vkbd.VkbdError as e:
                 # Forced and impossible: say exactly what was asked for and
                 # what refused it, and do not quietly type through uinput.
-                raise RuntimeError(
-                    f"--vkbd on: cannot use zwp_virtual_keyboard_v1: {e}") from None
+                raise RuntimeError(f"--vkbd on: cannot use zwp_virtual_keyboard_v1: {e}") from None
         # auto: the kernel device unless it cannot be used at all.
         if self._vk is not None and self.down and self._down_virtual:
             # Never change sinks under a held key: a key held on the virtual
@@ -804,8 +800,7 @@ class _Daemon:
             # have to fix. The protocol's reason goes to the daemon log.
             # Its own tag: sharing one with the notice below meant a daemon
             # that started before the compositor never said it had switched.
-            self._xkb_say("vkbd-none",
-                          f"no virtual-keyboard protocol either: {e}")
+            self._xkb_say("vkbd-none", f"no virtual-keyboard protocol either: {e}")
             raise RuntimeError(why) from None
         self._xkb_say("vkbd", VKBD_CHOSE_WARNING % why, warnings)
         return dev, True
@@ -959,9 +954,7 @@ class _Daemon:
             except vptr.VptrError as e:
                 # Forced and impossible: say exactly what was asked for and
                 # what refused it, and do not quietly click through uinput.
-                raise RuntimeError(
-                    f"--vkbd on: cannot use zwlr_virtual_pointer_v1: {e}"
-                ) from None
+                raise RuntimeError(f"--vkbd on: cannot use zwlr_virtual_pointer_v1: {e}") from None
         # auto: the kernel devices unless they cannot be used at all.
         if self._vp is not None and self.btns and self._btns_virtual:
             # Never change sinks under a held button, for the same reason as
@@ -988,8 +981,7 @@ class _Daemon:
             # No kernel device and no protocol: the error the user gets is
             # the kernel device's, unchanged -- that is still the thing they
             # have to fix. The protocol's reason goes to the daemon log.
-            self._xkb_say("vptr-none",
-                          f"no virtual-pointer protocol either: {e}")
+            self._xkb_say("vptr-none", f"no virtual-pointer protocol either: {e}")
             raise RuntimeError(why) from None
         self._xkb_say("vptr", VPTR_CHOSE_WARNING % why, warnings)
         return vp, True
@@ -1095,8 +1087,7 @@ class _Daemon:
         self.px, self.py = x, y
         self.pos_known = True
 
-    _REL_ENV = {"abs": True, "absolute": True, "warp": True,
-                "rel": False, "relative": False}
+    _REL_ENV = {"abs": True, "absolute": True, "warp": True, "rel": False, "relative": False}
 
     def _rel_absolute(self, virtual: bool = False) -> bool:
         """Should a relative move be emitted as an absolute warp? (B1)
@@ -1121,8 +1112,7 @@ class _Daemon:
         here, and relative motion has the property a warp cannot have: it
         needs no position model, so it is right even on the first command of
         a daemon that has never been told where the cursor is."""
-        forced = self._REL_ENV.get(
-            os.environ.get("WDOTOOL_REL_MODE", "").strip().lower())
+        forced = self._REL_ENV.get(os.environ.get("WDOTOOL_REL_MODE", "").strip().lower())
         if forced is not None:
             return forced
         if virtual:
@@ -1291,16 +1281,11 @@ class _Daemon:
         compositor, an unreadable or unparsable keymap, a keymap with no
         typable character. The old path is the floor, never a traceback.
         """
-        # `forced` is the client's --layout, which outranks the environment:
-        # a command line is the more specific statement of intent, and it is
-        # the only one that can reach a daemon spawned with a different one.
-        mode = (forced or os.environ.get("WDOTOOL_LAYOUT")
-                or "auto").strip().lower()
-        if mode in ("us", "fixed"):
+        mode = xkbmap.layout_mode(forced)
+        if mode == "us":
             # Nothing is read, nothing is parsed and the bypass check itself
             # is skipped: --layout us is a promise that no layout code runs.
             return None
-        force = mode == "xkb"
         now = time.monotonic()
         if now < self._xkb_backoff:
             self._xkb_warn_degraded(warnings)
@@ -1309,8 +1294,7 @@ class _Daemon:
             snap = xkbmap.fetch(mods_wait=self._xkb_mods_wait)
         except xkbmap.XkbError as e:
             self._xkb_backoff = now + 5.0
-            self._xkb_fell_back(f"cannot read the compositor's keymap ({e})",
-                                "read", warnings)
+            self._xkb_fell_back(f"cannot read the compositor's keymap ({e})", "read", warnings)
             return None
         except Exception as e:  # a bug in the new code must not break typing
             self._xkb_backoff = now + 60.0
@@ -1323,8 +1307,7 @@ class _Daemon:
             # on for ever on the commonest GNOME session there is, whose two
             # groups are the same `us` twice -- +87 ms on every command, B5.)
             self._xkb_mods_wait = 0.0
-        key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(),
-               snap.group)
+        key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(), snap.group)
         if self._layout_cache is not None and self._layout_cache[0] == key:
             self._xkb_warn_degraded(warnings)
             return self._layout_cache[1]
@@ -1332,18 +1315,16 @@ class _Daemon:
         rmap = None
         bypassed = False
         try:
-            if not force and xkbmap.active_group_is_plain_us(snap.text, snap.group):
+            if xkbmap.decide(snap.text, snap.group, mode):
                 bypassed = True  # THE BYPASS: nothing below this line runs
             else:
                 rmap = xkbmap.build(snap.text, snap.group)
         except xkbmap.XkbError as e:
             rmap = None
-            self._xkb_fell_back(f"cannot use the compositor's keymap ({e})",
-                                "build", warnings)
+            self._xkb_fell_back(f"cannot use the compositor's keymap ({e})", "build", warnings)
         except Exception as e:
             rmap = None
-            self._xkb_fell_back(f"keymap conversion failed ({e!r})",
-                                "build", warnings)
+            self._xkb_fell_back(f"keymap conversion failed ({e!r})", "build", warnings)
         try:
             if not snap.group_known and (bypassed or rmap is not None):
                 # Which layout is active was a guess. Say so on the bypass
@@ -1351,8 +1332,7 @@ class _Daemon:
                 # precisely the one that types the wrong characters, and it
                 # is the bypass that takes it (B1). Once per layout state,
                 # so a switch is announced again.
-                name = (rmap.name if rmap is not None
-                        else xkbmap.group_name(snap.text, snap.group))
+                name = rmap.name if rmap is not None else xkbmap.group_name(snap.text, snap.group)
                 self._xkb_say_group(
                     key,
                     "the compositor does not say which keyboard layout is "
@@ -1463,8 +1443,7 @@ class _Daemon:
                 out.add(os.path.join(keystate.INPUT_DIR, name))
         return out
 
-    def _clear_mods(self, warnings=None, session=None, dev=None,
-                    vkbd_path=False) -> set:
+    def _clear_mods(self, warnings=None, session=None, dev=None, vkbd_path=False) -> set:
         """Release the modifier keys; return the ones to press back afterwards.
 
         That set is what *this daemon* holds. A modifier on another keyboard
@@ -1535,8 +1514,7 @@ class _Daemon:
         held = self._foreign_mods()
         if not held:
             return       # nothing held, or nothing readable: nothing to say
-        msg = FOREIGN_MODS_WARNING % ", ".join(
-            _MOD_LABELS[c] for c in keymap.MODIFIER_KEYCODES if c in held)
+        msg = FOREIGN_MODS_WARNING % ", ".join(_MOD_LABELS[c] for c in keymap.MODIFIER_KEYCODES if c in held)
         if not self._keystate_logged:
             self._keystate_logged = True
             print(msg, file=sys.stderr, flush=True)
@@ -1548,8 +1526,7 @@ class _Daemon:
             warnings.append(msg)
 
     @contextlib.contextmanager
-    def _mods_cleared(self, on, warnings, session, dev=None, vkbd_path=False,
-                      mode=None):
+    def _mods_cleared(self, on, warnings, session, dev=None, vkbd_path=False, mode=None):
         """clear -> inject -> restore without letting go of the injection
         lock. The ops that carry `clearmods` themselves (`type`, `key`) do it
         inline; this is for the ones handle() wraps. Doing it as three
@@ -1649,9 +1626,7 @@ class _Daemon:
         rather than obeyed into garbage."""
         if not vkbd_path:
             return self._layout(warnings, layout_mode)
-        mode = (layout_mode or os.environ.get("WDOTOOL_LAYOUT")
-                or "auto").strip().lower()
-        if mode == "xkb":
+        if xkbmap.layout_mode(layout_mode) == "xkb":
             self._xkb_say(
                 "vkbd-xkb",
                 "layout 'xkb' does not apply to the virtual-keyboard path: "
@@ -1719,8 +1694,7 @@ class _Daemon:
                     # the base letter, which is how a French keyboard types "ô".
                     seq = layout.lookup_char(ch)
                 if not seq:
-                    warnings.append(
-                        f"Can't type character '{ch}' (not on the {lname} layout). Skipping.")
+                    warnings.append(f"Can't type character '{ch}' (not on the {lname} layout). Skipping.")
                     continue
                 for code, mask in seq:
                     mods = [m for m in self._mod_keycodes(mask, layout)
@@ -1827,8 +1801,7 @@ class _Daemon:
                 # B6: never answer "0,0" for a daemon that has no pointer.
                 if not self.pos_known:
                     self._no_pointer_yet()
-                return {"ok": True, "x": self.px, "y": self.py,
-                        "known": self.pos_known}
+                return {"ok": True, "x": self.px, "y": self.py, "known": self.pos_known}
             elif op == "geometry":
                 gx, gy, w, h = self.geometry(warnings)
                 return {"ok": True, "x": gx, "y": gy, "w": w, "h": h,
@@ -1898,18 +1871,15 @@ def daemon_main() -> int:
     # O_NOFOLLOW and a message rather than a traceback: the lock file lives
     # beside the socket, and a socket directory can be somebody else's.
     try:
-        lock_fd = os.open(path + ".lock",
-                          os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        lock_fd = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     except OSError as e:
-        print(f"wdotool daemon: cannot open {path}.lock: {e}",
-              file=sys.stderr, flush=True)
+        print(f"wdotool daemon: cannot open {path}.lock: {e}", file=sys.stderr, flush=True)
         return 1
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         os.close(lock_fd)
-        print(f"wdotool daemon already running/starting on {path}",
-              file=sys.stderr, flush=True)
+        print(f"wdotool daemon already running/starting on {path}", file=sys.stderr, flush=True)
         return 0
 
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -1936,8 +1906,7 @@ def daemon_main() -> int:
     try:
         srv.bind(path)
     except OSError as e:
-        print(f"wdotool daemon: cannot bind {path}: {e}",
-              file=sys.stderr, flush=True)
+        print(f"wdotool daemon: cannot bind {path}: {e}", file=sys.stderr, flush=True)
         return 1
     finally:
         os.umask(old_umask)
@@ -1989,8 +1958,7 @@ class DaemonClient:
         """uid at the other end of a connected AF_UNIX socket, or None when
         the kernel will not say (never on Linux)."""
         try:
-            data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                   struct.calcsize("3i"))
+            data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
             return struct.unpack("3i", data)[1]
         except (OSError, AttributeError, struct.error):
             return None
@@ -2038,14 +2006,12 @@ class DaemonClient:
                 import wdotool as _pkg
                 # The parent of the package directory; for a zipapp this is
                 # the .pyz itself, which is a valid PYTHONPATH entry too.
-                parent = os.path.dirname(
-                    os.path.dirname(os.path.abspath(_pkg.__file__)))
-            except Exception:  # noqa: BLE001 -- diagnostics only
+                parent = os.path.dirname(os.path.dirname(os.path.abspath(_pkg.__file__)))
+            except Exception:  # diagnostics only
                 parent = ""
             if parent:
                 menv["PYTHONPATH"] = parent
-            plan.append((sys.executable,
-                         [sys.executable, "-m", "wdotool", "__daemon"], menv))
+            plan.append((sys.executable, [sys.executable, "-m", "wdotool", "__daemon"], menv))
         return plan
 
     @staticmethod
@@ -2073,9 +2039,7 @@ class DaemonClient:
                 # O_NOFOLLOW: never append through a planted symlink in
                 # /tmp -- and never into a regular file somebody else made
                 # there either (the log carries session diagnostics).
-                log = os.open(LOG_PATH,
-                              os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                              0o644)
+                log = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o644)
                 if os.fstat(log).st_uid != os.geteuid():
                     os.close(log)
                     raise OSError("log file is not ours")
@@ -2177,20 +2141,14 @@ class DaemonClient:
     # `vkbd_mode` is --vkbd, which selects the pointer path as well as the
     # keyboard one; sent only when the flag was given, so an absent flag
     # leaves the request byte-identical to what an older client sent.
-    def mousemove_abs(self, x: int, y: int, clearmods: bool = False,
-                      vkbd_mode: str | None = None):
-        self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods,
-                  **self._modes(None, vkbd_mode))
+    def mousemove_abs(self, x: int, y: int, clearmods: bool = False, vkbd_mode: str | None = None):
+        self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods, **self._modes(None, vkbd_mode))
 
-    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False,
-                      vkbd_mode: str | None = None):
-        self._rpc(op="mousemove_rel", dx=dx, dy=dy, clearmods=clearmods,
-                  **self._modes(None, vkbd_mode))
+    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False, vkbd_mode: str | None = None):
+        self._rpc(op="mousemove_rel", dx=dx, dy=dy, clearmods=clearmods, **self._modes(None, vkbd_mode))
 
-    def button(self, btn: int, down: bool, clearmods: bool = False,
-               vkbd_mode: str | None = None):
-        self._rpc(op="button", btn=btn, down=down, clearmods=clearmods,
-                  **self._modes(None, vkbd_mode))
+    def button(self, btn: int, down: bool, clearmods: bool = False, vkbd_mode: str | None = None):
+        self._rpc(op="button", btn=btn, down=down, clearmods=clearmods, **self._modes(None, vkbd_mode))
 
     def click(self, btn: int, repeat: int, delay_ms: int,
               clearmods: bool = False, vkbd_mode: str | None = None):

@@ -2,48 +2,13 @@
 cmd_get_display_geometry.c)."""
 
 import math
-import re
 import subprocess
 import sys
 import time
 
-from wdotool.cli import ChainAbort, GetoptError, getopt_long_only
+from wdotool.cli import ChainAbort, _opts
+from wdotool.cnum import atof as _atof, atoi as _atoi
 from wdotool.ctx import CmdError, NoSessionError
-
-_ATOI_RE = re.compile(r"[ \t\n\r\f\v]*([+-]?\d+)")
-_ATOF_RE = re.compile(
-    r"[ \t\n\r\f\v]*[+-]?(?:0[xX][0-9a-fA-F]*(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?\d+)?"
-    r"|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
-    r"|[iI][nN][fF](?:[iI][nN][iI][tT][yY])?|[nN][aA][nN])"
-)
-
-
-def _atoi(s: str) -> int:
-    m = _ATOI_RE.match(s or "")
-    return int(m.group(1)) if m else 0
-
-
-def _atof(s: str) -> float:
-    """C atof(): parse a leading double (decimal, exponent, or hex float),
-    0.0 when nothing parses."""
-    m = _ATOF_RE.match(s or "")
-    if not m:
-        return 0.0
-    t = m.group().strip()
-    try:
-        return float.fromhex(t) if re.match(r"[+-]?0[xX]", t) else float(t)
-    except ValueError:
-        return 0.0
-    except OverflowError:
-        # C strtod() saturates to +-HUGE_VAL and sets ERANGE; only the hex
-        # spelling gets here, because float("1e400") already answers inf.
-        # `sleep 0x1p1024` used to end in "hexadecimal value too large to
-        # represent as a float" where the oracle returns 0 at once.
-        return -math.inf if t.startswith("-") else math.inf
-
-
-def _help_requested(opts) -> bool:
-    return any(name in ("h", "help") for name, _ in opts)
 
 
 def cmd_exec(ctx, args):
@@ -60,25 +25,20 @@ def cmd_exec(ctx, args):
         "                    for continuing with more xdotool commands.\n"
         "\n"
         "Unless --args OR --terminator is specified, the exec command is assumed\n"
-        "to be the remainder of the command line." % cmd
+        "to be the remainder of the command line.\n" % cmd
     )
-    try:
-        opts, nopts = getopt_long_only(
-            cmd, args, "h",
-            [("help", False), ("sync", False), ("args", True), ("terminator", True)],
-        )
-    except GetoptError as e:
-        if _help_requested(e.opts):
-            print(usage)
-            return len(args)
-        raise CmdError("%s\n%s" % (e, usage)) from None
+    parsed = _opts(
+        cmd, args, "h",
+        [("help", False), ("sync", False), ("args", True), ("terminator", True)],
+        usage,
+    )
+    if parsed is None:
+        return len(args)
+    opts, nopts = parsed
 
     opsync, arity, terminator = False, -1, None
     for name, val in opts:
-        if name in ("h", "help"):
-            print(usage)
-            return len(args)
-        elif name == "sync":
+        if name == "sync":
             opsync = True
         elif name == "args":
             arity = _atoi(val)
@@ -87,13 +47,11 @@ def cmd_exec(ctx, args):
 
     rest = args[nopts:]
     if not rest:
-        raise CmdError("No arguments given.\n%s" % usage)
+        raise CmdError("No arguments given.\n%s" % usage.rstrip("\n"))
     if arity > 0 and terminator is not None:
         raise CmdError("Don't use both --terminator and --args.")
     if len(rest) < arity:
-        raise CmdError(
-            "You said '--args %d' but only gave %d arguments." % (arity, len(rest))
-        )
+        raise CmdError("You said '--args %d' but only gave %d arguments." % (arity, len(rest)))
 
     command: list[str] = []
     command_count = 0
@@ -130,21 +88,15 @@ def cmd_sleep(ctx, args):
     cmd = getattr(ctx, "cmd_name", "sleep")
     usage = (
         "Usage: %s seconds\n"
-        "Sleep a given number of seconds. Fractions of seconds are valid." % cmd
+        "Sleep a given number of seconds. Fractions of seconds are valid.\n" % cmd
     )
-    try:
-        opts, nopts = getopt_long_only(cmd, args, "h", [("help", False)])
-    except GetoptError as e:
-        if _help_requested(e.opts):
-            print(usage)
-            return len(args)
-        raise CmdError("%s\n%s" % (e, usage)) from None
-    if _help_requested(opts):
-        print(usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
+    if parsed is None:
         return len(args)
+    _opt, nopts = parsed
     rest = args[nopts:]
     if not rest:
-        raise CmdError("No arguments given.\n%s" % usage)
+        raise CmdError("No arguments given.\n%s" % usage.rstrip("\n"))
     # NaN passes straight through max() and inf overflows time_t: both used
     # to leave a traceback where the real tool sleeps for no time at all.
     secs = _atof(rest[0])
@@ -166,22 +118,14 @@ def cmd_sleep(ctx, args):
 
 def cmd_getdisplaygeometry(ctx, args):
     cmd = getattr(ctx, "cmd_name", "getdisplaygeometry")
-    usage = "Usage: %s" % cmd
-    try:
-        opts, nopts = getopt_long_only(
-            cmd, args, "h", [("help", False), ("screen", True), ("shell", False)]
-        )
-    except GetoptError as e:
-        if _help_requested(e.opts):
-            print(usage)
-            return len(args)
-        raise CmdError("%s\n%s" % (e, usage)) from None
+    usage = "Usage: %s\n" % cmd
+    parsed = _opts(cmd, args, "h", [("help", False), ("screen", True), ("shell", False)], usage)
+    if parsed is None:
+        return len(args)
+    opts, nopts = parsed
     shell = False
     for name, _val in opts:
-        if name in ("h", "help"):
-            print(usage)
-            return len(args)
-        elif name == "screen":
+        if name == "screen":
             pass  # single logical screen on Wayland; accepted and ignored
         elif name == "shell":
             shell = True

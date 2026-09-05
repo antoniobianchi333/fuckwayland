@@ -9,61 +9,16 @@ import sys
 import time
 
 from wdotool import commands
-from wdotool.cli import ChainAbort, GetoptError, getopt_long_only
+from wdotool.cli import ChainAbort, GetoptError, _opts, getopt_long_only
+from wdotool.cnum import atoi as _atoi, strtol as _strtol
 from wdotool.ctx import CmdError, SoftCmdError
 
 _SEE_STACK = "If no window is given, %1 is used. See WINDOW STACK in xdotool(1)\n"
-
-_INT_RE = re.compile(r"[ \t\n\r\f\v]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|\d+)")
-
-
-def _strtol(s: str) -> int:
-    """C strtol(s, NULL, 0): parse a leading integer (dec/hex/octal), 0 if none."""
-    m = _INT_RE.match(s or "")
-    if not m:
-        return 0
-    sign, digits = m.group(1), m.group(2)
-    base = 16 if digits[:2].lower() == "0x" else 8 if digits.startswith("0") else 10
-    return int(sign + digits, base)
-
-
-def _atoi(s: str) -> int:
-    m = re.match(r"[ \t\n\r\f\v]*([+-]?\d+)", s or "")
-    return int(m.group(1)) if m else 0
 
 
 def _out(line: str):
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
-
-
-def _opts(ctx, args, shortopts, longopts, usage, shortmap=None,
-          invalid_usage=False):
-    """Leading-option parse via cli.getopt_long_only. Returns (opts, nopts)
-    with short chars canonicalized through shortmap, or None after printing
-    usage for --help (caller returns len(args)). Bad options raise CmdError
-    carrying getopt's message + usage, like the C default: branches.
-
-    `invalid_usage` adds the extra "Invalid usage" line that cmd_search.c --
-    alone among the commands -- prints between the two (B14)."""
-    cmd = getattr(ctx, "cmd_name", "?")
-    shortmap = dict(shortmap or ())
-    shortmap.setdefault("h", "help")
-    try:
-        raw, nopts = getopt_long_only(cmd, args, shortopts, longopts)
-    except GetoptError as e:
-        if any(shortmap.get(n, n) == "help" for n, _ in e.opts):
-            sys.stdout.write(usage)
-            sys.stdout.flush()
-            return None
-        head = "%s\nInvalid usage" % e if invalid_usage else str(e)
-        raise CmdError("%s\n%s" % (head, usage.rstrip("\n"))) from None
-    opts = [(shortmap.get(n, n), v) for n, v in raw]
-    if any(n == "help" for n, _ in opts):
-        sys.stdout.write(usage)
-        sys.stdout.flush()
-        return None
-    return opts, nopts
 
 
 def _window_arg(ctx, rest, min_args, usage):
@@ -134,7 +89,7 @@ def cmd_search(ctx, args):
         "If none of --name, --classname, --class, or --role are specified, the \n"
         "defaults are: --name --classname --class --role\n" % cmd
     )
-    parsed = _opts(ctx, args, "h", _SEARCH_LONGOPTS, usage, invalid_usage=True)
+    parsed = _opts(cmd, args, "h", _SEARCH_LONGOPTS, usage, invalid_usage=True)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
@@ -197,9 +152,7 @@ def cmd_search(ctx, args):
         pattern = rest[0]
         consumed += 1
         if not (want_name or want_class or want_classname or want_role):
-            sys.stderr.write(
-                "Defaulting to search window name, class, classname, and role\n"
-            )
+            sys.stderr.write("Defaulting to search window name, class, classname, and role\n")
             want_name = want_class = want_classname = want_role = True
 
     rx = None
@@ -211,9 +164,7 @@ def cmd_search(ctx, args):
             # re.compile can also raise RecursionError (deeply nested groups)
             # and OverflowError (huge repetition counts); C regcomp fails
             # gracefully on those, so treat them all as a bad regex.
-            sys.stderr.write(
-                "Failed to compile regex: '%s'; error %s\n" % (pattern, e)
-            )
+            sys.stderr.write("Failed to compile regex: '%s'; error %s\n" % (pattern, e))
             rx_broken = True
 
     def matches(w):
@@ -241,8 +192,7 @@ def cmd_search(ctx, args):
                 # "myinst" like it is under X11 (B4). Native Wayland
                 # toplevels have no instance, so they keep matching their
                 # app_id and --class/--classname stay equivalent there.
-                conds.append(
-                    rx.search(w.instance or w.class_ or "") is not None)
+                conds.append(rx.search(w.instance or w.class_ or "") is not None)
             if want_role:
                 # Window roles do not exist on Wayland; match against ""
                 # exactly like libxdo does for a window with no role set.
@@ -286,7 +236,7 @@ def cmd_search(ctx, args):
 def cmd_selectwindow(ctx, args):
     cmd = getattr(ctx, "cmd_name", "selectwindow")
     usage = "Usage: %s\n" % cmd
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -307,7 +257,7 @@ def _focused_window(ctx, errmsg):
 def cmd_getactivewindow(ctx, args):
     cmd = getattr(ctx, "cmd_name", "getactivewindow")
     usage = "Usage: %s\n" % cmd
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -326,7 +276,7 @@ def cmd_getwindowfocus(ctx, args):
         "         top-level window. The default is to find the top-level window\n"
         "         that has focus.\n" % cmd
     )
-    parsed = _opts(ctx, args, "fh", [("help", False)], usage)
+    parsed = _opts(cmd, args, "fh", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed  # -f is accepted; all Wayland toplevels are "sane"
@@ -340,7 +290,7 @@ def cmd_getwindowfocus(ctx, args):
 def cmd_getwindowname(ctx, args):
     cmd = getattr(ctx, "cmd_name", "getwindowname")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -353,7 +303,7 @@ def cmd_getwindowname(ctx, args):
 def cmd_getwindowclassname(ctx, args):
     cmd = getattr(ctx, "cmd_name", "getwindowclassname")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -366,7 +316,7 @@ def cmd_getwindowclassname(ctx, args):
 def cmd_getwindowpid(ctx, args):
     cmd = getattr(ctx, "cmd_name", "getwindowpid")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -387,10 +337,7 @@ def cmd_getwindowgeometry(ctx, args):
         "--prefix STR - use prefix for shell variables names (max 16 chars) \n"
         "%s" % (cmd, _SEE_STACK)
     )
-    parsed = _opts(
-        ctx, args, "h",
-        [("help", False), ("shell", False), ("prefix", True)], usage,
-    )
+    parsed = _opts(cmd, args, "h", [("help", False), ("shell", False), ("prefix", True)], usage)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
@@ -454,8 +401,7 @@ def _wait_until(pred, what, interval=0.03, timeout=None):
     deadline = None if limit <= 0 else time.monotonic() + limit
     while not pred():
         if deadline is not None and time.monotonic() >= deadline:
-            raise CmdError("wdotool: gave up waiting for %s after %gs"
-                           % (what, limit))
+            raise CmdError("wdotool: gave up waiting for %s after %gs" % (what, limit))
         time.sleep(interval)
 
 
@@ -465,12 +411,11 @@ def _is_mapped(ctx, wid) -> bool:
     return ctx.backend().is_mapped(wid)
 
 
-def _simple_action(ctx, args, usage_body, act, sync_pred=None,
-                   has_sync=False, sync_what="%d"):
+def _simple_action(ctx, args, usage_body, act, sync_pred=None, has_sync=False, sync_what="%d"):
     """Shared skeleton for [options] [window=%1] action commands."""
     usage = usage_body
     longopts = [("help", False)] + ([("sync", False)] if has_sync else [])
-    parsed = _opts(ctx, args, "h", longopts, usage)
+    parsed = _opts(getattr(ctx, "cmd_name", "?"), args, "h", longopts, usage)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
@@ -515,15 +460,13 @@ def cmd_windowfocus(ctx, args):
 def cmd_windowraise(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowraise")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, usage,
-                          lambda c, wid: c.backend().raise_(wid))
+    return _simple_action(ctx, args, usage, lambda c, wid: c.backend().raise_(wid))
 
 
 def cmd_windowlower(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowlower")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, usage,
-                          lambda c, wid: c.backend().lower(wid))
+    return _simple_action(ctx, args, usage, lambda c, wid: c.backend().lower(wid))
 
 
 def cmd_windowmap(ctx, args):
@@ -574,23 +517,20 @@ def cmd_windowminimize(ctx, args):
 def cmd_windowclose(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowclose")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, usage,
-                          lambda c, wid: c.backend().close(wid))
+    return _simple_action(ctx, args, usage, lambda c, wid: c.backend().close(wid))
 
 
 def cmd_windowquit(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowquit")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
     # Wayland has only one way to close a window: a polite close request.
-    return _simple_action(ctx, args, usage,
-                          lambda c, wid: c.backend().close(wid))
+    return _simple_action(ctx, args, usage, lambda c, wid: c.backend().close(wid))
 
 
 def cmd_windowkill(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowkill")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, usage,
-                          lambda c, wid: c.backend().kill(wid))
+    return _simple_action(ctx, args, usage, lambda c, wid: c.backend().kill(wid))
 
 
 def cmd_windowreparent(ctx, args):
@@ -634,10 +574,7 @@ def cmd_windowmove(ctx, args):
         "coordinate will be used. This is useful for moving the window along\n"
         "only one axis.\n" % cmd
     )
-    parsed = _opts(
-        ctx, args, "h",
-        [("help", False), ("sync", False), ("relative", False)], usage,
-    )
+    parsed = _opts(cmd, args, "h", [("help", False), ("sync", False), ("relative", False)], usage)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
@@ -682,8 +619,7 @@ def cmd_windowmove(ctx, args):
             ctx.backend().move_window(wid, tx, ty)
         except CmdError as e:
             sys.stderr.write("%s\n" % e)
-            msg = ("xdo_move_window reported an error while moving window %d"
-                   % wid)
+            msg = ("xdo_move_window reported an error while moving window %d" % wid)
             sys.stderr.write("%s\n" % msg)
             if not isinstance(e, SoftCmdError):
                 # A stale window id, a KWin script that failed, a compositor
@@ -695,10 +631,7 @@ def cmd_windowmove(ctx, args):
         if opsync:
             def moved():
                 w2 = ctx.backend().find(wid)
-                return not (
-                    ox == w2.x and oy == w2.y
-                    and abs(x - w2.x) > 10 and abs(y - w2.y) > 50
-                )
+                return not (ox == w2.x and oy == w2.y and abs(x - w2.x) > 10 and abs(y - w2.y) > 50)
             _wait_until(moved, "window %d to move" % wid)
     return nopts + used + 2
 
@@ -727,7 +660,7 @@ def cmd_windowsize(ctx, args):
         "--sync      - only exit once the window has resized\n" % (cmd, _SEE_STACK)
     )
     parsed = _opts(
-        ctx, args, "uh",
+        cmd, args, "uh",
         [("usehints", False), ("help", False), ("sync", False)], usage,
         shortmap={"u": "usehints"},
     )
@@ -811,13 +744,20 @@ def cmd_windowstate(ctx, args):
         % (cmd, _SEE_STACK)
     )
     parsed = _opts(
-        ctx, args, "ha:r:t:",
+        cmd, args, "ha:r:t:",
         [("add", True), ("remove", True), ("toggle", True), ("help", False)],
         usage, shortmap={"a": "add", "r": "remove", "t": "toggle"},
     )
     if parsed is None:
         return len(args)
     opts, nopts = parsed
+    # The last --add/--remove/--toggle on the line wins, and that is parity,
+    # not an oversight: xdotool's own cmd_windowstate.c keeps a single
+    # action/arg_property pair and its getopt_long_only switch overwrites both
+    # in every arm, so `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` maximizes
+    # horizontally only there too (read from 4.20260303.1, the release this
+    # tree claims parity against). Applying each option would be a nicer
+    # command and a different one; README says so under Compatibility.
     action = None
     prop = None
     for name, val in opts:
@@ -849,9 +789,7 @@ def cmd_windowstate(ctx, args):
         except CmdError as e:
             has_error = True
             sys.stderr.write("%s\n" % e)
-            sys.stderr.write(
-                "xdo_window_property reported an error on window %d\n" % wid
-            )
+            sys.stderr.write("xdo_window_property reported an error on window %d\n" % wid)
     if has_error:
         raise ChainAbort(1)
     return nopts + used
@@ -872,7 +810,7 @@ def cmd_set_window(ctx, args):
         "  1 sets the urgency flag, 0 removes it.\n" % cmd
     )
     parsed = _opts(
-        ctx, args, "hn:i:r:C:N:u:",
+        cmd, args, "hn:i:r:C:N:u:",
         [("name", True), ("icon-name", True), ("role", True), ("class", True),
          ("classname", True), ("overrideredirect", True), ("urgency", True),
          ("help", False)],
@@ -910,13 +848,12 @@ def cmd_behave(ctx, args):
     # (behave_screen_edge has done it this way all along).
     cmd = getattr(ctx, "cmd_name", "behave")
     usage = _USAGE_BEHAVE % cmd
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
     if len(args) - nopts < 3:
-        raise CmdError("Invalid number of arguments (minimum is 3)\n"
-                       + usage.rstrip("\n"))
+        raise CmdError("Invalid number of arguments (minimum is 3)\n" + usage.rstrip("\n"))
     raise CmdError(
         "behave is not supported on Wayland: compositors do not expose "
         "per-window enter/leave/focus event taps to clients"
