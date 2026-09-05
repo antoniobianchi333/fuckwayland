@@ -346,7 +346,8 @@ if [ -n "$kvm_ok" ] && [ -n "$tools_ok" ] && [ -n "$qemu_ok" ] && [ "$todo_n" = 
             note "    cd $VMIMAGES && curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
             note "                                          # 0.6 GB, the base of the noble-* flavors; nothing builds without it" ;;
     esac
-    note "    $HERE/vmctl build noble-gnome$build_args         # first golden image, about 7 minutes"
+    note "    $HERE/vmctl build noble-gnome$build_args         # the first golden image"
+    note "                                          # 6.6 min at 4 vCPU / 6 GB, 17 min at 2 vCPU / 3 GB"
     if [ -n "$inst_args" ]; then
         note "    SELFTEST_VM_ARGS='${inst_args# }' $HERE/selftest.sh noble-gnome"
         note "                                          # boots it with 3 heads and checks the rig end to end"
