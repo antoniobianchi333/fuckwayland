@@ -1,20 +1,20 @@
 # Six tools that should not exist
 
-There is a four-line script on a great many machines. Find the terminal, raise it,
+There is a four-line script on a lot of machines. Find the terminal, raise it,
 type the command, press Return. It has worked since 2007, which is when `xdotool`
-shipped. Then the session underneath it becomes a Wayland session, and the script
-prints nothing, because `xdotool` has quietly stopped being a program that does
-anything.
+was first released. Then the session underneath it becomes a Wayland session, and the
+script prints nothing, because `xdotool` no longer does anything at all, and it does
+not say so.
 
-Go looking and the first thing you find is that this is not news to anybody, least of
-all to Jordan Sissel, who wrote xdotool. His post
+Go looking and the first thing you find is that this is already well known. Jordan
+Sissel, who wrote xdotool, knows it better than anyone. His post
 [xdotool and exploring Wayland fragmentation](https://www.semicomplete.com/blog/xdotool-and-exploring-wayland-fragmentation/)
-is the one everybody links, and the reason it stings is that it is not a rant. It is
-the maintainer of the tool doing the survey honestly and coming back with nothing:
+is the one everybody links to, and it is discouraging precisely because it is not a
+rant. It is the maintainer of the tool doing an honest survey and finding nothing:
 
 > Wayland comes along and eliminates *everything* xdotool can do.
 
-and then, further down, the sentence I kept coming back to:
+and then, further down, the sentence I think about most:
 
 > I don't mind what the protocol is, but I sure would love to have *any* protocol that
 > does what I need.
@@ -25,27 +25,26 @@ there. `wlrctl` for wlroots. libei and the portal, which ask the user for permis
 with a dialog. A separate implementation per compositor, and no way to write one tool
 that runs everywhere, which is precisely what xdotool was for.
 
-Read the KDE forums and you get the same answer from the other side of the desk.
-Somebody wants to
+Read the KDE forums and you get the same answer, this time from the people who
+maintain the compositor. Somebody wants to
 [move the mouse to another screen](https://discuss.kde.org/t/move-mouse-to-screen/28971)
 with a footswitch and is told, correctly, that Wayland's pointer API has no absolute
 positioning. Somebody else asks
 [what UI automation looks like on KWin](https://discuss.kde.org/t/questions-about-ui-automation-on-kwin-wayland/1778)
 and gets a patient and entirely accurate reply: propose a protocol, get it reviewed,
 implement it in the compositors, wire it through the portal. That is the right process
-and it is measured in years. Meanwhile there is a footswitch on the floor that does
-not work.
+and it takes years. Meanwhile there is a footswitch on the floor that does not work.
 
-So I went and looked at whether the survey's conclusion was actually true, and it
-turns out to be true about *protocols* and false about *reach*. The reach did not go
-away. Every compositor still holds all of it. Each one just exposes some of it,
-differently, through an interface it invented, and nobody had sat down and written
-the compatibility layer, because writing four backends for one tool is boring and
-writing them for six tools is worse.
+So I checked whether the survey's conclusion was actually true, and it turns out to be
+true about *protocols* and false about *reach*. The reach did not go away. Every
+compositor still holds all of it. Each one just exposes some of it, differently,
+through an interface it invented, and nobody had written the compatibility layer,
+because writing four backends for one tool is boring and writing them for six tools is
+worse.
 
 I wrote them anyway.
 
-Six commands came out of it. Four are drop-in clones with byte parity against the
+The result is six commands. Four are drop-in clones with byte parity against the
 originals, one is a clone of arandr's GUI, and one has no original at all.
 
 ```
@@ -62,8 +61,8 @@ library, including the D-Bus client, the Wayland client and the X11 client. The 
 exception is `warandr`, which imports the system GTK 3 bindings, because writing a
 GUI toolkit as well would have been silly even by the standards of this project.
 
-What follows is what the measurements found on the way, which turned out to be more
-interesting than the code.
+What follows is what the measurements found while I was building them, which turned
+out to be more interesting than the code.
 
 ## What X11 got right, and what replaced it
 
@@ -84,7 +83,7 @@ keystrokes. The Wayland answer was to move all of it inside the compositor, wher
 client can only see and touch its own surfaces, and that answer is correct. It is
 also why none of those four programs work any more.
 
-Here is the part that stings. Wayland closed the hole and then did not open a door.
+Here is the real problem. Wayland closed the hole and then did not open a door.
 There is no standard protocol to list windows. There is no standard protocol to move
 one. There is no standard protocol to type a key. There is no standard protocol to
 read a window property, because there are no window properties. There is a
@@ -95,8 +94,9 @@ useless for a line in a shell script bound to a hotkey.
 
 That is the fragmentation Sissel is describing, and it is worth being precise about
 what kind of problem it is. It is not that the capability is gone. It is that the
-capability now has four addresses and no forwarding service. Every compositor has all
-of it, and each one exposes some of it, differently, through an interface it invented.
+capability now lives at four different addresses, and nothing points from the old one
+to the new ones. Every compositor has all of it, and each one exposes some of it,
+differently, through an interface it invented.
 
 So the actual project is not "reimplement xdotool". It is **find where each compositor
 keeps the thing X11 used to hold, and prove that what you found is right**. The first
@@ -107,9 +107,9 @@ half is an afternoon of reading. The second half is the whole rest of this post.
 | | windows | input | monitors |
 |---|---|---|---|
 | **sway and wlroots** | its own i3 IPC, complete and documented | `zwp_virtual_keyboard_v1` and `zwlr_virtual_pointer_v1`, unprivileged | `zwlr_output_management_v1`, atomic |
-| **GNOME** | nothing. I ship a Shell extension | nothing. `/dev/uinput` | `org.gnome.Mutter.DisplayConfig` on the session bus |
+| **GNOME** | nothing. I provide a Shell extension | nothing. `/dev/uinput` | `org.gnome.Mutter.DisplayConfig` on the session bus |
 | **KDE Plasma** | `org.kde.kwin.Scripting.loadScript()`, which runs JavaScript inside the compositor | nothing. `/dev/uinput` | `kde_output_management_v2`, a Wayland protocol of its own |
-| **X11 sessions** | the real tools. I get out of the way | the real tools | the real tools |
+| **X11 sessions** | the real tools. I just run them | the real tools | the real tools |
 
 sway is the easy one and it is worth saying why: it has an IPC because i3 had an IPC,
 and i3 had an IPC because somebody wanted to script their window manager. The
@@ -131,7 +131,7 @@ and no bus policy, which means **any client on your session bus can already push
 JavaScript into your compositor**. I use that. I am not the one who made it
 possible.
 
-### Where each of them lies
+### Where each of them lies to you
 
 Every one of the three has a place where the obvious reading of its API is wrong, and
 each of those cost me a day.
@@ -140,28 +140,28 @@ each of those cost me a day.
 workspaces, and with dynamic workspaces Mutter always keeps one trailing empty
 workspace so you have somewhere to drag a window to. `get_n_workspaces()` counts it.
 So `wmctrl -d` on a fresh GNOME session lists two workspaces when the user can see
-one, and `wdotool set_num_desktops 4` is refused outright, because with dynamic
+one, and `wdotool set_num_desktops 4` is simply refused, because with dynamic
 workspaces the count is not a thing you set. Both behaviours are correct and both
 look like bugs. I report the count Mutter reports and refuse the setter with the
 reason, which is the only honest pair.
 
 **KWin has no window ids.** Not "different ids". None. The scripting API's only
 handle is a UUID string, and everything downstream of it wants a number, because
-wmctrl prints `0x%08lx` and `wxprop -id` parses into an XID. So I mint one:
-`0x40000000` bitwise-or thirty bits of the internal id. The range is chosen so that a
-minted id can never collide with an id Xwayland hands its own clients, because a
-listing that mixes native and X windows must not let you confuse the two. Two uuids
-that collide in thirty bits, which is a one in a million session, re-mint the second
-window rather than dropping it.
+wmctrl prints `0x%08lx` and `wxprop -id` parses into an XID. So I invent one:
+`0x40000000` bitwise-or thirty bits of the internal id. The range is chosen so that an
+invented id can never collide with an id Xwayland hands its own clients, because a
+listing that mixes native and X windows must not let you confuse the two. If two
+uuids collide in thirty bits, which happens in about one session in a million, the
+second window gets a fresh id rather than being dropped.
 
 **KWin saves your layout whether you asked or not.** xrandr's model is that a change
 is temporary until something writes it down. KWin has no temporary mode at all: every
-apply it accepts lands in `~/.config/kwinoutputconfig.json` in the same second, the
-file is already there before you run anything, and `--persistent` is accepted and
-means nothing. Deleting the file from inside the session achieves nothing either,
-because KWin writes it out again on the way out. So `wxrandr` prints, once, the exact
-command that puts the previous layout back, because on that desktop it is the only
-undo there is.
+apply it accepts is written to `~/.config/kwinoutputconfig.json` within the same
+second, the file is already there before you run anything, and `--persistent` is
+accepted and means nothing. Deleting the file from inside the session achieves nothing
+either, because KWin writes it again when it exits. So `wxrandr` prints, once, the
+exact command that puts the previous layout back, because on that desktop it is the
+only undo there is.
 
 **Plasma 6.7 stopped publishing outputs.** Up to 6.6, each output is a
 `kde_output_device_v2` global in the `wl_registry`, so you enumerate the registry and
@@ -170,26 +170,26 @@ globals are gone and the device objects come out of a
 `kde_output_device_registry_v2` object instead. Not deprecated. Absent. On a real
 6.7.4 session the old path finds zero outputs and reports, correctly and uselessly,
 that this compositor has no monitors. `wxrandr` now tries both, and the fallback is
-pinned by a wire-level fake KWin that speaks both.
+covered by a wire-level fake KWin that speaks both.
 
 ## Four things the measurements said that I did not expect
 
 None of these came from reading a specification. All four came from running the thing
 on a real desktop and watching a screenshot.
 
-### 1. Both heads go entirely black
+### 1. Both screens go entirely black
 
 `wmirror` mirrors a region of one output onto another by running `wl-mirror`, which
 opens a fullscreen window on the target and paints captured frames into it.
 
 Now consider two outputs that share pixels. Not two outputs side by side: two that
-overlap, or worse, two at the same position, which is how you mirror on wlroots in
-the first place. The mirror window is fullscreen on the target. The target's pixels
+overlap, or worse, two at the same position, which is exactly how you mirror on
+wlroots. The mirror window is fullscreen on the target. The target's pixels
 **are** the source's pixels. So the capture captures the window that is displaying
 the capture.
 
 I expected the classic video feedback tunnel. What I got, on a real sway session,
-was both heads going entirely black. Every pixel, on both monitors, immediately. Not
+was both screens going entirely black. Every pixel, on both monitors, immediately. Not
 a tunnel, not a flicker, just nothing at all until the mirror was killed from another
 tty.
 
@@ -201,9 +201,9 @@ the configuration and prints the `wxrandr` line that does what you actually want
 
 This one is the best kind of bug, because everything involved is behaving correctly.
 
-Run something as root on a Plasma X11 session. `sudo wmctrl -l`, say. Root has no
-`DISPLAY` and no `XAUTHORITY`, so the tools find them for the user: logind knows the
-session's display, and the cookie is normally in `$XAUTHORITY`, or in the runtime
+Run something as root on a Plasma X11 session. `sudo wmctrl -l`, for example. Root has
+no `DISPLAY` and no `XAUTHORITY`, so the tools find them for the user: logind knows
+the session's display, and the cookie is normally in `$XAUTHORITY`, or in the runtime
 directory, or in `~/.Xauthority`. I looked in all three. I found a cookie. I handed
 it over. The X server said:
 
@@ -222,11 +222,11 @@ else. `gnome-shell`, `startplasma-x11`, `kwin_x11`, `plasmashell`, `xfce4-sessio
 `sway`. It is the only route to SDDM's cookie and it is right on every desktop I
 measured.
 
-There is a second trap sitting right next to it. On a box with a display manager, the
+There is a second trap right next to it. On a machine with a display manager, the
 lowest numbered runtime directory in `/run/user` is usually the **greeter's**. Its
 cookie is perfectly valid, for the greeter's X server, which is not the one you want.
 And `sudo -i` run by root leaves `SUDO_UID=0` behind, so believing `SUDO_UID` sends
-the search into `/root`. On a real Xfce box that was the difference between
+the search into `/root`. On a real Xfce machine that was the difference between
 `sudo -i xdotool getactivewindow` printing a window name and printing the
 authorization error above.
 
@@ -240,10 +240,11 @@ On Wayland a maximize is a **negotiation**. The compositor tells the client "you
 maximized now, here is your new size", and nothing has actually happened until the
 client acks the configure and draws. Which means that if you send the vertical
 maximize and then immediately read the state back, you get "not maximized", because
-the client has not answered yet. Send the horizontal one on top of that and you are
+the client has not answered yet. Send the horizontal one immediately after and you are
 now racing your own first request.
 
-I found this from the other end, on GNOME, and it was worse than a wrong reading.
+I found this on GNOME and from the opposite direction, removing the two states rather
+than adding them. There it was worse than a wrong reading.
 `wwmctl -b remove,maximized_vert,maximized_horz` removed only the horizontal half and
 **corrupted the saved restore rectangle** doing it, so the window came back the wrong
 size and only an explicit `windowsize` recovered it. The bridge was calling
@@ -251,11 +252,11 @@ size and only an explicit `windowsize` recovered it. The bridge was calling
 single `set_unmaximize_flags()`.
 
 The general fix is to stop reading state immediately. On KDE the injected script now
-arms the window's own change signal plus a timer backstop and answers from whichever
-fires first, so a fullscreen on a native window no longer warns about a state KWin
-had already applied. On GNOME the pair became one call. And the wait means the
-**next** command sees a settled window, which is what makes a two-axis maximize end
-with both axes on.
+waits for the window's own change signal, with a timer as a fallback, and answers from
+whichever arrives first, so a fullscreen on a native window no longer warns about a
+state KWin had already applied. On GNOME the pair became one call. And the wait means
+the **next** command sees a settled window, which is what makes a two-axis maximize
+end with both axes on.
 
 ### 4. A window id match that got it wrong six times in eight
 
@@ -272,11 +273,11 @@ but the managed X11 windows dropped.
 
 Then I wrote the adversarial case, which is `repro/kde-xid-twins.py`: one X client,
 two top level windows, same pid, same class, same title, same rectangle. Nothing but
-the order of the two lists can tell them apart. `WM_WINDOW_ROLE` carries the truth,
-because KWin exposes the role to scripts and the matcher never looks at it, so the
-answer can be graded without perturbing it.
+the order of the two lists can distinguish them. `WM_WINDOW_ROLE` records which
+window is which, because KWin exposes the role to scripts and the matcher never looks
+at it, so the match can be checked without changing it.
 
-The naive matcher put the two ids the wrong way round in six runs out of eight.
+The naive matcher swapped the two ids in six runs out of eight.
 
 The fix is not a better score. It is a rule about when you are allowed to answer at
 all: **a pair must agree on pid or on class**. An X client that publishes neither
@@ -288,14 +289,14 @@ Zero is a fine answer. A coin flip is not.
 ## What "no privilege on sway" costs everywhere else
 
 Input is where this project is most obviously a compromise, and it is worth being
-precise about the shape of it.
+precise about what that compromise is.
 
 The portable path is `/dev/uinput`. You create a virtual keyboard, a relative mouse
-and an absolute tablet shaped like QEMU's usb-tablet, and the compositor cannot tell
-them from real hardware, because at that layer they are real hardware. This works on
-GNOME, on KDE, on sway, on anything. It costs root or a udev rule, and it costs about
-600 milliseconds of hotplug settling the first time, which is why there is a daemon
-that owns the devices and why every later command is a client of it.
+and an absolute tablet shaped like QEMU's usb-tablet, and the compositor cannot
+distinguish them from real hardware, because at that layer they are real hardware.
+This works on GNOME, on KDE, on sway, on anything. It costs root or a udev rule, and
+it costs about 600 milliseconds of hotplug settling the first time, which is why there
+is a daemon that owns the devices and why every later command is a client of it.
 
 wlroots has something better. `zwp_virtual_keyboard_v1` lets a client **upload its
 own keymap** and send keycodes against it, and `zwlr_virtual_pointer_v1` does motion,
@@ -323,27 +324,26 @@ found in the keymap rather than assumed, because which key carries level three i
 German and `<CAPS>` on Neo. A character needing a dead key becomes two presses and
 the application composes them.
 
-That is a lot of machinery to get wrong, so the safety story is the interesting part.
-`active_group_is_plain_us()` verifies, key by key, that every keycode the fixed table
-would emit carries exactly the keysyms the fixed table assumes at levels one and two
-in the active group. If it holds, the old code path runs and **nothing else in the
-layout module is called at all**. What it deliberately does not check is as
-load-bearing as what it does: only the printable characters, and a key's type only
-where the fixed table actually presses level two. Checking more than that made a
-plain US session with `caps:swapescape` fail the check and drag the whole reverse map
-in, which is a fail-open, and a fail-open is the one thing the bypass exists to
-prevent.
+That is a lot of machinery to get wrong, so the way it stays safe is the interesting
+part. `active_group_is_plain_us()` verifies, key by key, that every keycode the fixed
+table would emit carries exactly the keysyms the fixed table assumes at levels one and
+two in the active group. If it holds, the old code path runs and **nothing else in the
+layout module is called at all**. What it deliberately does not check matters as much
+as what it does: only the printable characters, and a key's type only where the fixed
+table actually presses level two. Checking more than that made a plain US session with
+`caps:swapescape` fail the check and run the whole reverse map instead, which is a
+fail-open, and a fail-open is the one thing the bypass exists to prevent.
 
-There is one more thing on this path that is pure kernel trivia and cost a real
+There is one more thing on this path that is pure kernel trivia and that caused a real
 defect. `--clearmodifiers` cannot clear a modifier held on your physical keyboard.
 `input_handle_event()` **drops an `EV_KEY` release for a code the emitting device
 does not hold**, so the key-up wdotool sends generates no event at all, and pressing
 the modifier back afterwards would leave it stuck for the rest of the session, because
 Mutter and KWin reference count key state across the seat's devices. So it clears only
-what it holds itself, and it says which foreign modifier is in the way when it can
+what it holds itself, and it says which foreign modifier is blocking it when it can
 read that, and it is silent with identical behaviour when it cannot.
 
-## 2262 tests, and what 0.3 took away
+## 2262 tests, and what 0.3 removed
 
 The suite is the reason any of the sentences above can be written as facts. It has
 byte parity oracles that run the real `xdotool`, `wmctrl`, `xprop` and `xrandr` and
@@ -352,14 +352,14 @@ diff its output against theirs. It has wire-level fakes: a fake KWin that speaks
 fake Mutter on an in-process D-Bus mock, a fake X server, and a **hostile** X server
 that subclasses it and lies. It has live tests against a real headless sway with
 XWayland. And it has twelve VM images, ten built from cloud images and two installed
-from the release ISOs by the actual Ubuntu installer with every question left alone,
-because "it works on a default Ubuntu desktop" is a claim about an installed system
-and a cloud image plus `ubuntu-desktop` measurably is not one. That distinction is
-not pedantry: running the install guide verbatim on the real 24.04 install corrected
-three sentences of it.
+from the release ISOs by the actual Ubuntu installer with every question left at its
+default, because "it works on a default Ubuntu desktop" is a claim about an installed
+system and a cloud image plus `ubuntu-desktop` measurably is not one. That distinction
+is not pedantry: running the install guide verbatim on the real 24.04 install
+corrected three sentences of it.
 
 0.3 is a **subtraction** release, which is a strange thing to be proud of, so here is
-what went away.
+what it removed.
 
 Six copies of C's `atoi` became one module with C's semantics, including `[0-9]`
 rather than `\d`, so a Unicode digit gives zero exactly as C does. Three getopt
@@ -377,27 +377,28 @@ more than half.
 
 Seven fake Wayland servers became a marshaller library plus a server base: three of
 them now build their compositor on that base, and the other four, whose sync replies
-differ enough that a shared base would have to grow a flag for each, take the
-marshallers alone. Across the release the six packages lost a thousand and fourteen
-lines of Python and the tests gained two thousand six hundred and seventy six, which
-is the trade this release was for.
+differ enough that a shared base would need a flag for each, take the marshallers
+alone. Across the release the six packages lost a thousand and fourteen lines of
+Python and the tests gained two thousand six hundred and seventy six, which is the
+trade this release was for.
 
-The other thing 0.3 did was stop lying in small ways. A README that said the rig had
-seven images when it had twelve. A design document that said the daemon costs 500
+The other thing 0.3 did was stop lying in small ways. A README that said the test rig
+had seven images when it had twelve. A design document that said the daemon costs 500
 milliseconds of hotplug when the code sleeps 600. A note that the GNOME bridge is
 version 1 when it is version 3. A sentence saying `warandr --save` fails without
 `~/.screenlayout` when it creates the directory. A KWin undo line documented as
 starting with the word `xrandr` when it starts with `wxrandr`, which matters
-precisely because a KDE box has a real `/usr/bin/xrandr` that would answer `BadMatch`
-and change nothing. None of those were bugs. All of them were the documentation
-drifting away from a tree that kept being measured, and that drift is the thing a
-release like this exists to stop.
+precisely because a KDE machine has a real `/usr/bin/xrandr` that would answer
+`BadMatch` and change nothing. None of those were bugs. All of them were the
+documentation drifting away from a tree that kept being measured, and that drift is
+the thing a release like this exists to stop.
 
 None of this is the protocol the survey asked for. A compatibility layer is what you
-write while you wait for one, and it carries the shape of every desktop it has to
-paper over, which is why there is a GNOME Shell extension in here and why I am not
-happy about it either. But the four-line script works again, on GNOME and on KDE and
-on sway and on X11, and it does not know which. That was the entire requirement.
+write while you wait for one, and it takes the shape of every desktop whose
+differences it has to hide, which is why there is a GNOME Shell extension in here and
+why I am not happy about it either. But the four-line script works again, on GNOME and
+on KDE and on sway and on X11, and it does not know which. That was the entire
+requirement.
 
 The tools are at [github.com/antoniobianchi333/fuckwayland](https://github.com/antoniobianchi333/fuckwayland).
 [Technical.md](Technical.md) is where to start if you want to change something.
