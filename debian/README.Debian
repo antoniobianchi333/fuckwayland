@@ -22,9 +22,13 @@ What is installed where
         the code.
   /usr/share/gnome-shell/extensions/fuckwayland-bridge@fuckwayland/
         the GNOME Shell bridge extension, system-wide.
-  /etc/xdg/autostart/fuckwayland-enable-bridge.desktop
   /usr/lib/fuckwayland/enable-bridge
-        the once-per-user helper that enables the extension (see below).
+  /usr/lib/fuckwayland/enable-bridge.desktop
+        the once-per-user helper that enables the extension (see below) and
+        its autostart entry, which reaches /etc/xdg/autostart as a symlink:
+        a regular file under /etc is a conffile, and a conffile outlives
+        `apt remove` -- an autostart entry pointing at a helper the removal
+        has just deleted.  The symlink goes when the package goes.
   /usr/lib/udev/rules.d/60-fuckwayland-uinput.rules
   /usr/lib/modules-load.d/fuckwayland-uinput.conf
         /dev/uinput for the user at the active seat.
@@ -44,8 +48,17 @@ neither of those things itself.  What the package does instead:
   * ships an autostart entry that runs /usr/lib/fuckwayland/enable-bridge
     inside each user's first GNOME session after the install.  That script
     adds the uuid to org.gnome.shell enabled-extensions once, writes a stamp
-    in ~/.config/fuckwayland, and never touches the setting again -- so if you
+    in ~/.config/fuckwayland, and then leaves the setting alone -- so if you
     later disable the extension, it stays disabled.
+
+    Once per installation, that is: removing the package deletes the system
+    stamp /var/lib/fuckwayland/installed, installing writes a fresh one, and
+    the helper enables the extension again for any user whose own stamp is
+    older than it.  Without that, a remove (which takes the extension with it,
+    and with it the reason for the uuid to stay in anyone's dconf) followed by
+    an install would leave the user with a stamp, no setting and no extension
+    -- and the install's own message promising it had been enabled for them.
+    An upgrade keeps the system stamp and so disturbs nobody's choice.
 
 So: install, log out, log back in, and the window commands work.  Before that
 relogin wxrandr, warandr and wdotool's input commands already work, and the
@@ -90,8 +103,9 @@ editable install (`pip install -e .`) works by appending a finder to
 sys.meta_path -- after the ordinary path finder.  So once this package is
 installed, `import wdotool` inside that venv resolves to the packaged copy, not
 to your clone, and the venv's own commands run the packaged code.  Measured on
-26.04 with Python 3.14.  Either do not install the package on the machine you
-develop on, or point at the clone explicitly:
+both releases: 24.04 with Python 3.12 and 26.04 with Python 3.14.  Either do
+not install the package on the machine you develop on, or point at the clone
+explicitly:
 
   PYTHONPATH=/path/to/the/clone ~/.venvs/fuckwayland/bin/wdotool ...
 

@@ -12,16 +12,23 @@
 # extension can be loaded -- which is why "log out and back in once" is the
 # whole of the manual procedure.
 #
-# It runs exactly once per user: after the first run it writes a stamp and
-# never touches the setting again, so a user who later disables the extension
-# stays in charge of it.  Remove the stamp to have it run again.
+# It runs once per user per installation: after a run it writes a stamp and
+# leaves the setting alone, so a user who later disables the extension stays
+# in charge of it.  What resets that is a re-install and nothing else --
+# postrm drops /var/lib/fuckwayland/installed when the package is removed and
+# postinst writes a fresh one, so a system stamp newer than the user's means
+# this is a different installation from the one that user was set up for, and
+# the setting (which the removal may well have taken with it) is made again.
+# An upgrade keeps the system stamp, so it does not disturb anyone's choice.
+# Remove the user stamp to have it run again by hand.
 set -eu
 
 UUID='fuckwayland-bridge@fuckwayland'
 STAMP_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fuckwayland"
 STAMP="$STAMP_DIR/bridge-enabled"
+SYSTEM_STAMP='/var/lib/fuckwayland/installed'
 
-if [ -e "$STAMP" ]; then exit 0; fi
+if [ -e "$STAMP" ] && [ ! "$SYSTEM_STAMP" -nt "$STAMP" ]; then exit 0; fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
