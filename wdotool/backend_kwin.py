@@ -107,8 +107,6 @@ _WINDOW_TYPES = {
     14: "COMBO", 15: "DND", 16: "NOTIFICATION", 17: "NOTIFICATION",
     18: "POPUP_MENU",
 }
-# window types the pointer hit-test looks through (desktop icons, panels)
-_LAYER_TYPES = {"DESKTOP", "DOCK"}
 # _NET_WM_STATE atoms KWin has no setter for at all
 _GAP_REASONS = {"SHADED": "Plasma 6 removed window shading"}
 # How many times a load may lose the id race before it is called a fight
@@ -509,6 +507,7 @@ class KwinBackend(WindowBackend):
             focused=bool(d.get("f")),
             visible=not (d.get("m") or d.get("hi")) and bool(d.get("oc")),
             desktop=int(d.get("d", -1)),
+            window_type=_WINDOW_TYPES.get(int(d.get("ty", 0)), "NORMAL"),
         )
 
     @classmethod
@@ -535,7 +534,7 @@ class KwinBackend(WindowBackend):
             skip_pager=bool(d.get("sp")),
             floating=True,
             ws_name=ws_name,
-            window_type=_WINDOW_TYPES.get(int(d.get("ty", 0)), "NORMAL"),
+            window_type=win.window_type,
             client_type="x11" if xid else "wayland",
             role=d.get("ro") or "",
             desktop_id=_desktop_id(d.get("df") or ""),
@@ -807,29 +806,6 @@ class KwinBackend(WindowBackend):
         if not display and not xauth:
             return None
         return display, xauth
-
-    def window_at(self, x: int, y: int) -> int:
-        """Topmost window under (x, y) on the current desktop; DESKTOP and
-        DOCK layers are looked through, the focused window wins among the
-        hits. Client-side over the same list() the generic hit-test uses (as
-        on GNOME) so this and input_cmds cannot drift apart -- KWin 6's
-        workspace.windowAt() would answer for one Plasma release only."""
-        hits = []
-        for d in self._raw():
-            if _WINDOW_TYPES.get(int(d.get("ty", 0)), "NORMAL") in _LAYER_TYPES:
-                continue
-            if d.get("m") or d.get("hi") or not d.get("oc"):
-                continue
-            wx, wy = int(d.get("x", 0)), int(d.get("y", 0))
-            ww, wh = int(d.get("w", 0)), int(d.get("h", 0))
-            if ww > 0 and wh > 0 and wx <= x < wx + ww and wy <= y < wy + wh:
-                hits.append(d)
-        if not hits:
-            return 0
-        for d in hits:
-            if d.get("f"):
-                return self._win(d).id
-        return self._win(hits[-1]).id
 
     def events(self, timeout: float | None = None, workspaces: bool = False):
         """(id, change) in sway's vocabulary, from a script that stays loaded

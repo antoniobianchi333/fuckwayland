@@ -2,7 +2,7 @@
 
 Additive extension (gnome-bridge): the View/Workspace dataclasses and the
 optional hooks at the end of WindowBackend (views, workspaces, x_info,
-window_at, events). They let a backend that knows more than Window carries
+events). They let a backend that knows more than Window carries
 (X ids of XWayland windows, WM_CLASS instance/class, workspace names) hand it
 to wwmctl/wxprop/getmouselocation without those tools reaching into backend
 privates (sway's `_nodes()` tuple). Every hook defaults to "not available";
@@ -56,6 +56,40 @@ class Window:
     focused: bool = False
     visible: bool = True
     desktop: int = -1  # 0-based workspace index, -1 unknown/sticky
+    # Mutter window-type name (NORMAL DESKTOP DOCK DIALOG ...); the backends
+    # that know it fill it in, the rest leave it NORMAL. hit_test() is the
+    # only reader: it is what lets one rule look through the desktop and dock
+    # layers on every backend that can tell them apart.
+    window_type: str = "NORMAL"
+
+
+#: Window types the pointer hit-test looks through: the desktop-icon layer
+#: and docks/panels, which a click on X11 falls straight through.
+_LAYER_TYPES = {"DESKTOP", "DOCK"}
+
+
+def hit_test(wins: "list[Window]", x: int, y: int) -> int:
+    """The window under (x, y) in a list() result, 0 for none.
+
+    One rule for every backend, so getmouselocation and the backends cannot
+    drift apart: DESKTOP and DOCK layers are looked through, invisible
+    windows (minimized, or on another workspace) are never hits, the focused
+    window wins among the rest, and otherwise the topmost -- list() is
+    stacking order bottom to top, so that is the last hit.
+
+    Client-side on purpose. Neither the GNOME bridge nor KWin exports a
+    hit-test, and KWin 6's workspace.windowAt() would answer for one Plasma
+    release only."""
+    hits = [w for w in wins
+            if w.visible and w.window_type not in _LAYER_TYPES
+            and w.w > 0 and w.h > 0
+            and w.x <= x < w.x + w.w and w.y <= y < w.y + w.h]
+    if not hits:
+        return 0
+    for w in hits:
+        if w.focused:
+            return w.id
+    return hits[-1].id
 
 
 @dataclasses.dataclass
@@ -238,12 +272,6 @@ class WindowBackend:
         coordinates, or None when the compositor offers no pointer query
         (sway's IPC does not). Callers fall back to the input daemon's
         model of the last position it injected."""
-        return None
-
-    def window_at(self, x: int, y: int) -> int | None:
-        """Backend-native pointer hit-test: the topmost window under the
-        point, skipping desktop/dock layers, 0 for none; None means "use the
-        generic hit-test over list()"."""
         return None
 
     def events(self, timeout: float | None = None):

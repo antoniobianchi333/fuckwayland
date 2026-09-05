@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 from test_dbus_mini import MockBus                                    # noqa: E402
 from wdotool import backend_detect, backend_kwin, dbus_mini, kwin_js, session  # noqa: E402
-from wdotool.backend import View, Window, Workspace                   # noqa: E402
+from wdotool.backend import View, Window, Workspace, hit_test         # noqa: E402
 from wdotool.backend_kwin import (BUS_NAME, IFACE, KWIN_IFACE,        # noqa: E402
                                   KWIN_NAME, KWIN_PATH, OBJECT_PATH,
                                   SCRIPTING_IFACE, SCRIPTING_PATH,
@@ -623,8 +623,7 @@ class TransportTests(_Base):
     def test_a_malformed_payload_is_a_clear_error(self):
         b = self.backend(junk=True)
         b.script_timeout = 2.0
-        for call in (b.list, b.views, lambda: b.window_at(1, 1),
-                     b.display_size):
+        for call in (b.list, b.views, b.display_size):
             with self.assertRaises(CmdError) as cm:
                 call()
             self.assertIn("kwin backend", str(cm.exception))
@@ -1169,6 +1168,9 @@ class BackendTests(_Base):
         self.assertEqual(x.client_type, "wayland")   # no X plane in this test
         self.assertEqual(x.window_type, "NORMAL")
         self.assertEqual(views[WID["desktop"]].window_type, "DESKTOP")
+        wins = {w.id: w for w in self.b.list()}                      # and on Window
+        self.assertEqual(wins[WID["desktop"]].window_type, "DESKTOP")
+        self.assertEqual(wins[WID["xterm"]].window_type, "NORMAL")
         self.assertTrue(views[WID["desktop"]].skip_taskbar)
         k = views[WID["kate"]]
         self.assertTrue(k.minimized and k.hidden)
@@ -1227,18 +1229,24 @@ class BackendTests(_Base):
             (session.X11_SOCKET_DIR, session._owner,
              session._shell_environ) = saved
 
+    def window_at(self, x, y):
+        """The shared pointer hit-test over this backend's own list() --
+        what getmouselocation runs. The backend has no hit-test of its own:
+        it fills Window.window_type and backend.hit_test does the rest."""
+        return hit_test(self.b.list(), x, y)
+
     def test_window_at_looks_through_desktop_and_docks(self):
         # (1500, 900) is over the plasma DESKTOP window only
-        self.assertEqual(self.b.window_at(1500, 900), 0)
+        self.assertEqual(self.window_at(1500, 900), 0)
         # over the xterm (focused, topmost)
-        self.assertEqual(self.b.window_at(200, 200), WID["xterm"])
+        self.assertEqual(self.window_at(200, 200), WID["xterm"])
         # (900, 700) is inside kate, which is minimized: never a hit
-        self.assertEqual(self.b.window_at(900, 700), 0)
+        self.assertEqual(self.window_at(900, 700), 0)
 
     def test_window_at_prefers_the_focused_window(self):
         d = self.kwin.find(UU["kate"])
         d.update(m=False, hi=False, x=100, y=80, w=640, h=480, so=9)
-        self.assertEqual(self.b.window_at(200, 200), WID["xterm"])
+        self.assertEqual(self.window_at(200, 200), WID["xterm"])
 
     def test_x_info_is_the_session_scan(self):
         orig = (session.find_x_display, session.find_xauthority)

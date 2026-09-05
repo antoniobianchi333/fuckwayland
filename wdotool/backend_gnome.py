@@ -29,9 +29,9 @@ Field mapping (bridge object -> Window):
            windowmap --sync does not hang on windows parked elsewhere
   desktop  workspace index, -1 when on all workspaces (sticky)
 
-list() order is Mutter's stacking order bottom->top, so the generic hit-test
-picks hits[-1] = topmost; window_at() additionally skips DESKTOP/DOCK layers
-(desktop icons, docks) like a click-through X11 root window would.
+list() order is Mutter's stacking order bottom->top, so backend.hit_test()
+picks hits[-1] = topmost; it also skips the DESKTOP/DOCK layers (desktop
+icons, docks) window_type names, like a click-through X11 root window would.
 
 When the bridge name is missing but org.gnome.Shell is on the bus, the
 constructor fails with a diagnosis: screen locked, extension disabled or
@@ -97,8 +97,6 @@ AUTOLOAD_ENV = "WDOTOOL_GNOME_AUTOLOAD"
 # extension as a locked screen, observed live on 24.04).
 _LOCKED_MODES = {"unlock-dialog", "initial-setup"}
 _GREETER_MODES = {"gdm"}
-# window types the pointer hit-test looks through (DING desktop icons, docks)
-_LAYER_TYPES = {"DESKTOP", "DOCK"}
 
 # Best-effort: load an installed-but-not-yet-loaded copy of the extension
 # from inside the shell. Runs in shellDBus.js's module scope (Main, Gio, GLib
@@ -363,6 +361,7 @@ class GnomeBackend(WindowBackend):
             focused=bool(d.get("focused", False)),
             visible=(not hidden) and on_active,
             desktop=int(d.get("workspace", -1)),
+            window_type=d.get("window_type") or "NORMAL",
         )
 
     @classmethod
@@ -388,7 +387,7 @@ class GnomeBackend(WindowBackend):
             skip_taskbar=bool(d.get("skip_taskbar")),
             floating=True,
             ws_name="",
-            window_type=d.get("window_type") or "NORMAL",
+            window_type=win.window_type,
             client_type=client,
             role=d.get("role") or "",
             desktop_id=d.get("desktop_id") or "",
@@ -540,29 +539,6 @@ class GnomeBackend(WindowBackend):
         return int(w), int(h)
 
     # -- optional hooks -----------------------------------------------------
-
-    def window_at(self, x: int, y: int) -> int:
-        """Topmost window under (x, y) on the active workspace; DESKTOP and
-        DOCK layers are looked through, the focused window wins among the
-        hits (the generic rule getmouselocation applies). Client-side over
-        ListWindows on purpose: the bridge exports no hit-test, so this and
-        the rule in input_cmds cannot drift apart."""
-        hits = []
-        for d in self._raw_list():
-            if d.get("window_type") in _LAYER_TYPES:
-                continue
-            if d.get("hidden") or not d.get("on_active_workspace", True):
-                continue
-            wx, wy = int(d.get("x", 0)), int(d.get("y", 0))
-            ww, wh = int(d.get("width", 0)), int(d.get("height", 0))
-            if ww > 0 and wh > 0 and wx <= x < wx + ww and wy <= y < wy + wh:
-                hits.append(d)
-        if not hits:
-            return 0
-        for d in hits:
-            if d.get("focused"):
-                return int(d["id"])
-        return int(hits[-1]["id"])
 
     def views(self) -> "list[View]":
         names = {}

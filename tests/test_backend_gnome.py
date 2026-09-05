@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 from test_dbus_mini import MockBus                                   # noqa: E402
 from wdotool import backend_detect, backend_gnome, dbus_mini, session  # noqa: E402
-from wdotool.backend import View, Window, Workspace                    # noqa: E402
+from wdotool.backend import View, Window, Workspace, hit_test          # noqa: E402
 from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,        # noqa: E402
                                    OBJECT_PATH, SHELL_NAME, GnomeBackend)
 from wdotool.ctx import CmdError, NoSessionError                       # noqa: E402
@@ -511,6 +511,12 @@ class BackendTests(_Base):
         self.bridge = MockBridge(self.mock)
         self.b = GnomeBackend(settle=0.3)
 
+    def window_at(self, x, y):
+        """The shared pointer hit-test over this backend's own list() --
+        what getmouselocation runs. The backend has no hit-test of its own:
+        it fills Window.window_type and backend.hit_test does the rest."""
+        return hit_test(self.b.list(), x, y)
+
     def tearDown(self):
         self.b.bus.close()
         self.bridge.close()
@@ -743,16 +749,17 @@ class BackendTests(_Base):
         # editor is focused and the xterm is stacked above it.
         self.b.map(EDITOR)
         self.b.focus(EDITOR)
-        self.assertEqual(self.b.window_at(350, 250), EDITOR)   # focused wins
+        self.assertEqual(self.window_at(350, 250), EDITOR)     # focused wins
         self.bridge.select_at = (350, 250)
         self.assertEqual(self.b.select_window(), XTERM)        # topmost wins
 
     def test_select_window_hit_test_matches_the_client_side_rule(self):
-        # Same answers as window_at() for the same points: the desktop layer
-        # is looked through, other workspaces and hidden windows are not hits.
+        # Same answers as the client-side hit-test for the same points: the
+        # desktop layer is looked through, other workspaces and hidden
+        # windows are not hits.
         for x, y in ((150, 100), (600, 400), (1800, 1000), (0, 0)):
             self.bridge.select_at = (x, y)
-            expected = self.b.window_at(x, y)
+            expected = self.window_at(x, y)
             if expected:
                 self.assertEqual(self.b.select_window(), expected)
             else:
@@ -826,23 +833,23 @@ class BackendTests(_Base):
     # -- pointer hit-test
 
     def test_window_at_skips_desktop_hidden_and_other_workspaces(self):
-        self.assertEqual(self.b.window_at(150, 100), XTERM)
+        self.assertEqual(self.window_at(150, 100), XTERM)
         # review finding 3: one hit-test, client-side; the bridge has none
         self.assertEqual([m for m, _ in self.bridge.calls], ["ListWindows"])
-        self.assertEqual(self.b.window_at(1800, 1000), 0)     # only the desktop there
-        self.assertEqual(self.b.window_at(600, 400), XTERM)   # calc is on ws 1
-        self.assertEqual(self.b.window_at(-1, -1), 0)
+        self.assertEqual(self.window_at(1800, 1000), 0)       # only the desktop there
+        self.assertEqual(self.window_at(600, 400), XTERM)     # calc is on ws 1
+        self.assertEqual(self.window_at(-1, -1), 0)
         # nothing focused: topmost hit wins; the minimized editor never does
         self.bridge._focus(0)
         self.bridge.find(XTERM)["x"] = 0
         self.bridge.find(DESKTOP)["focused"] = True  # focused desktop is still looked through
-        self.assertEqual(self.b.window_at(350, 250), XTERM)
+        self.assertEqual(self.window_at(350, 250), XTERM)
         self.b.minimize(XTERM)
-        self.assertEqual(self.b.window_at(350, 250), 0)
+        self.assertEqual(self.window_at(350, 250), 0)
         self.b.map(EDITOR)
-        self.assertEqual(self.b.window_at(350, 250), EDITOR)
+        self.assertEqual(self.window_at(350, 250), EDITOR)
 
-    def test_getmouselocation_uses_the_hook(self):
+    def test_getmouselocation_uses_the_shared_hit_test(self):
         from wdotool.input_cmds import _window_under_pointer
 
         class Ctx:
@@ -868,6 +875,7 @@ class BackendTests(_Base):
         self.assertTrue(ed.minimized and ed.hidden)
         self.assertEqual(ed.desktop_id, "org.gnome.TextEditor.desktop")
         self.assertEqual(views[0].window_type, "DESKTOP")
+        self.assertEqual(self.b.list()[0].window_type, "DESKTOP")   # and on Window
         self.assertEqual(views[2].ws_name, "Workspace 2")
         self.assertTrue(all(v.floating for v in views))
 

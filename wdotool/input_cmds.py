@@ -10,6 +10,7 @@ import re
 import sys
 import time
 
+from wdotool import backend as _backend
 from wdotool import commands
 from wdotool.cli import ChainAbort
 from wdotool.ctx import CmdError
@@ -597,30 +598,15 @@ _USAGE_GETMOUSELOCATION = """Usage: %s [--shell] [--prefix <STR>]
 
 
 def _window_under_pointer(ctx, x, y) -> int:
-    """Hit-test the daemon-tracked pointer against the backend's window list.
-    Focused window wins, else the topmost (last listed) hit; 0 with no backend.
-    A backend with a native hit-test (`window_at`, e.g. GNOME looking through
-    desktop-icon and dock layers) is asked first; None means "use the generic
-    rule"."""
+    """Hit-test the daemon-tracked pointer against the backend's window list;
+    0 with no backend, or with nothing under the point. backend.hit_test() is
+    the one rule -- the backends that can name a window_type (GNOME, KWin)
+    have their desktop-icon and dock layers looked through by it."""
     try:
-        backend = ctx.backend()
-        native = getattr(backend, "window_at", None)
-        if native is not None:
-            hit = native(x, y)
-            if hit is not None:
-                return int(hit)
-        wins = backend.list()
+        wins = ctx.backend().list()
     except Exception:
         return 0
-    hits = [w for w in wins
-            if w.visible and w.w > 0 and w.h > 0
-            and w.x <= x < w.x + w.w and w.y <= y < w.y + w.h]
-    if not hits:
-        return 0
-    for w in hits:
-        if w.focused:
-            return w.id
-    return hits[-1].id
+    return _backend.hit_test(wins, x, y)
 
 
 def cmd_getmouselocation(ctx, args):
