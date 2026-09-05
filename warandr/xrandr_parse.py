@@ -11,8 +11,7 @@ tab-indented verbose block carries the transform matrix that reveals an X11
 import re
 
 ROTATIONS = ("normal", "left", "inverted", "right")
-REFLECTION_WORDS = {"": "normal", "X axis": "x", "Y axis": "y",
-                    "X and Y axis": "xy"}
+REFLECTION_WORDS = {"": "normal", "X axis": "x", "Y axis": "y", "X and Y axis": "xy"}
 
 _SCREEN_RE = re.compile(
     r"^Screen (\d+): minimum (\d+) x (\d+), current (\d+) x (\d+), "
@@ -43,8 +42,7 @@ class Rate:
         self.preferred = preferred
 
     def __repr__(self):
-        return "Rate(%.2f%s%s)" % (self.hz, "*" if self.current else "",
-                                   "+" if self.preferred else "")
+        return "Rate(%.2f%s%s)" % (self.hz, "*" if self.current else "", "+" if self.preferred else "")
 
 
 class ParsedMode:
@@ -59,8 +57,7 @@ class ParsedMode:
         self.xids = []
 
     def __repr__(self):
-        return "ParsedMode(%s %dx%d %r)" % (self.name, self.w, self.h,
-                                            self.rates)
+        return "ParsedMode(%s %dx%d %r)" % (self.name, self.w, self.h, self.rates)
 
 
 class ParsedOutput:
@@ -300,8 +297,7 @@ def _parse_query_row(o, line):
         w = h = 0
     mode = o._mode(name, w, h)
     for rm in _QUERY_RATE_RE.finditer(rest):
-        mode.rates.append(Rate(float(rm.group(1)), rm.group(2) == "*",
-                               rm.group(3) == "+"))
+        mode.rates.append(Rate(float(rm.group(1)), rm.group(2) == "*", rm.group(3) == "+"))
 
 
 def _parse_verbose_mode(o, vm):

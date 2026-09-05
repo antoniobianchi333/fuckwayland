@@ -36,8 +36,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, GObject, Gtk, Pango
 
 from . import VERSION, cli, randr
-from .model import (REFLECTIONS, ROTATIONS, SCALES, LayoutError,
-                    fmt_rate)
+from .model import (REFLECTIONS, ROTATIONS, SCALES, LayoutError, fmt_rate)
 
 TITLE = "Screen Layout Editor"
 # Layout ▸ Backend, in wxrandr's own order (the label, then the token that
@@ -48,8 +47,7 @@ BACKEND_ITEMS = (("Automatic", "auto"), ("X11 (xrandr)", "x11"),
 ZOOMS = (4, 8, 16)     # arandr's View menu; Zoom In/Out walk this list
 MARGIN = 12
 SNAP_PX = 5            # arandr: tolerance = factor * 5 layout pixels
-PALETTE = ("#9ad0f5", "#f5b99a", "#b8e2a0", "#f0d98a", "#d5b3f0", "#f5a3c8",
-           "#a3e6dc", "#d0d0d0")
+PALETTE = ("#9ad0f5", "#f5b99a", "#b8e2a0", "#f0d98a", "#d5b3f0", "#f5a3c8", "#a3e6dc", "#d0d0d0")
 
 CSS = """
 .warandr-canvas { background-color: #404040; }
@@ -106,8 +104,7 @@ def _style_int(widget, name):
 
 
 def _msg(parent, kind, text, buttons=Gtk.ButtonsType.CLOSE):
-    d = Gtk.MessageDialog(transient_for=parent, modal=True,
-                          message_type=kind, buttons=buttons, text=text)
+    d = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=kind, buttons=buttons, text=text)
     r = d.run()
     d.destroy()
     return r
@@ -139,8 +136,7 @@ class OutputBox(Gtk.EventBox):
         # goes to the status bar while the pointer is inside the box
         self.connect("enter-notify-event",
                      lambda *_: self.app.show_hover(self.info) or False)
-        self.connect("leave-notify-event",
-                     lambda *_: self.app.show_hover(None) or False)
+        self.connect("leave-notify-event", lambda *_: self.app.show_hover(None) or False)
         self._drag = None
         self.info = self.name
 
@@ -306,8 +302,7 @@ class Application:
         vbox.pack_start(self._build_toolbar(), False, False, 0)
 
         self.scroller = Gtk.ScrolledWindow()
-        self.scroller.set_policy(Gtk.PolicyType.AUTOMATIC,
-                                 Gtk.PolicyType.AUTOMATIC)
+        self.scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.canvas_bg = Gtk.EventBox()
         self.canvas_bg.get_style_context().add_class("warandr-canvas")
         self.canvas_bg.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
@@ -331,10 +326,8 @@ class Application:
                                        | Gdk.EventMask.ENTER_NOTIFY_MASK
                                        | Gdk.EventMask.LEAVE_NOTIFY_MASK)
         self.backend_button.connect("button-press-event", self._indicator_press)
-        self.backend_button.connect("enter-notify-event",
-                                    self._indicator_cursor, True)
-        self.backend_button.connect("leave-notify-event",
-                                    self._indicator_cursor, False)
+        self.backend_button.connect("enter-notify-event", self._indicator_cursor, True)
+        self.backend_button.connect("leave-notify-event", self._indicator_cursor, False)
         self.status = Gtk.Statusbar()
         # one line, three sources by priority: a transient message (rejected
         # drop, saved file; gone after a few seconds or at the next redraw),
@@ -351,8 +344,7 @@ class Application:
         self.boxes = {}
         self._refresh_backend()
         self.window.show_all()
-        self.window.connect("configure-event",
-                            lambda *_: self._schedule_dump())
+        self.window.connect("configure-event", lambda *_: self._schedule_dump())
 
         # Both of the startup reads are off the main loop; identify follows
         # the layout read (it patches the layout it finds) and is kicked off
@@ -369,8 +361,7 @@ class Application:
         it.connect("activate", lambda *_: cb())
         if accel:
             key, mods = Gtk.accelerator_parse(accel)
-            it.add_accelerator("activate", self.accel, key, mods,
-                               Gtk.AccelFlags.VISIBLE)
+            it.add_accelerator("activate", self.accel, key, mods, Gtk.AccelFlags.VISIBLE)
         return it
 
     def _build_menubar(self):
@@ -379,14 +370,11 @@ class Application:
         self._track_menu(layout, "layout")
         layout.append(self._item("_New", self.do_new, "<Control>n"))
         layout.append(self._item("_Open...", self.do_open, "<Control>o"))
-        layout.append(self._item("Save _As...", self.do_save_as,
-                                 "<Control>s"))
+        layout.append(self._item("Save _As...", self.do_save_as, "<Control>s"))
         layout.append(Gtk.SeparatorMenuItem())
-        self.apply_item = self._item("_Apply", self.do_apply,
-                                     "<Control>Return")
+        self.apply_item = self._item("_Apply", self.do_apply, "<Control>Return")
         layout.append(self.apply_item)
-        layout.append(self._item("Script _Properties", self.do_properties,
-                                 "<Alt>Return"))
+        layout.append(self._item("Script _Properties", self.do_properties, "<Alt>Return"))
         layout.append(self._build_backend_menu())
         layout.append(Gtk.SeparatorMenuItem())
         layout.append(self._item("_Quit", Gtk.main_quit, "<Control>q"))
@@ -575,8 +563,7 @@ class Application:
                 # nobody reads and leave the window none the wiser
                 return
             GLib.idle_add(self._identified, backend, info)
-        threading.Thread(target=work, name="warandr-backend",
-                         daemon=True).start()
+        threading.Thread(target=work, name="warandr-backend", daemon=True).start()
 
     def _identified(self, backend, info):
         if info:
@@ -627,8 +614,7 @@ class Application:
                 result, error = None, e
             GLib.idle_add(finish, result, error)
 
-        threading.Thread(target=work, name="warandr-read",
-                         daemon=True).start()
+        threading.Thread(target=work, name="warandr-read", daemon=True).start()
 
     def _nothing_to_edit(self, error):
         """The first read failed and there is no layout to fall back on: say
@@ -657,8 +643,7 @@ class Application:
                 _dump("backend", {"name": previous.name, "wanted": name,
                                   "forced": previous.forced, "ok": False,
                                   "error": str(error)})
-                _msg(self.window, Gtk.MessageType.ERROR,
-                     "Cannot use the %s backend:\n%s" % (name, error))
+                _msg(self.window, Gtk.MessageType.ERROR, "Cannot use the %s backend:\n%s" % (name, error))
                 self._sync_backend_menu()     # the radio goes back
                 return
             backend, layout = result
@@ -683,8 +668,7 @@ class Application:
         for `seconds`."""
         self._message = text
         self._message_serial += 1
-        GLib.timeout_add_seconds(seconds, self._expire_message,
-                                 self._message_serial)
+        GLib.timeout_add_seconds(seconds, self._expire_message, self._message_serial)
         self._refresh_status()
 
     def _expire_message(self, serial):
@@ -723,12 +707,10 @@ class Application:
         the backend in use — the status bar's one sentence at the moment of
         the drop.  None when this output overlaps nothing (an exact overlap
         is a clone, not this)."""
-        others = [b if a == name else a
-                  for a, b in self.layout.overlaps() if name in (a, b)]
+        others = [b if a == name else a for a, b in self.layout.overlaps() if name in (a, b)]
         if not others:
             return None
-        return "%s overlaps %s. %s" % (name, ", ".join(others),
-                                       self.backend.overlap_note())
+        return "%s overlaps %s. %s" % (name, ", ".join(others), self.backend.overlap_note())
 
     def set_layout(self, layout):
         # whether an overlapping layout is refused, and in whose name, is
@@ -742,13 +724,11 @@ class Application:
     def reload(self):
         if self._busy:
             return
-        self._read_async(self.backend.snapshot, self._reloaded,
-                         "reading the screen configuration...")
+        self._read_async(self.backend.snapshot, self._reloaded, "reading the screen configuration...")
 
     def _reloaded(self, layout, error):
         if error is not None:
-            _msg(self.window, Gtk.MessageType.ERROR,
-                 "Cannot read the screen configuration:\n%s" % error)
+            _msg(self.window, Gtk.MessageType.ERROR, "Cannot read the screen configuration:\n%s" % error)
             if self.layout is None:
                 self._nothing_to_edit(error)
             return
@@ -763,8 +743,7 @@ class Application:
     # -- drawing --------------------------------------------------------------
 
     def place_box(self, box, x, y):
-        box._target = (MARGIN + max(0, x) // self.factor,
-                       MARGIN + max(0, y) // self.factor)
+        box._target = (MARGIN + max(0, x) // self.factor, MARGIN + max(0, y) // self.factor)
         self.canvas.move(box, *box._target)
 
     def redraw(self):
@@ -811,8 +790,7 @@ class Application:
         area cannot hide anything, because a box that covers another is at
         least as big as it."""
         pending = False
-        for b in sorted(self.boxes.values(), key=lambda b: b._pw * b._ph,
-                        reverse=True):
+        for b in sorted(self.boxes.values(), key=lambda b: b._pw * b._ph, reverse=True):
             w = b.get_window()
             if w is None:
                 pending = True          # not realised yet: retry on idle
@@ -829,8 +807,7 @@ class Application:
     def _schedule_dump(self):
         if DUMP:
             self._dump_serial += 1
-            GLib.idle_add(self._dump_layout, self._dump_serial, 0,
-                          priority=GLib.PRIORITY_LOW)
+            GLib.idle_add(self._dump_layout, self._dump_serial, 0, priority=GLib.PRIORITY_LOW)
 
     def _layout_settled(self):
         """True once GTK has allocated every box at the size and place the
@@ -959,8 +936,7 @@ class Application:
         return False
 
     def _track_menu(self, menu, name):
-        menu.connect("map", lambda m: GLib.timeout_add(
-            150, self._dump_menu, m, name))
+        menu.connect("map", lambda m: GLib.timeout_add(150, self._dump_menu, m, name))
 
     # -- zoom -----------------------------------------------------------------
 
@@ -1014,8 +990,7 @@ class Application:
         if open_menu is not None and open_menu.get_mapped():
             if not getattr(open_menu, "_repopulate", False):
                 open_menu._repopulate = True
-                open_menu.connect("deactivate", lambda m: GLib.idle_add(
-                    self._repopulate_outputs_menu))
+                open_menu.connect("deactivate", lambda m: GLib.idle_add(self._repopulate_outputs_menu))
             return
         menu = Gtk.Menu()
         self._track_menu(menu, "outputs")
@@ -1056,8 +1031,7 @@ class Application:
         popup is released here, and this one on its deactivate (from idle,
         after the chosen item's handler ran)."""
         menu.show_all()
-        menu.connect("deactivate", lambda m: GLib.idle_add(
-            self._release_popup, m))
+        menu.connect("deactivate", lambda m: GLib.idle_add(self._release_popup, m))
         self._popup = menu
         if ev is not None:
             menu._anchor = (int(ev.x_root) + 1, int(ev.y_root) + 1)
@@ -1065,8 +1039,7 @@ class Application:
         else:                       # no event (programmatic): at the canvas
             r = _root_origin(self.canvas_bg)
             menu._anchor = (r[0], r[1]) if r else None
-            menu.popup_at_widget(self.canvas_bg, Gdk.Gravity.NORTH_WEST,
-                                 Gdk.Gravity.NORTH_WEST, None)
+            menu.popup_at_widget(self.canvas_bg, Gdk.Gravity.NORTH_WEST, Gdk.Gravity.NORTH_WEST, None)
 
     def _release_popup(self, menu):
         if self._popup is menu:
@@ -1077,8 +1050,7 @@ class Application:
         try:
             fn()
         except LayoutError as e:
-            _msg(self.window, Gtk.MessageType.ERROR,
-                 "%s is not possible here: %s" % (what, e))
+            _msg(self.window, Gtk.MessageType.ERROR, "%s is not possible here: %s" % (what, e))
         self.redraw()
 
     def output_menu(self, name):
@@ -1149,8 +1121,7 @@ class Application:
                       [({"normal": "none", "x": "X axis", "y": "Y axis",
                          "xy": "X and Y axis"}[r], r) for r in REFLECTIONS],
                       o.reflection, lambda v: live().set_reflection(name, v))
-        others = [p for p in lay.active_outputs()
-                  if p is not o and not p.mirror_of]
+        others = [p for p in lay.active_outputs() if p is not o and not p.mirror_of]
         radio_submenu("_Mirror of",
                       [("none", None)] + [(p.name, p.name) for p in others],
                       o.mirror_of, lambda v: live().set_mirror(name, v),
@@ -1181,8 +1152,7 @@ class Application:
 
     def _loaded(self, filename, layout, error):
         if error is not None:
-            _msg(self.window, Gtk.MessageType.ERROR,
-                 "Cannot load %s:\n%s" % (filename, error))
+            _msg(self.window, Gtk.MessageType.ERROR, "Cannot load %s:\n%s" % (filename, error))
             if self.layout is None:
                 self.reload()
             return
@@ -1190,8 +1160,7 @@ class Application:
         self._identify_once()
 
     def _file_dialog(self, title, action, button):
-        d = Gtk.FileChooserDialog(title=title, transient_for=self.window,
-                                  action=action)
+        d = Gtk.FileChooserDialog(title=title, transient_for=self.window, action=action)
         d.add_button("_Cancel", Gtk.ResponseType.CANCEL)
         d.add_button(button, Gtk.ResponseType.ACCEPT)
         folder = os.path.expanduser("~/.screenlayout/")
@@ -1207,8 +1176,7 @@ class Application:
         return d
 
     def do_open(self):
-        d = self._file_dialog("Open Layout", Gtk.FileChooserAction.OPEN,
-                              "_Open")
+        d = self._file_dialog("Open Layout", Gtk.FileChooserAction.OPEN, "_Open")
         r = d.run()
         fn = d.get_filename()
         d.destroy()
@@ -1236,8 +1204,7 @@ class Application:
             return
         fn = os.environ.get("WARANDR_TEST_SAVE_AS")
         if not fn:
-            d = self._file_dialog("Save Layout", Gtk.FileChooserAction.SAVE,
-                                  "_Save")
+            d = self._file_dialog("Save Layout", Gtk.FileChooserAction.SAVE, "_Save")
             d.set_do_overwrite_confirmation(True)
             r = d.run()
             fn = d.get_filename()
@@ -1291,8 +1258,7 @@ class Application:
                 except Exception as e:
                     exc = e
             GLib.idle_add(self._applied, layout, rc, out, err, fresh, exc)
-        threading.Thread(target=work, name="warandr-apply",
-                         daemon=True).start()
+        threading.Thread(target=work, name="warandr-apply", daemon=True).start()
 
     def _set_busy(self, busy):
         self._busy = busy
@@ -1319,8 +1285,7 @@ class Application:
     def do_properties(self):
         if self.layout is None:
             return
-        d = Gtk.Dialog(title="Script Properties", transient_for=self.window,
-                       modal=True)
+        d = Gtk.Dialog(title="Script Properties", transient_for=self.window, modal=True)
         d.add_button("_Close", Gtk.ResponseType.CLOSE)
         d.set_default_size(560, 300)
         tv = Gtk.TextView()
@@ -1335,8 +1300,7 @@ class Application:
         text = self.backend.detail()
         if self.backends:
             text += "\n\nbackends in this session:"
-            for name, _lbl in ((n, lb) for lb, n in BACKEND_ITEMS
-                               if n != "auto"):
+            for name, _lbl in ((n, lb) for lb, n in BACKEND_ITEMS if n != "auto"):
                 what = self.backends.get(name)
                 if what is None:
                     continue

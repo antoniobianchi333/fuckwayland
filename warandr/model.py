@@ -65,8 +65,7 @@ class Mode:
 
 
 class Output:
-    def __init__(self, name, connected=True, modes=(), rotations=None,
-                 hidpi=False):
+    def __init__(self, name, connected=True, modes=(), rotations=None, hidpi=False):
         self.name = name
         self.connected = connected
         self.modes = list(modes)
@@ -155,8 +154,7 @@ class Layout:
     # -- construction -------------------------------------------------------
 
     @classmethod
-    def from_screen(cls, screen, hidpi=False, command_word="xrandr",
-                    overlap_refusal=None):
+    def from_screen(cls, screen, hidpi=False, command_word="xrandr", overlap_refusal=None):
         """Build a layout from a parsed ``xrandr --query``/``--verbose``."""
         lay = cls(hidpi=hidpi, screen_max=screen.max, screen_min=screen.min,
                   command_word=command_word,
@@ -171,8 +169,7 @@ class Layout:
                         pref = r.hz
                         break
                 modes.append(Mode(pm.name, pm.w, pm.h, rates, pref))
-            o = Output(po.name, connected=po.connected, modes=modes,
-                       rotations=po.rotations, hidpi=hidpi)
+            o = Output(po.name, connected=po.connected, modes=modes, rotations=po.rotations, hidpi=hidpi)
             o.active = po.active
             o.primary = po.primary
             o.rotation = po.rotation if po.rotation in ROTATIONS else "normal"
@@ -304,8 +301,7 @@ class Layout:
         ax, ay, aw, ah = self.get(a).rect()
         bx, by, bw, bh = self.get(b).rect()
         x, y = max(ax, bx), max(ay, by)
-        return (x, y, max(0, min(ax + aw, bx + bw) - x),
-                max(0, min(ay + ah, by + bh) - y))
+        return (x, y, max(0, min(ax + aw, bx + bw) - x), max(0, min(ay + ah, by + bh) - y))
 
     def check(self):
         """Raise LayoutError for outputs beyond the server's maximum screen
@@ -317,8 +313,7 @@ class Layout:
             raise LayoutError(self.overlap_refusal)
         x0, y0, x1, y1 = self.bounding_box()
         if x1 - x0 > self.screen_max[0] or y1 - y0 > self.screen_max[1]:
-            raise LayoutError(
-                "A part of an output is outside the virtual screen.")
+            raise LayoutError("A part of an output is outside the virtual screen.")
 
     def snap(self, name, x, y, tolerance):
         """arandr's edge snapping: within `tolerance` layout pixels of another
@@ -366,8 +361,7 @@ class Layout:
     def move(self, name, x, y):
         o = self.get(name)
         if o.mirror_of:
-            raise LayoutError("%s mirrors %s; move that one"
-                              % (name, o.mirror_of))
+            raise LayoutError("%s mirrors %s; move that one" % (name, o.mirror_of))
 
         def do():
             o.x, o.y = int(x), int(y)
@@ -467,8 +461,7 @@ class Layout:
             if not t.active:
                 raise LayoutError("%s is not active" % target)
             if t.mirror_of:
-                raise LayoutError("%s is itself a mirror of %s"
-                                  % (target, t.mirror_of))
+                raise LayoutError("%s is itself a mirror of %s" % (target, t.mirror_of))
 
         def do():
             o.mirror_of = target
@@ -511,13 +504,11 @@ class Layout:
                 args += ["--reflect", o.reflection]
             if abs(o.scale - 1.0) >= 1e-6 or \
                     abs(o.screen_scale - 1.0) >= 1e-6:
-                args += ["--scale", "%sx%s" % (fmt_scale(o.scale),
-                                                fmt_scale(o.scale))]
+                args += ["--scale", "%sx%s" % (fmt_scale(o.scale), fmt_scale(o.scale))]
         return args
 
     def command_line(self, word=None):
-        return " ".join([word or self.command_word] +
-                        [shlex.quote(a) for a in self.args()])
+        return " ".join([word or self.command_word] + [shlex.quote(a) for a in self.args()])
 
     # -- scripts ------------------------------------------------------------
 
@@ -537,8 +528,7 @@ class Layout:
             for i, note in enumerate(notes):
                 lines.insert(1 + i, "# " + note)
         cmd = self.command_line(word)
-        return "\n".join(cmd if ln == PLACEHOLDER else ln
-                         for ln in lines) + "\n"
+        return "\n".join(cmd if ln == PLACEHOLDER else ln for ln in lines) + "\n"
 
     def load_script(self, text):
         """Apply a layout script (arandr's or ours) on top of this layout —
@@ -550,11 +540,9 @@ class Layout:
             lines.pop()
         if not lines or lines[0].strip() != SHEBANG:
             raise LayoutError("Not a shell script.")
-        found = [i for i, ln in enumerate(lines)
-                 if _command_word(ln) is not None]
+        found = [i for i, ln in enumerate(lines) if _command_word(ln) is not None]
         if not found:
-            raise LayoutError(
-                "No recognized xrandr command in this shell script.")
+            raise LayoutError("No recognized xrandr command in this shell script.")
         if len(found) > 1:
             raise LayoutError("More than one xrandr line in this shell script.")
         idx = found[0]
@@ -676,8 +664,7 @@ def _parse_stanzas(argv):
         elif a == "--pos":
             m = re.fullmatch(r"(-?\d+)x(-?\d+)", value())
             if not m:
-                raise LayoutError("failed to parse '%s' as a position"
-                                  % value())
+                raise LayoutError("failed to parse '%s' as a position" % value())
             cur["pos"] = (int(m.group(1)), int(m.group(2)))
             i += 2
         elif a == "--rotate":
@@ -711,8 +698,7 @@ def _parse_scale(text):
     hand-edited script ended in a traceback; and a parsed ``0`` was accepted
     here although set_scale refuses it, then divided by in Output.size().
     Both spellings now give the one ``warandr:`` line xrandr would."""
-    m = re.fullmatch(r"(\d+(?:\.\d*)?|\.\d+)(?:x(\d+(?:\.\d*)?|\.\d+))?",
-                     text)
+    m = re.fullmatch(r"(\d+(?:\.\d*)?|\.\d+)(?:x(\d+(?:\.\d*)?|\.\d+))?", text)
     if not m:
         raise LayoutError("failed to parse '%s' as a scaling factor" % text)
     scale = float(m.group(1))

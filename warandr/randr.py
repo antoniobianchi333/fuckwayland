@@ -82,8 +82,7 @@ def canonical_backend(name):
 
 
 class Backend:
-    def __init__(self, argv, wayland, env=None, source="auto", name=None,
-                 forced=None):
+    def __init__(self, argv, wayland, env=None, source="auto", name=None, forced=None):
         self.argv = list(argv)
         self.wayland = wayland
         self.env = dict(env if env is not None else os.environ)
@@ -166,9 +165,7 @@ class Backend:
         only ever restates ours (we are the one who passed ``--backend``),
         and two answers to one question in one paragraph is worse than
         none."""
-        lines = ["kind: %s" % self.kind,
-                 "runs: %s" % self.command(),
-                 "chosen by: %s" % self.source]
+        lines = ["kind: %s" % self.kind, "runs: %s" % self.command(), "chosen by: %s" % self.source]
         seen = set(ln.split(":", 1)[0] for ln in lines)
         for ln in self.info[1:]:
             if ln.strip() and ln.split(":", 1)[0] not in seen:
@@ -213,8 +210,7 @@ class Backend:
                                          respect_override=False) or "unknown")]
             return self
         try:
-            rc, out, _err = self.run(["--print-backend", "--verbose"],
-                                     timeout=timeout)
+            rc, out, _err = self.run(["--print-backend", "--verbose"], timeout=timeout)
         except RandrError:
             return self
         lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()]
@@ -242,16 +238,13 @@ class Backend:
         except OSError as e:
             raise RandrError("cannot run %s: %s" % (cmd[0], e))
         except subprocess.TimeoutExpired:
-            raise RandrError("%s did not finish within %ds"
-                             % (cmd[0], timeout))
-        return (p.returncode, p.stdout.decode("utf-8", "replace"),
-                p.stderr.decode("utf-8", "replace"))
+            raise RandrError("%s did not finish within %ds" % (cmd[0], timeout))
+        return (p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace"))
 
     def query(self, verbose=True):
         rc, out, err = self.run(["--verbose"] if verbose else ["--query"])
         if rc != 0:
-            raise RandrError("%s failed (%d): %s"
-                             % (self.word, rc, err.strip() or out.strip()))
+            raise RandrError("%s failed (%d): %s" % (self.word, rc, err.strip() or out.strip()))
         return out
 
     def snapshot(self):
@@ -307,8 +300,7 @@ def choose(env=None, forced=None):
     env = dict(os.environ if env is None else env)
     want = canonical_backend(forced)
     if forced and want is None:
-        raise RandrError("unknown backend %r (valid: %s)"
-                         % (forced, ", ".join(BACKENDS)))
+        raise RandrError("unknown backend %r (valid: %s)" % (forced, ", ".join(BACKENDS)))
     if want == "auto":
         want = None
     kind = env.get("WARANDR_BACKEND", "").strip().lower()
@@ -390,11 +382,8 @@ def probe_backends(env=None, timeout=20):
                           "reason": parts[2].strip() if len(parts) > 2 else "",
                           "auto": line[0] == "*"}
     if not info:
-        why = ("wxrandr is not installed" if not argv else
-               "wxrandr does not report its backends")
-        info = {n: {"available": False, "reason": why, "auto": False}
-                for n in WAYLAND_BACKENDS}
+        why = ("wxrandr is not installed" if not argv else "wxrandr does not report its backends")
+        info = {n: {"available": False, "reason": why, "auto": False} for n in WAYLAND_BACKENDS}
         has = bool(shutil.which("xrandr"))
-        info["x11"] = {"available": has, "auto": False,
-                       "reason": "" if has else "no xrandr on PATH"}
+        info["x11"] = {"available": has, "auto": False, "reason": "" if has else "no xrandr on PATH"}
     return info
