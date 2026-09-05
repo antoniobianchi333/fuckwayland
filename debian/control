@@ -17,7 +17,8 @@ Depends: ${python3:Depends},
          ${misc:Depends},
          gir1.2-gtk-3.0,
          python3-gi
-Suggests: wmctrl,
+Suggests: wl-mirror,
+          wmctrl,
           xdotool
 Description: X11 power tools as drop-in clones for Wayland
  Six commands that behave like the X11 tools they clone -- same commands, same
@@ -28,7 +29,7 @@ Description: X11 power tools as drop-in clones for Wayland
    * wxprop   - xprop: properties of native and XWayland windows
    * wxrandr  - xrandr: query and reshape the monitor layout
    * warandr  - arandr: the drag-your-monitors GUI, on Wayland and on X11
-   * wmirror  - mirror a region or an odd-shaped output on wlroots
+   * wmirror  - mirror a region or an odd-shaped output on wlroots (wl-mirror)
  .
  On an X11 session the first four hand over to the real xdotool, wmctrl, xprop
  and xrandr with execve, argv untouched, so one script runs on both session

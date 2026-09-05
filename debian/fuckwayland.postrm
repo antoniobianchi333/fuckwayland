@@ -12,6 +12,11 @@ set -e
 
 case "$1" in
 remove)
+    # The package is going away, so the next install is a fresh start for this
+    # machine and postinst says its piece again.
+    rm -f "${DPKG_ROOT:-}/var/lib/fuckwayland/installed" 2>/dev/null || true
+    rmdir "${DPKG_ROOT:-}/var/lib/fuckwayland" 2>/dev/null || true
+
     if [ -z "${DPKG_ROOT:-}" ] && [ -e /dev/uinput ]; then
         if command -v udevadm >/dev/null 2>&1; then
             udevadm control --reload-rules >/dev/null 2>&1 || true
@@ -36,6 +41,10 @@ remove)
         chown root:root /dev/uinput 2>/dev/null || true
         chmod 0600 /dev/uinput 2>/dev/null || true
     fi
+    ;;
+purge)
+    rm -f "${DPKG_ROOT:-}/var/lib/fuckwayland/installed" 2>/dev/null || true
+    rmdir "${DPKG_ROOT:-}/var/lib/fuckwayland" 2>/dev/null || true
     ;;
 esac
 

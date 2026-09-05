@@ -28,7 +28,15 @@ configure)
         udevadm settle --timeout=5 >/dev/null 2>&1 || true
     fi
 
-    if [ -z "$2" ]; then        # first install, not an upgrade
+    # The banner is for someone who has just acquired the tools: on the first
+    # install, and again after a remove and re-install (the extension and the
+    # rule went away with the package, so the relogin is due again).  A plain
+    # [ -z "$2" ] would not print it the second time -- dpkg passes the old
+    # version for a package left in `rc` state -- so the state is a stamp of
+    # our own, which postrm drops on remove.
+    stamp="${DPKG_ROOT:-}/var/lib/fuckwayland/installed"
+    if [ ! -e "$stamp" ]; then
+        mkdir -p "$(dirname "$stamp")" && : > "$stamp"
         cat <<'EOM'
 
 fuckwayland: wdotool, wwmctl, wxprop, wxrandr, warandr and wmirror are on PATH.
@@ -37,7 +45,8 @@ fuckwayland: wdotool, wwmctl, wxprop, wxrandr, warandr and wmirror are on PATH.
     only scans extension directories at login: LOG OUT AND BACK IN ONCE.  The
     extension is installed and is enabled for you automatically in that first
     session.  wxrandr and warandr work already; until the relogin the window
-    commands say the bridge is not running.
+    commands say the bridge is not running and name gnome/install-bridge.sh,
+    which is the from-a-clone route -- this package has done that part.
   * /dev/uinput is now open to the user at the active seat (udev rule
     60-fuckwayland-uinput.rules), which is what lets wdotool type and click
     without root.  Anyone who can open it can type as you -- see the threat

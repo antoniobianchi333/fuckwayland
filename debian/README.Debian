@@ -76,6 +76,37 @@ machine, remove the rule and run the input commands under sudo instead:
   sudo rm /usr/lib/udev/rules.d/60-fuckwayland-uinput.rules
   sudo udevadm control --reload-rules
 
+Alongside a pip install from the clone
+--------------------------------------
+
+The package and a venv install of the same source live together: /usr/local/bin
+comes before /usr/bin on Ubuntu's PATH, so the symlinks the README's pip route
+makes keep winning for the six command names, dpkg owns nothing under
+/usr/local, and `dpkg -V fuckwayland` stays clean either way.
+
+One thing is worth knowing if the clone is what you are working on.  A venv made
+with --system-site-packages sees /usr/lib/python3/dist-packages, and setuptools'
+editable install (`pip install -e .`) works by appending a finder to
+sys.meta_path -- after the ordinary path finder.  So once this package is
+installed, `import wdotool` inside that venv resolves to the packaged copy, not
+to your clone, and the venv's own commands run the packaged code.  Measured on
+26.04 with Python 3.14.  Either do not install the package on the machine you
+develop on, or point at the clone explicitly:
+
+  PYTHONPATH=/path/to/the/clone ~/.venvs/fuckwayland/bin/wdotool ...
+
+A non-editable install into the venv (`pip install .`) is not affected: those
+files are in the venv's own site-packages, which comes first.
+
+wmirror and wl-mirror
+---------------------
+
+wmirror drives wl-mirror, which is a Suggests and not a Depends: it is only
+useful where the compositor offers a screencopy protocol, which the wlroots
+family does and GNOME does not.  On GNOME `wmirror --check` says so in full --
+"this compositor advertises neither zwlr_screencopy_manager_v1 nor
+ext_image_copy_capture_manager_v1" -- with or without wl-mirror installed.
+
 Installing over the originals
 -----------------------------
 
