@@ -1069,7 +1069,12 @@ Daemon notes:
 - **wlr**: `zwlr_foreign_toplevel_management_unstable_v1` via `wayland_mini`. IDs:
   1000000 + enumeration order. list/activate/close/fullscreen/minimize only; geometry
   unknown (0,0 + output size); move/resize → CmdError.
-- `search`: `re.search` on title (`--name`), app_id (`--class`, `--classname`);
+- `search`: `re.search`, case-insensitive like xdotool's `REG_ICASE`, on title
+  (`--name`) and on the class (`--class`; `--classname` takes the WM_CLASS instance
+  where there is one). The class of a native toplevel is Mutter's `wm_class` and only
+  then `gtk_app_id`, which is the opposite order from the app id `wwmctl -lx` prints;
+  the two differ on Ubuntu 24.04's `gnome-terminal` and agree on 26.04's Ptyxis, and
+  `wm_class` is the X-parity answer ([WWMCTL.md](WWMCTL.md) says which is which);
   `--pid`, `--all/--any`, `--limit N`, `--onlyvisible`, `--sync`. Writes `ctx.stack`.
   Exact output formats for search/getwindowgeometry/getmouselocation (+ `--shell`
   variants): copy from the manpage and `cmd_*.c`.
