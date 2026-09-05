@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent X: tests for wwmctl.x11_mini, the pure-stdlib X11 wire client.
+"""Agent X: tests for wdotool.x11_mini, the pure-stdlib X11 wire client.
 
 Two layers:
 
@@ -33,8 +33,8 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wwmctl import x11_mini
-from wwmctl.x11_mini import X11Conn, X11Error, XUnavailable
+from wdotool import x11_mini
+from wdotool.x11_mini import X11Conn, X11Error, XUnavailable
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

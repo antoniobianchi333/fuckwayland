@@ -9,7 +9,7 @@ Dual-plane design per WWMCTL.md:
   views() carry it -- GNOME bridge `xid`; sway's raw tree exposes it as the
   node's "window" field) so xprop/real-wmctrl interoperate, and X-only
   data (WM_CLASS, WM_CLIENT_MACHINE, geometry) is read from the XWayland
-  server via wwmctl.x11_mini when it is reachable -- with the DISPLAY and
+  server via wdotool.x11_mini when it is reachable -- with the DISPLAY and
   cookie file the backend reports (x_info(): gnome-shell's own on GNOME,
   where Xwayland runs with -auth), else the session scan,
 - with no X server everything still works compositor-only (class from
@@ -18,16 +18,16 @@ Dual-plane design per WWMCTL.md:
 
 Listing sources, in order: backend.views() (typed View records: GNOME),
 the sway-private _nodes() tree, the generic backend.list(). Desktops come
-from backend.workspaces() (GNOME: names + work areas) or the sway workspace
-list; -k/-n reach the backend's show_desktop()/set_num_desktops() when it
-has them (GNOME) and warn otherwise.
+from backend.workspaces() (GNOME: names + work areas; sway: one row per
+workspace) or are synthesized from get_desktop()/num_desktops(); -k/-n reach
+the backend's show_desktop()/set_num_desktops() when it has them (GNOME) and
+warn otherwise.
 
 Output strings below are byte-parity copies of wmctrl 1.07 (main.c)."""
 
 import dataclasses
 import os
 import re
-import socket
 import struct
 import sys
 import time
@@ -35,7 +35,7 @@ import time
 from wdotool import backend_detect, session
 from wdotool.backend import warn as _warn
 from wdotool.ctx import CmdError
-from wwmctl.x11_mini import XUnavailable
+from wdotool.x11_mini import XUnavailable, hostname
 
 # _NET_WM_STATE actions (EWMH)
 STATE_REMOVE = 0
@@ -64,7 +64,7 @@ def _x11_connect(display=None, xauthority=None):
     if os.environ.get("WWMCTL_NO_X"):
         return None
     try:
-        from wwmctl import x11_mini
+        from wdotool import x11_mini
         if display is None and xauthority is None:
             return x11_mini.X11Conn()
         return x11_mini.X11Conn(display, xauthority=xauthority)
@@ -135,8 +135,7 @@ class Core:
             if params is None:
                 self._x11 = _x11_connect()
             else:
-                self._x11 = _x11_connect(display=params[0],
-                                         xauthority=params[1])
+                self._x11 = _x11_connect(display=params[0], xauthority=params[1])
         return self._x11
 
     def _x_is_up(self) -> bool:
@@ -164,30 +163,16 @@ class Core:
         for v in views:
             win = v.window
             xid = int(v.xid or 0)
-            if xid:
-                cls = _dot_class(v.instance or None, v.cls or None)
-            elif v.app_id:
-                cls = "%s.%s" % (v.app_id, v.app_id)
-            else:
-                cls = _dot_class(v.instance or None, v.cls or None)
-            out.append(UWindow(
-                id=xid if xid else win.id,
-                node_id=win.id,
-                is_x=bool(xid),
-                title=win.title,
-                class_=cls,
-                machine=host,
-                pid=win.pid,
-                x=win.x, y=win.y, w=win.w, h=win.h,
-                desktop=win.desktop,
-                focused=win.focused,
-                fx=win.x, fy=win.y, fw=win.w, fh=win.h,
-            ))
+            # only a native view falls back to its app id; an XWayland view
+            # has a real WM_CLASS pair, and so does a native one that set it
+            cls = ("%s.%s" % (v.app_id, v.app_id) if not xid and v.app_id
+                   else _dot_class(v.instance or None, v.cls or None))
+            out.append(_uwindow(win, host, xid, cls, win.title))
         return out
 
     def windows(self) -> list[UWindow]:
         backend = self.backend()
-        host = _hostname()
+        host = hostname() or None   # UWindow.machine: None means unknown
         out = None
         views_fn = getattr(backend, "views", None)
         if callable(views_fn):  # typed View records (GNOME bridge)
@@ -212,19 +197,7 @@ class Core:
                     cls = _dot_class(wp.get("instance"), wp.get("class"))
                     if node.get("app_id"):
                         cls = "%s.%s" % (node["app_id"], node["app_id"])
-                    out.append(UWindow(
-                        id=xid if xid else win.id,
-                        node_id=win.id,
-                        is_x=bool(xid),
-                        title=node.get("name"),
-                        class_=cls,
-                        machine=host,
-                        pid=win.pid,
-                        x=win.x, y=win.y, w=win.w, h=win.h,
-                        desktop=win.desktop,
-                        focused=win.focused,
-                        fx=win.x, fy=win.y, fw=win.w, fh=win.h,
-                    ))
+                    out.append(_uwindow(win, host, xid, cls, node.get("name")))
             except (TypeError, ValueError, KeyError) as e:
                 self.vprint("_nodes() has an unexpected shape (%s: %s); "
                             "using the generic backend listing\n"
@@ -234,13 +207,7 @@ class Core:
             out = []
             for win in backend.list():
                 cls = "%s.%s" % (win.class_, win.class_) if win.class_ else None
-                out.append(UWindow(
-                    id=win.id, node_id=win.id, is_x=False,
-                    title=win.title or None, class_=cls, machine=host,
-                    pid=win.pid, x=win.x, y=win.y, w=win.w, h=win.h,
-                    desktop=win.desktop, focused=win.focused,
-                    fx=win.x, fy=win.y, fw=win.w, fh=win.h,
-                ))
+                out.append(_uwindow(win, host, 0, cls, win.title or None))
         self._enrich(out)
         self._check_id_clash(out)
         return out
@@ -358,8 +325,7 @@ class Core:
             # sentence on every backend (a click on GNOME and KDE, the next
             # focus change on sway), so the backend supplies it.
             b = self.backend()
-            _warn(getattr(b, "select_window_hint",
-                          "click the target window to select it"))
+            _warn(b.select_window_hint)
             node = b.select_window()
             for w in self.windows():
                 if w.node_id == node:
@@ -397,11 +363,7 @@ class Core:
             # which also works when the focused workspace is named (no
             # number — get_desktop() would return -1 and the numeric route
             # would mis-file the window on a workspace called "0").
-            run = getattr(backend, "run", None)
-            if run is not None and getattr(backend, "_nodes", None):
-                backend.window_desktop(w.node_id)  # gone -> CmdError, exit 1
-                run("[con_id=%d] move container to workspace current"
-                    % w.node_id)
+            if backend.move_to_current_desktop(w.node_id):
                 return 0
             desktop = backend.get_desktop()
         if desktop < 0:
@@ -415,7 +377,7 @@ class Core:
 
     def to_current_and_activate(self, w: UWindow) -> int:  # -R
         self.to_desktop(w, -1)
-        if getattr(self.backend(), "_nodes", None) is None:
+        if self.backend().name != "sway":
             # wmctrl sleeps to give an asynchronous WM time to move the
             # window; the sway IPC round-trip above is synchronous, so
             # only non-sway backends need the grace period
@@ -683,8 +645,7 @@ class Core:
         try:
             atom = x.atom("_NET_WM_STATE_%s" % name)
             before = self._x_state_has(x, w.id, atom)
-            x.send_root_message(w.id, "_NET_WM_STATE",
-                                [action, atom, 0, 0, 0])
+            x.send_root_message(w.id, "_NET_WM_STATE", [action, atom, 0, 0, 0])
         except Exception as e:
             self.vprint("_NET_WM_STATE ClientMessage failed: %s\n" % e)
             return False
@@ -723,9 +684,7 @@ class Core:
                   "title; ignoring")
             return 0
         try:
-            x.set_name(w.id, title,
-                       icon=mode in ("T", "I"), long_=mode in ("T", "N"),
-                       utf8=self.utf8)
+            x.set_name(w.id, title, icon=mode in ("T", "I"), long_=mode in ("T", "N"), utf8=self.utf8)
         except Exception as e:
             _warn("cannot set the window title: %s; ignoring" % e)
         return 0
@@ -748,8 +707,7 @@ class Core:
                                     machine,
                                     w.title if w.title is not None else "N/A")
 
-    def list_one_window(self, w: UWindow, show_pid: bool,
-                        show_geometry: bool, show_class: bool) -> int:  # -L
+    def list_one_window(self, w: UWindow, show_pid: bool, show_geometry: bool, show_class: bool) -> int:  # -L
         """1.07+git's `-r <WIN> -L`: the window's own `-l` row. Its machine
         column is sized from that one window (display_window's
         `max_client_machine_len == 0` branch), so nothing is padded."""
@@ -783,8 +741,7 @@ class Core:
             _warn("cannot set the window icon: %s; ignoring" % e)
         return 0
 
-    def list_windows(self, show_pid: bool, show_geometry: bool,
-                     show_class: bool) -> int:
+    def list_windows(self, show_pid: bool, show_geometry: bool, show_class: bool) -> int:
         wins = self.windows()
         # The machine column is right-aligned to the LONGEST
         # WM_CLIENT_MACHINE. wmctrl 1.07 uses the LAST row's instead (a bug
@@ -796,8 +753,7 @@ class Core:
         # Widths count BYTES like printf's %*s, not characters.
         machine_len = max([_blen(w.machine) for w in wins if w.machine] or [0])
         for w in wins:
-            sys.stdout.write(self._list_row(w, show_pid, show_geometry,
-                                            show_class, machine_len) + "\n")
+            sys.stdout.write(self._list_row(w, show_pid, show_geometry, show_class, machine_len) + "\n")
         return 0
 
     def list_current_desktop(self) -> int:  # -j (1.07+git)
@@ -808,9 +764,9 @@ class Core:
     def _desktop_rows(self):
         """[(id, current?, dg, vp, wa, name)]. backend.workspaces() when the
         backend has it (GNOME: index, name, work area -- what wmctrl reads
-        from _NET_DESKTOP_NAMES/_NET_WORKAREA); sway: one row per workspace
-        (id = num-1, same mapping as wdotool's desktop commands); otherwise
-        synthesized from the generic backend API."""
+        from _NET_DESKTOP_NAMES/_NET_WORKAREA; sway: one row per workspace,
+        index num-1, the same mapping wdotool's desktop commands use);
+        otherwise synthesized from the generic backend API."""
         backend = self.backend()
         size_fn = getattr(backend, "display_size", None)
         try:
@@ -830,40 +786,11 @@ class Core:
                              "%d,%d %dx%d" % (wx, wy, ww, wh),
                              ws.name or "%d" % ws.index))
             return rows
-        workspaces = None
-        msg = getattr(backend, "_msg", None)
-        if msg is not None:
-            try:
-                from wdotool.backend_sway import GET_WORKSPACES
-                workspaces = msg(GET_WORKSPACES)
-            except Exception:
-                workspaces = None
-        if workspaces is not None:
-            # sway answers GET_WORKSPACES in creation order; real wmctrl -d
-            # is always ascending and positionally indexed, which is what a
-            # caller reading "the third line is desktop 2" relies on.
-            workspaces = sorted(
-                workspaces, key=lambda ws: (ws.get("num", -1) < 0,
-                                            ws.get("num", -1),
-                                            ws.get("name") or ""))
-            here = next((i for i, ws in enumerate(workspaces)
-                         if ws.get("focused")), -1)
-            vps = self._viewports(len(workspaces), here)
-            for i, ws in enumerate(workspaces):
-                num = ws.get("num", -1)
-                rect = ws.get("rect") or {}
-                wa = "%d,%d %dx%d" % (rect.get("x", 0), rect.get("y", 0),
-                                      rect.get("width", 0),
-                                      rect.get("height", 0))
-                rows.append((num - 1 if num > 0 else -1,
-                             bool(ws.get("focused")), dg, vps[i], wa,
-                             ws.get("name") or "N/A"))
-        else:
-            cur = backend.get_desktop()
-            n = backend.num_desktops()
-            vps = self._viewports(n, cur)
-            for i in range(n):
-                rows.append((i, i == cur, dg, vps[i], "N/A", "N/A"))
+        cur = backend.get_desktop()
+        n = backend.num_desktops()
+        vps = self._viewports(n, cur)
+        for i in range(n):
+            rows.append((i, i == cur, dg, vps[i], "N/A", "N/A"))
         return rows
 
     def _viewports(self, n: int, cur: int) -> list[str]:
@@ -885,7 +812,7 @@ class Core:
             if x is not None:
                 try:
                     vals = x.get_prop_ints(x.root(), "_NET_DESKTOP_VIEWPORT")
-                except Exception:                              # noqa: BLE001
+                except Exception:
                     vals = []
         out = []
         for i in range(n):
@@ -928,17 +855,13 @@ class Core:
                     deadline = time.monotonic() + 2.0
                     while not sup and time.monotonic() < deadline:
                         time.sleep(0.05)
-                        sup = x.get_prop_ints(x.root(),
-                                              "_NET_SUPPORTING_WM_CHECK")
+                        sup = x.get_prop_ints(x.root(), "_NET_SUPPORTING_WM_CHECK")
                 if sup:
                     got_x = True
-                    name = _xtry(lambda: x.get_prop_string(
-                        sup[0], "_NET_WM_NAME")) or None
-                    class_ = _xtry(lambda: x.get_prop_string(
-                        sup[0], "WM_CLASS")) or None
+                    name = _xtry(lambda: x.get_prop_string(sup[0], "_NET_WM_NAME")) or None
+                    class_ = _xtry(lambda: x.get_prop_string(sup[0], "WM_CLASS")) or None
                     pid = _xtry(lambda: x.get_pid(sup[0])) or 0
-                    ints = _xtry(lambda: x.get_prop_ints(
-                        x.root(), "_NET_SHOWING_DESKTOP"))
+                    ints = _xtry(lambda: x.get_prop_ints(x.root(), "_NET_SHOWING_DESKTOP"))
                     showing = ints[0] if ints else None
             except Exception:
                 got_x = False
@@ -947,8 +870,7 @@ class Core:
             # that knows what its WM calls itself (GNOME: the same string
             # Mutter puts on the X check window) says so
             backend = self.backend()
-            name = getattr(backend, "wm_name", None) \
-                or getattr(backend, "name", None)
+            name = getattr(backend, "wm_name", None) or getattr(backend, "name", None)
         if name is None:
             self.vprint("Cannot get name of the window manager "
                         "(_NET_WM_NAME).\n")
@@ -1025,8 +947,7 @@ class Core:
         if self._showing_desktop() == want:
             return True          # already in that mode: nothing to ask for
         try:
-            x.send_root_message(x.root(), "_NET_SHOWING_DESKTOP",
-                                [want, 0, 0, 0, 0])
+            x.send_root_message(x.root(), "_NET_SHOWING_DESKTOP", [want, 0, 0, 0, 0])
         except Exception as e:
             self.vprint("_NET_SHOWING_DESKTOP ClientMessage failed: %s\n" % e)
             return False
@@ -1098,8 +1019,7 @@ class Core:
                       full_match: bool, show_pid: bool = False,
                       show_geometry: bool = False,
                       show_class: bool = False) -> int:
-        w = self.find_target(param_window, match_by_id, match_by_cls,
-                             full_match)
+        w = self.find_target(param_window, match_by_id, match_by_cls, full_match)
         if w is None:
             return 1  # wmctrl exits 1 silently when nothing matches
         self.vprint("Using window: 0x%08x\n" % w.id)
@@ -1126,13 +1046,11 @@ class Core:
             self.backend().lower(w.node_id)
             return 0
         if mode == "L":  # 1.07+git (distro patch): this window's -l row
-            return self.list_one_window(w, show_pid, show_geometry,
-                                        show_class)
+            return self.list_one_window(w, show_pid, show_geometry, show_class)
         if mode == "M":  # 1.07+git (distro patch): _NET_WM_ICON from an XPM
             return self.set_mini_icon(w, param or "")
         if mode == "E":  # 1.07+git, undocumented: print the title
-            sys.stdout.write("%s\n" % (w.title if w.title is not None
-                                        else ""))
+            sys.stdout.write("%s\n" % (w.title if w.title is not None else ""))
             return 0
         if mode == "b":
             return self.window_state(w, param or "")
@@ -1144,11 +1062,28 @@ class Core:
 
 # -- small parsing/format helpers -------------------------------------------
 
-def _hostname() -> str | None:
-    try:
-        return socket.gethostname() or None
-    except OSError:
-        return None
+def _uwindow(win, host: str | None, xid: int | None, cls: str | None, title: str | None) -> UWindow:
+    """A UWindow over one backend Window, for all three listing sources.
+
+    `xid` is the window's X id when it has one (0/None for a native view):
+    it becomes the printed id and decides is_x, while the compositor's node
+    id stays in node_id, which is what every action addresses. `title` is a
+    parameter and not just `win.title` because the three sources disagree
+    about the absent title -- sway carries it on the tree node and the
+    generic listing folds "" to None -- and -l prints None as "N/A"."""
+    return UWindow(
+        id=xid if xid else win.id,
+        node_id=win.id,
+        is_x=bool(xid),
+        title=title,
+        class_=cls,
+        machine=host,
+        pid=win.pid,
+        x=win.x, y=win.y, w=win.w, h=win.h,
+        desktop=win.desktop,
+        focused=win.focused,
+        fx=win.x, fy=win.y, fw=win.w, fh=win.h,
+    )
 
 
 def _dot_class(instance: str | None, class_: str | None) -> str | None:

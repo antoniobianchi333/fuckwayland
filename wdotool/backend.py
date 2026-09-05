@@ -227,6 +227,14 @@ class WindowBackend:
         get_desktop()/num_desktops())."""
         return None
 
+    def move_to_current_desktop(self, wid: int) -> bool:
+        """Move `wid` to whatever desktop is current, in one operation, and
+        say whether that happened. False -- the answer everywhere but sway
+        -- means "ask me which desktop is current and move it by number";
+        sway answers True because a focused workspace can be named and have
+        no number at all, which get_desktop() can only report as -1."""
+        return False
+
     def x_info(self) -> tuple[str, str] | None:
         """(DISPLAY, XAUTHORITY) of the session's Xwayland, or None when the
         backend cannot tell (callers fall back to session.find_x_display /

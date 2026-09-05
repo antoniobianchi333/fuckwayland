@@ -2,7 +2,7 @@
 
 Two planes, per WXPROP.md:
 
-- X windows (XWayland): everything through wwmctl.x11_mini against the real
+- X windows (XWayland): everything through wdotool.x11_mini against the real
   X server — GetProperty/ListProperties for reads, ChangeProperty/
   DeleteProperty for -set/-remove, PropertyNotify events for -spy. Real
   xprop is the byte oracle.
@@ -10,8 +10,9 @@ Two planes, per WXPROP.md:
   built from compositor data, printed through the exact same fmt.py
   machinery so `wxprop -id N WM_CLASS`-style script parsing just works.
   -set/-remove on a native window is a clean one-line error (there is no
-  property store to write to); -spy subscribes to sway window IPC events
-  and reprints the synthesized property that changed.
+  property store to write to); -spy rides the compositor's own event
+  stream (backend.events()) and reprints the synthesized property that
+  changed.
 
 Window ids: an id that matches a compositor node resolves through the
 node (an XWayland node redirects to its real X window id); anything else
@@ -30,16 +31,21 @@ and -root merges the real X root with the bridge's view of all windows
 
 import os
 import queue
-import socket
 import struct
 import sys
 import threading
 
 from wxprop.fmt import FatalError
 
-try:  # the X error classes, for narrow catches in the -name DFS
-    from wwmctl.x11_mini import X11Error, XUnavailable
+try:  # the X error classes for narrow catches in the -name DFS, the X
+    # error text for -id on a dead window, and this machine's name
+    from wdotool.x11_mini import X11Error, X_ERROR_TEXT, XUnavailable, hostname
 except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
+    X_ERROR_TEXT = {}
+
+    def hostname() -> str:
+        return ""
+
     class X11Error(Exception):
         pass
 
@@ -49,33 +55,7 @@ except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
 # PropertyChangeMask | StructureNotifyMask
 SPY_EVENT_MASK = 0x420000
 
-_I3_MAGIC = b"i3-ipc"
-_I3_SUBSCRIBE = 2
-_I3_EVENT_BIT = 0x80000000
-_I3_EVENT_WINDOW = _I3_EVENT_BIT | 3
-_I3_EVENT_WORKSPACE = _I3_EVENT_BIT | 0
-
 # -- Xlib's default error report (what xprop shows on e.g. BadWindow) -------
-
-_X_ERROR_TEXT = {
-    1: "BadRequest (invalid request code or no such operation)",
-    2: "BadValue (integer parameter out of range for operation)",
-    3: "BadWindow (invalid Window parameter)",
-    4: "BadPixmap (invalid Pixmap parameter)",
-    5: "BadAtom (invalid Atom parameter)",
-    6: "BadCursor (invalid Cursor parameter)",
-    7: "BadFont (invalid Font parameter)",
-    8: "BadMatch (invalid parameter attributes)",
-    9: "BadDrawable (invalid Pixmap or Window parameter)",
-    10: "BadAccess (attempt to access private resource denied)",
-    11: "BadAlloc (insufficient resources for operation)",
-    12: "BadColor (invalid Colormap parameter)",
-    13: "BadGC (invalid GC parameter)",
-    14: "BadIDChoice (invalid resource ID chosen for this connection)",
-    15: "BadName (named color or font does not exist)",
-    16: "BadLength (poly request too large or internal Xlib length error)",
-    17: "BadImplementation (server does not implement operation)",
-}
 
 _X_OPCODE_NAMES = {
     2: "X_ChangeWindowAttributes", 14: "X_GetGeometry", 15: "X_QueryTree",
@@ -89,7 +69,7 @@ _X_RESOURCE_ERRORS = {3, 4, 6, 7, 9, 12, 13, 14}
 
 
 def x_error_report(err) -> str:
-    text = _X_ERROR_TEXT.get(err.code, "%s (unknown error)" % err.name)
+    text = X_ERROR_TEXT.get(err.code, "%s (unknown error)" % err.name)
     seq = getattr(err, "sequence", 0)
     lines = ["X Error of failed request:  %s" % text,
              "  Major opcode of failed request:  %d (%s)"
@@ -100,8 +80,7 @@ def x_error_report(err) -> str:
     elif err.code == 5:
         lines.append("  AtomID (in failed request):  0x%x" % err.bad_value)
     elif err.code in _X_RESOURCE_ERRORS:
-        lines.append("  Resource id in failed request:  0x%x"
-                     % err.bad_value)
+        lines.append("  Resource id in failed request:  0x%x" % err.bad_value)
     lines.append("  Serial number of failed request:  %d" % seq)
     lines.append("  Current serial number in output stream:  %d" % seq)
     return "\n".join(lines) + "\n"
@@ -117,7 +96,7 @@ def _x11_connect(display, xauthority=None):
     if os.environ.get("WXPROP_NO_X"):
         return None
     try:
-        from wwmctl import x11_mini
+        from wdotool import x11_mini
         if xauthority:
             return x11_mini.X11Conn(display, xauthority=xauthority)
         return x11_mini.X11Conn(display)
@@ -174,13 +153,6 @@ def _progname() -> str:
     return argv0
 
 
-def _hostname() -> str:
-    try:
-        return socket.gethostname() or ""
-    except OSError:
-        return ""
-
-
 def _xwayland_running() -> bool:
     try:
         from wdotool import session
@@ -221,8 +193,7 @@ def _node_from_view(v) -> dict:
     }
     if not xid and not node["app_id"] and (v.instance or v.cls):
         # a native window without an app id but with a WM_CLASS pair
-        node["window_properties"] = {"instance": v.instance, "class": v.cls,
-                                     "title": w.title}
+        node["window_properties"] = {"instance": v.instance, "class": v.cls, "title": w.title}
     return node
 
 
@@ -474,15 +445,11 @@ def _p_utf8(s: str):
 
 
 def _p_cardinal(vals):
-    return ("CARDINAL", 32,
-            struct.pack("<%dI" % len(vals),
-                        *[v & 0xFFFFFFFF for v in vals]))
+    return ("CARDINAL", 32, struct.pack("<%dI" % len(vals), *[v & 0xFFFFFFFF for v in vals]))
 
 
 def _p_window(vals):
-    return ("WINDOW", 32,
-            struct.pack("<%dI" % len(vals),
-                        *[v & 0xFFFFFFFF for v in vals]))
+    return ("WINDOW", 32, struct.pack("<%dI" % len(vals), *[v & 0xFFFFFFFF for v in vals]))
 
 
 def _p_atoms(atoms: NativeAtoms, names):
@@ -501,8 +468,7 @@ class XTarget:
         self.win = win
 
     def intern(self, name: bytes, create: bool) -> bool:
-        return bool(self.conn.atom(name.decode("latin-1"),
-                                   only_if_exists=not create))
+        return bool(self.conn.atom(name.decode("latin-1"), only_if_exists=not create))
 
     def fetch(self, name: bytes):
         r = self.conn.read_property(self.win, name.decode("latin-1"))
@@ -527,8 +493,7 @@ class XTarget:
         return self.conn.delete_property(self.win, name.decode("latin-1"))
 
     def set_prop(self, name: bytes, type_name: str, size: int, data: bytes):
-        self.conn.change_property(self.win, name.decode("latin-1"),
-                                  type_name, size, data)
+        self.conn.change_property(self.win, name.decode("latin-1"), type_name, size, data)
 
 
 class NativeTarget:
@@ -611,19 +576,17 @@ class NativeViewTarget(NativeTarget):
         props[b"_NET_WM_STATE"] = _p_atoms(self.atoms, states)
         wtype = "_NET_WM_WINDOW_TYPE_NORMAL"
         if rich:
-            wtype = _WINDOW_TYPES.get(node.get("window_type") or "NORMAL",
-                                      wtype)
+            wtype = _WINDOW_TYPES.get(node.get("window_type") or "NORMAL", wtype)
         props[b"_NET_WM_WINDOW_TYPE"] = _p_atoms(self.atoms, [wtype])
         transient = node.get("transient_for") or 0
         if transient:
             props[b"WM_TRANSIENT_FOR"] = _p_window([transient])
         desktop = getattr(win, "desktop", -1)
-        props[b"_NET_WM_DESKTOP"] = _p_cardinal(
-            [desktop if desktop >= 0 else 0xFFFFFFFF])
+        props[b"_NET_WM_DESKTOP"] = _p_cardinal([desktop if desktop >= 0 else 0xFFFFFFFF])
         pid = node.get("pid") or getattr(win, "pid", 0)
         if pid:
             props[b"_NET_WM_PID"] = _p_cardinal([pid])
-        host = _hostname()
+        host = hostname()
         if host:
             props[b"WM_CLIENT_MACHINE"] = _p_string(host)
         wp = node.get("window_properties") or {}
@@ -633,8 +596,7 @@ class NativeViewTarget(NativeTarget):
             # WM_CLASS is STRING by ICCCM whatever the app id looks like,
             # so this pair is not routed through _p_string's UTF8_STRING
             # escape hatch -- an X twin's WM_CLASS is STRING too.
-            data = (_latin1(instance or "") + b"\0" +
-                    _latin1(cls or "") + b"\0")
+            data = _latin1(instance or "") + b"\0" + _latin1(cls or "") + b"\0"
             props[b"WM_CLASS"] = ("STRING", 8, data)
         title = node.get("name")
         if title is None:
@@ -648,8 +610,7 @@ class NativeViewTarget(NativeTarget):
             # native one that answers "is this window minimized?" the same
             # way keeps a script working across the two planes.
             state = 1 if node.get("visible", True) else 3
-            props[b"WM_STATE"] = ("WM_STATE", 32, struct.pack("<II",
-                                                              state, 0))
+            props[b"WM_STATE"] = ("WM_STATE", 32, struct.pack("<II", state, 0))
         return props
 
 
@@ -834,8 +795,7 @@ class FontTarget:
         return True
 
     def intern(self, name: bytes, create: bool) -> bool:
-        return bool(self.conn.atom(name.decode("latin-1"),
-                                   only_if_exists=not create))
+        return bool(self.conn.atom(name.decode("latin-1"), only_if_exists=not create))
 
     def fetch(self, name: bytes):
         atom = self.conn.atom(name.decode("latin-1"), only_if_exists=True)
@@ -888,8 +848,7 @@ class MissingWindowTarget:
 
     def _fatal(self):
         if self.hint:
-            raise FatalError("cannot look up window id # 0x%x: %s"
-                             % (self.wid, self.hint))
+            raise FatalError("cannot look up window id # 0x%x: %s" % (self.wid, self.hint))
         raise FatalError("window id # 0x%x does not exists!" % self.wid)
 
     def intern(self, name, create=False):
@@ -954,8 +913,7 @@ def resolve_root(sess: Session):
         return XTarget(x, x.root())
     if sess.backend() is None:
         if sess.backend_error:
-            raise FatalError("cannot examine the root window: %s"
-                             % sess.backend_error)
+            raise FatalError("cannot examine the root window: %s" % sess.backend_error)
         raise FatalError("cannot examine the root window: no X server and "
                          "no compositor backend")
     return NativeRootTarget(sess, NativeAtoms())
@@ -1030,8 +988,7 @@ def select_target(sess: Session, prog: str):
                          "backend; use -root, -id or -name")
     # The instruction differs by backend: click on GNOME and KDE, focus the
     # window on sway, whose IPC has no picker (see WindowBackend).
-    sys.stderr.write("%s: %s\n" % (prog, getattr(
-        b, "select_window_hint", "click the target window to select it")))
+    sys.stderr.write("%s: %s\n" % (prog, b.select_window_hint))
     sys.stderr.flush()
     try:
         node_id = b.select_window()
@@ -1043,8 +1000,7 @@ def select_target(sess: Session, prog: str):
 # -- Show_Prop ---------------------------------------------------------------
 
 
-def show_prop(formatter, target, out: bytearray, fmt_b, dfmt_b,
-              prop_b: bytes):
+def show_prop(formatter, target, out: bytearray, fmt_b, dfmt_b, prop_b: bytes):
     out += prop_b
     if not target.intern(prop_b, create=False):
         out += b":  no such atom on any window.\n"
@@ -1054,8 +1010,7 @@ def show_prop(formatter, target, out: bytearray, fmt_b, dfmt_b,
         out += b":  not found.\n"
         return
     type_name, size, wire = r
-    formatter.render_property(out, prop_b, type_name, size, wire,
-                              fmt_b, dfmt_b)
+    formatter.render_property(out, prop_b, type_name, size, wire, fmt_b, dfmt_b)
 
 
 def show_all_props(formatter, target, out: bytearray):
@@ -1109,33 +1064,6 @@ def spy_x(formatter, target: XTarget, specs):
         raise
 
 
-def _sway_ipc_events(backend, payload: bytes):
-    """Subscribe on a fresh IPC socket; yield (event_type, data) forever.
-    Reuses the sway backend's framing helpers (the documented-contract
-    reuse pattern wwmctl established for _nodes)."""
-    connect = getattr(backend, "_connect", None)
-    send = getattr(backend, "_send", None)
-    recv = getattr(backend, "_recv", None)
-    if not (connect and send and recv):
-        raise FatalError("-spy on a native window needs the sway backend")
-    s = connect()
-    try:
-        send(s, _I3_SUBSCRIBE, payload)
-        t, reply = recv(s)
-        if (t & _I3_EVENT_BIT) or not (isinstance(reply, dict)
-                                       and reply.get("success")):
-            raise FatalError("sway IPC event subscription failed")
-        while True:
-            t, data = recv(s)
-            if t & _I3_EVENT_BIT and isinstance(data, dict):
-                yield t, data
-    finally:
-        try:
-            s.close()
-        except OSError:
-            pass
-
-
 # which synthesized properties a sway window event touches, in the order
 # the X plane would emit them (WM_NAME before _NET_WM_NAME, like xterm)
 _NATIVE_EVENT_PROPS = {
@@ -1159,6 +1087,16 @@ _VIEW_EVENT_PROPS = {
     "move": (),
     "focus": (),
     "new": (),
+}
+
+# root-level, sway: no stacking list (the tree is not a stacking order)
+# and no desktop names (workspaces are numbered), so two atoms fewer than
+# the bridge's table below
+_SWAY_ROOT_EVENT_PROPS = {
+    "new": (b"_NET_CLIENT_LIST",),
+    "close": (b"_NET_CLIENT_LIST", b"_NET_ACTIVE_WINDOW"),
+    "focus": (b"_NET_ACTIVE_WINDOW",),
+    "workspace": (b"_NET_CURRENT_DESKTOP", b"_NET_NUMBER_OF_DESKTOPS"),
 }
 
 # root-level: what a bridge event changes among the synthesized root props
@@ -1204,86 +1142,55 @@ def _show_names(formatter, target, names, specs) -> bytes:
     return bytes(out)
 
 
-def _native_event_source(backend, root: bool):
-    """(kind, iterator): "sway" yields raw i3 (type, data) frames, "hook"
-    yields (id, change) from backend.events(). FatalError when neither
-    exists."""
-    if all(getattr(backend, n, None) for n in ("_connect", "_send", "_recv")):
-        payload = b'["window","workspace"]' if root else b'["window"]'
-        return "sway", _sway_ipc_events(backend, payload)
+def _native_events(backend, workspaces: bool):
+    """backend.events(): (id, change) forever, in the backend's own change
+    vocabulary. FatalError when the backend has no event stream (the
+    WindowBackend default only raises)."""
     hook = _events_hook(backend)
     if hook is None:
         raise FatalError("-spy on a native window needs the sway backend, "
                          "the GNOME bridge or KWin")
     try:
-        it = hook(None, workspaces=True) if root else hook(None)
+        return hook(None, workspaces=workspaces)
     except TypeError:  # a hook without the workspaces flag
-        it = hook(None)
-    return "hook", it
+        return hook(None)
+
+
+def _is_sway(backend) -> bool:
+    """Which change vocabulary the events carry. The two tables above are
+    deliberately not merged: the same word means different things to sway
+    and to the bridge."""
+    return getattr(backend, "name", "") == "sway"
 
 
 def spy_native_view(formatter, target: NativeViewTarget, specs):
     backend = target.sess.backend()
-    kind, events = _native_event_source(backend, root=False)
-    if kind == "hook":
-        for wid, change in events:
-            if wid != target.node_id:
-                continue
-            if change == "close":
-                return 0
-            names = _VIEW_EVENT_PROPS.get(change)
-            if not names:
-                continue
-            if not target.refresh():
-                return 0  # gone between the event and the re-read
-            out = _show_names(formatter, target, names, specs)
-            if out:
-                _write_flush(out)
-        return 0
-    for t, data in events:
-        if t != _I3_EVENT_WINDOW:
+    table = _NATIVE_EVENT_PROPS if _is_sway(backend) else _VIEW_EVENT_PROPS
+    for wid, change in _native_events(backend, workspaces=False):
+        if wid != target.node_id:
             continue
-        container = data.get("container") or {}
-        if container.get("id") != target.node_id:
-            continue
-        change = data.get("change")
         if change == "close":
             return 0
-        names = _NATIVE_EVENT_PROPS.get(change)
-        if names is None or not names:
+        names = table.get(change)
+        if not names:
             continue
-        if change == "move":
-            target.refresh()  # workspace only lives in the tree
-        else:
-            target.node = container
+        if not target.refresh():
+            return 0  # gone between the event and the re-read
         out = _show_names(formatter, target, names, specs)
         if out:
             _write_flush(out)
+    return 0
 
 
 def spy_native_root(formatter, target: NativeRootTarget, specs):
     backend = target.sess.backend()
-    kind, events = _native_event_source(backend, root=True)
-    if kind == "hook":
-        for _wid, change in events:
-            names = _ROOT_EVENT_PROPS.get(change, ())
-            out = _show_names(formatter, target, names, specs)
-            if out:
-                _write_flush(out)
-        return 0
-    for t, data in events:
-        if t == _I3_EVENT_WINDOW:
-            change = data.get("change")
-            names = {"new": (b"_NET_CLIENT_LIST",),
-                     "close": (b"_NET_CLIENT_LIST", b"_NET_ACTIVE_WINDOW"),
-                     "focus": (b"_NET_ACTIVE_WINDOW",)}.get(change, ())
-        elif t == _I3_EVENT_WORKSPACE:
-            names = (b"_NET_CURRENT_DESKTOP", b"_NET_NUMBER_OF_DESKTOPS")
-        else:
-            continue
+    table = _SWAY_ROOT_EVENT_PROPS if _is_sway(backend) else _ROOT_EVENT_PROPS
+    for _wid, change in _native_events(backend, workspaces=True):
+        names = table.get(change, ())
         out = _show_names(formatter, target, names, specs)
         if out:
             _write_flush(out)
+    return 0
 
 
 def spy_merged_root(formatter, target: MergedRootTarget, specs):
@@ -1304,7 +1211,7 @@ def spy_merged_root(formatter, target: MergedRootTarget, specs):
                 q.put(item)
                 if stop.is_set():
                     return
-        except Exception as e:  # noqa: BLE001 -- surfaced by the main loop
+        except Exception as e:  # surfaced by the main loop
             q.put(("error", str(e)))
 
     if hook is not None:

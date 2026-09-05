@@ -42,7 +42,7 @@ and `swaymsg -t get_tree` exposes XWayland clients with their **real X11 window 
 - `wwmctl/core.py` — UWindow model, unified listing, selection (`-r STR`, `:ACTIVE:`,
   `:SELECT:`, `-i` ids, `-F` exact, `-x` class matching), actions, output formatting.
   Owner: Agent W.
-- `wwmctl/x11_mini.py` — pure-stdlib X11 client. Owner: Agent X. API is FROZEN:
+- `wdotool/x11_mini.py` — pure-stdlib X11 client. Owner: Agent X. API is FROZEN:
 
 ```python
 class XUnavailable(Exception): ...
@@ -356,7 +356,7 @@ nothing installed. wwmctl consumes the same typed hooks as on GNOME
   so `0x40000000`–`0x7FFFFFFF`. `-i` takes either.
 * **`-l -G`.** Real `wmctrl` doubles the frame offset under a non-reparenting
   window manager; our positions are the true ones (the same divergence as on
-  GNOME, documented at `wwmctl/x11_mini.py:get_geometry`). That is Plasma 6.6
+  GNOME, documented at `wdotool/x11_mini.py:get_geometry`). That is Plasma 6.6
   and sway: KWin 5.27's xwm *does* reparent, so on 5.27 both tools print the
   same positions. Sizes, classes, pids and the row set are identical to real
   `wmctrl -lpxG` everywhere.

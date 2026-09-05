@@ -15,7 +15,7 @@ is being measured.  Run it inside a Plasma session (`vmctl user <vm> --
 python3 /tmp/kde-xid-twins.py ...`) with `_NET_CLIENT_LIST` and
 `wwmctl -l` read alongside it.
 
-Built on the repo's own wwmctl.x11_mini connection (stdlib only, no
+Built on the repo's own wdotool.x11_mini connection (stdlib only, no
 python-xlib): a checkout beside this file, else the wwmctl zipapp
 `deploy-to-vm.sh` installs on a guest (zipimport reads it directly).
 """
@@ -26,7 +26,7 @@ for _cand in (_ROOT, "/usr/local/bin/wwmctl", "/usr/bin/wwmctl"):
     if os.path.exists(_cand):
         sys.path.insert(0, _cand)
 try:
-    from wwmctl import x11_mini
+    from wdotool import x11_mini
 except ImportError:                                        # pragma: no cover
     sys.exit("kde-xid-twins: no wwmctl to import: run me from a checkout, "
              "or install the wwmctl zipapp (repro/deploy-to-vm.sh)")

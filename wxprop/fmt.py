@@ -66,8 +66,7 @@ _GARBAGE = 1 << 62
 
 _C_PALETTE = (b" .'`,^:\";~-_+<>i!lI?/\\|()1{}[]rcvunxzjft"
               b"LCJUYXZO0Qoahkbdpqwm*WMB8&%$#@")
-_UTF8_PALETTE = (b" ", b"\342\226\221", b"\342\226\222",
-                 b"\342\226\223", b"\342\226\210")
+_UTF8_PALETTE = (b" ", b"\342\226\221", b"\342\226\222", b"\342\226\223", b"\342\226\210")
 
 UTF8_VALID = 0
 UTF8_FORBIDDEN_VALUE = 1
@@ -290,7 +289,7 @@ class Thunk:
 
     def __init__(self, value, extra_value=None, extra_encoding=None):
         self.value = value
-        self.extra_value = extra_value      # bytes (may include final NUL)
+        self.extra_value = extra_value        # bytes (may include final NUL)
         self.extra_encoding = extra_encoding  # type name for 't'
 
 
@@ -447,8 +446,7 @@ class Formatter:
             return buffer, n * nbytes
         return buffer, min(n * nbytes, self.max_len)
 
-    def break_down(self, buffer: bytes, length: int, type_name,
-                   fmt: bytes, size: int) -> list:
+    def break_down(self, buffer: bytes, length: int, type_name, fmt: bytes, size: int) -> list:
         thunks = []
         pos = 0
         i = 0
@@ -467,9 +465,7 @@ class Formatter:
                 else:
                     item = buffer[pos:nul + 1]  # value counts the NUL
                     consumed = nul + 1 - pos
-                thunks.append(Thunk(
-                    consumed, bytes(item),
-                    type_name if c == 0x74 else None))
+                thunks.append(Thunk(consumed, bytes(item), type_name if c == 0x74 else None))
                 pos += consumed
                 length -= consumed
             elif c == 0x6F:  # o
@@ -487,8 +483,7 @@ class Formatter:
                         v -= 0x100
                     step = 1
                 elif size == 16:
-                    v = int.from_bytes(buffer[pos:pos + 2], "little",
-                                       signed=signed)
+                    v = int.from_bytes(buffer[pos:pos + 2], "little", signed=signed)
                     step = 2
                 else:  # 32: Xlib's _XRead32 SIGN-extends the wire CARD32
                     # into a long (it reads through an `int *`), and
@@ -499,8 +494,7 @@ class Formatter:
                     # negatives), while 32c/32x/32a stay unsigned. All
                     # oracle-verified; the buffer's high 4 bytes are the
                     # zero padding xlib_shape added, so slice the low 4.
-                    v = int.from_bytes(buffer[pos:pos + 4], "little",
-                                       signed=signed)
+                    v = int.from_bytes(buffer[pos:pos + 4], "little", signed=signed)
                     step = 8
                 thunks.append(Thunk(v))
                 pos += step
@@ -526,19 +520,16 @@ class Formatter:
         if c == 0x62:  # b
             return b"True" if t.value else b"False"
         if c == 0x6D:  # m
-            bits = [b"%d" % bit for bit in range(64)
-                    if (t.value >> bit) & 1]
+            bits = [b"%d" % bit for bit in range(64) if (t.value >> bit) & 1]
             return b"{MASK: " + b", ".join(bits) + b"}"
         if c == 0x61:  # a
             name = self.atom_name(t.value & 0xFFFFFFFFFFFFFFFF)
             if name is None:
-                return b"undefined atom # 0x%x" % \
-                    (t.value & 0xFFFFFFFFFFFFFFFF)
+                return b"undefined atom # 0x%x" % (t.value & 0xFFFFFFFFFFFFFFFF)
             return name.encode("latin-1")
         if c == 0x6F:  # o
             return self.format_icons(t.extra_value)
-        raise FatalError("bad format character: %s"
-                         % bytes([c]).decode("latin-1"))
+        raise FatalError("bad format character: %s" % bytes([c]).decode("latin-1"))
 
     def format_thunk_i(self, thunks, fmt: bytes, i: int) -> bytes:
         if i >= len(thunks):
@@ -548,8 +539,7 @@ class Formatter:
     def format_len_unicode(self, data: bytes) -> bytes:
         validity = is_valid_utf8(data)
         if validity != UTF8_VALID:
-            err = _UTF8_ERRORS.get(
-                validity, b"<Invalid UTF-8 string: Unknown error>")
+            err = _UTF8_ERRORS.get(validity, b"<Invalid UTF-8 string: Unknown error>")
             return err + format_string(data, False)
         return format_string(data, self.utf8_locale)
 
@@ -615,8 +605,7 @@ class Formatter:
         """The mb loop of Format_Len_Text: printable locale chars pass raw,
         everything else is escaped one BYTE at a time."""
         if not self.utf8_locale:
-            return b"".join(bytes([c]) if _c_isprint(c) else b"\\%03o" % c
-                            for c in item)
+            return b"".join(bytes([c]) if _c_isprint(c) else b"\\%03o" % c for c in item)
         out = bytearray()
         i = 0
         while i < len(item):
@@ -681,9 +670,7 @@ class Formatter:
                         opacity = a / 255.0
                         j = i + width - 1
                         pixel2 = vals[j] if j < n else 0
-                        out += b"\033[48;2;%d;%d;%d;" % (
-                            int(r * opacity), int(g * opacity),
-                            int(b * opacity))
+                        out += b"\033[48;2;%d;%d;%d;" % (int(r * opacity), int(g * opacity), int(b * opacity))
                         op2 = ((pixel2 >> 24) & 0xFF) / 255.0
                         out += b"38;2;%d;%d;%dm\342\226\204" % (
                             int(((pixel2 >> 16) & 0xFF) * op2),
@@ -740,8 +727,7 @@ class Formatter:
             out.append(c)
         return pos
 
-    def _dollar(self, out: bytearray, dfmt: bytes, pos: int,
-                thunks, fmt: bytes) -> int:
+    def _dollar(self, out: bytearray, dfmt: bytes, pos: int, thunks, fmt: bytes) -> int:
         i, pos = _scan_long(dfmt, pos)
         if pos < len(dfmt) and dfmt[pos] == 0x2B:  # '+'
             pos += 1
@@ -813,8 +799,7 @@ class Formatter:
     def _question(self, dfmt: bytes, pos: int, thunks, fmt: bytes) -> int:
         is_true, pos = self._scan_exp(dfmt, pos, thunks, fmt)
         if pos >= len(dfmt) or dfmt[pos] != 0x28:
-            raise FatalError("Bad conditional: '(' expected: %s."
-                             % _msg(dfmt[pos:]))
+            raise FatalError("Bad conditional: '(' expected: %s." % _msg(dfmt[pos:]))
         pos += 1
         if not is_true:
             pos = self._skip_past_right_paren(dfmt, pos)
@@ -840,16 +825,14 @@ class Formatter:
 
     # -- Show_Prop from the type display on ----------------------------------
 
-    def render_property(self, out: bytearray, propname: bytes, type_name,
-                        size: int, wire: bytes, fmt, dfmt):
+    def render_property(self, out: bytearray, propname: bytes, type_name, size: int, wire: bytes, fmt, dfmt):
         """Everything Show_Prop does after the existence checks: `(TYPE)`,
         format resolution, the type-mismatch line, thunks, dformat."""
         if not self.notype and type_name is not None:
             out += b"(" + type_name.encode("latin-1") + b")"
         fmt, dfmt = self.lookup_formats(propname, fmt, dfmt)
         if type_name is not None:
-            fmt, dfmt = self.lookup_formats(
-                type_name.encode("latin-1"), fmt, dfmt)
+            fmt, dfmt = self.lookup_formats(type_name.encode("latin-1"), fmt, dfmt)
         if fmt is None:
             fmt = DEFAULT_FORMAT
         if dfmt is None:

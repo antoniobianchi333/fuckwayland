@@ -33,7 +33,7 @@ from test_wxprop_cli import _CapStdout  # noqa: E402
 from wdotool import backend_detect  # noqa: E402
 from wdotool.backend_gnome import IFACE, OBJECT_PATH, GnomeBackend  # noqa: E402
 from wdotool.dbus_mini import Bus  # noqa: E402
-from wwmctl.x11_mini import X11Error  # noqa: E402
+from wdotool.x11_mini import X11Error  # noqa: E402
 from wxprop import cli, core  # noqa: E402
 
 # The suite never hands a tool over to the real X11 one: see
@@ -82,7 +82,7 @@ def mutter_x_props():
 
 
 class FakeXConn:
-    """In-memory stand-in for wwmctl.x11_mini.X11Conn: properties per
+    """In-memory stand-in for wdotool.x11_mini.X11Conn: properties per
     window, an atom table, a QueryTree shape (root -> frame -> client), and
     an event queue for -spy (an exception object in the queue is raised, so
     a test can end a -spy loop with KeyboardInterrupt)."""
@@ -201,7 +201,7 @@ class GnomeXpropBase(_Base):
             mock.patch.object(core, "_detect_backend",
                               detect or (lambda: self.backend)),
             mock.patch.object(core, "_x11_connect", connect),
-            mock.patch.object(core, "_hostname", lambda: "testhost"),
+            mock.patch.object(core, "hostname", lambda: "testhost"),
         ]
         os.environ.pop("WXPROP_NO_X", None)
         if xwayland is not None:
@@ -676,7 +676,7 @@ class ErrorPathTests(_Base):
                 mock.patch.object(core, "_x11_connect",
                                   lambda display, xauthority=None: x), \
                 mock.patch.object(core, "_xwayland_running", lambda: False), \
-                mock.patch.object(core, "_hostname", lambda: "testhost"), \
+                mock.patch.object(core, "hostname", lambda: "testhost"), \
                 mock.patch.object(sys, "stdout", out), \
                 mock.patch.object(sys, "stderr", err):
             os.environ.pop("WXPROP_NO_X", None)

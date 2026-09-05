@@ -5,7 +5,7 @@ foot (native Wayland) and xterm (legacy X via XWayland) run side by side;
 wwmctl must list BOTH planes with correct classes/ids/geometry, the real
 wmctrl binary is the byte-parity oracle for the X rows, and actions
 (-a/-c/-e/-b/-t/-R/-s) are verified through swaymsg. Every listing assertion
-runs in both modes: X-enriched (when wwmctl/x11_mini.py is implemented and
+runs in both modes: X-enriched (when wdotool/x11_mini.py is implemented and
 the X server is reachable) and compositor-only (WWMCTL_NO_X=1).
 
 Skipped when sway/foot/xterm are not on PATH (run inside `nix develop`).
@@ -36,7 +36,7 @@ FOOT_TITLE = "WL-Foot"
 
 def _x11_mini_implemented() -> bool:
     try:
-        from wwmctl import x11_mini
+        from wdotool import x11_mini
         return hasattr(x11_mini, "X11Conn")
     except ImportError:
         return False

@@ -153,7 +153,7 @@ class GnomeCliBase(_Base):
             mock.patch.object(core, "_detect_backend",
                               detect or (lambda: self.backend)),
             mock.patch.object(core, "_x11_connect", connect),
-            mock.patch.object(core, "_hostname", lambda: "testhost"),
+            mock.patch.object(core, "hostname", lambda: "testhost"),
             mock.patch.object(sys, "argv", ["wmctrl"]),
         ]
         if xwayland is not None:

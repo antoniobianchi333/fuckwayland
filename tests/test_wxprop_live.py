@@ -230,7 +230,7 @@ class WxpropLiveTest(unittest.TestCase):
         return False
 
     def x11conn(self):
-        from wwmctl import x11_mini
+        from wdotool import x11_mini
         old_display = os.environ.get("DISPLAY")
         os.environ["DISPLAY"] = self.display
         try:

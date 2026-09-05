@@ -201,7 +201,7 @@ itself holds, missing anything the X server or XTEST put there — the
 documented Wayland approximations on a platform that has none). `wxrandr`:
 the X server's RandR is the truth, and our Mutter backend on GNOME-on-Xorg is
 at best a second opinion. `wwmctl` *does* carry an X11 wire client
-(`wwmctl/x11_mini.py`), and it is still not enough: `-m`, `-d` viewport and
+(`wdotool/x11_mini.py`), and it is still not enough: `-m`, `-d` viewport and
 workarea, `-e` gravity math, `-r -b` state toggles, `-x` class matching and
 `:SELECT:` (which needs `GrabPointer`/`QueryPointer`, not in `x11_mini`) would
 all have to be reimplemented and their byte parity re-proved against the real

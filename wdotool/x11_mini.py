@@ -1,4 +1,9 @@
-"""OWNER: Agent X. Minimal pure-stdlib X11 wire client for wwmctl.
+"""Minimal pure-stdlib X11 wire client.
+
+Three callers share it: wwmctl.core reads the X plane of XWayland windows
+(WM_CLASS, WM_CLIENT_MACHINE, geometry) and sends EWMH ClientMessages,
+wxprop.core does all of its X-window work through it, and
+wdotool.backend_kwin reads the XWayland ids KWin 6 does not export.
 
 Talks straight to the XWayland server over its unix socket — enough of the
 core protocol for wmctrl-style identity/property work and nothing more:
@@ -11,7 +16,7 @@ big-requests; byte order 'l' only.
 
 Error model: XUnavailable for anything connection-level (no server, bad
 DISPLAY, auth rejected, connection lost), X11Error for errors the server
-reports (BadWindow and friends). Callers (wwmctl.core) treat both as "degrade
+reports (BadWindow and friends). Every caller treats both as "degrade
 gracefully".
 
 Conventions: property values of format 32 are returned as unsigned 32-bit
@@ -66,13 +71,30 @@ _EV_PROPERTY_NOTIFY = 28
 # wait must never grow memory without limit; oldest events are shed first.
 _MAX_EVENT_QUEUE = 4096
 
-_ERROR_NAMES = {
-    1: "BadRequest", 2: "BadValue", 3: "BadWindow", 4: "BadPixmap",
-    5: "BadAtom", 6: "BadCursor", 7: "BadFont", 8: "BadMatch",
-    9: "BadDrawable", 10: "BadAccess", 11: "BadAlloc", 12: "BadColor",
-    13: "BadGC", 14: "BadIDChoice", 15: "BadName", 16: "BadLength",
-    17: "BadImplementation",
+#: Xlib's text for each core error code (what `wxprop` reprints on e.g.
+#: BadWindow); the wire client itself needs only the leading name.
+X_ERROR_TEXT = {
+    1: "BadRequest (invalid request code or no such operation)",
+    2: "BadValue (integer parameter out of range for operation)",
+    3: "BadWindow (invalid Window parameter)",
+    4: "BadPixmap (invalid Pixmap parameter)",
+    5: "BadAtom (invalid Atom parameter)",
+    6: "BadCursor (invalid Cursor parameter)",
+    7: "BadFont (invalid Font parameter)",
+    8: "BadMatch (invalid parameter attributes)",
+    9: "BadDrawable (invalid Pixmap or Window parameter)",
+    10: "BadAccess (attempt to access private resource denied)",
+    11: "BadAlloc (insufficient resources for operation)",
+    12: "BadColor (invalid Colormap parameter)",
+    13: "BadGC (invalid GC parameter)",
+    14: "BadIDChoice (invalid resource ID chosen for this connection)",
+    15: "BadName (named color or font does not exist)",
+    16: "BadLength (poly request too large or internal Xlib length error)",
+    17: "BadImplementation (server does not implement operation)",
 }
+
+_ERROR_NAMES = {code: text.split(" ", 1)[0]
+                for code, text in X_ERROR_TEXT.items()}
 
 _FAMILY_LOCAL = 256
 _FAMILY_WILD = 0xFFFF
@@ -93,6 +115,16 @@ class X11Error(Exception):
         self.name = _ERROR_NAMES.get(code, "XError%d" % code)
         super().__init__("%s (major %d, bad value 0x%x)"
                          % (self.name, major, bad_value))
+
+
+def hostname() -> str:
+    """This machine's name, or "" when the kernel will not say. The window
+    tools print it as WM_CLIENT_MACHINE; the auth lookup below wants the
+    same string as the "local" family address."""
+    try:
+        return socket.gethostname() or ""
+    except OSError:
+        return ""
 
 
 def _pad4(b: bytes) -> bytes:
@@ -174,10 +206,7 @@ def _auth_candidates(display_num: int, xauthority: str | None = None):
         if p and p not in paths:
             paths.append(p)
     dnum = str(display_num).encode()
-    try:
-        host = socket.gethostname().encode()
-    except OSError:
-        host = b""
+    host = hostname().encode()
 
     def collect(path):
         try:
@@ -664,8 +693,6 @@ class X11Conn:
         payload = struct.pack("<IIIB3xI", win, prop, type_a, fmt,
                               nitems) + _pad4(data)
         self._void(_OP_CHANGE_PROPERTY, 0, payload)  # PropModeReplace
-
-    # -- wxprop extensions (ADDITIVE ONLY; wwmctl behavior above unchanged) --
 
     def query_tree(self, win: int) -> list[int]:
         """Children of `win`, bottom-to-top stacking order (wire order)."""
