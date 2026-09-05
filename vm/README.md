@@ -1,18 +1,21 @@
 # vm/ — test VMs
 
-**`vmctl`** is the rig: full, default-configured Ubuntu desktops in QEMU/KVM —
-  **twelve flavors**: ten over four desktops (GNOME, KDE Plasma, Xfce, sway) and three
-  releases, built from an Ubuntu *cloud* image plus a desktop metapackage, and two more
-  (**`resolute-gnome-iso`**, **`noble-gnome-iso`**) installed from the Ubuntu 26.04 and 24.04
-  desktop **ISOs by the Ubuntu installer itself** — the images a claim about "a default Ubuntu
-  desktop install" has to rest on, one per supported LTS. Each with autologin of user `test` — on a **multi-head virtio-vga** whose monitors are
-  plugged, unplugged and resized from the host at runtime, plus host-side screenshots of
-  every head. This is the rig for testing all six tools against
-  real Wayland *and* X11 sessions, and for the X-parity oracles (every golden image also
-  carries the real `xdotool`, `wmctrl`, `x11-utils`, `x11-xserver-utils`). What the six
-  tools currently manage on each desktop — including where they have no backend at all —
-  is written down per flavor under *What the six tools do on each flavor*, which is the
-  measurement behind the *Desktop support* matrix in the repo README.
+**`vmctl`** is the rig: full, default-configured Ubuntu desktops in QEMU/KVM, in
+**twelve flavors**. Ten are four desktops (GNOME, KDE Plasma, Xfce, sway) over three
+releases, built from an Ubuntu *cloud* image plus a desktop metapackage. The other two
+(**`resolute-gnome-iso`**, **`noble-gnome-iso`**) are installed from the Ubuntu 26.04 and
+24.04 desktop **ISOs by the Ubuntu installer itself** — the images a claim about "a default
+Ubuntu desktop install" has to rest on, one per supported LTS.
+
+Each autologins user `test` on a **multi-head virtio-vga** whose monitors are plugged,
+unplugged and resized from the host at runtime, with host-side screenshots of every head.
+This is the rig for testing all six tools against real Wayland *and* X11 sessions, and for
+the X-parity oracles: every golden image also carries the real `xdotool`, `wmctrl`,
+`x11-utils` and `x11-xserver-utils`. What the six tools currently manage on each desktop —
+including where they have no backend at all — is written down per flavor under *What the six
+tools do on each flavor*, which is the measurement behind the *Desktop support* matrix in the
+repo README.
+
 ## Quickstart
 
 ```console
