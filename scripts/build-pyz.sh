@@ -37,25 +37,27 @@ build() { # name entry_module packages...
   echo "built dist/$name ($(wc -c < "dist/$name") bytes)"
 }
 
-# fwcommon is in every bundle: every tool here finds its session, and every
-# tool on an X11 session hands over to the original.
+# fwcommon is in every bundle: every tool here finds its session, hands over
+# to the original on an X11 one, raises the same exception when it fails and
+# flushes through the same stdout on the way out.
 #
 # wwmctl/wxprop ride with the package they import for backends and the X
 # wire client, wdotool. backend_kwin uses x11_mini to read the X plane: the
 # XWayland ids KWin 6 does not export, and the WM_CLASS pair 5.27
 # lower-cases; since it lives in wdotool the shipped wdotool answers like a
-# source checkout with nothing else in the bundle. wxrandr, warandr and
-# wmirror carry wdotool for three files of it -- ctx.py for the exception
-# class fwcommon.session raises, stdio.py and procs.py -- and zipapp copies
-# whole package directories, so they still carry all of it.
+# source checkout with nothing else in the bundle.
 build wdotool wdotool.cli fwcommon wdotool
 build wwmctl  wwmctl.cli  fwcommon wdotool wwmctl
 build wxprop  wxprop.cli  fwcommon wdotool wxprop
-build wxrandr wxrandr.cli fwcommon wdotool wxrandr
+# The three display tools import no wdotool at all: what they used of it --
+# CmdError, stdio and procs -- is in fwcommon, so a zipapp of one of them no
+# longer drags in the keysym table, the input daemon and four window
+# backends for three small files. That is 680 kB off each of the three.
+build wxrandr wxrandr.cli fwcommon wxrandr
 # warandr bundles wxrandr: on Wayland it runs the same interpreter with
 # -m wxrandr, PYTHONPATH pointing at the pyz itself (zipimport)
-build warandr warandr.cli fwcommon wdotool wxrandr warandr
+build warandr warandr.cli fwcommon wxrandr warandr
 # wmirror drives an external binary but reads the layout through wxrandr's
 # own wlr client, and the detached supervisor is this same zipapp re-entered
 # by fork, so it needs nothing else in the bundle.
-build wmirror wmirror.cli fwcommon wdotool wxrandr wmirror
+build wmirror wmirror.cli fwcommon wxrandr wmirror

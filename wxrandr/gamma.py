@@ -13,7 +13,7 @@ with the linear shortcut when gamma == 1 and brightness == 1.
 
 Holder liveness is tracked in the wxrandr state file as (pid, starttime) —
 starttime from /proc/pid/stat guards against pid reuse. The detaching, the
-status pipe and the /proc identity checks are wdotool.procs, which is where
+status pipe and the /proc identity checks are fwcommon.procs, which is where
 that protocol lives for the whole tree."""
 
 import os
@@ -22,7 +22,7 @@ import struct
 import sys
 import time
 
-from wdotool import procs
+from fwcommon import procs
 
 MANAGER = "zwlr_gamma_control_manager_v1"
 

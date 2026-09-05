@@ -1,4 +1,4 @@
-"""OWNER: wdotool. Detached children, and the /proc facts that outlive them.
+"""Detached children, and the /proc facts that outlive them.
 
 Two of these tools start a process that must outlive the command that
 started it: the gamma holder that keeps a zwlr_gamma_control alive for as
@@ -22,7 +22,7 @@ promises:
 
 What a status line means is the caller's business: this module knows only
 which line ends the start. Standard library only, like everything under
-wdotool/.
+fwcommon/.
 """
 
 import os

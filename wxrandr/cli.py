@@ -19,8 +19,7 @@ import os
 import re
 import sys
 
-from fwcommon import passthrough
-from wdotool import stdio
+from fwcommon import passthrough, stdio
 from wxrandr import core
 from wxrandr.core import ArgErr, Fatal, Stanza
 

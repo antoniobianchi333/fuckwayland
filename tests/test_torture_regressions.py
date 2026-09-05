@@ -15,9 +15,10 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from fwcommon.errors import CmdError
 from support import RecorderDev
 from wdotool import cli, daemon, input_cmds, keymap, uinput
-from wdotool.ctx import CmdError, Context
+from wdotool.ctx import Context
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

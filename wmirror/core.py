@@ -28,7 +28,7 @@ import subprocess
 import time
 
 from fwcommon import session
-from wdotool.ctx import CmdError
+from fwcommon.errors import CmdError
 from wxrandr import core as wxcore
 
 HELPER = "wl-mirror"

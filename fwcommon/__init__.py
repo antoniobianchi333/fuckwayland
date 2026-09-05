@@ -1,10 +1,10 @@
-"""What every command here shares: which session this is, how to hand a
-command over to the X11 original, and the two wire clients.
+"""What every command here shares: which session this is, how to hand a command over to the X11 original,
+the two wire clients, and the three small things a command does whatever it is for -- fail, print, and start
+something that outlives it.
 
-A package of its own rather than a corner of `wdotool`, because these four
-modules are what the *display* tools use of it: they find a session, talk
-D-Bus and talk Wayland, and they never type a key, never open a window
-backend and never start the input daemon.
+A package of its own rather than a corner of `wdotool`, because this is the whole of what the *display* tools
+use of that package: they find a session, talk D-Bus and talk Wayland, and they never type a key, never open
+a window backend and never start the input daemon.
 
 - `session`      -- which Wayland/X11 session this is, and where its sockets,
                     cookies and runtime directory are, from any uid.
@@ -12,12 +12,12 @@ backend and never start the input daemon.
                     xrandr with argv untouched, and never ourselves.
 - `dbus_mini`    -- a D-Bus client: SASL, marshalling, calls, signals.
 - `wayland_mini` -- a Wayland client: the registry, roundtrips, fd passing.
+- `errors`       -- `CmdError`, the exception every command catches.
+- `stdio`        -- what a tool does about a standard output that is gone.
+- `procs`        -- detached children, and the /proc facts that outlive them.
 
-One edge is still attached: `session` raises `wdotool.ctx.CmdError`, which is
-the exception class every command already catches, so `wdotool/ctx.py` is the
-one module outside this package that any of these four names. It is not moved
-here because `ctx.py` reaches the other way -- into `backend_detect` and the
-input daemon -- and would drag all of `wdotool` back in with it.
+Nothing here imports anything outside it: the package is closed, which is what lets a zipapp of a display
+tool carry it and nothing else.
 """
 
 #: The release. This is the constant the packages build their own VERSION

@@ -13,8 +13,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from fwcommon.errors import CmdError
 from wdotool import cli
-from wdotool.ctx import CmdError
 from wdotool.misc_cmds import _atof, _atoi, cmd_getdisplaygeometry
 
 # The suite never hands a tool over to the real X11 one: see

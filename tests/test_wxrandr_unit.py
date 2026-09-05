@@ -896,7 +896,7 @@ class Rendering(unittest.TestCase):
         self.assertIn("\tBrightness: 1.0", lines)
 
     def test_verbose_gamma_reports_live_holder(self):
-        from wdotool import procs
+        from fwcommon import procs
         st = mk_state()
         o = mk_output("H", 1280, 720)
         pid = os.getpid()

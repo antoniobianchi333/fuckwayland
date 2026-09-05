@@ -12,8 +12,8 @@ import types
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from fwcommon.errors import CmdError
 from wdotool import cli, commands
-from wdotool.ctx import CmdError
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

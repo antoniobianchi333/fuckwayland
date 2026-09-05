@@ -6,9 +6,10 @@ import subprocess
 import sys
 import time
 
+from fwcommon.errors import CmdError
 from wdotool.cli import ChainAbort, _opts
 from wdotool.cnum import atof as _atof, atoi as _atoi
-from wdotool.ctx import CmdError, NoSessionError
+from wdotool.ctx import NoSessionError
 
 
 def cmd_exec(ctx, args):

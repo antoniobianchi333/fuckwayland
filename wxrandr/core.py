@@ -41,9 +41,8 @@ import struct
 import sys
 import time
 
-from fwcommon import session
-from wdotool import procs
-from wdotool.ctx import CmdError
+from fwcommon import procs, session
+from fwcommon.errors import CmdError
 
 PROGRAM_VERSION = "1.5.4"
 

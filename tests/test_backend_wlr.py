@@ -26,9 +26,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import wl_fake
+from fwcommon.errors import CmdError
 from support import env
 from wdotool.backend_wlr import BASE_ID, WlrBackend
-from wdotool.ctx import CmdError
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

@@ -17,7 +17,7 @@ Every one of them printed something no original ever prints:
   `sys.stdout` is None) tracebacked with an AttributeError;
 - Ctrl-C during `wdotool sleep 5` printed a KeyboardInterrupt traceback.
 
-What they do now is in wdotool/stdio.py: repair a missing stdout at the top
+What they do now is in fwcommon/stdio.py: repair a missing stdout at the top
 of main(), and flush -- and, on failure, CLOSE -- at the bottom of it, one
 line to stderr, silence for a reader that left, and never a traceback.
 """
@@ -32,7 +32,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from wdotool import stdio
+from fwcommon import stdio
 
 # The suite never hands a tool over to the real X11 one (tests/conftest.py);
 # this line covers `python3 tests/<file>.py` and reaches every child below.

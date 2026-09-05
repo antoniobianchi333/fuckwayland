@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 from fwcommon import dbus_mini, session
 from fwcommon.dbus_mini import Bus, DBusError, Message, Variant
+from fwcommon.errors import CmdError
 from support import env
 from test_dbus_mini import MockBus
 from wdotool import backend_detect, backend_gnome
@@ -30,7 +31,7 @@ from wdotool.backend import (View, Window, WindowBackend, Workspace,
                              hit_test, state_steps)
 from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,
                                    OBJECT_PATH, SHELL_NAME, GnomeBackend)
-from wdotool.ctx import CmdError, NoSessionError
+from wdotool.ctx import NoSessionError
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

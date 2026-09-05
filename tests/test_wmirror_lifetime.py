@@ -30,7 +30,7 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wdotool import procs
+from fwcommon import procs
 from wmirror import cli, core, supervise
 from wxrandr import core as wxcore
 

@@ -18,7 +18,8 @@ What is installed where
         the six commands.  Under their own names only: no file of xdotool,
         wmctrl, x11-utils or x11-xserver-utils is touched or replaced, which
         is what keeps the X11 handover working.
-  /usr/lib/python3/dist-packages/{wdotool,wwmctl,wxprop,wxrandr,warandr,wmirror}/
+  /usr/lib/python3/dist-packages/{fwcommon,wdotool,wwmctl,wxprop,wxrandr,
+                                 warandr,wmirror}/
         the code.
   /usr/share/gnome-shell/extensions/fuckwayland-bridge@fuckwayland/
         the GNOME Shell bridge extension, system-wide.

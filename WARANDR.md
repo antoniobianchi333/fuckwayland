@@ -523,8 +523,9 @@ on backend/parse/file errors.
 ## Files
 
 `warandr/{__init__,__main__,cli,randr,xrandr_parse,model,gui}.py`,
-`warandr.desktop`, `scripts/build-pyz.sh` (→ `dist/warandr`, bundling wdotool
-+ wxrandr so the Wayland backend runs from inside the pyz), `pyproject.toml`
+`warandr.desktop`, `scripts/build-pyz.sh` (→ `dist/warandr`, bundling
+fwcommon + wxrandr so the Wayland backend runs from inside the pyz),
+`pyproject.toml`
 console script. Tests: `tests/test_warandr_parse.py` (Xvfb captures, an
 xrandr 1.5.4 laptop capture, wxrandr renders for 1–4 outputs),
 `tests/test_warandr_model.py` (geometry, snapping, edits, command line,
