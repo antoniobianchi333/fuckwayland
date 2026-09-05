@@ -20,25 +20,28 @@ machine and not on others, and some need it switched on per machine, so on a ren
 machine check before anything else:
 
 ```console
-$ grep -c -E 'vmx|svm' /proc/cpuinfo      # one line per CPU when the feature is there, 0 when not
+$ grep -c -E '^flags.*\b(vmx|svm)\b' /proc/cpuinfo   # one line per CPU when the feature is there, 0 when not
 $ ls -l /dev/kvm                          # crw-rw---- root kvm: the kvm module is loaded
 $ systemd-detect-virt                     # none on a physical machine; otherwise the hypervisor's name
 ```
 
-Without it nothing here boots. `vmctl`, `build-iso-golden.sh` and `run.sh` all pass
-`-enable-kvm -cpu host`, and QEMU then stops at once —
+Without it nothing here boots as written. QEMU can run these guests without KVM
+(`-accel tcg`, its software emulation), many times slower; the scripts do not fall back
+to it. `vmctl`, `build-iso-golden.sh` and `run.sh` all pass `-enable-kvm -cpu host`, and
+QEMU then stops at once —
 
 ```
 Could not access KVM kernel module: Permission denied
 qemu-system-x86_64: failed to initialize kvm: Permission denied
 ```
 
-(`No such file or directory` when there is no `/dev/kvm` at all) — rather than
-falling back to its software emulation, which would run these guests many times
-slower. `Permission denied` on a machine that *has* `/dev/kvm` is the other common
-case: Ubuntu's udev rule makes it `0660 root:kvm` and hands an ACL to whoever is
-logged in at the machine's own screen, which an ssh login is not, so a user who works
-over ssh needs `sudo usermod -aG kvm $USER` and a new login.
+(`No such file or directory` when there is no `/dev/kvm` at all) — rather than start a
+build or a self-test whose timeouts (240 s for ssh in `vmctl start`, 180 s for the
+desktop in `vmctl session`) are set for KVM speeds. `Permission denied` on a machine
+that *has* `/dev/kvm` is the other common case: Ubuntu's udev rules make it
+`0660 root:kvm` and hand an ACL to whoever is logged in at the machine's own screen,
+which an ssh login is not, so a user who works over ssh needs
+`sudo usermod -aG kvm $USER` and a new login.
 
 ## Sizing
 
@@ -53,26 +56,30 @@ What the scripts ask for, per virtual machine (all of it changeable with `--cpus
 
 A guest's QEMU process grows towards its `--mem` as the guest touches memory, not
 beyond it: measured, 4.9 GB resident for a 6 GB build VM while the desktop was
-installing, 2.5 GB for a 4 GB GNOME instance after the self-test, 4.1 GB for the
+installing, 2.4 GB for a 4 GB GNOME instance after the self-test, 4.1 GB for the
 4 GB ISO installer. A machine with 4 CPUs and 16 GB runs one build or two desktop
 instances at a time comfortably; 8 CPUs and 32 GB run four (`vm/README.md`).
 
 Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
 
-* a golden image is **5.4 to 7.6 GB** for a cloud-image desktop flavor (GNOME the
-  smallest, Plasma the largest), **0.7 GB** for `resolute-sway`, **8.7 GB** for the
-  installer-built `resolute-gnome-iso`; all eleven together, 66 GB;
-* the base cloud images they are overlays on: 0.6 GB (24.04) and 0.9 GB (26.04) each,
-  in `~/images`; the desktop ISO, 6.5 GB, for the ISO flavor only;
+* a golden image is **5.4 to 7.6 GB** for a flavor built from a distro desktop
+  metapackage (`noble-gnome` the smallest, `resolute-kde-x11` the largest), **3.5 GB**
+  for `stonking-kde` (the bare Plasma session, no metapackage), **0.7 GB** for
+  `resolute-sway`, **8.7 GB** for the installer-built `resolute-gnome-iso`; all eleven
+  together, 66 GB;
+* the base cloud images they are overlays on: 0.6 GB (24.04), 0.8 GB (26.04) and
+  0.8 GB (26.10, `stonking-kde` only), in `~/images`; the desktop ISO, 6.1 GB, for the
+  ISO flavor only;
 * an instance is an overlay on its golden: a few hundred kilobytes when created,
-  158 MB after one self-test, 30–350 MB after a day of use. It never has to be
-  bigger than what the guest wrote;
+  173 MB after one self-test, tens to a few hundred MB after a day of use. It never
+  has to be bigger than what the guest wrote;
 * a build's working directory (`~/vm-data/build/<flavor>/`) grows to the golden's size
-  and is *renamed* into `golden/` on success — keep `~/vm-data` on one filesystem.
+  and is moved into `golden/` on success — a rename when `build/` and `golden/` share
+  a filesystem, a copy otherwise.
 
 So: 10 GB per golden image you intend to keep, plus 8 GB for the base images and the
 ISO, plus a few GB for instances. Swap is not needed for the rig itself — a 16 GB
-machine with a swap file had used 19 MB of it after a day of builds and
+machine with a swap file had used 35 MB of it after three days of builds and
 instances — but a swap file the size of one guest turns a memory shortfall into a
 slowdown rather than a killed QEMU.
 
@@ -103,7 +110,7 @@ distribution:
 
 Nothing else: no libvirt, no bridge, no root after this step. The guests reach the
 network through QEMU's user-mode networking, and the host reaches them through one
-forwarded port each on `127.0.0.1` (`2400–2499` for `vmctl` instances and builds,
+forwarded port each on the loopback interface (`2400–2499` for `vmctl` instances and builds,
 `2500–2599` for an ISO build, `2222` for the old sway rig).
 
 ## What vmctl needs from QEMU
@@ -126,7 +133,7 @@ relies on*) and each checkable without a guest:
 `dbus-daemon` and a **paused, diskless** QEMU (`-S`, no KVM, 128 MB) with
 `-display dbus` and `virtio-vga,max_outputs=4`, waits for `Console_0` … `Console_3`
 to appear on the bus, calls `SetUIInfo` on `Console_1`, takes a PNG screendump of
-head 0 over QMP, and quits — about a tenth of a second. To do it by hand:
+head 0 over QMP, and quits — a fraction of a second. To do it by hand:
 
 ```console
 $ dbus-daemon --session --fork --nopidfile --print-pid=1 --address=unix:path=/tmp/bus
@@ -172,6 +179,7 @@ $ cd ~/images
 $ curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img          # the noble-* flavors
 $ curl -LO https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-amd64.img   # resolute-*
 $ curl -LO https://releases.ubuntu.com/26.04/ubuntu-26.04.1-desktop-amd64.iso                    # resolute-gnome-iso only
+$ curl -LO https://cloud-images.ubuntu.com/stonking/current/stonking-server-cloudimg-amd64.img    # stonking-kde only (26.10, a development release: this image moves)
 ```
 
 `build-iso-golden.sh` checks the ISO's sha256 against the one in the flavor before it
@@ -183,7 +191,7 @@ download them, which is why every golden's package list is kept next to it.
 ```console
 $ vm/vmctl build noble-gnome
 vmctl: generated guest root ssh key ~/vm-data/keys/id_ed25519
-vmctl: build noble-gnome: base noble-server-cloudimg-amd64.img, 4 vCPU/6G, ssh 127.0.0.1:2400 (root, debugging only)
+vmctl: build noble-gnome: base noble-server-cloudimg-amd64.img, 4 vCPU/6G, ssh ... (root, debugging only)
 vmctl: [  20s] vmctl-build: flavor noble-gnome (gnome): Ubuntu 24.04.4 LTS, kernel 6.8.0-138-generic
 vmctl: [  50s] vmctl-build: installing ubuntu-desktop (expect 5-20 minutes)
 vmctl: [ 380s] vmctl-build: GDM: autologin of user test on Wayland, graphical.target
@@ -193,10 +201,12 @@ vmctl: build noble-gnome: done in 6.6 min -> ~/vm-data/golden/noble-gnome.qcow2 
 
 That run — a fresh `$VMDATA`, the default 4 vCPU / 6 GB, on a 4-CPU machine that was
 running one other build — took 6.6 minutes and produced a 5.4 GB image. The build
-logs of the other flavors put the guest's uptime at power-off between 6.3 minutes
-(`noble-xfce`) and 10.7 minutes (`resolute-kde`) for the desktop flavors, and one
-minute for `resolute-sway`; almost all of it is the desktop metapackage downloading
-and unpacking, so the network matters as much as the CPU. `build-iso-golden.sh
+logs of the other flavors (`golden/<flavor>.build.log`, the guest's uptime at
+power-off) put a distro desktop metapackage between 6.3 minutes (`noble-xfce`, 376 s)
+and 10.7 minutes (`resolute-kde`, 641 s) — the GNOME builds at the default 4 vCPU / 6 GB,
+the others at 3 vCPU / 5 GB — with `stonking-kde` at 3.2 minutes and `resolute-sway` at
+one minute; almost all of it is the desktop packages downloading and unpacking, so the
+network matters as much as the CPU. `build-iso-golden.sh
 resolute-gnome-iso` is 14 minutes on its default 2 vCPU / 4 GB (12.6 of them the
 installer's). Builds run one at a time per flavor and refuse to overwrite a golden
 without `--force`; two *different* flavors can build side by side on a machine with
@@ -207,16 +217,17 @@ the memory for it.
 ```console
 $ vm/selftest.sh noble-gnome
 == [0s] vmctl start noble-gnome-t --flavor noble-gnome --heads 3 --fresh   (desktop gnome, native tool: GetCurrentState)
-vmctl: noble-gnome-t: ssh up after 16s
-== [16s] vmctl session noble-gnome-t
-vmctl: noble-gnome-t: wayland session 3 of user test (gnome) active after 4s
-vmctl: noble-gnome-t: desktop painted its first frame 2s later
-== [22s] GetCurrentState: expect Virtual-1..3, Virtual-1 at 0,0, no first-run window
+vmctl: noble-gnome-t: ssh up after 25s
+== [25s] vmctl session noble-gnome-t
+vmctl: noble-gnome-t: wayland session 3 of user test (gnome) active after 5s
+vmctl: noble-gnome-t: desktop painted its first frame 6s later
+== [35s] GetCurrentState: expect Virtual-1..3, Virtual-1 at 0,0, no first-run window
 ...
-== [35s] PASS: noble-gnome-t (noble-gnome, gnome) running, ssh port 2400, screenshots in /tmp/vmctl-selftest-noble-gnome-t
+== [52s] PASS: noble-gnome-t (noble-gnome, gnome) running, ssh port 2403, screenshots in /tmp/vmctl-selftest-noble-gnome-t
 ```
 
-35 seconds for GNOME on the same machine (`vm/README.md` says roughly 40; a desktop
+52 seconds for GNOME on a 4-CPU machine that had three other instances running at the
+time, 35 seconds on the same machine idle (`vm/README.md` says roughly 40; a desktop
 that starts more slowly takes correspondingly longer). What it asserts, step by step,
 is under *Self-test* in `vm/README.md`; the two things that are easy to miss: it
 leaves the instance **running** for inspection (`vm/vmctl stop noble-gnome-t`, or
@@ -229,7 +240,9 @@ are built — the rig is the same; only the desktop differs.
 The suite (`tests/`, pytest) is a host-side thing: `python3 -m pytest tests -q` on the
 machine you develop on, or in the nix dev shell, with no desktop session of these
 kinds around. On such a machine it is `2024 passed, 61 skipped in 162.76s` — the 2085
-tests the repo README counts, in under three minutes.
+tests the repo README counts, in under three minutes (172 s with three instances
+running beside it, when one timing-sensitive lifecycle test failed and then passed on
+its own).
 
 Run it *inside* a guest and it does not pass, by construction. Measured on the
 `noble-gnome` self-test instance, once as `test` in the live session and once as root
@@ -266,7 +279,7 @@ can be recreated in half a minute from the golden it overlays.
 
 * `vm/vmctl list` shows every instance and build directory with its state, pid, port
   and heads; `du -sh ~/vm-data/*` shows where the space went. A stopped instance
-  still holds its directory (30–350 MB) and its ssh port; `vm/vmctl destroy <name>`
+  still holds its directory (tens to a few hundred MB) and its ssh port; `vm/vmctl destroy <name>`
   frees both.
 * `vm/selftest.sh` creates `<flavor>-t` every time and leaves it running; `destroy`
   it when done, and clear `/tmp/vmctl-selftest-*` now and then.
