@@ -1586,49 +1586,13 @@ class SessionTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_dir_with_wayland_socket_sorts_first(self):
-        a = os.path.join(self.tmp, "a")
-        os.makedirs(a)
-        with env(XDG_RUNTIME_DIR=a, PKEXEC_UID=None, SUDO_UID=None):
-            cands = session.runtime_dir_candidates()
-            self.assertEqual(cands[0][1], a)  # nothing has a socket: env dir first
-            self.assertFalse(session._has_wayland_socket(a))
-            # a wayland socket anywhere else beats an empty $XDG_RUNTIME_DIR
-            have = [d for _u, d in cands[1:] if session._has_wayland_socket(d)]
-            if have:
-                with open(os.path.join(a, "wayland-9"), "w"):
-                    pass
-                self.assertEqual(session.runtime_dir_candidates()[0][1], a)
-
-    def test_find_user_bus_prefers_the_bus_next_to_the_wayland_socket(self):
-        """ssh root@box: $DBUS_SESSION_BUS_ADDRESS is root's own empty bus in
-        /run/user/0; the desktop user's bus sits next to wayland-0."""
-        root_dir = os.path.join(self.tmp, "0")
-        user_dir = os.path.join(self.tmp, "1000")
-        os.makedirs(root_dir)
-        os.makedirs(user_dir)
-        for p in (os.path.join(root_dir, "bus"), os.path.join(user_dir, "bus"),
-                  os.path.join(user_dir, "wayland-0")):
-            with open(p, "w"):
-                pass
-        root_bus = "unix:path=" + os.path.join(root_dir, "bus")
-        user_bus = "unix:path=" + os.path.join(user_dir, "bus")
-        # env bus without a compositor next to it, session dir scanned via XDG
-        with env(DBUS_SESSION_BUS_ADDRESS=root_bus, XDG_RUNTIME_DIR=user_dir,
-                 SUDO_UID=None, PKEXEC_UID=None):
-            self.assertEqual(session.find_user_bus()[1], user_bus)
-        # env bus next to a wayland socket wins outright
-        with env(DBUS_SESSION_BUS_ADDRESS=user_bus, XDG_RUNTIME_DIR=root_dir,
-                 SUDO_UID=None, PKEXEC_UID=None):
-            self.assertEqual(session.find_user_bus()[1], user_bus)
-        # no wayland socket anywhere in play: the env bus is trusted
-        os.unlink(os.path.join(user_dir, "wayland-0"))
-        with env(DBUS_SESSION_BUS_ADDRESS=root_bus, XDG_RUNTIME_DIR=user_dir,
-                 SUDO_UID=None, PKEXEC_UID=None):
-            got = session.find_user_bus()[1]
-        self.assertIn(got, (root_bus,) + tuple(
-            "unix:path=" + d + "/bus" for _u, d in session.runtime_dir_candidates()
-            if session._has_wayland_socket(d)))
+    # runtime_dir_candidates() ordering, and find_user_bus()'s preference for
+    # the bus beside the Wayland socket, moved to tests/test_session.py, which
+    # builds the /run/user tree by hand. The two versions that were here read
+    # the *host's* real /run/user instead: one kept its only real assertion
+    # behind an `if have:` that is empty in a container, so it asserted
+    # nothing, and the other ended in an assertIn over a tuple computed from
+    # that same tree, so it could pass for the wrong reason.
 
     def test_pkexec_uid(self):
         with env(SUDO_UID=None, PKEXEC_UID="4242"):
