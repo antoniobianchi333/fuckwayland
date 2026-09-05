@@ -226,8 +226,7 @@ class Backend:
         """arandr's --randr-display: talk to another display while the GUI
         stays on the one from the environment."""
         if display:
-            self.env["WAYLAND_DISPLAY" if self.wayland else "DISPLAY"] = \
-                display
+            self.env["WAYLAND_DISPLAY" if self.wayland else "DISPLAY"] = display
 
     def run(self, args, timeout=30):
         cmd = self.argv + list(args)

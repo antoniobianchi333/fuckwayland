@@ -145,8 +145,7 @@ def start(recs: dict, source: str, target: str, argv: list, region=None,
         return None
     if status is not None:
         recs.pop(target, None)
-        msg = status[len("failed "):] if status.startswith("failed ") \
-            else status
+        msg = status[len("failed "):] if status.startswith("failed ") else status
         return ["%s did not start: %s" % (core.HELPER, msg)]
     if named:                 # no verdict, but it named itself: keep it
         recs[target] = rec

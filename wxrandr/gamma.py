@@ -142,8 +142,7 @@ def holder_main(output: str, brightness: float, gamma_rgb,
     # tell the parent who we are before touching the control, so a failure or
     # timeout past this point still leaves a stoppable record (finding: no
     # unstoppable orphan holder)
-    emit("pid %d %s" % (os.getpid(),
-                        procs.proc_starttime(os.getpid()) or "?"))
+    emit("pid %d %s" % (os.getpid(), procs.proc_starttime(os.getpid()) or "?"))
 
     try:
         from wdotool import session

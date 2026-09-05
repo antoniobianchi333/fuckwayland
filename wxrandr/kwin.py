@@ -790,8 +790,7 @@ class KwinOutputs:
             src = by_uuid.get(self.by_name[o.name]["pub"]["repl"] or None)
             # KWin ignores a source that is not enabled, and its own uuid is
             # `failed` ("An output cannot mirror itself") in the first place
-            if src is not None and src != o.name and o.name in active \
-                    and src in active:
+            if src is not None and src != o.name and o.name in active and src in active:
                 src_of[o.name] = src
         self.replica_of = src_of      # blank ones included: they are still
         for name, src in src_of.items():   # out of the layout, and still a
@@ -942,8 +941,7 @@ class KwinOutputs:
             replica, source = by_name.get(name), by_name.get(src)
             if name in graph or name in drop:
                 continue
-            if replica is not None and source is not None \
-                    and replica.enabled and source.enabled:
+            if replica is not None and source is not None and replica.enabled and source.enabled:
                 graph[name] = src
         for name in sorted(asked):
             root = self._root_of(graph, name)
@@ -958,8 +956,7 @@ class KwinOutputs:
         # what we are setting, plus what we are leaving alone. A `--same-as`
         # that stayed a shared position is NOT in it: it keeps a rectangle of
         # its own and is a layout output like any other.
-        pending = {n: src for n, src in graph.items()
-                   if n not in drop and n in self.replica_of}
+        pending = {n: src for n, src in graph.items() if n not in drop and n in self.replica_of}
         pending.update(want)
         return want, drop, pending
 
@@ -1076,8 +1073,7 @@ class KwinOutputs:
             # sent only when the invocation asked for it: the query reports a
             # replica at its source's position, and re-sending that as a delta
             # would cost a modeset for nothing.
-            asked = t.stanza is not None and (t.stanza.relation is not None
-                                              or t.stanza.pos is not None)
+            asked = t.stanza is not None and (t.stanza.relation is not None or t.stanza.pos is not None)
             if (xy is not None and (full or xy != (p["x"], p["y"])) and (asked or not mirroring)):
                 rec["position"] = xy
             if full or abs(scales[t.name] - p["scale"]) > 1e-9:
@@ -1199,13 +1195,11 @@ class KwinOutputs:
                 self.conn.send(cfg, REQ_POSITION, [("u", dev), ("i", x), ("i", y)])
             if rec["scale"] is not None:
                 # the wl_fixed is marshalled here, not by _marshal's "f"
-                self.conn.send(cfg, REQ_SCALE,
-                               [("u", dev), ("i", to_fixed(rec["scale"]))])
+                self.conn.send(cfg, REQ_SCALE, [("u", dev), ("i", to_fixed(rec["scale"]))])
             if rec["repl"] is not None:
                 # set_replication_source(outputdevice, uuid) -- management
                 # v13; the empty string is how a mirror is turned off
-                self.conn.send(cfg, REQ_SET_REPLICATION,
-                               [("u", dev), ("s", rec["repl"])])
+                self.conn.send(cfg, REQ_SET_REPLICATION, [("u", dev), ("s", rec["repl"])])
         if primary is not None:
             if primary["output"] is not None:
                 # sent for the courtesy of a KWin that honours it; measured

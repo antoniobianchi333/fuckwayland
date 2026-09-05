@@ -64,8 +64,7 @@ import struct
 from wdotool import session as wsession
 from wdotool.dbus_mini import Bus, DBusError, Variant
 from wxrandr import core
-from wxrandr.core import (Fatal, Mode, OutputState,   # noqa: F401
-                          round_half_away, warn)
+from wxrandr.core import Fatal, Mode, OutputState, round_half_away, warn  # noqa: F401
 
 DEST = "org.gnome.Mutter.DisplayConfig"
 PATH = "/org/gnome/Mutter/DisplayConfig"

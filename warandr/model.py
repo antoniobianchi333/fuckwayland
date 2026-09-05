@@ -109,8 +109,7 @@ class Output:
         if self.mode is None:
             return (0, 0)
         w, h = self.mode.w, self.mode.h
-        if self.scale != 1.0 and self.scale > 0 and \
-                math.isfinite(self.scale):
+        if self.scale != 1.0 and self.scale > 0 and math.isfinite(self.scale):
             if self.hidpi:
                 w, h = int(w / self.scale), int(h / self.scale)
             else:
@@ -492,8 +491,7 @@ class Layout:
             if o.primary:
                 args.append("--primary")
             args += ["--mode", o.mode.name]
-            if o.rate is not None and o.mode.rates and \
-                    abs(o.rate - o.mode.default_rate()) >= 0.005:
+            if o.rate is not None and o.mode.rates and abs(o.rate - o.mode.default_rate()) >= 0.005:
                 args += ["--rate", fmt_rate(o.rate)]
             if o.mirror_of:
                 args += ["--same-as", o.mirror_of]
@@ -502,8 +500,7 @@ class Layout:
             args += ["--rotate", o.rotation]
             if o.reflection != "normal":
                 args += ["--reflect", o.reflection]
-            if abs(o.scale - 1.0) >= 1e-6 or \
-                    abs(o.screen_scale - 1.0) >= 1e-6:
+            if abs(o.scale - 1.0) >= 1e-6 or abs(o.screen_scale - 1.0) >= 1e-6:
                 args += ["--scale", "%sx%s" % (fmt_scale(o.scale), fmt_scale(o.scale))]
         return args
 
@@ -712,8 +709,7 @@ def _derive_scale(po, o, hidpi):
     Wayland compositors report identity there, but the logical geometry is
     ``mode / scale`` (truncated) — recover the factor and snap it to a menu
     value when it is within rounding of one."""
-    if po.transform is not None and abs(po.transform[0] - 1.0) > 1e-6 \
-            and not hidpi:
+    if po.transform is not None and abs(po.transform[0] - 1.0) > 1e-6 and not hidpi:
         return round(po.transform[0], 4)
     if o.mode is None or not po.w or not po.h:
         return 1.0

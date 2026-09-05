@@ -175,8 +175,7 @@ def _parse_header(line):
             o.w, o.h, o.x, o.y = (int(m.group(k)) for k in (1, 2, 3, 4))
             o.active = True
             seen_geometry = True
-        elif seen_geometry and tok in ROTATIONS and o.rotation == "normal" \
-                and not o._matrix:
+        elif seen_geometry and tok in ROTATIONS and o.rotation == "normal" and not o._matrix:
             o.rotation = tok
             # reflection phrase follows the rotation word: "X axis",
             # "Y axis", "X and Y axis"
@@ -191,8 +190,7 @@ def _parse_header(line):
             o._matrix = ["seen-rotation"]
         elif _MM_RE.match(tok):
             mm = int(_MM_RE.match(tok).group(1))
-            if i + 2 < len(parts) and parts[i + 1] == "x" \
-                    and _MM_RE.match(parts[i + 2]):
+            if i + 2 < len(parts) and parts[i + 1] == "x" and _MM_RE.match(parts[i + 2]):
                 o.mm_w = mm
                 o.mm_h = int(_MM_RE.match(parts[i + 2]).group(1))
                 i += 2

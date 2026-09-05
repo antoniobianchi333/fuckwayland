@@ -74,8 +74,7 @@ ROTATIONS = ("normal", "left", "inverted", "right")
 REFLECTIONS = ("normal", "x", "y", "xy")
 
 # rotation word -> the sway transform that XWayland reports as that rotation
-_ROT_TO_SWAY = {"normal": "normal", "right": "90", "inverted": "180",
-                "left": "270"}
+_ROT_TO_SWAY = {"normal": "normal", "right": "90", "inverted": "180", "left": "270"}
 # rotation composed with reflect-X (RandR: reflect first, then rotate)
 _ROT_X_TO_SWAY = {"normal": "flipped", "right": "flipped-90",
                   "inverted": "flipped-180", "left": "flipped-270"}
@@ -159,8 +158,7 @@ def screen_mm(px: int) -> int:
 
 # -- modeline math ------------------------------------------------------------
 
-MODE_FLAGS = ("+hsync", "-hsync", "+vsync", "-vsync", "+csync", "-csync",
-              "csync", "interlace", "doublescan")
+MODE_FLAGS = ("+hsync", "-hsync", "+vsync", "-vsync", "+csync", "-csync", "csync", "interlace", "doublescan")
 
 
 def mode_refresh_hz(clock_mhz: float, htotal: int, vtotal: int, flags=()) -> float:
@@ -201,8 +199,7 @@ class Mode:
         if self.clock_mhz and self.timings:
             # exact modeline math — the mHz round-trip would lose the second
             # decimal (74.5MHz/1664x748 is 59.8554: xrandr prints 59.86)
-            return mode_refresh_hz(self.clock_mhz, self.timings[2],
-                                   self.timings[5], self.flags)
+            return mode_refresh_hz(self.clock_mhz, self.timings[2], self.timings[5], self.flags)
         return self.refresh_mhz / 1000.0
 
 
@@ -484,8 +481,7 @@ class State:
                 # and the directory is shared.  A symlink planted there must
                 # not be written through, and a leftover from a crashed run
                 # of ours (the name carries our pid) is unlinked, not opened.
-                flags = (os.O_CREAT | os.O_EXCL | os.O_WRONLY
-                         | os.O_NOFOLLOW)
+                flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
                 try:
                     fd = os.open(tmp, flags, 0o600)
                 except FileExistsError:

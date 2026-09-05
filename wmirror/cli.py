@@ -214,8 +214,7 @@ def _start_locked(args, source, target, region, outputs, helper) -> int:
     state, recs, changed = _state()
     # --replace must not be destructive on a refusal: decide FIRST, with the
     # record it would replace out of the way, and only then stop it.
-    running = {k: v for k, v in recs.items()
-               if not (args.replace and k == target)}
+    running = {k: v for k, v in recs.items() if not (args.replace and k == target)}
     decision = core.decide(outputs, source, target, region, args.keep_layout, running)
     if decision.verdict != core.RUN:
         if changed:

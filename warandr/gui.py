@@ -134,8 +134,7 @@ class OutputBox(Gtk.EventBox):
         self.connect("button-release-event", self._release)
         # no tooltip (it would pop over the context menu): the description
         # goes to the status bar while the pointer is inside the box
-        self.connect("enter-notify-event",
-                     lambda *_: self.app.show_hover(self.info) or False)
+        self.connect("enter-notify-event", lambda *_: self.app.show_hover(self.info) or False)
         self.connect("leave-notify-event", lambda *_: self.app.show_hover(None) or False)
         self._drag = None
         self.info = self.name
@@ -188,8 +187,7 @@ class OutputBox(Gtk.EventBox):
             % (big * Pango.SCALE, name, small * Pango.SCALE,
                GLib.markup_escape_text(sub)))
         # ellipsizing is ignored for rotated labels (GTK); they fit by font
-        self.label.set_ellipsize(Pango.EllipsizeMode.NONE if rotated
-                                 else Pango.EllipsizeMode.END)
+        self.label.set_ellipsize(Pango.EllipsizeMode.NONE if rotated else Pango.EllipsizeMode.END)
         self.label.set_angle({"left": 90, "right": 270,
                               "inverted": 180}.get(output.rotation, 0)
                              if output.active else 0)
@@ -772,8 +770,7 @@ class Application:
                 self.place_box(box, o.x, o.y)
             else:
                 self.place_box(box, park_x, park_y)
-                park_y += (o.size()[1] if o.mode else 40 * self.factor) \
-                    + 10 * self.factor
+                park_y += (o.size()[1] if o.mode else 40 * self.factor) + 10 * self.factor
         if self._restack():
             GLib.idle_add(self._restack_later)
         self.show_status(self.command_text())
@@ -818,8 +815,8 @@ class Application:
         for b in self.boxes.values():
             a = b.get_allocation()
             rel = b.translate_coordinates(self.canvas, 0, 0)
-            if (a.width, a.height) != (b._pw, b._ph) or rel is None or \
-                    tuple(rel) != getattr(b, "_target", None):
+            if ((a.width, a.height) != (b._pw, b._ph) or rel is None
+                    or tuple(rel) != getattr(b, "_target", None)):
                 return False
         return True
 
@@ -915,8 +912,7 @@ class Application:
             return False
         items, modelled, sensitive, tips, active = {}, {}, {}, {}, {}
         for it in menu.get_children():
-            if not isinstance(it, Gtk.MenuItem) or \
-                    isinstance(it, Gtk.SeparatorMenuItem):
+            if not isinstance(it, Gtk.MenuItem) or isinstance(it, Gtk.SeparatorMenuItem):
                 continue
             label = (it.get_label() or "").replace("_", "")
             m = self._widget_rect(it)
@@ -967,8 +963,7 @@ class Application:
             return
         x0, y0, x1, y1 = self.layout.bounding_box()
         a = self.scroller.get_allocation()
-        aw, ah = max(a.width - 2 * MARGIN - 40, 100), \
-            max(a.height - 2 * MARGIN - 40, 100)
+        aw, ah = max(a.width - 2 * MARGIN - 40, 100), max(a.height - 2 * MARGIN - 40, 100)
         for f in ZOOMS:
             if (x1 - x0) // f <= aw and (y1 - y0) // f <= ah:
                 self.set_factor(f)
@@ -1224,8 +1219,7 @@ class Application:
         # the script calls the bare command word (arandr's shape); xrandr is
         # always installed on X11, wxrandr on a stock desktop is not
         if not shutil.which(self.backend.word):
-            text += " - note: %s is not on PATH, the script needs it" \
-                % self.backend.word
+            text += " - note: %s is not on PATH, the script needs it" % self.backend.word
         self.show_status(text)
         _dump("saved", {"path": path})
 

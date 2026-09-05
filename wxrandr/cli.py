@@ -102,10 +102,10 @@ class Opts:
         self.screen = -1
         self.fb = None
         self.fbmm = None
-        self.dpi = None            # float or output name
+        self.dpi = None             # float or output name
         self.noprimary = False
-        self.persistent = False    # --persistent (Mutter: write monitors.xml)
-        self.backend = None        # --backend NAME (None: auto)
+        self.persistent = False     # --persistent (Mutter: write monitors.xml)
+        self.backend = None         # --backend NAME (None: auto)
         self.print_backend = False  # --print-backend
         self.list_backends = False  # --backends
         self.global_auto = False
@@ -921,8 +921,7 @@ class Session:
             # one output really does move every other one, and a --dryrun
             # that printed a crtc line only for the outputs the command
             # names under-reported what the run would do
-            if t.enabled and t.name in pos and \
-                    pos[t.name] != (t.output.x, t.output.y):
+            if t.enabled and t.name in pos and pos[t.name] != (t.output.x, t.output.y):
                 t.changed = True
         return pos
 
@@ -958,11 +957,7 @@ def _do_mode_ops(sess: Session, opts: Opts, outputs):
     for op in opts.mode_ops:
         if op[0] == "new":
             _, name, clock, nums, flags = op
-            st.modes()[name] = {
-                "clock": clock,
-                "h": nums[0:4], "v": nums[4:8],
-                "flags": flags,
-            }
+            st.modes()[name] = {"clock": clock, "h": nums[0:4], "v": nums[4:8], "flags": flags}
         elif op[0] == "rm":
             name = op[1]
             if name not in st.modes():
@@ -1176,8 +1171,7 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
         if (sess.backend == "kwin" and sess.impl.primary and not any(s.primary for s in opts.stanzas)):
             # neither set_priority nor set_primary_output has an inverse:
             # KWin's output order always has a first entry
-            core.warn("KWin keeps a primary output; keeping %s\n"
-                      % sess.impl.primary)
+            core.warn("KWin keeps a primary output; keeping %s\n" % sess.impl.primary)
         sess.state.primary = None
     for s in opts.stanzas:
         if s.primary and any(t.name == s.name and t.stanza is s for t in targets):
@@ -1328,8 +1322,7 @@ def _run_session(sess: Session, opts: Opts) -> int:
         if opts.monitor_op[0] in ("list", "listactive"):
             # KWin has a real primary XWayland knows about (measured: its
             # own --listmonitors puts it first), so it lists it first too
-            for line in core.render_monitors(
-                    outputs, sess.state, sess.backend in ("mutter", "kwin")):
+            for line in core.render_monitors(outputs, sess.state, sess.backend in ("mutter", "kwin")):
                 print(line)
             return 0
         if opts.monitor_op[0] == "del":
@@ -1369,8 +1362,7 @@ def main(argv=None) -> int:
     flag, info_only, stripped = scan_backend_argv(args)
     asked = canonical_backend(flag)
     forced = asked
-    if forced in (None, "auto") and \
-            canonical_backend(os.environ.get("WXRANDR_BACKEND")) == "x11":
+    if forced in (None, "auto") and canonical_backend(os.environ.get("WXRANDR_BACKEND")) == "x11":
         # the variable's one say over the handover, so that it cannot ask
         # for a backend this process is then unable to be: `x11` there means
         # the real xrandr on any session, exactly like the flag.  A Wayland

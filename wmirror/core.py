@@ -312,8 +312,7 @@ def decide(outputs, source: str, target: str, region=None,
             "replace it with --replace, or stop it: wmirror --stop %s"
             % target])
 
-    if region is None and (src.w, src.h) == (dst.w, dst.h) \
-            and not keep_layout:
+    if region is None and (src.w, src.h) == (dst.w, dst.h) and not keep_layout:
         return Decision(REFUSE, [
             "%s and %s are both %dx%d: the layout mirrors them byte for "
             "byte, with no helper and no cost" % (source, target,
