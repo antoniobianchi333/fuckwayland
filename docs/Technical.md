@@ -792,6 +792,21 @@ Alongside a pip install of the same source, the two do not fight. The
 `import wdotool` finds the packaged copy. `debian/README.Debian` has the detail and
 the one line that gets you back to the clone.
 
+The built package is in the repository, at `release/fuckwayland_<version>_all.deb`,
+so a clone is already installable and `git log release/` is the record of every
+binary that shipped. `scripts/build-deb.sh` writes it there and replaces the one it
+finds, dropping any package left over from an older version so exactly one file is in
+the tree and the README can name it. What the build also produces and the repository
+does not keep is the `.changes` and the `.buildinfo`: a `.buildinfo` is a description
+of the machine that ran the build, down to the version of every package installed on
+it, which is a build record rather than something anyone installs. Those go to
+`dist/`, which `.gitignore` excludes along with the six zipapps of
+`scripts/build-pyz.sh`, the `__pycache__` trees, the nix `result` links and the VM
+images. Committing a binary is only tolerable because this one is
+reproducible: `dpkg-buildpackage` timestamps every member from `debian/changelog`,
+so two builds of the same source give the same bytes (measured: identical SHA-256
+over two runs), and `git status` stays clean after a rebuild that changed nothing.
+
 `scripts/build-deb.sh` installs its own build tools from the Ubuntu archive on first
 run, nothing from a PPA:
 

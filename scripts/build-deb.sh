@@ -4,7 +4,8 @@
 #
 #     sh scripts/build-deb.sh
 #
-# -> dist/fuckwayland_<version>_all.deb  (plus the .changes/.buildinfo)
+# -> release/fuckwayland_<version>_all.deb, committed, replacing the one there
+#    (the .changes/.buildinfo go to the untracked dist/)
 #
 #   --no-deps     do not apt-get anything; fail if a build tool is missing
 #   --lintian     run lintian on the result (needs the `lintian` package)
@@ -25,7 +26,7 @@ for a in "$@"; do
         --no-deps) DEPS=1 ;;
         --lintian) LINTIAN=1 ;;
         --keep) CLEAN=0 ;;
-        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "build-deb.sh: unknown option: $a" >&2; exit 2 ;;
     esac
 done
@@ -81,10 +82,31 @@ fi
 # Rules-Requires-Root: no means no fakeroot either.
 dpkg-buildpackage -b -us -uc
 
-mkdir -p dist
-for f in ../fuckwayland_"$pver"_all.deb ../fuckwayland_"$pver"_*.changes \
-         ../fuckwayland_"$pver"_*.buildinfo; do
-    [ -e "$f" ] && mv -f "$f" dist/
+# --- where the package lands -------------------------------------------------
+# release/ is part of the repository, so a clone is already an installable
+# package and nobody has to build anything to try the tools; `git log
+# release/` is then the record of every binary that shipped.  Exactly one .deb
+# is kept there, which is what lets the install command in the README name the
+# file.  The .changes and the .buildinfo stay out: they describe the machine
+# that ran the build, not the thing anyone installs, so they go to dist/ with
+# the zipapps, which .gitignore keeps out of the tree.
+deb=release/fuckwayland_${pver}_all.deb
+mkdir -p release dist
+
+for old in release/fuckwayland_*_all.deb; do
+    if [ -e "$old" ] && [ "$old" != "$deb" ]; then
+        echo "build-deb.sh: removing the superseded $old"
+        rm -f "$old"
+    fi
+done
+
+if [ -e ../fuckwayland_"$pver"_all.deb ]; then
+    mv -f ../fuckwayland_"$pver"_all.deb "$deb"
+fi
+for f in ../fuckwayland_"$pver"_*.changes ../fuckwayland_"$pver"_*.buildinfo; do
+    if [ -e "$f" ]; then
+        mv -f "$f" dist/
+    fi
 done
 
 if [ "$CLEAN" = 1 ]; then
@@ -92,7 +114,6 @@ if [ "$CLEAN" = 1 ]; then
     debian/rules clean >/dev/null 2>&1 || true
 fi
 
-deb=dist/fuckwayland_${pver}_all.deb
 [ -f "$deb" ] || { echo "build-deb.sh: $deb was not produced" >&2; exit 1; }
 echo "build-deb.sh: built $deb ($(wc -c < "$deb") bytes)"
 
@@ -105,4 +126,5 @@ if [ "$LINTIAN" = 1 ]; then
 fi
 
 echo
+echo "The package in the tree is now $deb."
 echo "Install it with:  sudo apt-get install ./$deb"
