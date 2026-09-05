@@ -219,16 +219,20 @@ def root_key():
         # generate under a private name and link it into place atomically, so
         # two concurrent vmctl processes (e.g. parallel builds) share one key
         tmp = KEYS / f".id_ed25519.{os.getpid()}"
+        # ssh-keygen writes the public half to "<file>.pub"; pathlib's with_suffix
+        # would replace ".<pid>" instead of appending, and name a file that is
+        # never written -- the first build on a fresh $VMDATA then died here.
+        pub = tmp.parent / (tmp.name + ".pub")
         run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "vmctl-guest-root", "-f", str(tmp)])
         try:
             os.link(tmp, key)
         except FileExistsError:
             pass
         else:
-            os.replace(tmp.with_suffix(".pub"), key.with_suffix(".pub"))
+            os.replace(pub, key.with_suffix(".pub"))
             log(f"generated guest root ssh key {key}")
         tmp.unlink(missing_ok=True)
-        tmp.with_suffix(".pub").unlink(missing_ok=True)
+        pub.unlink(missing_ok=True)
         for _ in range(50):
             if key.with_suffix(".pub").exists():
                 break

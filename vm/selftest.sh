@@ -13,6 +13,8 @@
 #   xfce   xrandr --listmonitors (the X server's enabled outputs)
 #   sway   swaymsg -t get_outputs
 # Leaves the VM running.   usage: vm/selftest.sh <flavor> [name]
+# The instance gets vmctl start's defaults (3 vCPU / 4 GB).  On a machine with
+# less than that, pass the size it can give:  SELFTEST_VM_ARGS='--cpus 2 --mem 3G'
 set -eu
 VMDIR=$(cd -- "$(dirname -- "$0")" && pwd)
 VM=$VMDIR/vmctl
@@ -176,8 +178,9 @@ diagnose_heads() {   # what the guest thinks the connectors are, and (on X11) wh
     echo "    X server has not let go of: the connector is gone, the CRTC is still scanning it out)"
 }
 
-step "vmctl start $name --flavor $flavor --heads 3 --fresh   (desktop $desktop, native tool: $tool)"
-port=$("$VM" start "$name" --flavor "$flavor" --heads 3 --fresh)
+vm_args=${SELFTEST_VM_ARGS:-}   # a list of options: unquoted below on purpose
+step "vmctl start $name --flavor $flavor --heads 3 --fresh $vm_args  (desktop $desktop, native tool: $tool)"
+port=$("$VM" start "$name" --flavor "$flavor" --heads 3 --fresh $vm_args)
 step "vmctl session $name"
 "$VM" session "$name"
 step "$tool: expect Virtual-1..3, Virtual-1 at 0,0, no first-run window"
