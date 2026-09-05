@@ -83,13 +83,10 @@ def _window_arg(ctx, rest, min_args, usage):
 
 
 def _display_size(ctx) -> tuple[int, int]:
-    b = ctx.backend()
-    fn = getattr(b, "display_size", None)
-    if fn is not None:
-        try:
-            return fn()
-        except CmdError:
-            pass
+    try:
+        return ctx.backend().display_size()
+    except CmdError:
+        pass
     sys.stderr.write("wdotool: cannot determine display size; assuming 1920x1080\n")
     return 1920, 1080
 
@@ -463,18 +460,12 @@ def _wait_until(pred, what, interval=0.03, timeout=None):
 
 
 def _is_mapped(ctx, wid) -> bool:
-    """X11 map state, as close as the backend can tell. Backends that track
-    it (sway: not in the scratchpad) beat the visibility flag: a window on
-    an unfocused workspace or background tab is mapped but not visible, and
-    waiting on visibility would hang windowmap --sync forever."""
-    b = ctx.backend()
-    fn = getattr(b, "is_mapped", None)
-    if fn is not None:
-        return fn(wid)
-    return b.find(wid).visible
+    """X11 map state, as close as the backend can tell (WindowBackend.is_mapped
+    carries the rule and the default)."""
+    return ctx.backend().is_mapped(wid)
 
 
-def _simple_action(ctx, args, cmdname, usage_body, act, sync_pred=None,
+def _simple_action(ctx, args, usage_body, act, sync_pred=None,
                    has_sync=False, sync_what="%d"):
     """Shared skeleton for [options] [window=%1] action commands."""
     usage = usage_body
@@ -500,7 +491,7 @@ def cmd_windowactivate(ctx, args):
         "%s" % (cmd, _SEE_STACK)
     )
     return _simple_action(
-        ctx, args, cmd, usage,
+        ctx, args, usage,
         lambda c, wid: c.backend().activate(wid),
         sync_pred=lambda c, wid: c.backend().find(wid).focused,
         has_sync=True, sync_what="window %d to become active",
@@ -514,7 +505,7 @@ def cmd_windowfocus(ctx, args):
         "--sync    - only exit once the window has focus\n" % cmd
     )
     return _simple_action(
-        ctx, args, cmd, usage,
+        ctx, args, usage,
         lambda c, wid: c.backend().focus(wid),
         sync_pred=lambda c, wid: c.backend().find(wid).focused,
         has_sync=True, sync_what="window %d to take focus",
@@ -524,14 +515,14 @@ def cmd_windowfocus(ctx, args):
 def cmd_windowraise(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowraise")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, cmd, usage,
+    return _simple_action(ctx, args, usage,
                           lambda c, wid: c.backend().raise_(wid))
 
 
 def cmd_windowlower(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowlower")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, cmd, usage,
+    return _simple_action(ctx, args, usage,
                           lambda c, wid: c.backend().lower(wid))
 
 
@@ -543,7 +534,7 @@ def cmd_windowmap(ctx, args):
         "%s" % (cmd, _SEE_STACK)
     )
     return _simple_action(
-        ctx, args, cmd, usage,
+        ctx, args, usage,
         lambda c, wid: c.backend().map(wid),
         sync_pred=_is_mapped,
         has_sync=True, sync_what="window %d to be mapped",
@@ -558,7 +549,7 @@ def cmd_windowunmap(ctx, args):
         "%s" % (cmd, _SEE_STACK)
     )
     return _simple_action(
-        ctx, args, cmd, usage,
+        ctx, args, usage,
         lambda c, wid: c.backend().unmap(wid),
         sync_pred=lambda c, wid: not _is_mapped(c, wid),
         has_sync=True, sync_what="window %d to be unmapped",
@@ -573,7 +564,7 @@ def cmd_windowminimize(ctx, args):
         "%s" % (cmd, _SEE_STACK)
     )
     return _simple_action(
-        ctx, args, cmd, usage,
+        ctx, args, usage,
         lambda c, wid: c.backend().minimize(wid),
         sync_pred=lambda c, wid: not _is_mapped(c, wid),
         has_sync=True, sync_what="window %d to be minimized",
@@ -583,7 +574,7 @@ def cmd_windowminimize(ctx, args):
 def cmd_windowclose(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowclose")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, cmd, usage,
+    return _simple_action(ctx, args, usage,
                           lambda c, wid: c.backend().close(wid))
 
 
@@ -591,14 +582,14 @@ def cmd_windowquit(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowquit")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
     # Wayland has only one way to close a window: a polite close request.
-    return _simple_action(ctx, args, cmd, usage,
+    return _simple_action(ctx, args, usage,
                           lambda c, wid: c.backend().close(wid))
 
 
 def cmd_windowkill(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowkill")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, cmd, usage,
+    return _simple_action(ctx, args, usage,
                           lambda c, wid: c.backend().kill(wid))
 
 

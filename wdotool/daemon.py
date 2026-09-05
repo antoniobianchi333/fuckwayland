@@ -1733,7 +1733,7 @@ class _Daemon:
             warnings = []
         dev, vk = self._keyboard(warnings, vkbd_mode)
         layout = self._typing_layout(vk, warnings, layout_mode)  # see op_key
-        lname = "US" if layout is None else layout.name
+        lname = keymap.layout_name(layout)
         with self._mods_cleared(clearmods, warnings, session, dev, vk):
             # xdo_enter_text_window: delay split between down and up, down capped at 50ms
             down_d = min(delay_ms / 2, 50) / 1000

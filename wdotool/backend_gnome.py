@@ -51,7 +51,7 @@ import time
 from wdotool import session
 from wdotool.backend import View, Window, WindowBackend, Workspace, warn
 from wdotool.ctx import CmdError, NoSessionError
-from wdotool.dbus_mini import ERR, Bus, DBusError
+from wdotool.dbus_mini import ERR, Bus, DBusError, no_bus_text
 
 BUS_NAME = "org.fuckwayland.Bridge"
 OBJECT_PATH = "/org/fuckwayland/Bridge"
@@ -176,7 +176,7 @@ class GnomeBackend(WindowBackend):
             try:
                 bus = Bus()
             except DBusError as e:
-                raise NoSessionError("gnome backend: %s" % _no_bus_text(e)) from None
+                raise NoSessionError("gnome backend: %s" % no_bus_text(e)) from None
         self.bus = bus
         if names is None:
             try:
@@ -492,12 +492,6 @@ class GnomeBackend(WindowBackend):
     def num_desktops(self) -> int:
         return int(self._call("GetNWorkspaces")[0])
 
-    def set_num_desktops(self, n: int):
-        # The bridge answers Unsupported when Mutter's dynamic-workspaces is
-        # on (then the shell owns the count); _map_error marks that so
-        # set_num_desktops can warn instead of failing (B9).
-        self._call("SetNWorkspaces", "i", (n,))
-
     # The bridge version that made SelectWindow a click-to-pick; v1 waited
     # for a focus change and would hang on the already-focused window.
     _SELECT_MIN_VERSION = 2
@@ -624,7 +618,9 @@ class GnomeBackend(WindowBackend):
     def set_num_desktops(self, n: int):
         """wmctrl -n: only with static workspaces; with dynamic workspaces
         (GNOME's default) the bridge answers Unsupported (a CmdError the
-        caller turns into wmctrl's "the WM may ignore the request")."""
+        caller turns into wmctrl's "the WM may ignore the request").
+        _map_error marks that answer .unsupported, so wdotool's
+        set_num_desktops warns instead of failing a chain (B9)."""
         self._call("SetNWorkspaces", "i", (int(n),))
 
     def monitors(self) -> "list[dict]":
@@ -678,9 +674,3 @@ def _autoload_wanted() -> bool:
     v = os.environ.get(AUTOLOAD_ENV, "").strip().lower()
     return bool(v) and v not in ("0", "no", "false", "off")
 
-
-def _no_bus_text(e: DBusError) -> str:
-    if e.name == ERR + "NoServer":
-        return "no session D-Bus found (set DBUS_SESSION_BUS_ADDRESS or run " \
-               "inside the graphical session / under sudo)"
-    return "cannot connect to the session D-Bus: %s" % e

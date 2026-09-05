@@ -14,6 +14,23 @@ Usage sketch:
 import os
 import socket
 import struct
+import time
+
+
+def now_ms() -> int:
+    """The `time` argument the input protocols take: milliseconds, monotonic,
+    32-bit, as every compositor's own input clock is."""
+    return int(time.monotonic() * 1000) & 0xFFFFFFFF
+
+
+def roundtrip(conn, what: str, error):
+    """conn.roundtrip(), with a protocol error or a dead socket turned into
+    `error` -- the daemon must never see a traceback out of a virtual-device
+    module."""
+    try:
+        conn.roundtrip()
+    except (OSError, RuntimeError, ValueError) as e:
+        raise error(f"{what} refused: {e}") from None
 
 
 class Cursor:

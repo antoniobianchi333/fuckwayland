@@ -64,7 +64,7 @@ which is the shape `_send` catches. Hence: ONE connection and ONE pointer
 object for the life of anything held down.
 """
 
-import time
+from wdotool.wayland_mini import now_ms as _now_ms, roundtrip
 
 MANAGER = "zwlr_virtual_pointer_manager_v1"
 # sway advertises v2; we bind v1 on purpose. The only thing v2 adds is
@@ -302,16 +302,5 @@ class VirtualPointer:
                 "buttons wdotool was holding were released with it") from None
 
 
-def _now_ms() -> int:
-    """The `time` argument: milliseconds, monotonic, 32-bit, as every
-    compositor's own input clock is."""
-    return int(time.monotonic() * 1000) & 0xFFFFFFFF
-
-
 def _roundtrip(conn, what: str):
-    """conn.roundtrip(), with a protocol error or a dead socket turned into
-    VptrError -- the daemon must never see a traceback out of this module."""
-    try:
-        conn.roundtrip()
-    except (OSError, RuntimeError, ValueError) as e:
-        raise VptrError(f"{what} refused: {e}") from None
+    return roundtrip(conn, what, VptrError)

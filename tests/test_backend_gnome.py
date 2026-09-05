@@ -1259,7 +1259,7 @@ class DetectTests(_Base):
         self.assertEqual(self._wlr_calls, [1])
         self.assertIn("no session D-Bus reachable", str(cm.exception))
         self.assertIsNone(backend_detect.session_names())
-        self.assertFalse(backend_detect.dbus_name_has_owner(SHELL_NAME))
+        self.assertNotIn(SHELL_NAME, backend_detect.session_names() or [])
 
 
 class ShippedFilesTests(unittest.TestCase):

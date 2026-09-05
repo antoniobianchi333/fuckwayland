@@ -103,6 +103,17 @@ class DBusError(Exception):
         self.message = message
 
 
+def no_bus_text(e: DBusError) -> str:
+    """Why the session bus could not be reached, in one line. "There is no
+    bus here" and "the bus refused us" are different problems -- the first is
+    a login-session question, the second a permissions one -- and every
+    backend that opens a bus has to tell the user which it hit."""
+    if e.name == ERR + "NoServer":
+        return ("no session D-Bus found (set DBUS_SESSION_BUS_ADDRESS or run "
+                "inside the graphical session / under sudo)")
+    return "cannot connect to the session D-Bus: %s" % e
+
+
 class Variant:
     """Explicitly typed value for `v` slots on the write side (and what the
     reader returns for `v` when wrap_variants=True)."""

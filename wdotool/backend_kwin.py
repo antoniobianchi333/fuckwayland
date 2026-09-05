@@ -77,7 +77,7 @@ from wdotool.backend import (View, Window, WindowBackend, Workspace,
                              warn as _warn)
 from wdotool.ctx import CmdError, NoSessionError
 from wdotool.dbus_mini import (ERR, METHOD_CALL, NAME_FLAG_DO_NOT_QUEUE,
-                               NO_REPLY_EXPECTED, Bus, DBusError)
+                               NO_REPLY_EXPECTED, Bus, DBusError, no_bus_text)
 
 KWIN_NAME = "org.kde.KWin"
 KWIN_PATH = "/KWin"
@@ -131,7 +131,7 @@ class KwinBackend(WindowBackend):
             try:
                 bus = Bus()
             except DBusError as e:
-                raise NoSessionError("kwin backend: %s" % _no_bus_text(e)) from None
+                raise NoSessionError("kwin backend: %s" % no_bus_text(e)) from None
         self.bus = bus
         if names is None:
             try:
@@ -1243,9 +1243,3 @@ def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
               % len(blocked))
     return out
 
-
-def _no_bus_text(e: DBusError) -> str:
-    if e.name == ERR + "NoServer":
-        return ("no session D-Bus found (set DBUS_SESSION_BUS_ADDRESS or run "
-                "inside the graphical session / under sudo)")
-    return "cannot connect to the session D-Bus: %s" % e

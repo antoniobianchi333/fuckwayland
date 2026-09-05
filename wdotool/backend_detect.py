@@ -88,26 +88,6 @@ def session_names() -> list[str] | None:
     return _names
 
 
-def dbus_env() -> dict | None:
-    """Process env pointing at the graphical session's D-Bus, or None. No
-    backend needs it any more (they all speak dbus_mini); kept for
-    diagnostics and for anything that still shells out."""
-    hit = session.find_user_bus()
-    if not hit:
-        return None
-    _uid, addr = hit
-    env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS=addr)
-    if addr.startswith("unix:path="):
-        path = addr[len("unix:path="):].split(",")[0]
-        env["XDG_RUNTIME_DIR"] = os.path.dirname(path)
-    return env
-
-
-def dbus_name_has_owner(name: str) -> bool:
-    names = session_names()
-    return bool(names) and name in names
-
-
 def detect():
     forced = os.environ.get("WDOTOOL_BACKEND")
     if forced:

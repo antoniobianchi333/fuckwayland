@@ -36,9 +36,10 @@ closed again inside the call -- no fd is held between samples.
 import fcntl
 import os
 
+from wdotool.uinput import EV_KEY
+
 INPUT_DIR = "/dev/input"
 
-EV_KEY = 0x01
 KEY_MAX = 0x2FF
 _KEY_BYTES = (KEY_MAX + 8) // 8   # 96: the bitmap ioctls' buffer size
 _NAME_BYTES = 256

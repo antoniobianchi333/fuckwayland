@@ -229,6 +229,21 @@ class WindowBackend:
     def window_desktop(self, wid: int) -> int:
         return self.find(wid).desktop
 
+    def is_mapped(self, wid: int) -> bool:
+        """X11 map state, as close as the backend can tell: the looser "not
+        minimized", NOT "visible". A window on an unfocused workspace is
+        mapped, and `windowmap --sync` waiting on visibility would never
+        return for one. Backends that track it exactly (sway: not in the
+        scratchpad) override this; the default is the visibility flag, which
+        is all a compositor that reports nothing else can offer."""
+        return self.find(wid).visible
+
+    def display_size(self) -> tuple[int, int]:
+        """The bounding box of the whole output layout, in logical pixels.
+        CmdError when the compositor will not say -- callers fall back to a
+        warning and 1920x1080 (wdotool) or print N/A (wwmctl)."""
+        self._unsupported("display_size")
+
     def set_window_desktop(self, wid: int, n: int):
         self._unsupported("set_desktop_for_window")
 
