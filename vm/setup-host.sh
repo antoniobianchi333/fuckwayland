@@ -6,7 +6,8 @@
 # only thing here that needs sudo), verifies every QEMU feature vmctl relies
 # on -- the dbus display backend, virtio-vga with four heads, SetUIInfo over
 # D-Bus, QMP screendump to PNG -- by starting a paused, diskless machine for a
-# fraction of a second, creates the directories, and prints what to run next.
+# fraction of a second, creates the directories, sizes the first build to what
+# the machine has, and prints what to run next.
 # Idempotent: run it again after fixing something and it re-checks everything.
 #
 # usage: vm/setup-host.sh [--no-apt]
@@ -22,7 +23,7 @@ NO_APT=
 for a in "$@"; do
     case $a in
         --no-apt) NO_APT=1 ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,${/^#/!q;p;}' "$0"; exit 0 ;;
         *) echo "setup-host: unknown option $a (see --help)" >&2; exit 2 ;;
     esac
 done
@@ -80,6 +81,48 @@ if [ -z "$kvm_ok" ]; then
     note "Without KVM nothing in vm/ boots: vmctl, build-iso-golden.sh and run.sh all pass"
     note "-enable-kvm, and QEMU then stops at 'failed to initialize kvm' instead of falling back to"
     note "software emulation. Everything below is still checked so that the rest is ready."
+fi
+
+# ---------------------------------------------------------------- machine size
+# `vmctl build` asks for 4 vCPU and 6 GB by default.  A smaller machine has to
+# be told to ask for less: QEMU does not scale the request down, it stops with
+# "cannot set up guest memory 'pc.ram': Cannot allocate memory".
+head1 "machine size"
+ncpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+memkb=$(sed -n 's/^MemTotal:[[:space:]]*\([0-9]*\).*/\1/p' /proc/meminfo 2>/dev/null || true)
+memmb=$(( ${memkb:-0} / 1024 ))
+build_cpus=4
+build_memmb=6144
+build_args=
+if [ "$ncpu" -lt 4 ]; then build_cpus=$ncpu; fi
+if [ "$memmb" -gt 0 ]; then
+    ok "$ncpu vCPU, $((memmb / 1024)) GB of memory"
+    # leave the machine itself about 768 MB; QEMU's resident size grows only to
+    # what the guest actually touches, so this is the request, not a reservation.
+    if [ $((memmb - 768)) -lt "$build_memmb" ]; then build_memmb=$((memmb - 768)); fi
+else
+    ok "$ncpu vCPU (memory unknown: no MemTotal in /proc/meminfo)"
+fi
+inst_cpus=3
+inst_memmb=4096
+inst_args=
+if [ "$ncpu" -lt 3 ]; then inst_cpus=$ncpu; fi
+if [ "$memmb" -gt 0 ] && [ $((memmb - 768)) -lt "$inst_memmb" ]; then inst_memmb=$((memmb - 768)); fi
+if [ "$inst_cpus" != 3 ]; then inst_args="$inst_args --cpus $inst_cpus"; fi
+if [ "$inst_memmb" != 4096 ]; then inst_args="$inst_args --mem ${inst_memmb}M"; fi
+if [ "$build_cpus" != 4 ]; then build_args="$build_args --cpus $build_cpus"; fi
+if [ "$build_memmb" != 6144 ]; then build_args="$build_args --mem ${build_memmb}M"; fi
+if [ -n "$build_args" ]; then
+    note "smaller than the 4 vCPU / 6 GB a build asks for by default, so build with$build_args"
+    note "(QEMU does not ask for less on its own; it stops at \"cannot set up guest memory\")"
+fi
+if [ -n "$inst_args" ]; then
+    note "a desktop instance asks for 3 vCPU / 4 GB, more than this machine has, so start"
+    note "one with$inst_args -- and run the self-test as SELFTEST_VM_ARGS='${inst_args# }'"
+fi
+if [ "$build_memmb" -lt 3072 ]; then
+    note "that leaves the build VM under 3 GB, below the smallest a desktop build has been"
+    note "measured to finish in (3 GB); it may not get through. The rest of the rig is fine."
 fi
 
 # ---------------------------------------------------------------- packages
@@ -298,8 +341,18 @@ fi
 head1 "next"
 if [ -n "$kvm_ok" ] && [ -n "$tools_ok" ] && [ -n "$qemu_ok" ] && [ "$todo_n" = 0 ]; then
     ok "this machine can run the rig"
-    note "    $HERE/vmctl build noble-gnome         # first golden image, about 7 minutes (needs the noble image above)"
-    note "    $HERE/selftest.sh noble-gnome         # boots it with 3 heads and checks the rig end to end"
+    case " $imgs_missing " in
+        *" noble-server-cloudimg-amd64.img "*)
+            note "    cd $VMIMAGES && curl -LO https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+            note "                                          # 0.6 GB, the base of the noble-* flavors; nothing builds without it" ;;
+    esac
+    note "    $HERE/vmctl build noble-gnome$build_args         # first golden image, about 7 minutes"
+    if [ -n "$inst_args" ]; then
+        note "    SELFTEST_VM_ARGS='${inst_args# }' $HERE/selftest.sh noble-gnome"
+        note "                                          # boots it with 3 heads and checks the rig end to end"
+    else
+        note "    $HERE/selftest.sh noble-gnome         # boots it with 3 heads and checks the rig end to end"
+    fi
     note "    $HERE/vmctl stop noble-gnome-t        # selftest leaves its VM running"
     exit 0
 fi

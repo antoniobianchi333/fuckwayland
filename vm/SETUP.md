@@ -5,6 +5,10 @@ flavors, the commands, what the tools do on each desktop — is `vm/README.md`; 
 is only how to get a machine to the point where that document applies.
 `vm/setup-host.sh` does the mechanical part of it and checks the rest.
 
+The repository is the only thing you copy onto the machine — clone it, or unpack a
+tarball of it, anywhere in your home directory; everything below is run from inside
+it and writes nothing outside `~/vm-data`, `~/images` and the packages it installs.
+
 ## The machine
 
 Any Linux machine on which `/dev/kvm` works: a physical box, or a virtual machine
@@ -60,6 +64,19 @@ installing, 2.4 GB for a 4 GB GNOME instance after the self-test, 4.1 GB for the
 4 GB ISO installer. A machine with 4 CPUs and 16 GB runs one build or two desktop
 instances at a time comfortably; 8 CPUs and 32 GB run four (`vm/README.md`).
 
+QEMU asks for the whole `--mem` when it starts and does not settle for less, so on a
+machine smaller than the defaults it is the *defaults* that fail, before anything
+boots:
+
+```
+qemu-system-x86_64: warning: Number of SMP cpus requested (4) exceeds the recommended cpus supported by KVM (2)
+qemu-system-x86_64: cannot set up guest memory 'pc.ram': Cannot allocate memory
+```
+
+Give it what the machine has instead — `vmctl build <flavor> --cpus 2 --mem 3G` and
+so on. `vm/setup-host.sh` reports the machine's vCPU count and memory and prints the
+pair it can take in the command it suggests.
+
 Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
 
 * a golden image is **5.4 to 7.6 GB** for a flavor built from a distro desktop
@@ -91,6 +108,12 @@ On Ubuntu 24.04 or 26.04 — `vm/setup-host.sh` runs exactly this, after saying 
 $ sudo apt-get install -y qemu-system-x86 qemu-system-modules-opengl qemu-utils cloud-image-utils \
       genisoimage dbus libglib2.0-bin openssh-client python3 imagemagick
 ```
+
+On a machine with nothing on it but the distribution's server install that is 214
+packages, 149 MB to download and 662 MB on disk — measured, three minutes at
+0.7 MB/s. Most of it is dependencies QEMU declares and the rig never uses: GTK,
+SDL2, SPICE, GStreamer, PipeWire, PulseAudio. Nothing here opens a window on the
+host; the guests are watched over D-Bus and QMP.
 
 Which program each one is there for, so the list can be translated for another
 distribution:
