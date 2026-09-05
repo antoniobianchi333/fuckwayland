@@ -11,11 +11,16 @@ import shutil
 import socket
 import stat
 import struct
+import sys
 import tempfile
 import threading
 import unittest
 from unittest import mock
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from support import RecorderDev
 from wdotool import backend, daemon, keymap, uinput
 from wdotool.ctx import CmdError
 from wdotool.keysyms import NAME_TO_KEYSYM
@@ -31,24 +36,6 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 # Dvorak session would have the daemon read that session's real keymap and
 # type through it, and every keycode assertion here would be wrong.
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
-
-
-class RecorderDev:
-    def __init__(self):
-        self.events = []
-        self.closed = False
-
-    def emit(self, etype, code, value):
-        self.events.append((etype, code, value))
-
-    def syn(self):
-        self.events.append(("SYN",))
-
-    def key(self, code, down):
-        self.events.append(("KEY", code, 1 if down else 0))
-
-    def close(self):
-        self.closed = True
 
 
 def make_daemon(geom=(0, 0, 1920, 1080), rel_abs=False):

@@ -13,10 +13,8 @@ Starts its own sway on a private XDG_RUNTIME_DIR."""
 
 import os
 import shutil
-import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -29,6 +27,8 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+from support import HeadlessSway
 
 XTERM_TITLE = "XW-Xterm"
 FOOT_TITLE = "WL-Foot"
@@ -48,79 +48,26 @@ def _x11_mini_implemented() -> bool:
 class WwmctlLiveTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.rtdir = tempfile.mkdtemp(prefix="wwmctl-live-")
-        os.chmod(cls.rtdir, 0o700)
-        conf = os.path.join(cls.rtdir, "sway.conf")
-        with open(conf, "w") as f:
-            f.write(
-                "output HEADLESS-1 mode 1280x720\n"
-                "xwayland enable\n"
-                "default_border none\n"
-                "exec sh -c 'echo \"$DISPLAY\" > %s/display'\n" % cls.rtdir
-            )
-        env = dict(
-            os.environ,
-            XDG_RUNTIME_DIR=cls.rtdir,
-            WLR_BACKENDS="headless",
-            WLR_LIBINPUT_NO_DEVICES="1",
-            WLR_RENDERER="pixman",
-            # dodge the nixpkgs sway wrapper's dbus-run-session fallback
-            DBUS_SESSION_BUS_ADDRESS=f"unix:path={cls.rtdir}/no-bus",
-        )
-        cls.sway = subprocess.Popen(
-            ["sway", "-c", conf], env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        cls.sock = None
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            socks = [n for n in os.listdir(cls.rtdir)
-                     if n.startswith("sway-ipc.") and n.endswith(".sock")]
-            if socks:
-                cls.sock = os.path.join(cls.rtdir, socks[0])
-                break
-            if cls.sway.poll() is not None:
-                raise unittest.SkipTest("sway exited at startup")
-            time.sleep(0.2)
-        if cls.sock is None:
-            cls.sway.kill()
-            raise unittest.SkipTest("sway did not create an IPC socket")
-        cls.display = ""
-        deadline = time.monotonic() + 10
-        dfile = os.path.join(cls.rtdir, "display")
-        while time.monotonic() < deadline and not cls.display:
-            try:
-                with open(dfile) as f:
-                    cls.display = f.read().strip()
-            except OSError:
-                pass
-            time.sleep(0.2)
-        if not cls.display:
-            cls.sway.terminate()
-            raise unittest.SkipTest("sway did not announce an X DISPLAY "
-                                    "(xwayland enable missing?)")
+        cls.rig = HeadlessSway("wwmctl-live-")
+        cls.rtdir, cls.sock = cls.rig.rtdir, cls.rig.sock
+        cls.display, cls.sway = cls.rig.display, cls.rig.proc
         # xterm FIRST so it tiles at x=0 (keeps the oracle geometry
         # comparison out of wmctrl's coordinate-doubling quirk under
         # non-reparenting X window managers, see test_04), foot second.
         cls.swaymsg_cls("exec xterm -T %s -e sh -c 'sleep 600'" % XTERM_TITLE)
         if not cls.wait(lambda: XTERM_TITLE in cls.wwm("-l")[1]):
-            cls.sway.terminate()
+            cls.rig.stop()
             raise unittest.SkipTest("xterm window never appeared "
                                     "(XWayland broken?)")
         cls.swaymsg_cls("exec foot --app-id footw --title %s "
                         "sh -c 'sleep 600'" % FOOT_TITLE)
         if not cls.wait(lambda: FOOT_TITLE in cls.wwm("-l")[1]):
-            cls.sway.terminate()
+            cls.rig.stop()
             raise unittest.SkipTest("foot window never appeared")
 
     @classmethod
     def tearDownClass(cls):
-        cls.sway.send_signal(signal.SIGTERM)
-        try:
-            cls.sway.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            cls.sway.kill()
-        shutil.rmtree(cls.rtdir, ignore_errors=True)
+        cls.rig.stop()
 
     # -- helpers ------------------------------------------------------------
 

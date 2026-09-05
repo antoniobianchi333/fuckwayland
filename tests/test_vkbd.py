@@ -31,6 +31,7 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 # session would have the kernel-path daemon read that session's keymap.
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
+from support import RecorderDev  # noqa: E402
 from wdotool import cli, daemon, keymap, us_keymap, vkbd, xkbmap  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -299,25 +300,6 @@ def _unpack_bind(body):
 
 # ---------------------------------------------------------------------------
 # daemons
-
-
-class RecorderDev:
-    """The kernel keyboard, recording (same double as test_input_daemon)."""
-
-    def __init__(self):
-        self.events = []
-
-    def key(self, code, down):
-        self.events.append(("KEY", code, 1 if down else 0))
-
-    def emit(self, *a):
-        self.events.append(("EMIT",) + a)
-
-    def syn(self):
-        self.events.append(("SYN",))
-
-    def close(self):
-        pass
 
 
 def daemon_with_uinput():

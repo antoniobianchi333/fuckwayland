@@ -19,7 +19,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import socket
 import struct
 import subprocess
@@ -32,6 +31,8 @@ from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+from support import HeadlessSway
 
 from wdotool import x11_mini
 from wdotool.x11_mini import X11Conn, X11Error, XUnavailable
@@ -665,63 +666,16 @@ def _need(*tools):
 class X11LiveTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.rtdir = tempfile.mkdtemp(prefix="x11mini-live-")
-        os.chmod(cls.rtdir, 0o700)
-        conf = os.path.join(cls.rtdir, "sway.conf")
-        with open(conf, "w") as f:
-            f.write(
-                "output HEADLESS-1 mode 1280x720\n"
-                "xwayland enable\n"
-                "default_border none\n"
-                # so _NET_ACTIVE_WINDOW client messages really move focus
-                "focus_on_window_activation focus\n"
-                "exec sh -c 'echo \"$DISPLAY\" > %s/display'\n" % cls.rtdir
-            )
-        cls.env = dict(
-            os.environ,
-            XDG_RUNTIME_DIR=cls.rtdir,
-            WLR_BACKENDS="headless",
-            WLR_LIBINPUT_NO_DEVICES="1",
-            WLR_RENDERER="pixman",
-            DBUS_SESSION_BUS_ADDRESS="unix:path=%s/no-bus" % cls.rtdir,
-            XAUTHORITY=os.path.join(cls.rtdir, "no-such-authority"),
-        )
-        cls.sway = subprocess.Popen(
-            ["sway", "-c", conf], env=cls.env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        cls.sock = None
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            socks = [n for n in os.listdir(cls.rtdir)
-                     if n.startswith("sway-ipc.") and n.endswith(".sock")]
-            if socks:
-                cls.sock = os.path.join(cls.rtdir, socks[0])
-                break
-            if cls.sway.poll() is not None:
-                raise unittest.SkipTest("sway exited at startup")
-            time.sleep(0.2)
-        if cls.sock is None:
-            cls.sway.kill()
-            raise unittest.SkipTest("sway created no IPC socket")
-        cls.env["SWAYSOCK"] = cls.sock
-        cls.display = ""
-        dfile = os.path.join(cls.rtdir, "display")
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not cls.display:
-            try:
-                with open(dfile) as f:
-                    cls.display = f.read().strip()
-            except OSError:
-                pass
-            time.sleep(0.2)
-        if not cls.display:
-            cls.stop_all()
-            raise unittest.SkipTest("sway did not announce DISPLAY "
-                                    "(xwayland disabled?)")
-        cls.env["DISPLAY"] = cls.display
-        wl = [n for n in os.listdir(cls.rtdir)
-              if n.startswith("wayland-") and not n.endswith(".lock")]
-        cls.env["WAYLAND_DISPLAY"] = wl[0] if wl else "wayland-1"
+        cls.rig = HeadlessSway(
+            "x11mini-live-",
+            # so _NET_ACTIVE_WINDOW client messages really move focus
+            extra_conf="focus_on_window_activation focus\n",
+            extra_env=lambda rt: {
+                "XAUTHORITY": os.path.join(rt, "no-such-authority")})
+        cls.rtdir, cls.sock = cls.rig.rtdir, cls.rig.sock
+        cls.display, cls.sway = cls.rig.display, cls.rig.proc
+        cls.env = dict(cls.rig.env,
+                       WAYLAND_DISPLAY=cls.rig.wayland_display())
         cls.kids = []
         cls.kids.append(subprocess.Popen(
             ["xterm", "-T", XTERM_TITLE, "-e", "sh", "-c", "sleep 600"],
@@ -751,12 +705,7 @@ class X11LiveTest(unittest.TestCase):
                 p.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        cls.sway.send_signal(signal.SIGTERM)
-        try:
-            cls.sway.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            cls.sway.kill()
-        shutil.rmtree(cls.rtdir, ignore_errors=True)
+        cls.rig.stop()
 
     @classmethod
     def tearDownClass(cls):

@@ -7,10 +7,15 @@ import io
 import os
 import signal
 import socket
+import sys
 import tempfile
 import time
 import unittest
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from support import RecorderDev
 from wdotool import cli, daemon, input_cmds, keymap, uinput
 from wdotool.ctx import CmdError, Context
 
@@ -25,23 +30,6 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 # Dvorak session would have the daemon read that session's real keymap and
 # type through it, and every keycode assertion here would be wrong.
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
-
-
-class RecorderDev:
-    def __init__(self):
-        self.events = []
-
-    def emit(self, etype, code, value):
-        self.events.append((etype, code, value))
-
-    def syn(self):
-        self.events.append(("SYN",))
-
-    def key(self, code, down):
-        self.events.append(("KEY", code, 1 if down else 0))
-
-    def close(self):
-        pass
 
 
 def make_daemon():

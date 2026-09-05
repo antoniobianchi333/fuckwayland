@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
+from support import RecorderDev, abs_report  # noqa: E402
 from wdotool import daemon, uinput, vptr  # noqa: E402
 
 # What a daemon that could not open /dev/uinput says today, and must keep
@@ -372,34 +373,6 @@ def _over_the_socket(d, req):
         return __import__("json").loads(a.makefile("r").readline())
     finally:
         a.close()
-
-
-class RecorderDev:
-    """A uinput device, recording (the same double as test_input_daemon)."""
-
-    def __init__(self):
-        self.events = []
-
-    def key(self, code, down):
-        self.events.append(("KEY", code, 1 if down else 0))
-
-    def emit(self, *a):
-        self.events.append(("EMIT",) + a)
-
-    def syn(self):
-        self.events.append(("SYN",))
-
-    def close(self):
-        pass
-
-
-def abs_report(dev):
-    """(ABS_X, ABS_Y) of the last report a recorder tablet emitted."""
-    vals = {}
-    for ev in dev.events:
-        if ev[0] == "EMIT" and ev[1] == uinput.EV_ABS:
-            vals[ev[2]] = ev[3]
-    return vals[uinput.ABS_X], vals[uinput.ABS_Y]
 
 
 class VptrTest(unittest.TestCase):
