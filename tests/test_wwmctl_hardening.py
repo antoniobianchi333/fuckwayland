@@ -27,9 +27,9 @@ Findings fixed and pinned here (wdotool/x11_mini.py unless noted):
 - :SELECT: blocked with no hint of what it was waiting for.
 """
 
+import contextlib
 import io
 import os
-import socket
 import struct
 import sys
 import tempfile
@@ -55,126 +55,64 @@ from wdotool.x11_mini import X11Conn, XUnavailable
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 
-def _pad4(b: bytes) -> bytes:
-    return b + b"\0" * (-len(b) % 4)
+class HostileXServer(FakeXServer):
+    """FakeXServer with one attack switched on; `mode` selects it.
 
+    Everything a client needs to get connected is the base class's; what an
+    attack overrides is the setup reply, or a single request arm. The base
+    is the honest server these tests are measured against, so an attack that
+    stops being an attack (a lying length the base would also send) cannot
+    hide here."""
 
-def _recvn(conn, n: int) -> bytes:
-    buf = b""
-    while len(buf) < n:
-        chunk = conn.recv(n - len(buf))
-        if not chunk:
-            raise EOFError
-        buf += chunk
-    return buf
-
-
-def _good_setup() -> bytes:
-    vendor = b"EVIL"
-    depth = struct.pack("<BxH4x", 24, 1) + b"\0" * 24
-    screens = struct.pack("<5I6HI4B", 0x5A, 0, 0, 0, 0,
-                          1280, 720, 300, 200, 1, 1,
-                          0x21, 0, 0, 24, 1) + depth
-    extra = struct.pack("<4IHH8B4x", 1, 0x400000, 0x3FFFFF, 256,
-                        len(vendor), 0xFFFF, 1, 0,
-                        0, 0, 32, 32, 8, 255)
-    extra += _pad4(vendor) + screens
-    return struct.pack("<BxHHH", 1, 11, 0, len(extra) // 4) + extra
-
-
-class HostileXServer(threading.Thread):
-    """Programmable hostile server; `mode` selects the attack."""
+    ROOTS = [0x5A]                # one screen; nscreens is what one attack lies about
 
     def __init__(self, sockdir, mode, num=7):
-        super().__init__(daemon=True)
         self.mode = mode
         self.getprop_count = 0
-        self.path = os.path.join(sockdir, "X%d" % num)
-        self._ls = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._ls.bind(self.path)
-        self._ls.listen(4)
-        self.start()
+        super().__init__(sockdir, num=num)
 
-    def stop(self):
-        self._ls.close()
-
-    def run(self):
-        try:
-            while True:
-                conn, _ = self._ls.accept()
-                threading.Thread(target=self._serve_one, args=(conn,),
-                                 daemon=True).start()
-        except OSError:
-            pass
-
-    def _serve_one(self, conn):
-        try:
-            self._serve(conn)
-        except (EOFError, OSError):
-            pass
-        finally:
-            conn.close()
-
-    def _serve(self, conn):
-        hdr = _recvn(conn, 12)
-        nlen, dlen = struct.unpack_from("<HH", hdr, 6)
-        if nlen:
-            _recvn(conn, len(_pad4(b"x" * nlen)))
-        if dlen:
-            _recvn(conn, len(_pad4(b"x" * dlen)))
-
+    def _setup_reply(self):
         if self.mode == "tiny_body":
             # status=1 but the body is 1 word of zeros: nothing parses
-            conn.sendall(struct.pack("<BxHHH", 1, 11, 0, 1) + b"\0" * 4)
-            return
+            return struct.pack("<BxHHH", 1, 11, 0, 1) + b"\0" * 4
+        reply = bytearray(super()._setup_reply())
         if self.mode == "lying_nscreens":
             # well-formed except nscreens=200 with a 1-screen body
-            reply = bytearray(_good_setup())
             reply[8 + 20] = 200
-            conn.sendall(bytes(reply))
-            _recvn(conn, 4)  # keep the connection up while the client acts
-            return
+        return bytes(reply)
 
-        conn.sendall(_good_setup())
-        seq = 0
+    def _dispatch(self, conn, opcode, dbyte, payload, seq):
         if self.mode == "stall_resume":
-            # request 1: 10 bytes of the reply, stall past the client
-            # timeout, then the rest -- a resumed partial packet
-            _op, _db, rl = struct.unpack("<BBH", _recvn(conn, 4))
-            _recvn(conn, (rl - 1) * 4)
+            # 10 bytes of the reply, a stall past the client's timeout, then
+            # the rest -- a resumed partial packet. Raising is what ends the
+            # connection mid-packet, and it has to happen before any opcode
+            # arm answers this request honestly.
             full = struct.pack("<BBHII20x", 1, 0, 1, 0, 7)
             conn.sendall(full[:10])
             time.sleep(1.2)
-            try:
+            with contextlib.suppress(OSError):
                 conn.sendall(full[10:])
-            except OSError:
-                pass
-            return
-        while True:
-            op, _db, rl = struct.unpack("<BBH", _recvn(conn, 4))
-            _recvn(conn, (rl - 1) * 4)
-            seq = (seq + 1) & 0xFFFF
-            if op == 16:  # InternAtom -> atom 5
-                conn.sendall(struct.pack("<BBHII20x", 1, 0, seq, 0, 5))
-            elif op == 20 and self.mode == "prop_loop":
-                # GetProperty: always claim more bytes after this chunk
-                self.getprop_count += 1
-                data = b"ABCD" * 16
-                conn.sendall(struct.pack(
-                    "<BBHIIII12x", 1, 8, seq, len(data) // 4,
-                    6, 0xFFFF, len(data)) + data)
-            elif op == 20 and self.mode == "huge_reply":
-                # reply header alleging a ~4GB body, then nothing
-                conn.sendall(struct.pack(
-                    "<BBHIIII12x", 1, 8, seq, 0x3FFFFFFF, 6, 0, 4))
-            elif op == 15 and self.mode == "lying_tree":
-                # QueryTree: claims 500 children, body carries 2
-                body = struct.pack("<2I", 0x400001, 0x400002)
-                conn.sendall(struct.pack(
-                    "<BBHIIIH14x", 1, 0, seq, len(body) // 4,
-                    0x5A, 0, 500) + body)
-            else:
-                conn.sendall(struct.pack("<BBHII20x", 1, 0, seq, 0, 1))
+            raise EOFError
+        if opcode == 16:  # InternAtom -> atom 5, whatever was asked for
+            return conn.sendall(struct.pack("<BBHII20x", 1, 0, seq, 0, 5))
+        if opcode == 20 and self.mode == "prop_loop":
+            # GetProperty: always claim more bytes after this chunk
+            self.getprop_count += 1
+            data = b"ABCD" * 16
+            return conn.sendall(struct.pack(
+                "<BBHIIII12x", 1, 8, seq, len(data) // 4,
+                6, 0xFFFF, len(data)) + data)
+        if opcode == 20 and self.mode == "huge_reply":
+            # a reply header alleging a ~4GB body, then nothing
+            return conn.sendall(struct.pack(
+                "<BBHIIII12x", 1, 8, seq, 0x3FFFFFFF, 6, 0, 4))
+        if opcode == 15 and self.mode == "lying_tree":
+            # QueryTree: claims 500 children, body carries 2
+            body = struct.pack("<2I", 0x400001, 0x400002)
+            return conn.sendall(struct.pack(
+                "<BBHIIIH14x", 1, 0, seq, len(body) // 4,
+                self.ROOTS[0], 0, 500) + body)
+        return super()._dispatch(conn, opcode, dbyte, payload, seq)
 
 
 class HostileServerTest(unittest.TestCase):
