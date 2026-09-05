@@ -17,6 +17,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from support import stop_daemons_under
+
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
 # This line is what covers `python3 tests/<file>.py`, where conftest is
@@ -30,6 +32,14 @@ class TestSwayGeometry(unittest.TestCase):
     def setUpClass(cls):
         cls.rtdir = tempfile.mkdtemp(prefix="wdotool-sway-")
         os.chmod(cls.rtdir, 0o700)
+        # Whatever the tests below do and however they fail, a daemon
+        # spawned into this rig must not outlive it -- and it must be
+        # stopped *before* the directory it listens in is removed, because
+        # a daemon whose socket directory is gone is unreachable, which
+        # used to mean immortal (tests/test_daemon_lifetime.py). Cleanups
+        # run last-in-first-out, so this pair is in the order it reads.
+        cls.addClassCleanup(shutil.rmtree, cls.rtdir, True)
+        cls.addClassCleanup(stop_daemons_under, cls.rtdir)
         conf = os.path.join(cls.rtdir, "sway.conf")
         with open(conf, "w") as f:
             f.write("output HEADLESS-1 mode 1280x720\n")
@@ -79,7 +89,6 @@ class TestSwayGeometry(unittest.TestCase):
         cls.sway.send_signal(signal.SIGTERM)
         with contextlib.suppress(subprocess.TimeoutExpired):
             cls.sway.wait(timeout=5)
-        shutil.rmtree(cls.rtdir, ignore_errors=True)
 
     @classmethod
     def _swaymsg(cls, *args):
@@ -128,8 +137,6 @@ class TestSwayGeometry(unittest.TestCase):
 
         client = DaemonClient.connect_or_spawn()
         self.addCleanup(client.close)
-        pid = client._rpc(op="ping")["pid"]
-        self.addCleanup(lambda: os.kill(pid, signal.SIGTERM))
         self.assertEqual(client.geometry(), (1280, 720))
         client.mousemove_abs(99999, 99999)
         self.assertEqual(client.pointer(), (1279, 719))

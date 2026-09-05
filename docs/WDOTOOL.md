@@ -914,6 +914,34 @@ Daemon notes:
   service units are left alone: a daemon started from a login session should
   still die with it. A failure at any step is not fatal, just the old
   behaviour.
+- **lifetime**: outliving the command that spawned it is the whole point — that is
+  what makes the next command cheap — but not for ever, and not once nobody can
+  reach it. Between `accept()` calls, once every `WDOTOOL_DAEMON_CHECK` seconds (15)
+  and only while no client is connected, the daemon asks two questions:
+  - **is the socket still mine?** `stat()` on the path it bound, against the
+    `(st_dev, st_ino)` it saw when it bound it. The inode, not the name, so this also
+    catches a second daemon having taken the path over. Logging out clears
+    `$XDG_RUNTIME_DIR`, and a daemon whose socket file is gone can never be dialled
+    again by anybody — it used to sit there anyway, holding its devices, until the
+    machine was rebooted. (Measured on the test rig: 161 alive at once, ~3GB between
+    them, sockets in directories deleted hours before, the oldest 18 hours old.)
+  - **has anyone used me in the last `WDOTOOL_DAEMON_IDLE` seconds?** 900 of them, a
+    quarter of an hour. The gap it has to sit through is the gap between two commands
+    of one piece of work — a script, a keybinding pressed twice, a person moving a
+    window by hand — and those are seconds apart; a quarter of an hour is an order of
+    magnitude past the longest of them, and the price of getting it wrong is one
+    respawn (~600ms, paid once, by the command that comes late). A daemon holding a
+    key or a button down for the next command (`keydown ctrl`) is never idle: its
+    exit would release exactly what it is there to hold.
+
+  Both are seconds and both take `0` for "never"; `WDOTOOL_DAEMON_CHECK=0` turns off
+  the tick and with it both checks, which is the bare accept loop 0.3 shipped. Idle
+  costs one wakeup and one `stat()` per 15s — `accept()` blocks in the kernel in
+  between — and a client that is connected at that moment is never interrupted,
+  because a connection means "in use" for both checks. On the way out the daemon
+  unlinks the socket **only while it is still the one it bound** (the startup lock's
+  rule — a loser never unlinks the winner's socket — applied to the exit), closes the
+  devices, and logs one line saying which of the two it was.
 - hardening: the socket is bound under umask 0o177 and chmod 0600 (root daemon
   serves root only; non-root users spawn their own per-user daemon and hit the
   clean "/dev/uinput ... run it as root" error). Per-request catch-all keeps a

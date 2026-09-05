@@ -512,6 +512,13 @@ Three facts about it decide most of its code:
    the compositor implements that protocol** — through `/dev/uinput` in every other
    case, with `--vkbd on|off` (`WDOTOOL_VKBD`) forcing either.
 
+**And it does not live for ever.** A daemon that can no longer be reached — its
+socket file deleted, which is what logging out does to `$XDG_RUNTIME_DIR`, or
+replaced by a second daemon's — exits, and so does one nobody has used for fifteen
+minutes; neither can touch a daemon with a client connected or a key held down. The
+period, the check interval and the two off switches are in
+[WDOTOOL.md § The input daemon](WDOTOOL.md#the-input-daemon).
+
 **One layout decision, in one function.** `xkbmap.decide(text, group, mode)` is the
 single answer to "which character table does this keystroke use?", and
 `xkbmap.layout_mode(forced)` is the single answer to "which mode are we in?". Three
@@ -637,7 +644,7 @@ way out and make the status 120 exactly as stdout's do.
 
 ## 8. The environment
 
-Seventeen rows below, and rather more names than rows, because some of them group.
+Eighteen rows below, and rather more names than rows, because some of them group.
 All but seven are also written down in the README, in a tool contract or in
 `gnome/README.md`; the seven in **bold** are written down only here.
 
@@ -656,6 +663,7 @@ All but seven are also written down in the README, in a tool contract or in
 | **`WXPROP_ARGV0`** | `wxprop` | the program name in usage and error lines, overriding `argv[0]`. Real xprop prints the name it was invoked under, and `python -m wxprop` has none to print |
 | **`WDOTOOL_UINPUT_PATH`** | `wdotool.uinput` | the device node to open, default `/dev/uinput` |
 | **`WDOTOOL_FAKE_UINPUT=1`** | `wdotool.uinput` | skip the ioctls, so a regular file can stand in for the device. This is what lets the daemon's event stream be asserted byte for byte in a container that has no `/dev/uinput` |
+| `WDOTOOL_DAEMON_IDLE`, `WDOTOOL_DAEMON_CHECK` | the daemon | seconds with no client before it exits (900), and how often it looks (15, and the same tick checks that its socket is still there). `0` is never; `CHECK=0` turns both checks off |
 | `WDOTOOL_NO_KEYSTATE=1` | the daemon | force the `keystate.py` path (the foreign-modifier diagnostic) even where the `/dev/input` read would be skipped |
 | `WDOTOOL_GNOME_AUTOLOAD=1` | `backend_gnome` | opt in to one `org.gnome.Shell.Eval` that tries to load the installed extension. Eval is a privileged interface and this is off by default |
 | **`XPROPFORMATS`** | `wxprop.cli` | a format file, exactly as real xprop's `-fs` and `$XPROPFORMATS` do |
@@ -668,13 +676,19 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2262 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2283 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite
   would `execve` itself away on an X11 box and the parity oracle would compare the
   real xdotool with itself and pass tautologically. `tests/test_passthrough.py` fails
   when a test file is missing the line.
+* **no test leaves a daemon running.** One that spawns a real daemon stops it
+  through `support.stop_daemons_under()`, registered before the spawn so it runs
+  however the test ends and before the runtime directory goes away;
+  `tests/test_zz_daemon_leak.py` runs last and fails the suite over anything still
+  alive that was not there when it started. The suite is how the rig came to have
+  161 of them.
 * **shared helpers live in `tests/support.py`**, deliberately not named `test_*.py`
   so the escape-hatch guard above skips it. It holds `RecorderDev` and `abs_report`
   (the plain 3-tuple shape every uinput assertion uses), `env()`, one merged
@@ -687,7 +701,7 @@ hold across all of them and are enforced by tests of their own:
 |---|---|---|
 | `cli.py`, `commands.py`, `misc_cmds.py` | `test_cli_chain`, `test_cli_misc`, `test_cli_script`, `test_cli_parity` | the real `xdotool` binary as the byte oracle (skipped outside `nix develop`) |
 | `window_cmds.py`, `desktop_cmds.py` | `test_windows_cmds`, `test_windows_sway` | `FakeBackend` in-memory; a real headless sway |
-| `input_cmds.py`, `daemon.py`, `uinput.py` | `test_input_cmds`, `test_input_daemon`, `test_input_uinput`, `test_torture_regressions`, `test_hardening` | `FakeDaemon`, `RecorderDev`, and `WDOTOOL_FAKE_UINPUT=1` writing into a regular file |
+| `input_cmds.py`, `daemon.py`, `uinput.py` | `test_input_cmds`, `test_input_daemon`, `test_input_uinput`, `test_daemon_lifetime`, `test_torture_regressions`, `test_hardening` | `FakeDaemon`, `RecorderDev`, and `WDOTOOL_FAKE_UINPUT=1` writing into a regular file |
 | `vkbd.py`, `vptr.py` | `test_vkbd`, `test_vptr` | `wl_fake.Server`: a real unix socket speaking the Wayland wire format |
 | `xkbmap.py`, `keymap.py`, `us_keymap.py` | `test_xkbmap`, `test_keymap`, `test_layout_flag` | `tests/fixtures/keymaps/*.xkb`, each a byte-for-byte capture of what a compositor handed a client |
 | `keys_cmds.py` | `test_keys_cmds` | recorded evdev streams |

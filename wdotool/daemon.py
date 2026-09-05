@@ -132,6 +132,68 @@ def socket_path() -> str:
     return os.path.join(rd or session.runtime_dir(), "wdotool.sock")
 
 
+# -- how long a daemon lives --------------------------------------------------
+#
+# The daemon deliberately outlives the command that spawned it: it pays for its uinput devices once (~600ms of
+# compositor hotplug settle), and it keeps the compositor connections, the geometry and the keymap it has
+# worked out, so the second command of a script costs a socket round trip instead of a second of setup. That
+# is what it is for, and none of this is a timer on *using* wdotool. Two things end a daemon anyway, both
+# checked once per _CHECK_SECONDS from the accept loop, both skipped while a client is connected:
+#
+# * **it can no longer be reached.** The socket is a name in $XDG_RUNTIME_DIR, and logging out clears that
+#   directory; a daemon whose socket file is gone can never be dialled again, by anybody, and it neither
+#   notices nor exits. Measured on the test rig: 161 of them alive at once, ~3GB between them, sockets in
+#   per-test runtime directories that had been deleted hours before, the oldest 18 hours old. The check
+#   compares the socket file's *inode*, not its name, so it also catches the other way to become unreachable:
+#   a second daemon having replaced the socket at the same path.
+# * **nobody has used it for _IDLE_SECONDS.** Fifteen minutes, chosen from what the daemon is for: the gap it
+#   has to sit through is the gap between two commands of one piece of work -- a script, a keybinding pressed
+#   twice, a person moving a window by hand -- and those are seconds apart, not minutes. A quarter of an hour
+#   is an order of magnitude past the longest of them, and the cost of being wrong is one respawn (~0.6s, paid
+#   once, by the command that comes late). Left running instead, that daemon costs ~19MB, two compositor
+#   connections and three devices on the seat, for a session that has stopped using the tool.
+#
+# Both are overridable, and setting WDOTOOL_DAEMON_CHECK=0 restores the bare accept loop exactly.
+IDLE_ENV = "WDOTOOL_DAEMON_IDLE"      # seconds with no client before exiting; 0 = never
+CHECK_ENV = "WDOTOOL_DAEMON_CHECK"    # seconds between checks; 0 = no check runs at all
+_IDLE_SECONDS = 900.0
+_CHECK_SECONDS = 15.0
+
+
+def _lifetime_seconds(name: str, default: float) -> float:
+    """One lifetime knob out of the environment: a number of seconds, 0 for "never". Lenient like WDOTOOL_VKBD
+    -- a typo in a shell profile must not hand the daemon a lifetime nobody asked for -- so anything that is
+    not a non-negative number is the default."""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        return default
+    return val if val >= 0 else default
+
+
+def _tick_seconds(idle: float, check: float) -> float:
+    """How long accept() waits before it looks around: `check`, but never coarser than the idle period itself
+    -- asking for five seconds and waiting fifteen would make the period mean nothing. 0 (no tick, no checks)
+    stays 0, and the shipped pair is untouched: 15s against 900s."""
+    return min(check, idle) if check and idle else check
+
+
+def _socket_ident(path: str):
+    """(st_dev, st_ino) of the socket file at `path`, or None when nothing is there.
+
+    The identity of the *directory entry*, which is the thing a client dials -- not of the listening socket,
+    whose own inode lives in sockfs and stays what it is however the name is unlinked or replaced. Only the
+    entry can answer "is the path I bound still my socket?"."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def _bbox_of(boxes) -> tuple[int, int, int, int]:
     """(min_x, min_y, width, height) of a list of (x, y, w, h) output boxes.
     Multi-output layouts can have non-zero or negative origins."""
@@ -1718,6 +1780,69 @@ class _Daemon:
                 pass
 
 
+class _Clients:
+    """Connected clients, counted, and when the last one left: what the idle timer reads.
+
+    Its own lock, never the daemon's: every serve thread touches it and the accept loop reads it between
+    accepts, and neither may end up waiting behind the injection lock -- one `type` of a long string holds that
+    for as long as the typing takes, which is exactly when the accept loop has to stay responsive."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._live = 0
+        self._left = time.monotonic()
+
+    def opened(self):
+        with self._lock:
+            self._live += 1
+
+    def closed(self):
+        with self._lock:
+            self._live -= 1
+            self._left = time.monotonic()
+
+    def quiet_for(self):
+        """Seconds since the last client disconnected, or None while one is connected."""
+        with self._lock:
+            return None if self._live else time.monotonic() - self._left
+
+
+def _serve(d: "_Daemon", conn: socket.socket, clients: _Clients):
+    """One connection, plus the bookkeeping the idle timer reads. The count has to come down however
+    serve_client() ends -- it catches OSError and nothing else, so an unexpected exception out of a handler
+    would otherwise leave a daemon that can never be idle again."""
+    try:
+        d.serve_client(conn)
+    finally:
+        clients.closed()
+
+
+def _exit_reason(path: str, ident, clients: _Clients, d: "_Daemon", idle: float):
+    """Why this daemon should stop serving, or None to carry on. One stat(2) and a couple of comparisons, once
+    per _CHECK_SECONDS.
+
+    Neither check can end a daemon that is in use. A connected client -- one in the middle of a `type`, one
+    that has not said anything yet -- is "in use" for both, so no exit ever cuts a request short or drops a
+    connection somebody is holding; an unreachable daemon simply exits once its last client has gone. The
+    liveness check goes first: a daemon nothing can dial is finished whatever its idle timer says.
+
+    `d.down`/`d.btns` are read without the injection lock on purpose (see _Clients): a set's truthiness is one
+    word, and the worst a lost race can cost is one more tick."""
+    quiet = clients.quiet_for()
+    if quiet is None:
+        return None
+    if ident is not None:
+        now = _socket_ident(path)
+        if now != ident:
+            return ("%s is gone" % path if now is None
+                    else "%s is a different socket now" % path)
+    if idle and quiet >= idle and not d.down and not d.btns:
+        # ...and not while holding something for the next command (`keydown ctrl`, `mousedown 1`): the exit
+        # would release it, which is the one thing a later command cannot redo for itself.
+        return "no client for %gs" % idle
+    return None
+
+
 def daemon_main() -> int:
     try:
         path = socket_path()
@@ -1770,20 +1895,46 @@ def daemon_main() -> int:
     srv.listen(16)
     print(f"wdotool daemon (pid {os.getpid()}) listening on {path}", flush=True)
 
+    # What we bound, by inode: the socket file can be deleted or replaced under a running daemon, and the
+    # accept loop has no other way to find out (see "how long a daemon lives").
+    ident = _socket_ident(path)
+
     d = _Daemon()
     d.create_devices()
+    clients = _Clients()
+    idle = _lifetime_seconds(IDLE_ENV, _IDLE_SECONDS)
+    check = _tick_seconds(idle, _lifetime_seconds(CHECK_ENV, _CHECK_SECONDS))
+    # A timeout on the *listening* socket, not a second thread: accept() still blocks in the kernel between
+    # ticks, so an idle daemon costs one wakeup per `check` seconds and no CPU in between. The accepted
+    # connection comes back blocking regardless -- socket.accept() restores that when the listener has a
+    # timeout -- so nothing about serving a client changes. check == 0: the bare blocking accept, as before.
+    srv.settimeout(check or None)
+    reason = None
     try:
         while True:
-            conn, _addr = srv.accept()
-            threading.Thread(target=d.serve_client, args=(conn,), daemon=True).start()
+            try:
+                conn, _addr = srv.accept()
+            except socket.timeout:
+                reason = _exit_reason(path, ident, clients, d, idle)
+                if reason:
+                    break
+                continue
+            clients.opened()
+            threading.Thread(target=_serve, args=(d, conn, clients), daemon=True).start()
     finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        # Our own socket, or nothing: by now the path may be a *second* daemon's (one of the two things the
+        # liveness check catches), and the startup-lock rule above -- a loser never unlinks -- would be worth
+        # little if the exit path took the winner's socket away instead.
+        if _socket_ident(path) == ident:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         for dev in (d.kb, d.mouse, d.tablet):
             if dev is not None:
                 dev.close()
+        if reason:
+            print(f"wdotool daemon (pid {os.getpid()}) exiting: {reason}", flush=True)
     return 0
 
 

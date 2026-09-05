@@ -397,7 +397,9 @@ across the whole output layout), so the compositor cannot tell it from real hard
 On wlroots every injecting command skips that entirely through
 `zwp_virtual_keyboard_v1` and `zwlr_virtual_pointer_v1` and needs no privilege at
 all. The first invocation forks a small daemon that owns the devices, because
-creating them costs about 600ms of hotplug and you should pay it once. **Window
+creating them costs about 600ms of hotplug and you should pay it once; it goes away
+again a quarter of an hour after the last command, or at once when its socket does —
+logging out takes the socket with the session. **Window
 management** talks to the compositor: sway and i3 IPC, GNOME Shell through the
 bundled bridge extension, KDE Plasma through KWin scripting, and the
 wlr-foreign-toplevel protocol as the generic fallback. Window ids are real, stable
@@ -859,7 +861,7 @@ Developed against real desktops, not against a model of them. `vm/` is the rig:
 `vmctl` builds and runs twelve golden images, each with up to four virtual monitors
 that can be plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/README.md` documents the whole thing and `vm/SETUP.md` is how to
-set the rig up on a machine of your own. `tests/` holds the suite, 2262 tests: unit
+set the rig up on a machine of your own. `tests/` holds the suite, 2283 tests: unit
 tests, wire-level fake compositors and X servers, live-compositor integration,
 hostile-input torture, byte-parity oracles against the real xdotool, wmctrl, xprop
 and xrandr, and one static check that no package ever reaches for the desktop portal
