@@ -203,6 +203,35 @@ def run_chain(ctx: Context, prog: str, tokens: list[str]) -> int:
     return ret
 
 
+def _opts(cmd, args, shortopts, longopts, usage, shortmap=None,
+          invalid_usage=False):
+    """Leading-option parse via getopt_long_only, the way every command wants
+    it. Returns (opts, nopts) with short chars canonicalized through shortmap,
+    or None after printing usage for --help (caller returns len(args)). Bad
+    options raise CmdError carrying getopt's message + usage, like the C
+    default: branches. `usage` is written verbatim, so it ends in a newline.
+
+    `invalid_usage` adds the extra "Invalid usage" line that cmd_search.c --
+    alone among the commands -- prints between the two (B14)."""
+    shortmap = dict(shortmap or ())
+    shortmap.setdefault("h", "help")
+    try:
+        raw, nopts = getopt_long_only(cmd, args, shortopts, longopts)
+    except GetoptError as e:
+        if any(shortmap.get(n, n) == "help" for n, _ in e.opts):
+            sys.stdout.write(usage)
+            sys.stdout.flush()
+            return None
+        head = "%s\nInvalid usage" % e if invalid_usage else str(e)
+        raise CmdError("%s\n%s" % (head, usage.rstrip("\n"))) from None
+    opts = [(shortmap.get(n, n), v) for n, v in raw]
+    if any(n == "help" for n, _ in opts):
+        sys.stdout.write(usage)
+        sys.stdout.flush()
+        return None
+    return opts, nopts
+
+
 class _ScriptError(Exception):
     pass
 

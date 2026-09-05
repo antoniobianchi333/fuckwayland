@@ -10,7 +10,7 @@ import sys
 import time
 
 from wdotool import commands
-from wdotool.cli import ChainAbort
+from wdotool.cli import ChainAbort, _opts
 from wdotool.cnum import atoi as _atoi, strtol as _strtonum
 from wdotool.ctx import CmdError
 
@@ -19,34 +19,16 @@ from wdotool.ctx import CmdError
 
 
 def _parse(cmdname, args, usage, shortopts, longopts, shortmap=None):
-    """Parse a command's leading options with cli.py's getopt_long_only clone.
-
-    longopts: [(name, takes_arg), ...]; shortmap maps short chars to the long
-    name used in the returned dict. Returns (opts dict, tokens consumed,
-    help_requested). Mirrors the C loops: a --help seen before any bad option
-    wins; a bad option raises CmdError carrying getopt's message + usage."""
-    from wdotool import cli
-
-    shortmap = shortmap or {}
-
-    def convert(pairs):
-        opts = {}
-        for name, val in pairs:
-            name = shortmap.get(name, name)
-            if name == "help":
-                return opts, True
-            opts[name] = True if val is None else val
-        return opts, False
-
-    try:
-        pairs, i = cli.getopt_long_only(cmdname, args, shortopts, longopts)
-    except cli.GetoptError as e:
-        _opts, want_help = convert(e.opts)
-        if want_help:
-            return {}, len(args), True
-        raise CmdError(f"{e}\n" + usage.rstrip("\n")) from None
-    opts, want_help = convert(pairs)
-    return opts, i, want_help
+    """cli._opts with the options as a dict, which is how the input commands
+    read them: longopts is [(name, takes_arg), ...] and shortmap maps short
+    chars to the long name used in the dict. Returns (opts, tokens consumed,
+    help_requested); when help was requested, usage has already been printed
+    and opts is empty."""
+    parsed = _opts(cmdname, args, shortopts, longopts, usage, shortmap)
+    if parsed is None:
+        return {}, len(args), True
+    pairs, i = parsed
+    return {name: True if val is None else val for name, val in pairs}, i, False
 
 
 def _activate_settle(ctx, wid):
@@ -160,7 +142,6 @@ def _key_common(ctx, args, default_name, direction):
         {"c": "clearmodifiers", "d": "delay", "h": "help", "w": "window"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     delay = _strtonum(opts.get("delay", 12))
     repeat = _atoi(opts.get("repeat", 1))
@@ -300,7 +281,6 @@ def cmd_type(ctx, args):
         {"c": "clearmodifiers", "d": "delay", "h": "help", "w": "window"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     delay = _strtonum(opts.get("delay", 12))
     window_arg = opts.get("window")
@@ -374,7 +354,6 @@ def cmd_click(ctx, args):
         {"c": "clearmodifiers", "w": "window", "h": "help"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     clearmods = bool(opts.get("clearmodifiers"))
     window_arg = opts.get("window")
@@ -413,7 +392,6 @@ def _mouse_updown(ctx, args, default_name, down, noargs_msg):
         {"c": "clearmodifiers", "h": "help", "w": "window"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     if i >= len(args):
         raise CmdError(usage.rstrip("\n") + "\n" + noargs_msg)
@@ -461,7 +439,6 @@ def cmd_mousemove(ctx, args):
          "d": "_delay"},  # short -d parses (and is ignored) like the C code
     )
     if want_help:
-        print(usage, end="")
         return len(args)
 
     if i >= len(args) or (args[i] != "restore" and len(args) - i < 2):
@@ -531,7 +508,6 @@ def cmd_mousemove_relative(ctx, args):
         {"c": "clearmodifiers", "p": "polar", "h": "help"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     if len(args) - i < 2:
         raise CmdError(usage.rstrip("\n") + "\nYou specified the wrong number of args (expected 2).")
@@ -595,7 +571,6 @@ def cmd_getmouselocation(ctx, args):
         {"h": "help"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     x, y = _pointer(ctx)
     window = _window_under_pointer(ctx, x, y)
@@ -639,7 +614,6 @@ def cmd_behave_screen_edge(ctx, args):
         {"h": "help"},
     )
     if want_help:
-        print(usage, end="")
         return len(args)
     if len(args) - i < 2:
         raise CmdError("Invalid number of arguments (minimum is 2)\n" + usage.rstrip("\n"))

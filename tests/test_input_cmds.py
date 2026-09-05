@@ -121,7 +121,12 @@ class TestParse(unittest.TestCase):
     MAP = {"c": "clearmodifiers", "d": "delay", "h": "help"}
 
     def parse(self, args):
-        return input_cmds._parse("key", args, "usage\n", "cd:h", self.LONG, self.MAP)
+        """_parse prints the usage itself now, so every caller here catches
+        it and test_help_* below check what came out."""
+        self.printed = io.StringIO()
+        with contextlib.redirect_stdout(self.printed):
+            return input_cmds._parse("key", args, "usage\n", "cd:h", self.LONG,
+                                     self.MAP)
 
     def test_prefix_match(self):
         opts, i, h = self.parse(["--clear", "x"])
@@ -166,10 +171,17 @@ class TestParse(unittest.TestCase):
     def test_help_detected(self):
         opts, i, h = self.parse(["--help", "x"])
         self.assertTrue(h)
+        self.assertEqual((i, self.printed.getvalue()), (2, "usage\n"))
 
     def test_help_before_bad_option_wins(self):
         opts, i, h = self.parse(["--help", "--bogus"])
         self.assertTrue(h)
+        self.assertEqual(self.printed.getvalue(), "usage\n")
+
+    def test_short_h_is_help(self):
+        opts, i, h = self.parse(["-h"])
+        self.assertTrue(h)
+        self.assertEqual(self.printed.getvalue(), "usage\n")
 
     def test_bad_option_before_help_raises(self):
         with self.assertRaises(CmdError):

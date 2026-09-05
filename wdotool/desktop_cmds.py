@@ -3,9 +3,10 @@ compositor workspaces, 0-based like EWMH (sway workspace N -> desktop N-1)."""
 
 import sys
 
+from wdotool.cli import _opts
 from wdotool.cnum import atoi as _atoi, strtol as _strtol
 from wdotool.ctx import CmdError
-from wdotool.window_cmds import _opts, _out, _warn_noop, _window_arg
+from wdotool.window_cmds import _out, _warn_noop, _window_arg
 
 _SEE_STACK = "If no window is given, %1 is used. See WINDOW STACK in xdotool(1)\n"
 
@@ -13,7 +14,7 @@ _SEE_STACK = "If no window is given, %1 is used. See WINDOW STACK in xdotool(1)\
 def cmd_set_num_desktops(ctx, args):
     cmd = getattr(ctx, "cmd_name", "set_num_desktops")
     usage = "Usage: %s num_desktops\n" % cmd
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -37,7 +38,7 @@ def cmd_set_num_desktops(ctx, args):
 def cmd_get_num_desktops(ctx, args):
     cmd = getattr(ctx, "cmd_name", "get_num_desktops")
     usage = "Usage: %s\n" % cmd
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -52,7 +53,7 @@ def cmd_set_desktop(ctx, args):
         "--relative    - Move relative to the current desktop. Negative values OK\n"
         % cmd
     )
-    parsed = _opts(ctx, args, "h", [("help", False), ("relative", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False), ("relative", False)], usage)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
@@ -75,7 +76,7 @@ def cmd_set_desktop(ctx, args):
 def cmd_get_desktop(ctx, args):
     cmd = getattr(ctx, "cmd_name", "get_desktop")
     usage = "Usage: %s\n" % cmd
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -86,7 +87,7 @@ def cmd_get_desktop(ctx, args):
 def cmd_set_desktop_for_window(ctx, args):
     cmd = getattr(ctx, "cmd_name", "set_desktop_for_window")
     usage = "Usage: %s [window=%%1] <desktop>\n%s" % (cmd, _SEE_STACK)
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -108,7 +109,7 @@ def cmd_set_desktop_for_window(ctx, args):
 def cmd_get_desktop_for_window(ctx, args):
     cmd = getattr(ctx, "cmd_name", "get_desktop_for_window")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
@@ -121,7 +122,7 @@ def cmd_get_desktop_for_window(ctx, args):
 def cmd_get_desktop_viewport(ctx, args):
     cmd = getattr(ctx, "cmd_name", "get_desktop_viewport")
     usage = "Usage: %s\n" % cmd
-    parsed = _opts(ctx, args, "h", [("help", False), ("shell", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False), ("shell", False)], usage)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
@@ -137,7 +138,7 @@ def cmd_get_desktop_viewport(ctx, args):
 def cmd_set_desktop_viewport(ctx, args):
     cmd = getattr(ctx, "cmd_name", "set_desktop_viewport")
     usage = "Usage: %s x y\n" % cmd
-    parsed = _opts(ctx, args, "h", [("help", False)], usage)
+    parsed = _opts(cmd, args, "h", [("help", False)], usage)
     if parsed is None:
         return len(args)
     _o, nopts = parsed
