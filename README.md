@@ -6,7 +6,7 @@ same scripts, bugs faithfully included. Symlink them over the originals and your
 muscle memory never finds out the compositor changed underneath it.
 
 <p align="center">
-<img src="media/meme.svg" width="620" alt="reject modernity, embrace tradition">
+<img src="media/meme.svg" width="900" alt="reject modernity, embrace tradition">
 </p>
 
 In the box:
