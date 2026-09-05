@@ -728,42 +728,25 @@ class SetTitleTest(unittest.TestCase):
 
 
 class UnnamedFlagsTest(unittest.TestCase):
-    """-S, -I and -y: three flags the help text listed and nothing ran by
-    name. -S is the one that does nothing on purpose, and "nothing" is a
-    claim worth pinning: WWMCTL.md says our listing is already in stacking
-    order, so -S must leave the rows and the exit code exactly as they were,
-    not merely be accepted."""
+    """What -S, -I and -y do beyond what GitGenerationOptionsTest and
+    SetTitleTest already pin.
 
-    def test_S_is_accepted_and_changes_no_row(self):
-        plain = run(["-l"])
-        stacked = run(["-lS"])
-        self.assertEqual(plain[:3], stacked[:3])
-        # and on its own it is an option with nothing to do, like `-p`
+    The plan listed these three as never named, from a search for their
+    literal spelling; all three were in fact covered, as "-lS", as
+    `"-%s" % mode` in a N/I/T loop, and at test_y_is_e_then_activate. What
+    was missing is the edge of each: -S with no listing to reorder, -I with
+    no window, and -y whose move half is refused."""
+
+    def test_S_alone_is_an_option_with_nothing_to_do(self):
+        # like a bare `-p`: options, but no action -- rc 0 and silence
         self.assertEqual(run(["-S"])[:3], (0, "", ""))
 
     def test_S_survives_the_other_list_flags(self):
         self.assertEqual(run(["-lGpx"])[:3], run(["-lGpxS"])[:3])
 
-    def test_I_sets_the_icon_name_only(self):
-        x11 = FakeX11()
-        rc, _o, err, _b = run(["-r", "Mail", "-I", "Short"], x11=x11,
-                              env={"LC_ALL": "C", "LC_CTYPE": "C", "LANG": "C"})
-        self.assertEqual((rc, err), (0, ""))
-        # icon=True, long_=False: WM_ICON_NAME, not WM_NAME, and not both
-        self.assertEqual(x11.calls,
-                         [("set_name", 0x40000C, "Short", True, False, False)])
-
     def test_I_needs_a_window(self):
         rc, _o, err, _b = run(["-I", "Short"])
         self.assertEqual((rc, err), (1, "No window was specified.\n"))
-
-    def test_y_moves_then_activates_in_that_order(self):
-        specs = [dict(s) for s in SPECS]
-        specs[0]["floating"] = True
-        b = FakeSwayBackend(specs)
-        rc, _o, err, b = run(["-r", "Mail", "-y", "0,10,20,300,200"], backend=b)
-        self.assertEqual((rc, err), (0, ""))
-        self.assertEqual(b.calls[-1], ("activate", 5))
 
     def test_y_activates_even_when_the_move_is_refused(self):
         # -e on a tiled sway container is a soft refusal; 1.07+git's -y is
