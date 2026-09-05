@@ -1,6 +1,6 @@
 # Six tools that should not exist
 
-There is a four line script on a great many machines. Find the terminal, raise it,
+There is a four-line script on a great many machines. Find the terminal, raise it,
 type the command, press Return. It has worked since 2007, which is when `xdotool`
 shipped. Then the session underneath it becomes a Wayland session, and the script
 prints nothing, because `xdotool` has quietly stopped being a program that does
@@ -396,7 +396,7 @@ release like this exists to stop.
 None of this is the protocol the survey asked for. A compatibility layer is what you
 write while you wait for one, and it carries the shape of every desktop it has to
 paper over, which is why there is a GNOME Shell extension in here and why I am not
-happy about it either. But the four line script works again, on GNOME and on KDE and
+happy about it either. But the four-line script works again, on GNOME and on KDE and
 on sway and on X11, and it does not know which. That was the entire requirement.
 
 The tools are at [github.com/antoniobianchi333/fuckwayland](https://github.com/antoniobianchi333/fuckwayland).
