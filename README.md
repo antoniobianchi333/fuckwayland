@@ -5,7 +5,7 @@ drop-in clones that work on Wayland. Same commands, same flags, same output byte
 same scripts, bugs faithfully included. Symlink them over the originals and your
 muscle memory never finds out the compositor changed underneath it.
 
-![reject modernity, embrace tradition](meme.svg)
+![reject modernity, embrace tradition](media/meme.svg)
 
 In the box:
 
@@ -792,7 +792,7 @@ xdotool, but it works on Wayland. Drop-in: same commands, same flags, same outpu
 bytes, same chaining, same scripts. Symlink it as `xdotool` and your scripts don't
 know the difference.
 
-![wdotool driving a real Wayland desktop](demo.gif)
+![wdotool driving a real Wayland desktop](media/demo.gif)
 
 *(that's wdotool driving a live sway session: typing, chaining, window search,
 floating-window moves, fullscreen, mouse, close, recorded in the Ubuntu 26.04 VM this
@@ -831,7 +831,7 @@ the input daemon and the per-compositor backend notes.
 
 ### wwmctl
 
-![wwmctl listing native and X windows in one list, then acting on them](wwmctl-demo.gif)
+![wwmctl listing native and X windows in one list, then acting on them](media/wwmctl-demo.gif)
 
 `wmctrl`, same treatment, and it handles **both** native Wayland apps and legacy X
 apps (XWayland) in one list. The compositor exposes XWayland windows with their real
@@ -869,7 +869,7 @@ Contract: [WWMCTL.md](docs/WWMCTL.md).
 
 ### wxprop
 
-![wxprop rendering a _NET_WM_ICON as ASCII art, byte-identical to real xprop](wxprop-demo.gif)
+![wxprop rendering a _NET_WM_ICON as ASCII art, byte-identical to real xprop](media/wxprop-demo.gif)
 
 `xprop`, dual-plane. XWayland windows report their **real** X properties, byte for
 byte identical to xprop 1.2.8. The whole formatting machine is ported, down to the
@@ -907,7 +907,7 @@ Contract: [WXPROP.md](docs/WXPROP.md).
 
 ### wxrandr
 
-![wxrandr reshaping a multi-output layout live: panels sliding, rotating, scaling](wxrandr-demo.gif)
+![wxrandr reshaping a multi-output layout live: panels sliding, rotating, scaling](media/wxrandr-demo.gif)
 
 `xrandr`, with the crazy multimonitor configs as the whole point rather than an
 afterthought. A real pending-geometry resolver means relative-placement chains
