@@ -178,7 +178,7 @@ diagnose_heads() {   # what the guest thinks the connectors are, and (on X11) wh
     echo "    X server has not let go of: the connector is gone, the CRTC is still scanning it out)"
 }
 
-vm_args=${SELFTEST_VM_ARGS:-}
+vm_args=${SELFTEST_VM_ARGS:-}   # a list of options: unquoted below on purpose
 step "vmctl start $name --flavor $flavor --heads 3 --fresh $vm_args  (desktop $desktop, native tool: $tool)"
 port=$("$VM" start "$name" --flavor "$flavor" --heads 3 --fresh $vm_args)
 step "vmctl session $name"

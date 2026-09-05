@@ -100,6 +100,7 @@ if [ "$memmb" -gt 0 ]; then
     # leave the machine itself about 768 MB; QEMU's resident size grows only to
     # what the guest actually touches, so this is the request, not a reservation.
     if [ $((memmb - 768)) -lt "$build_memmb" ]; then build_memmb=$((memmb - 768)); fi
+    if [ "$build_memmb" -lt 512 ]; then build_memmb=512; fi   # never suggest a negative --mem
 else
     ok "$ncpu vCPU (memory unknown: no MemTotal in /proc/meminfo)"
 fi
@@ -108,6 +109,7 @@ inst_memmb=4096
 inst_args=
 if [ "$ncpu" -lt 3 ]; then inst_cpus=$ncpu; fi
 if [ "$memmb" -gt 0 ] && [ $((memmb - 768)) -lt "$inst_memmb" ]; then inst_memmb=$((memmb - 768)); fi
+if [ "$inst_memmb" -lt 512 ]; then inst_memmb=512; fi
 if [ "$inst_cpus" != 3 ]; then inst_args="$inst_args --cpus $inst_cpus"; fi
 if [ "$inst_memmb" != 4096 ]; then inst_args="$inst_args --mem ${inst_memmb}M"; fi
 if [ "$build_cpus" != 4 ]; then build_args="$build_args --cpus $build_cpus"; fi
@@ -313,7 +315,7 @@ chmod 700 "$VMDATA/keys"
 ok "\$VMDATA   $VMDATA  (golden/ instances/ build/ keys/)"
 ok "\$VMIMAGES $VMIMAGES"
 avail=$(df -k --output=avail "$VMDATA" | tail -1)
-note "free space there: $((avail / 1048576)) GB (a golden image is 1-9 GB, see vm/SETUP.md)"
+note "free space there: $((avail / 1048576)) GB (a golden image is 0.7-8.7 GB, see vm/SETUP.md)"
 if [ "$(df --output=target "$VMDATA" | tail -1)" != "$(df --output=target "$VMIMAGES" | tail -1)" ]; then
     note "(different filesystems: fine; a golden refers to its base image by absolute path)"
 fi

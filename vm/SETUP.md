@@ -9,6 +9,18 @@ The repository is the only thing you copy onto the machine — clone it, or unpa
 tarball of it, anywhere in your home directory; everything below is run from inside
 it and writes nothing outside `~/vm-data`, `~/images` and the packages it installs.
 
+Run the script first; the sections below are what it checked, and why.
+
+```console
+$ vm/setup-host.sh            # check, install the packages, create the directories
+$ vm/setup-host.sh --no-apt   # the same, without installing anything
+```
+
+It is idempotent — run it again after fixing something — and exits 0 when the machine
+can run the rig now, 1 when it leaves a step to you, each of those printed with the
+command that does it. One thing in it needs root: the `apt-get` below, announced
+before it runs.
+
 ## The machine
 
 Any Linux machine on which `/dev/kvm` works: a physical box, or a virtual machine
@@ -235,15 +247,14 @@ power-off) put a distro desktop metapackage between 6.3 minutes (`noble-xfce`, 3
 and 10.7 minutes (`resolute-kde`, 641 s) — the GNOME builds at the default 4 vCPU / 6 GB,
 the others at 3 vCPU / 5 GB — with `stonking-kde` at 3.2 minutes and `resolute-sway` at
 one minute; almost all of it is the desktop packages downloading and unpacking, so the
-network matters as much as the CPU. `build-iso-golden.sh
-resolute-gnome-iso` is 14 minutes on its default 2 vCPU / 4 GB (12.6 of them the
-installer's). Builds run one at a time per flavor and refuse to overwrite a golden
-without `--force`; two *different* flavors can build side by side on a machine with
-the memory for it.
+network matters as much as the CPU. `build-iso-golden.sh resolute-gnome-iso` is 14
+minutes on its default 2 vCPU / 4 GB (12.6 of them the installer's). Builds run one at
+a time per flavor and refuse to overwrite a golden without `--force`; two *different*
+flavors can build side by side on a machine with the memory for it.
 
 The same build with `--cpus 2 --mem 3G`, on two cores and 3.8 GB with KVM one level
-further down, took 17.2 minutes — and produced the image the roomy run produces:
-5.5 GB, the same 1695 packages. A smaller machine is slower, not less able.
+further down, took 17.2 minutes — and produced the same image: 5.5 GB against the
+roomy run's 5.4, the same 1695 packages. A smaller machine is slower, not less able.
 
 ## The self-test
 
@@ -261,8 +272,8 @@ vmctl: noble-gnome-t: desktop painted its first frame 6s later
 
 52 seconds for GNOME with three other instances competing for the same cores, 35
 seconds on an idle host (`vm/README.md` says roughly 40; a desktop that starts more
-slowly takes correspondingly longer); 143 seconds on the two cores above, 108 of them
-the guest's own boot.
+slowly takes correspondingly longer); 143 seconds at 2 vCPU / 3 GB, 108 of them the
+guest's own boot.
 
 The self-test starts its instance with `vmctl start`'s defaults — 3 vCPU, 4 GB — and
 takes no options of its own, so a machine with less than that has to say so:
@@ -271,10 +282,10 @@ takes no options of its own, so a machine with less than that has to say so:
 $ SELFTEST_VM_ARGS='--cpus 2 --mem 3G' vm/selftest.sh noble-gnome
 ```
 
-What it asserts, step by step,
-is under *Self-test* in `vm/README.md`; the two things that are easy to miss: it
-leaves the instance **running** for inspection (`vm/vmctl stop noble-gnome-t`, or
-`destroy`), and its three screenshots (1.3 MB each) stay in `/tmp/vmctl-selftest-<name>/`.
+What it asserts, step by step, is under *Self-test* in `vm/README.md`; the two things
+that are easy to miss: it leaves the instance **running** for inspection
+(`vm/vmctl stop noble-gnome-t`, or `destroy`), and its three screenshots (1.3 MB each)
+stay in `/tmp/vmctl-selftest-<name>/`.
 A machine that passes it for one flavor passes it for the others once their goldens
 are built — the rig is the same; only the desktop differs.
 
