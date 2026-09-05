@@ -30,7 +30,9 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from wdotool import procs                                        # noqa: E402
 from wmirror import cli, core, supervise                         # noqa: E402
+from wxrandr import core as wxcore                               # noqa: E402
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -129,6 +131,35 @@ class Starting(Base):
         with open("/proc/%d/stat" % pid, "rb") as f:
             after = f.read().rsplit(b")", 1)[1].split()
         self.assertNotEqual(int(after[1]), os.getpid())   # reparented
+
+    def test_an_interrupt_mid_start_leaves_a_stoppable_record(self):
+        """Ctrl-C while the start is still reading the status pipe.
+
+        The supervisor names itself before it can fail, and that line is
+        acted on the moment it arrives rather than when the start finishes
+        -- so the record naming it is already there when the interrupt
+        lands. A start that buffered its lines would leave a mirror running
+        with nothing able to find it."""
+        recs = {}
+        real_select = procs.select.select
+
+        class Shim:                # only the second call is interrupted
+            @staticmethod
+            def select(*a, **kw):
+                if recs.get("B", {}).get("pid"):
+                    raise KeyboardInterrupt
+                return real_select(*a, **kw)
+
+        # the verdict is a second away, so there is a second select call
+        with mock.patch.object(supervise, "STARTUP_SECONDS", 1.0), \
+                mock.patch.object(procs, "select", Shim):
+            with self.assertRaises(KeyboardInterrupt):
+                self.start(recs)
+        rec = recs["B"]
+        self.assertTrue(procs.alive(rec["pid"], rec["start"],
+                                    supervise.SUPERVISOR_COMM))
+        self.assertTrue(supervise.stop_record(rec))
+        self.assertEqual(supervise.liveness(rec), (False, False))
 
     def test_stderr_chatter_is_not_failure(self):
         """The real wl-mirror prints libEGL warnings while working; the stub
@@ -237,11 +268,11 @@ class Reaping(Base):
             os._exit(0)
         self.addCleanup(self._reap, pid)
         for _ in range(200):
-            if supervise._zombie(pid):
+            if procs.zombie(pid):
                 break
             time.sleep(0.01)
         start = supervise.proc_starttime(pid)
-        self.assertTrue(supervise._zombie(pid), "no zombie to test with")
+        self.assertTrue(procs.zombie(pid), "no zombie to test with")
         self.assertIsNotNone(start)                    # /proc still has it
         self.assertEqual(os.stat("/proc/%d" % pid).st_uid, os.geteuid())
         self.assertFalse(supervise.alive(pid, start, core.HELPER))
@@ -252,7 +283,7 @@ class Reaping(Base):
             os._exit(0)
         self.addCleanup(self._reap, pid)
         for _ in range(200):
-            if supervise._zombie(pid):
+            if procs.zombie(pid):
                 break
             time.sleep(0.01)
         recs = {"B": {"source": "A", "helper_pid": pid,
@@ -348,9 +379,15 @@ class Watching(Base):
 
     @staticmethod
     def head(name, x=0, w=1920, enabled=True):
-        return {"name": name, "enabled": enabled, "x": x, "y": 0,
-                "transform": 0, "scale": 1.0, "current": 1,
-                "modes": [{"id": 1, "w": w, "h": 1080}]}
+        """One zwlr head as WlrOutputs.live_heads() hands it over: every
+        field the wire sets, because the snapshot reads every field."""
+        return {"id": 1, "name": name, "description": name,
+                "enabled": enabled, "x": x, "y": 0, "transform": 0,
+                "scale": 1.0, "current": 1, "gone": False,
+                "mm_w": 0, "mm_h": 0, "make": "Unknown", "model": "Unknown",
+                "serial": "Unknown",
+                "modes": [{"id": 1, "w": w, "h": 1080, "refresh": 60000,
+                           "preferred": True}]}
 
     def supervise_in_thread(self, watch, life="30", **kw):
         with mock.patch.dict(os.environ, {"WMIRROR_STUB_LIFE": life}):
@@ -473,8 +510,8 @@ class FakeCompositor:
     underneath. Not a TestCase: mixed into the ones below."""
 
     def outputs(self):
-        return [core.Output("A", True, 0, 0, 1920, 1080),
-                core.Output("B", True, 1920, 0, 1280, 1024)]
+        return [wxcore.OutputState("A", True, 0, 0, 1920, 1080),
+                wxcore.OutputState("B", True, 1920, 0, 1280, 1024)]
 
     def invoke(self, argv):
         conn = mock.Mock()

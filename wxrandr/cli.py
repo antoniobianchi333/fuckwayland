@@ -102,10 +102,10 @@ class Opts:
         self.screen = -1
         self.fb = None
         self.fbmm = None
-        self.dpi = None            # float or output name
+        self.dpi = None             # float or output name
         self.noprimary = False
-        self.persistent = False    # --persistent (Mutter: write monitors.xml)
-        self.backend = None        # --backend NAME (None: auto)
+        self.persistent = False     # --persistent (Mutter: write monitors.xml)
+        self.backend = None         # --backend NAME (None: auto)
         self.print_backend = False  # --print-backend
         self.list_backends = False  # --backends
         self.global_auto = False
@@ -202,8 +202,7 @@ def parse(argv: list) -> Opts:
             v = need()
             m = re.fullmatch(r"(\d+)x(\d+)", v)
             if not m:
-                raise ArgErr("failed to parse '%s' as a framebuffer size\n"
-                             % v)
+                raise ArgErr("failed to parse '%s' as a framebuffer size\n" % v)
             o.fb = (int(m.group(1)), int(m.group(2)))
             o.setit_1_2 = True
             o.action = True
@@ -298,8 +297,7 @@ def parse(argv: list) -> Opts:
             if v not in core.REFLECTIONS:
                 raise ArgErr("%s: invalid argument '%s'\n" % (a, v))
             cur.reflect = v
-        elif a in ("--left-of", "--right-of", "--above", "--below",
-                   "--same-as"):
+        elif a in ("--left-of", "--right-of", "--above", "--below", "--same-as"):
             per_output(a)
             cur.relation = (a[2:], need())
         elif a == "--set":
@@ -332,8 +330,7 @@ def parse(argv: list) -> Opts:
             v = need()
             m = re.fullmatch(r"(-?\d+)x(-?\d+)", v)
             if not m:
-                raise ArgErr("failed to parse '%s' as a scale-from size\n"
-                             % v)
+                raise ArgErr("failed to parse '%s' as a scale-from size\n" % v)
             w, h = int(m.group(1)), int(m.group(2))
             if w < 0 or h < 0:
                 raise ArgErr("--scale-from dimensions must be nonnegative\n")
@@ -344,14 +341,12 @@ def parse(argv: list) -> Opts:
             if v != "none":
                 parts = v.split(",")
                 if len(parts) != 9:
-                    raise ArgErr("failed to parse '%s' as a transformation\n"
-                                 % v)
+                    raise ArgErr("failed to parse '%s' as a transformation\n" % v)
                 for p in parts:
                     try:
                         float(p)
                     except ValueError:
-                        raise ArgErr("failed to parse '%s' as a "
-                                     "transformation\n" % v)
+                        raise ArgErr("failed to parse '%s' as a " "transformation\n" % v)
             core.warn("--transform is not supported on Wayland; ignoring\n")
         elif a == "--filter":
             per_output(a)
@@ -420,8 +415,7 @@ def parse(argv: list) -> Opts:
             # wxrandr extension: force the backend for this invocation
             v = a.split("=", 1)[1] if a.startswith("--backend=") else need()
             if canonical_backend(v) is None:
-                raise ArgErr("--backend: invalid argument '%s'; valid: %s\n"
-                             % (v, ", ".join(BACKEND_NAMES)))
+                raise ArgErr("--backend: invalid argument '%s'; valid: %s\n" % (v, ", ".join(BACKEND_NAMES)))
             o.backend = canonical_backend(v)
         elif a == "--newmode":
             name = need()
@@ -565,8 +559,7 @@ class Probe:
     connection the probe opened, which Session reuses so a session still
     opens exactly one; `close()` drops it when nothing wants it."""
 
-    def __init__(self, name, available, reason="", detail="",
-                 compositor=None, protocol=None, handle=None):
+    def __init__(self, name, available, reason="", detail="", compositor=None, protocol=None, handle=None):
         self.name = name
         self.available = available
         self.reason = reason            # short, true, only when unavailable
@@ -590,8 +583,7 @@ def _probe_x11(env):
     except passthrough.RealToolError as e:
         return Probe("x11", False, str(e).split("\n")[0])
     if real is None:
-        return Probe("x11", False,
-                     "no real xrandr on PATH (install x11-xserver-utils)")
+        return Probe("x11", False, "no real xrandr on PATH (install x11-xserver-utils)")
     return Probe("x11", True, detail=real, compositor="X server (RandR)")
 
 
@@ -623,8 +615,7 @@ def _probe_kwin():
     if conn is None:
         if wsession.find_wayland_socket() is None:
             return Probe("kwin", False, "no wayland socket")
-        return Probe("kwin", False, "the compositor does not advertise "
-                     + kwin_mod.MGMT)
+        return Probe("kwin", False, "the compositor does not advertise " + kwin_mod.MGMT)
     ver = None
     try:
         for iface, v in conn.get_registry().values():
@@ -633,8 +624,7 @@ def _probe_kwin():
     except Exception:
         pass
     what = kwin_mod.MGMT + ("" if ver is None else " version %d" % ver)
-    return Probe("kwin", True, detail=what, compositor="KWin", protocol=what,
-                 handle=conn)
+    return Probe("kwin", True, detail=what, compositor="KWin", protocol=what, handle=conn)
 
 
 def _probe_mutter():
@@ -644,8 +634,7 @@ def _probe_mutter():
     if bus is None:
         if not wsession.find_session_bus():
             return Probe("mutter", False, "no session bus")
-        return Probe("mutter", False, "%s is not on the session bus"
-                     % mutter_mod.DEST)
+        return Probe("mutter", False, "%s is not on the session bus" % mutter_mod.DEST)
     return Probe("mutter", True,
                  detail="%s on the session bus" % mutter_mod.DEST,
                  compositor="Mutter", protocol="%s (D-Bus)" % mutter_mod.DEST,
@@ -672,11 +661,9 @@ def _probe_wlr():
             conn.close()
         except Exception:
             pass
-        return Probe("wlr", False,
-                     "the compositor does not advertise " + _WLR_IFACE)
+        return Probe("wlr", False, "the compositor does not advertise " + _WLR_IFACE)
     what = "%s version %d" % (_WLR_IFACE, g[1])
-    return Probe("wlr", True, detail=what, compositor="wlroots",
-                 protocol=what, handle=conn)
+    return Probe("wlr", True, detail=what, compositor="wlroots", protocol=what, handle=conn)
 
 
 def probe_backend(name, env=None, verbose=False):
@@ -747,18 +734,15 @@ def print_backend_lines(flag=None, env=None, verbose=False):
     if verbose:
         p = probes.get(name) or probe_backend(name, env=env, verbose=True)
         probes[name] = p
-        lines.append("session: %s"
-                     % (passthrough.session_kind("xrandr", env) or "unknown"))
-        lines.append("chosen by: %s"
-                     % (source if note is None else "%s (%s)" % (source, note)))
+        lines.append("session: %s" % (passthrough.session_kind("xrandr", env) or "unknown"))
+        lines.append("chosen by: %s" % (source if note is None else "%s (%s)" % (source, note)))
         if p.compositor:
             lines.append("compositor: %s" % p.compositor)
         if p.protocol:
             lines.append("protocol: %s" % p.protocol)
         if name == "x11" and p.available:
             lines.append("real xrandr: %s" % p.detail)
-        lines.append("available: %s"
-                     % ("yes" if p.available else "no (%s)" % p.reason))
+        lines.append("available: %s" % ("yes" if p.available else "no (%s)" % p.reason))
     for p in probes.values():
         p.close()
     return lines
@@ -818,10 +802,10 @@ class Session:
 
     BACKENDS = WAYLAND_BACKENDS
 
-    # the handles close() drops, as class defaults: __init__ always rebinds
-    # them, and a Session built any other way (the backend tests stub
+    # the backend object close() drops, as a class default: __init__ always
+    # rebinds it, and a Session built any other way (the backend tests stub
     # __init__ with their own fake) is still closeable
-    ipc = wlr = mutter = kwin = None
+    impl = None
     probes: dict = {}
 
     def __init__(self, forced=None):
@@ -840,8 +824,7 @@ class Session:
             p = probes[name] = probe_backend(name)
             if not p.available:
                 p.close()
-                raise Fatal("--backend %s is not available in this session: "
-                            "%s\n" % (name, p.reason))
+                raise Fatal("--backend %s is not available in this session: " "%s\n" % (name, p.reason))
         self.backend = name
 
         def reuse(bname):
@@ -856,15 +839,11 @@ class Session:
         # left to the garbage collector (which reports them as a
         # ResourceWarning at whatever moment it gets round to them)
         self.probes = probes
-        keep = {id(h) for h in (sway_sock, kprobe, probe, wprobe)
-                if h is not None}
+        keep = {id(h) for h in (sway_sock, kprobe, probe, wprobe) if h is not None}
         for p in probes.values():
             if p.handle is not None and id(p.handle) not in keep:
                 p.close()
-        self.ipc = None
-        self.wlr = None
-        self.mutter = None
-        self.kwin = None
+        self.impl = None
         self.persistent = os.environ.get("WXRANDR_PERSIST", "") not in ("", "0")
         # OSError as well as Fatal: WlConn's connect() can raise
         # ConnectionRefusedError on a stale-but-present socket, and sway IPC
@@ -872,10 +851,12 @@ class Session:
         # never a traceback.
         if self.backend == "sway":
             try:
-                self.ipc = core.SwayIPC(sway_sock)
+                ipc = core.SwayIPC(sway_sock)
             except (Fatal, OSError):
                 self._cant_open()
-            self.wlr = core.wlr_snapshot_safe()
+            # the enrichment connection is opened only once the IPC is up: a
+            # session without sway has already left through _cant_open()
+            self.impl = core.SwayBackend(ipc, core.wlr_snapshot_safe())
         elif self.backend == "kwin":
             from wxrandr import kwin as kwin_mod
             if kprobe is None and wsession.find_wayland_socket() is None:
@@ -884,7 +865,7 @@ class Session:
                 # a socket without kde_output_management_v2 raises Fatal with
                 # a one-line explanation; an unusable one is "Can't open
                 # display", like everywhere else
-                self.kwin = kwin_mod.KwinOutputs(conn=kprobe)
+                self.impl = kwin_mod.KwinOutputs(conn=kprobe)
             except (OSError, RuntimeError, ValueError):
                 self._cant_open()
         elif self.backend == "mutter":
@@ -892,45 +873,34 @@ class Session:
             try:
                 # no bus at all -> "Can't open display"; a bus without
                 # DisplayConfig raises Fatal with a one-line explanation
-                self.mutter = mutter_mod.MutterOutputs(bus=probe)
+                self.impl = mutter_mod.MutterOutputs(bus=probe)
             except (mutter_mod.DBusError, OSError, ValueError):
                 self._cant_open()
         else:
             try:
-                self.wlr = core.WlrOutputs(conn=wprobe)
+                self.impl = core.WlrOutputs(conn=wprobe)
             except (Fatal, OSError):
                 self._cant_open()
         # state is keyed by the compositor's wayland socket so all backends
-        # share one primary/custom-mode store per session
+        # share one primary/custom-mode store per session; sway is the only
+        # one that can run without such a socket, and it keys by its own
         hit = wsession.find_wayland_socket()
-        key = hit[2] if hit else (self.ipc.sockpath if self.ipc else "?")
+        key = hit[2] if hit else getattr(self.impl, "sockpath", "?")
         self.state = core.State(key)
 
     @staticmethod
     def _cant_open():
-        sys.stderr.write("Can't open display %s\n"
-                         % os.environ.get("WAYLAND_DISPLAY", ""))
+        sys.stderr.write("Can't open display %s\n" % os.environ.get("WAYLAND_DISPLAY", ""))
         raise SystemExit(1)
 
     def snapshot(self):
-        if self.backend == "sway":
-            return core.snapshot_sway(self.ipc, self.state, self.wlr)
-        if self.backend == "mutter":
-            return self.mutter.snapshot(self.state)
-        if self.backend == "kwin":
-            return self.kwin.snapshot(self.state)
-        return core.snapshot_wlr(self.wlr, self.state)
+        return self.impl.snapshot(self.state)
 
     def dims(self, t) -> tuple:
         """Pending logical size of an enabled target in the backend's own
         coordinate space (Mutter and KWin round, and Mutter may not scale at
         all; wlroots truncates)."""
-        if self.backend == "mutter":
-            return self.mutter.predicted_dims(t, self.state)
-        if self.backend == "kwin":
-            return self.kwin.predicted_dims(t, self.state)
-        return core.predicted_dims(
-            t, self.state, wire="fixed" if self.backend == "wlr" else "text")
+        return self.impl.predicted_dims(t, self.state)
 
     def positions(self, targets, dims) -> dict:
         """Pending positions the way the backend will lay them out: xrandr's
@@ -941,8 +911,7 @@ class Session:
         pos = core.resolve_positions(targets, dims)
         if self.backend == "mutter":
             from wxrandr import mutter as mutter_mod
-            moved = {n for n, _p, _via in
-                     mutter_mod.keep_adjacent(targets, dims, pos)}
+            moved = {n for n, _p, _via in mutter_mod.keep_adjacent(targets, dims, pos)}
             for t in targets:
                 if t.name in moved:
                     t.changed = True   # its crtc line belongs in the plan
@@ -952,53 +921,32 @@ class Session:
             # one output really does move every other one, and a --dryrun
             # that printed a crtc line only for the outputs the command
             # names under-reported what the run would do
-            if t.enabled and t.name in pos and \
-                    pos[t.name] != (t.output.x, t.output.y):
+            if t.enabled and t.name in pos and pos[t.name] != (t.output.x, t.output.y):
                 t.changed = True
         return pos
 
     def close(self):
-        """Drop the compositor connections.  SwayIPC, WlrOutputs, KwinOutputs
-        and MutterOutputs all have a close() and nothing called any of them,
-        so every run handed its socket (and, on sway, a second one for the
-        wlr enrichment) to the garbage collector -- which reports it as a
-        ResourceWarning whenever it gets round to it.  Idempotent: the probe
-        objects hold the same handles and swallow a second close."""
-        for handle in (self.ipc, self.wlr, self.mutter, self.kwin):
-            closer = getattr(handle, "close", None)
-            if closer is None:
-                continue
+        """Drop the compositor connections.  Every backend has a close() and
+        nothing called any of them, so every run handed its socket (and, on
+        sway, a second one for the wlr enrichment) to the garbage collector
+        -- which reports it as a ResourceWarning whenever it gets round to
+        it.  Idempotent: the probe objects hold the same handles and swallow
+        a second close."""
+        if self.impl is not None:
             try:
-                closer()
+                self.impl.close()
             except OSError:
                 pass
-        self.ipc = self.wlr = self.mutter = self.kwin = None
+        self.impl = None
         for probe in self.probes.values():
             probe.close()
 
     def apply(self, targets):
-        if self.backend == "sway":
-            return core.apply_sway(self.ipc, self.state, targets)
-        if self.backend == "mutter":
-            return self.mutter.apply(self.state, targets, self.persistent)
-        if self.backend == "kwin":
-            return self.kwin.apply(self.state, targets, self.persistent)
-        core.apply_wlr(self.wlr, self.state, targets)
-        # refresh the head snapshot for the post-apply query.  A compositor
-        # that accepted the configuration and then stopped answering gets a
-        # sentence rather than the socket's own `timed out`.
-        try:
-            self.wlr.conn.roundtrip()
-            return self.snapshot()
-        except OSError:
-            raise Fatal("the compositor applied the output configuration "
-                        "and then stopped responding\n")
+        return self.impl.apply(self.state, targets, self.persistent)
 
     @property
     def compositor_name(self):
-        if self.backend in ("mutter", "kwin"):
-            return self.backend
-        return "sway" if self.backend == "sway" else "wlroots"
+        return self.impl.name
 
 
 # -- action helpers -----------------------------------------------------------
@@ -1009,11 +957,7 @@ def _do_mode_ops(sess: Session, opts: Opts, outputs):
     for op in opts.mode_ops:
         if op[0] == "new":
             _, name, clock, nums, flags = op
-            st.modes()[name] = {
-                "clock": clock,
-                "h": nums[0:4], "v": nums[4:8],
-                "flags": flags,
-            }
+            st.modes()[name] = {"clock": clock, "h": nums[0:4], "v": nums[4:8], "flags": flags}
         elif op[0] == "rm":
             name = op[1]
             if name not in st.modes():
@@ -1042,8 +986,7 @@ def _dpi_and_mm(opts: Opts, outputs, new_w, new_h):
     """The verbose/dryrun screen line pieces (xrandr main + set_screen_size):
     dpi from the *current* screen height unless --dpi/--fbmm."""
     if opts.fbmm:
-        return (25.4 * new_h / opts.fbmm[1] if opts.fbmm[1] else 96.0,
-                opts.fbmm[0], opts.fbmm[1])
+        return (25.4 * new_h / opts.fbmm[1] if opts.fbmm[1] else 96.0, opts.fbmm[0], opts.fbmm[1])
     dpi = None
     if isinstance(opts.dpi, float):
         dpi = opts.dpi
@@ -1052,8 +995,7 @@ def _dpi_and_mm(opts: Opts, outputs, new_w, new_h):
             if o.name == opts.dpi and o.active and o.mm_h:
                 dpi = 25.4 * o.h / o.mm_h
         if dpi is None:
-            core.warn("output %s has no physical size; using 96dpi\n"
-                      % opts.dpi)
+            core.warn("output %s has no physical size; using 96dpi\n" % opts.dpi)
             dpi = 96.0
     if dpi is None:
         x0, y0, x1, y1 = core.layout_box(outputs)
@@ -1099,8 +1041,7 @@ def _print_plan(opts: Opts, outputs, targets, dims, pos):
     if opts.fb:
         new_w, new_h = opts.fb
     dpi, mm_w, mm_h = _dpi_and_mm(opts, outputs, new_w, new_h)
-    print("screen 0: %dx%d %dx%d mm %6.2fdpi" % (new_w, new_h, mm_w, mm_h,
-                                                 dpi))
+    print("screen 0: %dx%d %dx%d mm %6.2fdpi" % (new_w, new_h, mm_w, mm_h, dpi))
     for t in targets:
         if not t.changed or not t.enabled:
             continue
@@ -1149,10 +1090,8 @@ def _check_screen_size(opts: Opts, targets, dims, pos):
     if opts.fb:
         desired_w, desired_h = opts.fb
     else:
-        xs = [pos[t.name][0] + dims[t.name][0]
-              for t in targets if t.enabled and t.name in pos]
-        ys = [pos[t.name][1] + dims[t.name][1]
-              for t in targets if t.enabled and t.name in pos]
+        xs = [pos[t.name][0] + dims[t.name][0] for t in targets if t.enabled and t.name in pos]
+        ys = [pos[t.name][1] + dims[t.name][1] for t in targets if t.enabled and t.name in pos]
         desired_w = max(xs) if xs else 0
         desired_h = max(ys) if ys else 0
     if desired_w > core.MAX_WIDTH or desired_h > core.MAX_HEIGHT:
@@ -1182,19 +1121,16 @@ def _apply_gamma(sess: Session, opts: Opts, outputs):
             core.warn("--brightness/--gamma are not supported on Mutter "
                       "(no gamma LUT API); ignoring for %s\n" % s.name)
             continue
-        if sess.backend == "kwin" and not sess.kwin.has_gamma:
+        if sess.backend == "kwin" and not sess.impl.has_gamma:
             # probed, not assumed: kde-output-management-v2 carries no LUT
             # call and KWin advertises no zwlr_gamma_control_manager_v1 either
             core.warn("--brightness/--gamma are not supported on KWin "
                       "(no gamma LUT API); ignoring for %s\n" % s.name)
             continue
         rec = sess.state.gamma().get(s.name, {})
-        brightness = (s.brightness if s.brightness is not None
-                      else rec.get("brightness", 1.0))
-        gam = (s.gamma if s.gamma is not None
-               else tuple(rec.get("gamma", (1.0, 1.0, 1.0))))
-        err = gammamod.set_output_gamma(sess.state, s.name, brightness, gam,
-                                        wayland_socket=sock)
+        brightness = (s.brightness if s.brightness is not None else rec.get("brightness", 1.0))
+        gam = (s.gamma if s.gamma is not None else tuple(rec.get("gamma", (1.0, 1.0, 1.0))))
+        err = gammamod.set_output_gamma(sess.state, s.name, brightness, gam, wayland_socket=sock)
         changed = True
         if err == "refused":
             sess.state.save()
@@ -1217,10 +1153,8 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
                 else:
                     core.warn("--filter needs the sway backend; ignoring\n")
             else:
-                core.warn("--set %s is not supported on Wayland; ignoring\n"
-                          % prop)
-    targets = core.build_targets(outputs, opts.stanzas, sess.state,
-                                 opts.global_auto)
+                core.warn("--set %s is not supported on Wayland; ignoring\n" % prop)
+    targets = core.build_targets(outputs, opts.stanzas, sess.state, opts.global_auto)
     dims = {t.name: sess.dims(t) for t in targets if t.enabled}
     pos = sess.positions(targets, dims)
     _check_fb(opts, targets, dims, pos)
@@ -1232,34 +1166,27 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
     # send, and the dryrun branch puts this back before it saves.
     primary_before = sess.state.primary
     if opts.noprimary:
-        if (sess.backend == "mutter" and sess.mutter.primary
-                and not any(s.primary for s in opts.stanzas)):
-            core.warn("GNOME requires a primary output; keeping %s\n"
-                      % sess.mutter.primary)
-        if (sess.backend == "kwin" and sess.kwin.primary
-                and not any(s.primary for s in opts.stanzas)):
+        if (sess.backend == "mutter" and sess.impl.primary and not any(s.primary for s in opts.stanzas)):
+            core.warn("GNOME requires a primary output; keeping %s\n" % sess.impl.primary)
+        if (sess.backend == "kwin" and sess.impl.primary and not any(s.primary for s in opts.stanzas)):
             # neither set_priority nor set_primary_output has an inverse:
             # KWin's output order always has a first entry
-            core.warn("KWin keeps a primary output; keeping %s\n"
-                      % sess.kwin.primary)
+            core.warn("KWin keeps a primary output; keeping %s\n" % sess.impl.primary)
         sess.state.primary = None
     for s in opts.stanzas:
-        if s.primary and any(t.name == s.name and t.stanza is s
-                             for t in targets):
+        if s.primary and any(t.name == s.name and t.stanza is s for t in targets):
             sess.state.primary = s.name
     if opts.dryrun:
+        # what a verify can promise is the backend's business: Mutter really
+        # validates, with method 0, the exact call a real run would make
+        # (adjacency, overlap, primary, scales), and a rejection is the same
+        # one-line `xrandr: <mutter message>` the apply would give; KWin has
+        # no such request and re-runs the plan client-side (mode resolution,
+        # the last-output refusal); sway and wlroots have nothing to ask.
+        sess.impl.verify(sess.state, targets)
         if sess.backend == "mutter":
-            # method 0: Mutter validates the exact call a real run would
-            # make (adjacency, overlap, primary, scales); a rejection is the
-            # same one-line `xrandr: <mutter message>` the apply would give.
-            # The verdict goes to stderr: stdout stays xrandr's dryrun bytes.
-            sess.mutter.verify(sess.state, targets)
+            # the verdict goes to stderr: stdout stays xrandr's dryrun bytes
             sys.stderr.write("mutter verify: ok\n")
-        elif sess.backend == "kwin":
-            # KWin has no verify request, and building a configuration
-            # without applying it changes nothing, so this runs the plan
-            # client-side only (mode resolution, the last-output refusal).
-            sess.kwin.verify(sess.state, targets)
         # Nothing was sent, so nothing may be claimed about the compositor --
         # including the primary: a --dryrun that recorded one would make the
         # next --query name a primary the compositor was never asked for.
@@ -1270,7 +1197,7 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
         sess.state.save()
         return outputs
     for cmd in filter_cmds:
-        sess.ipc.run(cmd)
+        sess.impl.ipc.run(cmd)
     fresh = sess.apply(targets)
     still = {o.name for o in fresh}
     if sess.state.primary and sess.state.primary not in still:
@@ -1288,11 +1215,9 @@ def _do_1_0(sess: Session, opts: Opts, outputs) -> int:
     sizes = core.q1_sizes(outputs)
     if isinstance(opts.size, tuple):
         w, h = opts.size
-        idx = next((i for i, (sw, sh, _r) in enumerate(sizes)
-                    if (sw, sh) == (w, h)), None)
+        idx = next((i for i, (sw, sh, _r) in enumerate(sizes) if (sw, sh) == (w, h)), None)
         if idx is None:
-            sys.stderr.write("Size %dx%d not found in available modes\n"
-                             % (w, h))
+            sys.stderr.write("Size %dx%d not found in available modes\n" % (w, h))
             return 1
     elif opts.size >= 0:
         if opts.size >= len(sizes):
@@ -1311,11 +1236,9 @@ def _do_1_0(sess: Session, opts: Opts, outputs) -> int:
     if opts.rate >= 0 and sizes:
         rates = sizes[idx][2]
         if rates and round(opts.rate) not in rates:
-            sys.stderr.write("Rate %.2f Hz not available for this size\n"
-                             % opts.rate)
+            sys.stderr.write("Rate %.2f Hz not available for this size\n" % opts.rate)
             return 1
-    cur_rot, cur_refl = core.RANDR_VIEW.get(first.transform,
-                                            ("normal", "normal"))
+    cur_rot, cur_refl = core.RANDR_VIEW.get(first.transform, ("normal", "normal"))
     rot = _DIRECTION[opts.rot] if opts.rot >= 0 else cur_rot
     refl = set()
     if "x" in cur_refl:
@@ -1326,8 +1249,7 @@ def _do_1_0(sess: Session, opts: Opts, outputs) -> int:
         refl.symmetric_difference_update("x")
     if opts.toggle_y:
         refl.symmetric_difference_update("y")
-    new_refl = ("xy" if refl == {"x", "y"} else
-                "x" if refl == {"x"} else "y" if refl == {"y"} else "normal")
+    new_refl = ("xy" if refl == {"x", "y"} else "x" if refl == {"x"} else "y" if refl == {"y"} else "normal")
     if opts.query or opts.query_1:
         for line in core.render_q1(outputs, sess.state):
             print(line)
@@ -1382,8 +1304,7 @@ def _run_session(sess: Session, opts: Opts) -> int:
     if opts.persistent:
         sess.persistent = True
     if opts.screen > 0:
-        sys.stderr.write("Invalid screen number %d (display has 1)\n"
-                         % opts.screen)
+        sys.stderr.write("Invalid screen number %d (display has 1)\n" % opts.screen)
         return 1
     if opts.version:
         print("Server reports RandR version 1.6")
@@ -1401,8 +1322,7 @@ def _run_session(sess: Session, opts: Opts) -> int:
         if opts.monitor_op[0] in ("list", "listactive"):
             # KWin has a real primary XWayland knows about (measured: its
             # own --listmonitors puts it first), so it lists it first too
-            for line in core.render_monitors(
-                    outputs, sess.state, sess.backend in ("mutter", "kwin")):
+            for line in core.render_monitors(outputs, sess.state, sess.backend in ("mutter", "kwin")):
                 print(line)
             return 0
         if opts.monitor_op[0] == "del":
@@ -1419,8 +1339,7 @@ def _run_session(sess: Session, opts: Opts) -> int:
     if opts.query_1 and not opts.setit:
         for line in core.render_q1(outputs, sess.state):
             print(line)
-        for line in core.render_q1_state(outputs[0] if outputs else
-                                         core.OutputState("none", False)):
+        for line in core.render_q1_state(outputs[0] if outputs else core.OutputState("none", False)):
             print(line)
         return 0
     if opts.query:
@@ -1443,8 +1362,7 @@ def main(argv=None) -> int:
     flag, info_only, stripped = scan_backend_argv(args)
     asked = canonical_backend(flag)
     forced = asked
-    if forced in (None, "auto") and \
-            canonical_backend(os.environ.get("WXRANDR_BACKEND")) == "x11":
+    if forced in (None, "auto") and canonical_backend(os.environ.get("WXRANDR_BACKEND")) == "x11":
         # the variable's one say over the handover, so that it cannot ask
         # for a backend this process is then unable to be: `x11` there means
         # the real xrandr on any session, exactly like the flag.  A Wayland

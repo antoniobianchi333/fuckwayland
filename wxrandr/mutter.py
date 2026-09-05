@@ -59,14 +59,12 @@ Mapping to the wxrandr model (core.OutputState / core.Target):
                          mode with the same size (and rate) -> `cannot find mode`
 """
 
-import math
 import struct
 
 from wdotool import session as wsession
 from wdotool.dbus_mini import Bus, DBusError, Variant
 from wxrandr import core
-from wxrandr.core import (Fatal, Mode, OutputState,   # noqa: F401
-                          round_half_away, warn)
+from wxrandr.core import Fatal, Mode, OutputState, round_half_away, warn  # noqa: F401
 
 DEST = "org.gnome.Mutter.DisplayConfig"
 PATH = "/org/gnome/Mutter/DisplayConfig"
@@ -75,11 +73,9 @@ APPLY_SIG = "uua(iiduba(ssa{sv}))a{sv}"
 VERIFY, TEMPORARY, PERSISTENT = 0, 1, 2
 LAYOUT_LOGICAL, LAYOUT_PHYSICAL = 1, 2
 MONITORS_CHANGED_TIMEOUT = 5.0
-CANCELLED = ("output configuration cancelled by a concurrent change; "
-             "try again\n")
+CANCELLED = ("output configuration cancelled by a concurrent change; " "try again\n")
 _MATCH = "type='signal',interface='%s',member='MonitorsChanged'" % IFACE
-PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the '
-                   "dialog or the layout reverts\n")
+PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the ' "dialog or the layout reverts\n")
 
 
 # -- pure helpers (unit-tested) ----------------------------------------------
@@ -96,28 +92,13 @@ def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
     return (round_half_away(px_w / scale), round_half_away(px_h / scale))
 
 
-# What real xrandr prints through Mutter's XWayland for each Mutter transform
-# (measured on GNOME 50, all eight): Xwayland's wl_transform_to_xrandr maps
-# n -> RR_Rotate_(90*n) [| RR_Reflect_X], and the spec's 90 is
-# counter-clockwise, i.e. xrandr `left`. sway's verified table
-# (core.RANDR_VIEW) has "90" == `right`, so the two numberings differ by a
-# 90<->270 swap (1<->3, 5<->7); the renderer keeps speaking sway names.
-MUTTER_RANDR_VIEW = {0: ("normal", "normal"), 1: ("left", "normal"),
-                     2: ("inverted", "normal"), 3: ("right", "normal"),
-                     4: ("normal", "x"), 5: ("left", "x"),
-                     6: ("inverted", "x"), 7: ("right", "x")}
-SWAY_FROM_MUTTER = {n: next(tf for tf, v in core.RANDR_VIEW.items() if v == view)
-                    for n, view in MUTTER_RANDR_VIEW.items()}
-MUTTER_FROM_SWAY = {tf: n for n, tf in SWAY_FROM_MUTTER.items()}
-
-
-def to_transform(sway_tf: str) -> int:
-    """sway transform name (what core/RANDR_VIEW use) -> Mutter transform."""
-    return MUTTER_FROM_SWAY.get(sway_tf, 0)
-
-
-def from_transform(n: int) -> str:
-    return SWAY_FROM_MUTTER.get(n, "normal")
+# Mutter numbers transforms exactly as the wl_output spec does, so the
+# measured table lives in core (WL_SPEC_RANDR_VIEW) next to the sway one it
+# is a permutation of. These are this module's names for it.
+MUTTER_RANDR_VIEW = core.WL_SPEC_RANDR_VIEW
+MUTTER_FROM_SWAY = core.WL_SPEC_FROM_SWAY
+to_transform = core.to_wl_spec_transform
+from_transform = core.from_wl_spec_transform
 
 
 def snap_scale(scale: float, supported) -> float:
@@ -129,25 +110,9 @@ def snap_scale(scale: float, supported) -> float:
     return min(supported, key=lambda s: (abs(s - scale), s))
 
 
-def _interlaced(m: Mode) -> bool:
-    return any(f.lower() == "interlace" for f in m.flags)
-
-
-def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
-               tolerance: float | None = None,
-               interlaced: bool = False) -> Mode | None:
-    """The real (mode-id bearing) mode of size w x h: nearest refresh when a
-    rate is given (within `tolerance` Hz if set), else the first listed."""
-    cands = [m for m in modes if m.mode_id and (m.w, m.h) == (w, h)
-             and _interlaced(m) == interlaced]
-    if not cands:
-        return None
-    if rate_hz:
-        best = min(cands, key=lambda m: abs(m.refresh_hz - rate_hz))
-        if tolerance is not None and abs(best.refresh_hz - rate_hz) > tolerance:
-            return None
-        return best
-    return cands[0]
+# Mutter's mode list carries the interlace flag, so core.match_mode's
+# default (progressive unless asked) is the right one here.
+match_mode = core.match_mode
 
 
 def _mode_from_wire(mid: str, w: int, h: int, rate: float, mp: dict) -> Mode:
@@ -219,8 +184,7 @@ def keep_adjacent(targets: list, dims: dict, pos: dict) -> list:
     to; Mutter reports the hole). Mutates `pos` (every enabled output,
     min x = min y = 0 as core.resolve_positions leaves it) and returns
     [(name, (x, y), neighbour)] for each output it moved, in move order."""
-    old = {t.name: (t.output.x, t.output.y, t.output.w, t.output.h)
-           for t in targets if t.output.active}
+    old = {t.name: (t.output.x, t.output.y, t.output.w, t.output.h) for t in targets if t.output.active}
     fixed = {t.name for t in targets if _positioned(t)}
     movable = [t.name for t in targets
                if t.enabled and t.name in old and t.name in pos
@@ -314,8 +278,7 @@ def wl_output_info(sock_path: str | None = None) -> dict:
         for gname, (iface, ver) in list(conn.get_registry().items()):
             if iface != "wl_output" or ver < 4:
                 continue
-            o = {"name": "", "mm_w": 0, "mm_h": 0, "subpixel": "unknown",
-                 "make": "", "model": ""}
+            o = {"name": "", "mm_w": 0, "mm_h": 0, "subpixel": "unknown", "make": "", "model": ""}
 
             def handler(op, cur, fds, o=o):
                 if op == 0:  # geometry(x, y, mm_w, mm_h, subpixel, make, model, tf)
@@ -341,8 +304,9 @@ def wl_output_info(sock_path: str | None = None) -> dict:
 class MutterOutputs:
     """Snapshot + one-call atomic apply over org.gnome.Mutter.DisplayConfig."""
 
-    def __init__(self, bus: Bus | None = None, addr: str | None = None,
-                 wl_socket=None):
+    name = "mutter"
+
+    def __init__(self, bus: Bus | None = None, addr: str | None = None, wl_socket=None):
         """`wl_socket`: Wayland socket path for the wl_output enrichment
         (None = the session's, False = none)."""
         self.wl_socket = wl_socket
@@ -350,8 +314,7 @@ class MutterOutputs:
             if addr is None:
                 hit = wsession.find_session_bus()
                 if not hit:
-                    raise DBusError("org.freedesktop.DBus.Error.NoServer",
-                                    "no session D-Bus found")
+                    raise DBusError("org.freedesktop.DBus.Error.NoServer", "no session D-Bus found")
                 addr = hit[1]
             bus = Bus(addr)
         self.bus = bus
@@ -362,8 +325,7 @@ class MutterOutputs:
             raise
         if not owned:
             self.bus.close()
-            raise Fatal("%s is not on the session bus (not a GNOME "
-                        "session?)\n" % DEST)
+            raise Fatal("%s is not on the session bus (not a GNOME " "session?)\n" % DEST)
         self.serial = 0
         self.fingerprint = None      # monitors + layout the serial stood for
         self.props = {}
@@ -392,14 +354,12 @@ class MutterOutputs:
         layout mode, supported scales, the real primary (synced into
         state.primary — the state file never overrides Mutter here)."""
         serial, monitors, logical, props = self.get_current_state()
-        wl = {} if self.wl_socket is False else wl_output_info(
-            self.wl_socket or None)
+        wl = {} if self.wl_socket is False else wl_output_info(self.wl_socket or None)
         self.serial = serial
         self.fingerprint = self._fingerprint(monitors, logical)
         self.props = props
         self.layout_mode = _int(props.get("layout-mode")) or LAYOUT_LOGICAL
-        self.global_scale_required = bool(props.get("global-scale-required",
-                                                    False))
+        self.global_scale_required = bool(props.get("global-scale-required", False))
         lm_of = {}
         for lm in logical:
             for spec in lm[5]:
@@ -417,8 +377,7 @@ class MutterOutputs:
             self.primary = None
         else:
             members = [spec[0] for spec in primary_lm[5]]
-            self.primary = (state.primary if state.primary in members
-                            else members[0])
+            self.primary = (state.primary if state.primary in members else members[0])
         self.scales = {}
         self.underscan = {}
         current_ids = {}
@@ -432,8 +391,7 @@ class MutterOutputs:
                              make=vendor or "Unknown",
                              model=product or "Unknown",
                              serial=mserial or "Unknown")
-            self.underscan[connector] = bool(mprops.get("is-underscanning",
-                                                        False))
+            self.underscan[connector] = bool(mprops.get("is-underscanning", False))
             w_info = wl.get(connector)
             if w_info:
                 st.mm_w = st.mm_w or w_info["mm_w"]
@@ -442,8 +400,7 @@ class MutterOutputs:
             current = None
             for (mid, w, h, rate, _pscale, scales, mp) in modes:
                 m = _mode_from_wire(mid, w, h, rate, mp)
-                self.scales[(connector, mid)] = ([float(s) for s in scales]
-                                                 or [1.0])
+                self.scales[(connector, mid)] = ([float(s) for s in scales] or [1.0])
                 st.modes.append(m)
                 if mp.get("is-current"):
                     current = m
@@ -451,17 +408,14 @@ class MutterOutputs:
                 x, y, scale, transform, primary, _specs, _lp = lm_of[connector]
                 st.x, st.y, st.scale = x, y, float(scale)
                 st.transform = from_transform(transform)
-                st.current = current if current is not None else (
-                    st.modes[0] if st.modes else None)
+                st.current = current if current is not None else (st.modes[0] if st.modes else None)
                 if st.current is not None:
                     st.w, st.h = logical_size(st.current.w, st.current.h,
                                               st.transform, st.scale,
                                               self.layout_mode)
                     current_ids[connector] = st.current.mode_id
                 st.primary = lm_of[connector] is primary_lm
-            if not any(m.preferred for m in st.modes) and st.modes:
-                st.modes[0].preferred = True
-            st.modes.extend(state.modes_for_output(connector))
+            core.finish_modes(st, state.modes_for_output(connector))
             outs.append(st)
         self.current_config = _canon([
             {"x": lm[0], "y": lm[1], "scale": lm[2], "transform": lm[3],
@@ -495,8 +449,7 @@ class MutterOutputs:
         if len(flagged) <= 1:
             return flagged[0] if flagged else None
         try:
-            _serial, _crtcs, outputs, _modes, _mw, _mh = self.bus.call(
-                DEST, PATH, IFACE, "GetResources")
+            _serial, _crtcs, outputs, _modes, _mw, _mh = self.bus.call(DEST, PATH, IFACE, "GetResources")
             for out in outputs:
                 if out[7].get("primary") and out[4] in lm_of:
                     return lm_of[out[4]]
@@ -510,30 +463,9 @@ class MutterOutputs:
         """The real mode an enabled target will run: the stanza's, else the
         current one, else the mode wxrandr disabled it at (state file), else
         the preferred one. A custom (--newmode) mode is only applicable when
-        a real mode of the same size and rate exists."""
-        o = t.output
-        mode = t.mode
-        if mode is None:
-            mode = o.current
-        if mode is None:
-            last = state.lastmodes().get(t.name)
-            if last:
-                mode = match_mode(o.modes, last[0], last[1],
-                                  (last[2] or 0) / 1000.0 or None)
-        if mode is None:
-            mode = next((m for m in o.modes if m.preferred and m.mode_id),
-                        None)
-        if mode is None:
-            mode = next((m for m in o.modes if m.mode_id), None)
-        if mode is None:
-            raise Fatal("cannot find preferred mode\n")
-        if mode.mode_id:
-            return mode
-        real = match_mode(o.modes, mode.w, mode.h, mode.refresh_hz or None,
-                          tolerance=1.0, interlaced=_interlaced(mode))
-        if real is None:
-            raise Fatal("cannot find mode %s\n" % mode.display_name)
-        return real
+        a real mode of the same size and rate exists -- and Mutter's modes
+        say whether they are interlaced, so that has to match too."""
+        return core.resolve_real_mode(t, state, interlace_known=True)
 
     def _scale_for(self, t: core.Target, mode: Mode) -> float:
         """The scale Mutter will accept: an output keeping its mode and scale
@@ -545,16 +477,14 @@ class MutterOutputs:
                 and o.current.mode_id == mode.mode_id
                 and abs(t.scale - o.scale) < 1e-9):
             return t.scale
-        return snap_scale(t.scale,
-                          self.scales.get((t.name, mode.mode_id)) or [1.0])
+        return snap_scale(t.scale, self.scales.get((t.name, mode.mode_id)) or [1.0])
 
     def predicted_dims(self, t: core.Target, state: core.State) -> tuple:
         """Pending logical size of an enabled target in Mutter's space (the
         dryrun/verbose plan and --fb checks use this instead of the wlroots
         prediction)."""
         m = self.resolve_mode(t, state)
-        return logical_size(m.w, m.h, t.sway_tf, self._scale_for(t, m),
-                            self.layout_mode)
+        return logical_size(m.w, m.h, t.sway_tf, self._scale_for(t, m), self.layout_mode)
 
     @staticmethod
     def _floating(t: core.Target) -> bool:
@@ -570,11 +500,9 @@ class MutterOutputs:
             if not self._floating(t):
                 continue
             if placed:
-                right = max(placed, key=lambda n: (pos[n][0] + dims[n][0],
-                                                   -pos[n][1]))
+                right = max(placed, key=lambda n: (pos[n][0] + dims[n][0], -pos[n][1]))
                 pos[t.name] = (pos[right][0] + dims[right][0], pos[right][1])
-                warn("output %s enabled without a position; placing it "
-                     "right-of %s\n" % (t.name, right))
+                warn("output %s enabled without a position; placing it " "right-of %s\n" % (t.name, right))
             else:
                 pos[t.name] = (0, 0)
             placed.append(t.name)
@@ -597,16 +525,14 @@ class MutterOutputs:
             m = self.resolve_mode(t, state)
             s = self._scale_for(t, m)
             if abs(s - t.scale) > 1e-6:
-                warn("scale %g is not available for %s at %dx%d; using %g\n"
-                     % (t.scale, t.name, m.w, m.h, s))
+                warn("scale %g is not available for %s at %dx%d; using %g\n" % (t.scale, t.name, m.w, m.h, s))
             real[t.name], scales[t.name] = m, s
         by_name = {t.name: t for t in targets}
         dims = {n: logical_size(real[n].w, real[n].h, by_name[n].sway_tf,
                                 scales[n], self.layout_mode) for n in real}
         pos = core.resolve_positions(targets, dims)
         for n, (x, y), via in keep_adjacent(targets, dims, pos):
-            warn("output %s moved to +%d+%d to stay adjacent to %s\n"
-                 % (n, x, y, via))
+            warn("output %s moved to +%d+%d to stay adjacent to %s\n" % (n, x, y, via))
         self._auto_place(targets, dims, pos)
         groups, index = [], {}
         for t in targets:
@@ -691,8 +617,7 @@ class MutterOutputs:
         """--dryrun: method 0 — Mutter validates, nothing changes."""
         self._send(VERIFY, self.plan(state, targets))
 
-    def apply(self, state: core.State, targets: list,
-              persistent: bool = False) -> list:
+    def apply(self, state: core.State, targets: list, persistent: bool = False) -> list:
         """One ApplyMonitorsConfig for the whole layout, then wait for
         MonitorsChanged (<= 5 s) and return the fresh snapshot. An unchanged
         temporary layout is not re-applied (no modeset for `--primary` on the
@@ -701,11 +626,7 @@ class MutterOutputs:
         method = PERSISTENT if persistent else TEMPORARY
         if method == TEMPORARY and _canon(plan) == self.current_config:
             return self.snapshot(state)
-        for t in targets:
-            if t.changed and not t.enabled and t.output.active:
-                cur = t.output.current
-                if cur:
-                    state.lastmodes()[t.name] = [cur.w, cur.h, cur.refresh_mhz]
+        core.record_lastmodes(state, targets)
         if method == PERSISTENT:
             warn(PERSIST_WARNING)
         if not self._matched:
@@ -716,8 +637,7 @@ class MutterOutputs:
             self._matched = True
         self._send(method, plan)
         try:
-            self.bus.wait_signal(IFACE, "MonitorsChanged",
-                                 MONITORS_CHANGED_TIMEOUT)
+            self.bus.wait_signal(IFACE, "MonitorsChanged", MONITORS_CHANGED_TIMEOUT)
         except DBusError:
             pass
         return self.snapshot(state)

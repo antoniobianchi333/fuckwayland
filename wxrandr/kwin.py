@@ -266,8 +266,7 @@ def from_fixed(raw: float) -> float:
     return quantize_scale(raw)
 
 
-def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
-                 plasma6: bool = True) -> tuple[int, int]:
+def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float, plasma6: bool = True) -> tuple[int, int]:
     """KWin's logical size: the transform-swapped mode size divided by the
     scale, made whole the way the running KWin does it.
 
@@ -287,28 +286,14 @@ def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
     return (math.ceil(px_w / scale), math.ceil(px_h / scale))
 
 
-# libkscreen's toKScreenRotation (waylandoutputdevice.cpp) reads the wl_output
-# transform enum the way the spec's counter-clockwise 90 implies: 1 -> xrandr
-# `left`, 3 -> `right`, 4..7 the same rotations with a reflection. sway's
-# verified table (core.RANDR_VIEW) numbers "90" the other way round, so the
-# sway transform *names* the renderer speaks differ from the wl numbers by a
-# 90<->270 swap (1<->3, 5<->7) -- the same permutation the Mutter backend needs.
-KWIN_RANDR_VIEW = {0: ("normal", "normal"), 1: ("left", "normal"),
-                   2: ("inverted", "normal"), 3: ("right", "normal"),
-                   4: ("normal", "x"), 5: ("left", "x"),
-                   6: ("inverted", "x"), 7: ("right", "x")}
-SWAY_FROM_KWIN = {n: next(tf for tf, v in core.RANDR_VIEW.items() if v == view)
-                  for n, view in KWIN_RANDR_VIEW.items()}
-KWIN_FROM_SWAY = {tf: n for n, tf in SWAY_FROM_KWIN.items()}
-
-
-def to_transform(sway_tf: str) -> int:
-    """sway transform name (what core/RANDR_VIEW use) -> wl_output enum."""
-    return KWIN_FROM_SWAY.get(sway_tf, 0)
-
-
-def from_transform(n: int) -> str:
-    return SWAY_FROM_KWIN.get(n, "normal")
+# libkscreen's toKScreenRotation (waylandoutputdevice.cpp) reads the
+# wl_output transform enum as the spec's counter-clockwise 90 implies, the
+# same numbering Mutter uses: core.WL_SPEC_RANDR_VIEW is that table, and the
+# 90<->270 swap against the sway names the renderer speaks follows from it.
+KWIN_RANDR_VIEW = core.WL_SPEC_RANDR_VIEW
+KWIN_FROM_SWAY = core.WL_SPEC_FROM_SWAY
+to_transform = core.to_wl_spec_transform
+from_transform = core.from_wl_spec_transform
 
 
 def normalise(pos: dict) -> dict:
@@ -327,19 +312,10 @@ def normalise(pos: dict) -> dict:
     return {n: (x + dx, y + dy) for n, (x, y) in pos.items()}
 
 
-def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
-               tolerance: float | None = None) -> Mode | None:
-    """The real (object-bearing) mode of size w x h: nearest refresh when a
-    rate is given (within `tolerance` Hz if set), else the first listed."""
-    cands = [m for m in modes if m.mode_id and (m.w, m.h) == (w, h)]
-    if not cands:
-        return None
-    if rate_hz:
-        best = min(cands, key=lambda m: abs(m.refresh_hz - rate_hz))
-        if tolerance is not None and abs(best.refresh_hz - rate_hz) > tolerance:
-            return None
-        return best
-    return cands[0]
+# KWin's modes are objects with a size and a refresh and nothing else --
+# no interlace flag -- so every candidate here is flagless and the shared
+# matcher's progressive default excludes none of them.
+match_mode = core.match_mode
 
 
 def mirror_needs_replication(replica: tuple, source: tuple) -> bool:
@@ -369,8 +345,7 @@ def mirror_needs_replication(replica: tuple, source: tuple) -> bool:
     return tuple(replica) != tuple(source)
 
 
-def restore_command(outputs, primary: str | None = None,
-                    mirrors: dict | None = None) -> str:
+def restore_command(outputs, primary: str | None = None, mirrors: dict | None = None) -> str:
     """The xrandr invocation that puts `outputs` back the way they were --
     KWin has already saved the new layout by the time we could offer an undo,
     so the pre-apply snapshot is printed as a command the user can paste.
@@ -428,8 +403,7 @@ def wire(doing: str):
     try:
         yield
     except (OSError, struct.error) as e:
-        raise Fatal("lost the connection to the compositor while %s (%s)\n"
-                    % (doing, e))
+        raise Fatal("lost the connection to the compositor while %s (%s)\n" % (doing, e))
     except RuntimeError as e:
         raise Fatal("%s\n" % e)
 
@@ -471,6 +445,8 @@ def probe(sock_path: str | None = None):
 class KwinOutputs:
     """Snapshot + one-shot atomic apply over kde_output_management_v2."""
 
+    name = "kwin"
+
     def __init__(self, conn=None, socket_path: str | None = None):
         from wdotool.wayland_mini import WlConn
         self._own_conn = conn is None
@@ -478,8 +454,7 @@ class KwinOutputs:
             if socket_path is None:
                 hit = wsession.find_wayland_socket()
                 if hit is None:
-                    raise Fatal("cannot connect to the compositor "
-                                "(no wayland socket found)\n")
+                    raise Fatal("cannot connect to the compositor " "(no wayland socket found)\n")
                 socket_path = hit[2]
             conn = WlConn(socket_path)
         self.conn = conn
@@ -489,12 +464,10 @@ class KwinOutputs:
         except OSError:
             pass
         regs = conn.get_registry()
-        mgmt = next(((n, v) for n, (i, v) in sorted(regs.items())
-                     if i == MGMT), None)
+        mgmt = next(((n, v) for n, (i, v) in sorted(regs.items()) if i == MGMT), None)
         if mgmt is None:
             self.close()
-            raise Fatal("compositor does not advertise %s (not a KDE Plasma "
-                        "session?)\n" % MGMT)
+            raise Fatal("compositor does not advertise %s (not a KDE Plasma " "session?)\n" % MGMT)
         self.mgmt_advertised = mgmt[1]
         self.mgmt_version = max(1, min(mgmt[1], MGMT_WANT))
         self.mgmt = conn.bind(mgmt[0], MGMT, self.mgmt_version)
@@ -542,8 +515,7 @@ class KwinOutputs:
         read-back a mirror could never be cleared again -- the delta against
         a source we cannot see is always empty, so `--right-of` on a replica
         would be silently inert, which is the one thing this policy is for."""
-        return (self.mgmt_version >= REPL_MGMT
-                and self.dev_version >= REPL_DEV)
+        return (self.mgmt_version >= REPL_MGMT and self.dev_version >= REPL_DEV)
 
     # -- discovery -----------------------------------------------------------
 
@@ -552,14 +524,11 @@ class KwinOutputs:
         call picks up hotplugged globals and drops departed ones."""
         regs = self.conn.get_registry()
         if self.order is None:
-            ordg = next(((n, v) for n, (i, v) in sorted(regs.items())
-                         if i == ORDER), None)
+            ordg = next(((n, v) for n, (i, v) in sorted(regs.items()) if i == ORDER), None)
             if ordg is not None:
-                self.order = self.conn.bind(ordg[0], ORDER,
-                                            min(ordg[1], ORDER_WANT))
+                self.order = self.conn.bind(ordg[0], ORDER, min(ordg[1], ORDER_WANT))
                 self.conn.on(self.order, self._on_order)
-        reg = next(((n, v) for n, (i, v) in sorted(regs.items()) if i == REG),
-                   None)
+        reg = next(((n, v) for n, (i, v) in sorted(regs.items()) if i == REG), None)
         if reg is not None and self.registry is None:
             name, adv = reg
             ver = min(adv, REG_WANT)
@@ -654,11 +623,9 @@ class KwinOutputs:
             d["current"] = cur.u32()
         elif op == 2:    # mode(new_id): a server-allocated mode object
             mid = cur.u32()
-            m = {"id": mid, "w": 0, "h": 0, "refresh": 0, "preferred": False,
-                 "gone": False}
+            m = {"id": mid, "w": 0, "h": 0, "refresh": 0, "preferred": False, "gone": False}
             d["modes"].append(m)
-            self.conn.on(mid, lambda op, cur, fds, m=m: self._on_mode(m, op,
-                                                                     cur))
+            self.conn.on(mid, lambda op, cur, fds, m=m: self._on_mode(m, op, cur))
         elif op == 3:    # done: the atomic publish barrier
             self._publish(d)
         elif op == 4:
@@ -763,8 +730,7 @@ class KwinOutputs:
                 raise Fatal("%s announced no outputs (this compositor hands "
                             "them out through %s; wxrandr bound it at version "
                             "%d)\n" % (MGMT, REG, self.dev_version))
-            raise Fatal("%s is advertised but the compositor announced no "
-                        "outputs\n" % MGMT)
+            raise Fatal("%s is advertised but the compositor announced no " "outputs\n" % MGMT)
         self.by_name, self.edid, self.uuid = {}, {}, {}
         self.mirror, self.replica_of = {}, {}
         outs = []
@@ -792,15 +758,12 @@ class KwinOutputs:
                 st.x, st.y = p["x"], p["y"]
                 st.scale = p["scale"] or 1.0
                 st.transform = from_transform(p["transform"])
-                st.current = current if current is not None else (
-                    st.modes[0] if st.modes else None)
+                st.current = current if current is not None else (st.modes[0] if st.modes else None)
                 if st.current is not None:
                     st.w, st.h = logical_size(st.current.w, st.current.h,
                                               st.transform, st.scale,
                                               self.ceil_logical)
-            if not any(m.preferred for m in st.modes) and st.modes:
-                st.modes[0].preferred = True
-            st.modes.extend(state.modes_for_output(name))
+            core.finish_modes(st, state.modes_for_output(name))
             outs.append(st)
         # A replicated output is not a layout member on KWin at all -- no
         # wl_output, gone from kde_output_order_v1, nothing of its own in the
@@ -827,8 +790,7 @@ class KwinOutputs:
             src = by_uuid.get(self.by_name[o.name]["pub"]["repl"] or None)
             # KWin ignores a source that is not enabled, and its own uuid is
             # `failed` ("An output cannot mirror itself") in the first place
-            if src is not None and src != o.name and o.name in active \
-                    and src in active:
+            if src is not None and src != o.name and o.name in active and src in active:
                 src_of[o.name] = src
         self.replica_of = src_of      # blank ones included: they are still
         for name, src in src_of.items():   # out of the layout, and still a
@@ -873,29 +835,9 @@ class KwinOutputs:
         the preferred one. A custom (--newmode) mode is only applicable when a
         real mode of the same size and rate exists -- KWin needs a mode object,
         and creating one needs management v18 plus capability_custom_modes,
-        which nothing we bind offers."""
-        o = t.output
-        mode = t.mode
-        if mode is None:
-            mode = o.current
-        if mode is None:
-            last = state.lastmodes().get(t.name)
-            if last:
-                mode = match_mode(o.modes, last[0], last[1],
-                                  (last[2] or 0) / 1000.0 or None)
-        if mode is None:
-            mode = next((m for m in o.modes if m.preferred and m.mode_id), None)
-        if mode is None:
-            mode = next((m for m in o.modes if m.mode_id), None)
-        if mode is None:
-            raise Fatal("cannot find preferred mode\n")
-        if mode.mode_id:
-            return mode
-        real = match_mode(o.modes, mode.w, mode.h, mode.refresh_hz or None,
-                          tolerance=1.0)
-        if real is None:
-            raise Fatal("cannot find mode %s\n" % mode.display_name)
-        return real
+        which nothing we bind offers. Its modes carry no interlace flag, so
+        that is not part of the match here."""
+        return core.resolve_real_mode(t, state, interlace_known=False)
 
     def supports_custom_modes(self, name: str) -> bool:
         """Custom modes need management v18 (create_mode_list) *and* the
@@ -904,16 +846,14 @@ class KwinOutputs:
         honest form of the check, not a guess."""
         d = self.by_name.get(name)
         caps = d["pub"]["caps"] if d and d["pub"] else 0
-        return (self.mgmt_version >= CUSTOM_MODES_MGMT
-                and bool(caps & CAP_CUSTOM_MODES))
+        return (self.mgmt_version >= CUSTOM_MODES_MGMT and bool(caps & CAP_CUSTOM_MODES))
 
     def _scale_for(self, t: core.Target) -> float:
         """1/120-quantised, and never <= 0: KWin drops a non-positive scale
         silently, so we keep the current one and say so."""
         if t.scale <= 0:
             cur = t.output.scale if t.output.active else 1.0
-            warn("scale %g is not usable on KWin; keeping %g for %s\n"
-                 % (t.scale, cur, t.name))
+            warn("scale %g is not usable on KWin; keeping %g for %s\n" % (t.scale, cur, t.name))
             return quantize_scale(cur)
         return quantize_scale(t.scale)
 
@@ -921,8 +861,7 @@ class KwinOutputs:
         """Pending logical size in KWin's space (the dryrun/verbose plan and
         the --fb checks use this instead of the wlroots prediction)."""
         m = self.resolve_mode(t, state)
-        return logical_size(m.w, m.h, t.sway_tf, self._scale_for(t),
-                            self.ceil_logical)
+        return logical_size(m.w, m.h, t.sway_tf, self._scale_for(t), self.ceil_logical)
 
     @staticmethod
     def _mode_object(pub, mode: Mode):
@@ -934,8 +873,7 @@ class KwinOutputs:
         if not cands:
             return None
         if mode.refresh_mhz:
-            return min(cands,
-                       key=lambda m: abs(m["refresh"] - mode.refresh_mhz))["id"]
+            return min(cands, key=lambda m: abs(m["refresh"] - mode.refresh_mhz))["id"]
         return cands[0]["id"]
 
     @staticmethod
@@ -1003,8 +941,7 @@ class KwinOutputs:
             replica, source = by_name.get(name), by_name.get(src)
             if name in graph or name in drop:
                 continue
-            if replica is not None and source is not None \
-                    and replica.enabled and source.enabled:
+            if replica is not None and source is not None and replica.enabled and source.enabled:
                 graph[name] = src
         for name in sorted(asked):
             root = self._root_of(graph, name)
@@ -1019,8 +956,7 @@ class KwinOutputs:
         # what we are setting, plus what we are leaving alone. A `--same-as`
         # that stayed a shared position is NOT in it: it keeps a rectangle of
         # its own and is a layout output like any other.
-        pending = {n: src for n, src in graph.items()
-                   if n not in drop and n in self.replica_of}
+        pending = {n: src for n, src in graph.items() if n not in drop and n in self.replica_of}
         pending.update(want)
         return want, drop, pending
 
@@ -1062,8 +998,7 @@ class KwinOutputs:
         output is not what the query showed."""
         known = [t for t in targets if t.name in self.by_name]
         if known and not any(t.enabled for t in known):
-            raise Fatal("cannot disable all outputs (KWin requires at least "
-                        "one enabled output)\n")
+            raise Fatal("cannot disable all outputs (KWin requires at least " "one enabled output)\n")
         modes, scales = {}, {}
         for t in known:
             if not t.enabled:
@@ -1108,8 +1043,7 @@ class KwinOutputs:
                 rec["enable"] = True
             obj = self._mode_object(p, modes[t.name])
             if obj is None:
-                raise Fatal("cannot find mode %s\n"
-                            % modes[t.name].display_name)
+                raise Fatal("cannot find mode %s\n" % modes[t.name].display_name)
             if full or obj != p["current"]:
                 rec["mode"] = obj
             tf = to_transform(t.sway_tf)
@@ -1139,15 +1073,12 @@ class KwinOutputs:
             # sent only when the invocation asked for it: the query reports a
             # replica at its source's position, and re-sending that as a delta
             # would cost a modeset for nothing.
-            asked = t.stanza is not None and (t.stanza.relation is not None
-                                              or t.stanza.pos is not None)
-            if (xy is not None and (full or xy != (p["x"], p["y"]))
-                    and (asked or not mirroring)):
+            asked = t.stanza is not None and (t.stanza.relation is not None or t.stanza.pos is not None)
+            if (xy is not None and (full or xy != (p["x"], p["y"])) and (asked or not mirroring)):
                 rec["position"] = xy
             if full or abs(scales[t.name] - p["scale"]) > 1e-9:
                 rec["scale"] = scales[t.name]
-            if any(rec[k] is not None for k in ("enable", "mode", "transform",
-                                                "position", "scale", "repl")):
+            if any(rec[k] is not None for k in ("enable", "mode", "transform", "position", "scale", "repl")):
                 records.append(rec)
         if self.primary in mirrors and state.primary in (None, self.primary):
             # measured: the replica leaves kde_output_order_v1, so KWin's
@@ -1159,9 +1090,7 @@ class KwinOutputs:
         want = state.primary
         if want and want != self.primary:
             t = next((t for t in known if t.name == want and t.enabled), None)
-            if t is not None and (want in mirrors
-                                  or (want in self.mirror
-                                      and want not in unmirror)):
+            if t is not None and (want in mirrors or (want in self.mirror and want not in unmirror)):
                 # measured: a replicated output never enters
                 # kde_output_order_v1, so set_priority on it moves nothing
                 warn("%s mirrors %s and cannot be the primary output on "
@@ -1175,8 +1104,7 @@ class KwinOutputs:
                                           if self.mgmt_version >= PRIMARY_MGMT
                                           else None)}
                 elif self.mgmt_version >= PRIMARY_MGMT:
-                    primary = {"name": want, "priority": (),
-                               "output": self.by_name[want]["id"]}
+                    primary = {"name": want, "priority": (), "output": self.by_name[want]["id"]}
                 else:
                     warn("this KWin is too old for --primary (%s version "
                          "%d)\n" % (MGMT, self.mgmt_version))
@@ -1244,49 +1172,41 @@ class KwinOutputs:
                 # evidence, and it is the same evidence on 6.x.
                 raise _Invalidated(reason or "the outputs changed")
             if reason:
-                raise Fatal("KWin rejected the output configuration: %s\n"
-                            % reason)
+                raise Fatal("KWin rejected the output configuration: %s\n" % reason)
             if self.mgmt_version < REASON_MGMT:
                 raise Fatal("KWin rejected the output configuration (this "
                             "KWin is too old to report why)\n")
             raise Fatal("KWin rejected the output configuration\n")
         if "ok" not in result:
-            raise Fatal("timed out waiting for the compositor to apply the "
-                        "output configuration\n")
+            raise Fatal("timed out waiting for the compositor to apply the " "output configuration\n")
 
     def _marshal_configuration(self, cfg, records, primary):
         self.conn.send(self.mgmt, 0, [("u", cfg)])   # create_configuration
         for rec in records:
             dev = rec["dev"]
             if rec["enable"] is not None:
-                self.conn.send(cfg, REQ_ENABLE,
-                               [("u", dev), ("i", 1 if rec["enable"] else 0)])
+                self.conn.send(cfg, REQ_ENABLE, [("u", dev), ("i", 1 if rec["enable"] else 0)])
             if rec["mode"] is not None:
                 self.conn.send(cfg, REQ_MODE, [("u", dev), ("u", rec["mode"])])
             if rec["transform"] is not None:
-                self.conn.send(cfg, REQ_TRANSFORM,
-                               [("u", dev), ("i", rec["transform"])])
+                self.conn.send(cfg, REQ_TRANSFORM, [("u", dev), ("i", rec["transform"])])
             if rec["position"] is not None:
                 x, y = rec["position"]
-                self.conn.send(cfg, REQ_POSITION,
-                               [("u", dev), ("i", x), ("i", y)])
+                self.conn.send(cfg, REQ_POSITION, [("u", dev), ("i", x), ("i", y)])
             if rec["scale"] is not None:
                 # the wl_fixed is marshalled here, not by _marshal's "f"
-                self.conn.send(cfg, REQ_SCALE,
-                               [("u", dev), ("i", to_fixed(rec["scale"]))])
+                self.conn.send(cfg, REQ_SCALE, [("u", dev), ("i", to_fixed(rec["scale"]))])
             if rec["repl"] is not None:
                 # set_replication_source(outputdevice, uuid) -- management
                 # v13; the empty string is how a mirror is turned off
-                self.conn.send(cfg, REQ_SET_REPLICATION,
-                               [("u", dev), ("s", rec["repl"])])
+                self.conn.send(cfg, REQ_SET_REPLICATION, [("u", dev), ("s", rec["repl"])])
         if primary is not None:
             if primary["output"] is not None:
                 # sent for the courtesy of a KWin that honours it; measured
                 # to be a no-op on 5.27 and on 6.6, hence set_priority below
                 self.conn.send(cfg, REQ_SET_PRIMARY, [("u", primary["output"])])
             for dev, rank in primary["priority"]:
-                self.conn.send(cfg, REQ_SET_PRIORITY,
-                               [("u", dev), ("u", rank)])
+                self.conn.send(cfg, REQ_SET_PRIORITY, [("u", dev), ("u", rank)])
         self.conn.send(cfg, REQ_APPLY, [])
 
     def _warn_saved(self):
@@ -1297,8 +1217,7 @@ class KwinOutputs:
             return
         self._warned_save = True
         warn(SAVE_WARNING)
-        cmd = restore_command(self.previous, self.previous_primary,
-                              self.previous_mirrors)
+        cmd = restore_command(self.previous, self.previous_primary, self.previous_mirrors)
         if cmd:
             warn("to restore the previous layout: %s\n" % cmd)
 
@@ -1313,8 +1232,7 @@ class KwinOutputs:
                 continue        # the output the plan named is no longer there
             t.output = fresh
             if t.mode is not None:
-                twin = match_mode(fresh.modes, t.mode.w, t.mode.h,
-                                  t.mode.refresh_hz or None)
+                twin = match_mode(fresh.modes, t.mode.w, t.mode.h, t.mode.refresh_hz or None)
                 if twin is not None:
                     t.mode = twin
             out.append(t)
@@ -1326,8 +1244,7 @@ class KwinOutputs:
         client-side rejections still surface, the compositor is not touched."""
         self.plan(state, targets)
 
-    def apply(self, state: core.State, targets: list,
-              persistent: bool = False) -> list:
+    def apply(self, state: core.State, targets: list, persistent: bool = False) -> list:
         """One atomic configuration, applied once. Returns the fresh
         snapshot. `persistent` is accepted for contract parity and ignored:
         KWin persists every applied layout itself."""
@@ -1354,12 +1271,7 @@ class KwinOutputs:
                 self.primary = primary["name"]
             # only now: KWin has applied and saved something
             self._warn_saved()
-            for t in targets:
-                if t.changed and not t.enabled and t.output.active:
-                    cur = t.output.current
-                    if cur:
-                        state.lastmodes()[t.name] = [cur.w, cur.h,
-                                                     cur.refresh_mhz]
+            core.record_lastmodes(state, targets)
         outs = self.snapshot(state)
         # the state file records the primary KWin has, never one we merely
         # wanted: --primary on a compositor too old to take it, or on an

@@ -41,7 +41,7 @@ import struct
 import sys
 import time
 
-from wdotool import session
+from wdotool import procs, session
 from wdotool.ctx import CmdError
 
 PROGRAM_VERSION = "1.5.4"
@@ -75,8 +75,7 @@ ROTATIONS = ("normal", "left", "inverted", "right")
 REFLECTIONS = ("normal", "x", "y", "xy")
 
 # rotation word -> the sway transform that XWayland reports as that rotation
-_ROT_TO_SWAY = {"normal": "normal", "right": "90", "inverted": "180",
-                "left": "270"}
+_ROT_TO_SWAY = {"normal": "normal", "right": "90", "inverted": "180", "left": "270"}
 # rotation composed with reflect-X (RandR: reflect first, then rotate)
 _ROT_X_TO_SWAY = {"normal": "flipped", "right": "flipped-90",
                   "inverted": "flipped-180", "left": "flipped-270"}
@@ -113,6 +112,31 @@ WL_TRANSFORM = {"normal": 0, "90": 1, "180": 2, "270": 3, "flipped": 4,
                 "flipped-90": 5, "flipped-180": 6, "flipped-270": 7}
 WL_TRANSFORM_NAME = {v: k for k, v in WL_TRANSFORM.items()}
 
+# The same enum read the way the spec's counter-clockwise 90 implies, which
+# is how both Mutter and KWin number transforms: libkscreen's
+# toKScreenRotation and Xwayland's wl_transform_to_xrandr agree that 1 is
+# xrandr `left` and 3 is `right`, where the sway table above has "90" ==
+# `right`. So the two numberings differ by a 90<->270 swap (1<->3, 5<->7).
+# The words below are what real xrandr prints through Mutter's XWayland for
+# each of the eight (all eight measured on GNOME 50).
+WL_SPEC_RANDR_VIEW = {0: ("normal", "normal"), 1: ("left", "normal"),
+                      2: ("inverted", "normal"), 3: ("right", "normal"),
+                      4: ("normal", "x"), 5: ("left", "x"),
+                      6: ("inverted", "x"), 7: ("right", "x")}
+SWAY_FROM_WL_SPEC = {n: next(tf for tf, v in RANDR_VIEW.items() if v == view)
+                     for n, view in WL_SPEC_RANDR_VIEW.items()}
+WL_SPEC_FROM_SWAY = {tf: n for n, tf in SWAY_FROM_WL_SPEC.items()}
+
+
+def to_wl_spec_transform(sway_tf: str) -> int:
+    """sway transform name (what RANDR_VIEW uses) -> the spec's number."""
+    return WL_SPEC_FROM_SWAY.get(sway_tf, 0)
+
+
+def from_wl_spec_transform(n: int) -> str:
+    """The spec's transform number -> the sway name the renderer speaks."""
+    return SWAY_FROM_WL_SPEC.get(n, "normal")
+
 REFLECTION_SUFFIX = {"x": " X axis", "y": " Y axis", "xy": " X and Y axis"}
 
 
@@ -135,12 +159,10 @@ def screen_mm(px: int) -> int:
 
 # -- modeline math ------------------------------------------------------------
 
-MODE_FLAGS = ("+hsync", "-hsync", "+vsync", "-vsync", "+csync", "-csync",
-              "csync", "interlace", "doublescan")
+MODE_FLAGS = ("+hsync", "-hsync", "+vsync", "-vsync", "+csync", "-csync", "csync", "interlace", "doublescan")
 
 
-def mode_refresh_hz(clock_mhz: float, htotal: int, vtotal: int,
-                    flags=()) -> float:
+def mode_refresh_hz(clock_mhz: float, htotal: int, vtotal: int, flags=()) -> float:
     """xrandr.c:554 — dotClock/(hTotal*vTotal); DoubleScan doubles vTotal,
     Interlace halves it."""
     if not htotal or not vtotal:
@@ -178,8 +200,7 @@ class Mode:
         if self.clock_mhz and self.timings:
             # exact modeline math — the mHz round-trip would lose the second
             # decimal (74.5MHz/1664x748 is 59.8554: xrandr prints 59.86)
-            return mode_refresh_hz(self.clock_mhz, self.timings[2],
-                                   self.timings[5], self.flags)
+            return mode_refresh_hz(self.clock_mhz, self.timings[2], self.timings[5], self.flags)
         return self.refresh_mhz / 1000.0
 
 
@@ -207,6 +228,15 @@ class OutputState:
     virtual_modes: bool = False   # no compositor mode list (headless): any
     #                               WxH is achievable via a custom mode
     primary: bool = False         # the compositor's own primary flag (Mutter)
+
+    def rect(self) -> tuple[int, int, int, int]:
+        """The logical rectangle as (x, y, w, h), layout coordinates."""
+        return (self.x, self.y, self.w, self.h)
+
+    def geom(self) -> str:
+        """The same rectangle as X11 geometry, `WxH+X+Y` -- the form --query
+        prints it in, and the one `--fb`, `--pos` and slurp all speak."""
+        return "%dx%d+%d+%d" % (self.w, self.h, self.x, self.y)
 
 
 def layout_box(outputs) -> tuple[int, int, int, int]:
@@ -258,8 +288,7 @@ def wlr_scale(scale: float, wire: str = "text") -> float:
     return f32(round_half_away(f32(scale) * SCALE_STEPS) / SCALE_STEPS)
 
 
-def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float
-                 ) -> tuple[int, int]:
+def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float) -> tuple[int, int]:
     """sway/wlroots logical dimensions: the transform swap, then
     wlr_output_effective_resolution -- `*width /= output->scale` with an int
     on the left and a C float on the right, so a single-precision division
@@ -270,8 +299,7 @@ def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float
     passes it through wlr_scale() first."""
     if transform_swaps(sway_tf):
         px_w, px_h = px_h, px_w
-    return (int(f32(f32(px_w) / f32(scale))),
-            int(f32(f32(px_h) / f32(scale))))
+    return (int(f32(f32(px_w) / f32(scale))), int(f32(f32(px_h) / f32(scale))))
 
 
 # -- sway IPC -----------------------------------------------------------------
@@ -285,8 +313,7 @@ class SwayIPC:
     def __init__(self, sockpath: str | None = None):
         self.sockpath = sockpath or session.find_sway_socket()
         if not self.sockpath:
-            raise Fatal("cannot connect to the compositor "
-                        "(no sway/i3 IPC socket found)\n")
+            raise Fatal("cannot connect to the compositor " "(no sway/i3 IPC socket found)\n")
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             self.sock.settimeout(10.0)
@@ -324,8 +351,7 @@ class SwayIPC:
         results = self.msg(RUN_COMMAND, command)
         for r in results:
             if not r.get("success"):
-                raise Fatal("compositor rejected `%s`: %s\n"
-                            % (command, r.get("error", "unknown error")))
+                raise Fatal("compositor rejected `%s`: %s\n" % (command, r.get("error", "unknown error")))
         return results
 
     def run_collect(self, command: str):
@@ -376,8 +402,7 @@ def _read_state(path: str) -> dict:
         return {}
     try:
         st = os.fstat(fd)
-        if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid()
-                or st.st_mode & 0o002):
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o002):
             os.close(fd)
             return {}
         f = os.fdopen(fd, "r")
@@ -412,8 +437,7 @@ def _merge3(base: dict, ours: dict, theirs: dict) -> dict:
             else:
                 result[k] = ours[k]
         elif ours[k] != base[k]:                # we changed it
-            if (isinstance(ours[k], dict) and isinstance(base[k], dict)
-                    and isinstance(result.get(k), dict)):
+            if (isinstance(ours[k], dict) and isinstance(base[k], dict) and isinstance(result.get(k), dict)):
                 result[k] = _merge3(base[k], ours[k], result[k])
             else:
                 result[k] = ours[k]
@@ -440,8 +464,7 @@ class State:
         lockpath = self.path + ".lock"
         lock_fd = None
         try:
-            lock_fd = os.open(lockpath,
-                              os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            lock_fd = os.open(lockpath, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
         except OSError:
             lock_fd = None  # locking unavailable: proceed best-effort
@@ -464,8 +487,7 @@ class State:
                 # and the directory is shared.  A symlink planted there must
                 # not be written through, and a leftover from a crashed run
                 # of ours (the name carries our pid) is unlinked, not opened.
-                flags = (os.O_CREAT | os.O_EXCL | os.O_WRONLY
-                         | os.O_NOFOLLOW)
+                flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
                 try:
                     fd = os.open(tmp, flags, 0o600)
                 except FileExistsError:
@@ -561,6 +583,8 @@ class WlrOutputs:
     model/serial — data sway IPC lacks) and apply whole-layout configurations
     atomically (the generic-wlroots backend)."""
 
+    name = "wlroots"
+
     def __init__(self, conn=None):
         from wdotool.wayland_mini import WlConn
         self.conn = conn
@@ -568,19 +592,16 @@ class WlrOutputs:
         if self.conn is None:
             hit = session.find_wayland_socket()
             if hit is None:
-                raise Fatal("cannot connect to the compositor "
-                            "(no wayland socket found)\n")
+                raise Fatal("cannot connect to the compositor " "(no wayland socket found)\n")
             self.conn = WlConn(hit[2])
             self.conn.sock.settimeout(10.0)
         g = self.conn.find_global("zwlr_output_manager_v1")
         if g is None:
-            raise Fatal("compositor does not advertise "
-                        "zwlr_output_manager_v1\n")
+            raise Fatal("compositor does not advertise " "zwlr_output_manager_v1\n")
         self.version = min(g[1], 4)
         self.serial = None
         self.heads = []  # dicts, server announce order
-        self._mgr = self.conn.bind(g[0], "zwlr_output_manager_v1",
-                                   self.version)
+        self._mgr = self.conn.bind(g[0], "zwlr_output_manager_v1", self.version)
         self.conn.on(self._mgr, self._on_manager)
         self.conn.roundtrip()
 
@@ -595,8 +616,7 @@ class WlrOutputs:
                     "scale": 1.0, "make": "Unknown", "model": "Unknown",
                     "serial": "Unknown", "gone": False}
             self.heads.append(head)
-            self.conn.on(hid, lambda op, cur, fds, h=head:
-                         self._on_head(h, op, cur))
+            self.conn.on(hid, lambda op, cur, fds, h=head: self._on_head(h, op, cur))
         elif op == 1:  # done(serial)
             self.serial = cur.u32()
 
@@ -609,11 +629,9 @@ class WlrOutputs:
             h["mm_w"], h["mm_h"] = cur.i32(), cur.i32()
         elif op == 3:  # mode(new_id)
             mid = cur.u32()
-            mode = {"id": mid, "w": 0, "h": 0, "refresh": 0,
-                    "preferred": False}
+            mode = {"id": mid, "w": 0, "h": 0, "refresh": 0, "preferred": False}
             h["modes"].append(mode)
-            self.conn.on(mid, lambda op, cur, fds, m=mode:
-                         self._on_mode(m, op, cur))
+            self.conn.on(mid, lambda op, cur, fds, m=mode: self._on_mode(m, op, cur))
         elif op == 4:
             h["enabled"] = bool(cur.i32())
         elif op == 5:  # current_mode(object id)
@@ -651,9 +669,9 @@ class WlrOutputs:
                 return h
         return None
 
-    # -- atomic apply --------------------------------------------------------
+    # -- the wire ------------------------------------------------------------
 
-    def apply(self, targets: dict, positions: dict):
+    def send(self, targets: dict, positions: dict):
         """One zwlr_output_configuration_v1: enable/disable + mode + position
         + transform + scale, applied atomically; waits for succeeded/failed/
         cancelled. The protocol demands EVERY head be configured, so `targets`
@@ -661,8 +679,7 @@ class WlrOutputs:
         by disable/enable alone)."""
         conf = self.conn.alloc()
         result = []
-        self.conn.on(conf, lambda op, cur, fds: result.append(
-            ("succeeded", "failed", "cancelled")[op]))
+        self.conn.on(conf, lambda op, cur, fds: result.append(("succeeded", "failed", "cancelled")[op]))
         self.conn.send(self._mgr, 0, [("u", conf), ("u", self.serial)])
         for head in self.live_heads():
             name = head["name"]
@@ -693,8 +710,7 @@ class WlrOutputs:
                 if match:
                     self.conn.send(ch, 0, [("u", match["id"])])  # set_mode
                 else:  # custom (or unlisted) mode
-                    self.conn.send(ch, 1, [("i", mode.w), ("i", mode.h),
-                                           ("i", mode.refresh_mhz)])
+                    self.conn.send(ch, 1, [("i", mode.w), ("i", mode.h), ("i", mode.refresh_mhz)])
             if name in positions:
                 x, y = positions[name]
                 self.conn.send(ch, 2, [("i", x), ("i", y)])
@@ -719,17 +735,50 @@ class WlrOutputs:
         except OSError:
             pass
         if not result:
-            raise Fatal("timed out waiting for the compositor to apply the "
-                        "output configuration\n")
+            raise Fatal("timed out waiting for the compositor to apply the " "output configuration\n")
         if result[0] == "failed":
             raise Fatal("compositor rejected the output configuration\n")
         if result[0] == "cancelled":
-            raise Fatal("output configuration cancelled by a concurrent "
-                        "change; try again\n")
+            raise Fatal("output configuration cancelled by a concurrent " "change; try again\n")
 
     def close(self):
         if self._own_conn:
             self.conn.close()
+
+    # -- the backend shape ---------------------------------------------------
+
+    def snapshot(self, state: "State | None" = None) -> list:
+        return snapshot_wlr(self, state)
+
+    def predicted_dims(self, t: "Target", state: "State") -> tuple:
+        """wlroots computes the logical size from the fixed-point scale on
+        the wire and truncates, where sway rounds the decimal it was typed."""
+        return predicted_dims(t, state, wire="fixed")
+
+    def verify(self, state: "State", targets: list):
+        """--dryrun: zwlr_output_management can only be asked by applying,
+        and an apply is what a dryrun must not do, so there is nothing to
+        send here."""
+
+    def apply(self, state: "State", targets: list, persistent: bool = False) -> list:
+        """Single atomic zwlr_output_configuration apply (positions resolved
+        against predicted logical sizes — same math wlroots uses), then the
+        fresh snapshot. `persistent` is accepted for contract parity and
+        ignored: wlroots stores no layout of its own."""
+        dims = {}
+        for t in targets:
+            if t.enabled:
+                dims[t.name] = predicted_dims(t, state, wire="fixed")
+        pos = resolve_positions(targets, dims)
+        self.send({t.name: t for t in targets}, pos)
+        # re-read the heads for the post-apply query.  A compositor that
+        # accepted the configuration and then stopped answering gets a
+        # sentence rather than the socket's own `timed out`.
+        try:
+            self.conn.roundtrip()
+            return snapshot_wlr(self, state)
+        except OSError:
+            raise Fatal("the compositor applied the output configuration " "and then stopped responding\n")
 
 
 def wlr_snapshot_safe():
@@ -741,6 +790,16 @@ def wlr_snapshot_safe():
 
 
 # -- unified snapshot ---------------------------------------------------------
+
+def finish_modes(st: OutputState, customs: list):
+    """The last two steps of every backend's snapshot: xrandr always marks
+    one mode preferred, so a compositor that flags none makes the first
+    listed one preferred; then the state file's custom modes join the list
+    (they are ours, no compositor knows them)."""
+    if not any(m.preferred for m in st.modes) and st.modes:
+        st.modes[0].preferred = True
+    st.modes.extend(customs)
+
 
 _SUBPIXEL = {"rgb": "horizontal rgb", "bgr": "horizontal bgr",
              "vrgb": "vertical rgb", "vbgr": "vertical bgr",
@@ -789,8 +848,7 @@ def snapshot_sway(ipc: SwayIPC, state: State, wlr=None) -> list:
         customs = state.modes_for_output(name)
         cm = o.get("current_mode")
         if st.active and cm:
-            st.current = Mode(w=cm.get("width", 0), h=cm.get("height", 0),
-                              refresh_mhz=cm.get("refresh", 0))
+            st.current = Mode(w=cm.get("width", 0), h=cm.get("height", 0), refresh_mhz=cm.get("refresh", 0))
             for m in st.modes + customs:
                 # a custom mode currently applied via `mode --custom` comes
                 # back nameless from sway; match it up by w/h/refresh so the
@@ -801,15 +859,16 @@ def snapshot_sway(ipc: SwayIPC, state: State, wlr=None) -> list:
                     break
             else:
                 st.modes.insert(0, st.current)
-        if not any(m.preferred for m in st.modes) and st.modes:
-            st.modes[0].preferred = True
-        st.modes.extend(customs)
+        finish_modes(st, customs)
         outs.append(st)
     return outs
 
 
-def snapshot_wlr(wlr: WlrOutputs, state: State) -> list:
-    """OutputState list from zwlr head events alone (generic wlroots)."""
+def snapshot_wlr(wlr: WlrOutputs, state: State | None = None) -> list:
+    """OutputState list from zwlr head events alone (generic wlroots).
+
+    `state` may be None for a caller that wants the live layout and nothing
+    else: the state file only ever adds custom modes to the lists."""
     outs = []
     for i, h in enumerate(wlr.live_heads()):
         st = OutputState(
@@ -820,8 +879,7 @@ def snapshot_wlr(wlr: WlrOutputs, state: State) -> list:
         st.virtual_modes = not h["modes"]
         by_id = {}
         for m in h["modes"]:
-            mode = Mode(w=m["w"], h=m["h"], refresh_mhz=m["refresh"],
-                        preferred=m["preferred"])
+            mode = Mode(w=m["w"], h=m["h"], refresh_mhz=m["refresh"], preferred=m["preferred"])
             by_id[m["id"]] = mode
             st.modes.append(mode)
         if st.active:
@@ -832,9 +890,8 @@ def snapshot_wlr(wlr: WlrOutputs, state: State) -> list:
             if st.current is None and st.modes:
                 st.current = st.modes[0]
             if st.current:
-                st.w, st.h = logical_size(st.current.w, st.current.h,
-                                          st.transform, st.scale)
-        customs = state.modes_for_output(h["name"])
+                st.w, st.h = logical_size(st.current.w, st.current.h, st.transform, st.scale)
+        customs = ([] if state is None else state.modes_for_output(h["name"]))
         if st.current is not None and not st.current.name:
             for m in customs:
                 if (m.w, m.h) == (st.current.w, st.current.h) and abs(
@@ -843,9 +900,7 @@ def snapshot_wlr(wlr: WlrOutputs, state: State) -> list:
                         st.modes.remove(st.current)
                     st.current = m
                     break
-        if not any(m.preferred for m in st.modes) and st.modes:
-            st.modes[0].preferred = True
-        st.modes.extend(customs)
+        finish_modes(st, customs)
         outs.append(st)
     return outs
 
@@ -892,8 +947,7 @@ class Target:
         return self.output.name
 
 
-def _find_mode_for(output: OutputState, spec: str | None, rate: float | None,
-                   preferred: bool) -> Mode:
+def _find_mode_for(output: OutputState, spec: str | None, rate: float | None, preferred: bool) -> Mode:
     """xrandr find_mode(): match by name (WxH for compositor modes), nearest
     refresh when a rate is given (no threshold — xrandr.c find_mode)."""
     if preferred and spec is None:
@@ -926,8 +980,69 @@ def _find_mode_for(output: OutputState, spec: str | None, rate: float | None,
     return cands[0]
 
 
-def build_targets(outputs: list, stanzas: list, state: State,
-                  global_auto: bool = False) -> list:
+def mode_interlaced(m: Mode) -> bool:
+    """Whether a mode is interlaced, by the flag xrandr prints."""
+    return any(f.lower() == "interlace" for f in m.flags)
+
+
+def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
+               tolerance: float | None = None,
+               interlaced: bool | None = False) -> Mode | None:
+    """The real (mode-id bearing) mode of size w x h: nearest refresh when a
+    rate is given (within `tolerance` Hz if set), else the first listed.
+    `interlaced=None` leaves the flag out of the match, for a compositor
+    whose mode list carries no interlace bit to compare against."""
+    cands = [m for m in modes if m.mode_id and (m.w, m.h) == (w, h)
+             and (interlaced is None or mode_interlaced(m) == interlaced)]
+    if not cands:
+        return None
+    if rate_hz:
+        best = min(cands, key=lambda m: abs(m.refresh_hz - rate_hz))
+        if tolerance is not None and abs(best.refresh_hz - rate_hz) > tolerance:
+            return None
+        return best
+    return cands[0]
+
+
+def resolve_real_mode(t: Target, state: State, interlace_known: bool = True) -> Mode:
+    """The real mode an enabled target will run: the stanza's, else the
+    current one, else the mode wxrandr disabled it at (state file), else the
+    preferred one. A custom (--newmode) mode is only applicable when a real
+    mode of the same size and rate exists -- a compositor that hands out
+    mode objects or ids cannot be given a modeline.
+
+    `interlace_known` says whether this compositor's mode list carries the
+    interlace flag. Mutter's does, so a custom interlaced mode may only
+    resolve onto an interlaced real one; KWin's modes are flagless, and
+    matching them against a flag none of them can carry would find nothing.
+    """
+    o = t.output
+    want = False if interlace_known else None
+    mode = t.mode
+    if mode is None:
+        mode = o.current
+    if mode is None:
+        last = state.lastmodes().get(t.name)
+        if last:
+            mode = match_mode(o.modes, last[0], last[1], (last[2] or 0) / 1000.0 or None, interlaced=want)
+    if mode is None:
+        mode = next((m for m in o.modes if m.preferred and m.mode_id), None)
+    if mode is None:
+        mode = next((m for m in o.modes if m.mode_id), None)
+    if mode is None:
+        raise Fatal("cannot find preferred mode\n")
+    if mode.mode_id:
+        return mode
+    real = match_mode(o.modes, mode.w, mode.h, mode.refresh_hz or None,
+                      tolerance=1.0,
+                      interlaced=mode_interlaced(mode) if interlace_known
+                      else None)
+    if real is None:
+        raise Fatal("cannot find mode %s\n" % mode.display_name)
+    return real
+
+
+def build_targets(outputs: list, stanzas: list, state: State, global_auto: bool = False) -> list:
     """Match stanzas to outputs and settle everything except positions.
     Unknown --output names warn (`warning: output %s not found; ignoring`,
     exit stays 0) exactly like xrandr; relatives naming unknown outputs are
@@ -1000,8 +1115,7 @@ def build_targets(outputs: list, stanzas: list, state: State,
     return [targets[o.name] for o in outputs]
 
 
-def predicted_dims(t: Target, state: State, wire: str = "text"
-                   ) -> tuple[int, int]:
+def predicted_dims(t: Target, state: State, wire: str = "text") -> tuple[int, int]:
     """Pending logical size of an enabled target (for dryrun + wlr backend +
     relative math when we cannot re-read).  `wire` is how the scale will
     reach the compositor -- "text" over the sway IPC, "fixed" over
@@ -1088,11 +1202,9 @@ def _mode_cmd(name: str, mode: Mode) -> str:
     if mode.custom:
         if not mode.refresh_mhz:
             return "output %s mode --custom %dx%d" % (name, mode.w, mode.h)
-        return "output %s mode --custom %dx%d@%sHz" % (
-            name, mode.w, mode.h, _fmt_refresh(mode.refresh_mhz))
+        return "output %s mode --custom %dx%d@%sHz" % (name, mode.w, mode.h, _fmt_refresh(mode.refresh_mhz))
     if mode.refresh_mhz:
-        return "output %s mode %dx%d@%sHz" % (
-            name, mode.w, mode.h, _fmt_refresh(mode.refresh_mhz))
+        return "output %s mode %dx%d@%sHz" % (name, mode.w, mode.h, _fmt_refresh(mode.refresh_mhz))
     return "output %s mode %dx%d" % (name, mode.w, mode.h)
 
 
@@ -1140,8 +1252,7 @@ def _settle_modes(ipc: SwayIPC, state: State, targets: list):
     Replaces a fixed settle sleep that raced under load; on a mismatch that
     never converges (a rounding quirk) it simply times out and the caller
     falls back to whatever sway reports — no worse than the old sleep."""
-    want = {t.name: predicted_dims(t, state)
-            for t in targets if t.changed and t.enabled}
+    want = {t.name: predicted_dims(t, state) for t in targets if t.changed and t.enabled}
     if not want:
         return
     deadline = time.monotonic() + 1.0
@@ -1153,6 +1264,17 @@ def _settle_modes(ipc: SwayIPC, state: State, targets: list):
                    for n, wh in want.items())
         if done or time.monotonic() >= deadline:
             return
+
+
+def record_lastmodes(state: State, targets: list):
+    """Remember the mode of every output this run switches off, so that a
+    later --auto can bring it back at the one it was running: a disabled
+    output has no current mode left to ask the compositor for."""
+    for t in targets:
+        if t.changed and not t.enabled and t.output.active:
+            cur = t.output.current
+            if cur:
+                state.lastmodes()[t.name] = [cur.w, cur.h, cur.refresh_mhz]
 
 
 def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
@@ -1167,11 +1289,7 @@ def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
     survivors re-moded but un-positioned for sway's auto-arranger to scramble.
     We collect the results, still position everything that IS enabled, then
     re-raise the first failure."""
-    for t in targets:
-        if t.changed and not t.enabled and t.output.active:
-            cur = t.output.current
-            if cur:
-                state.lastmodes()[t.name] = [cur.w, cur.h, cur.refresh_mhz]
+    record_lastmodes(state, targets)
     p1 = phase1_commands(targets)
     p1_err = None
     if p1:
@@ -1207,15 +1325,53 @@ def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
     return snapshot_sway(ipc, state)
 
 
-def apply_wlr(wlr: WlrOutputs, state: State, targets: list):
-    """Single atomic zwlr_output_configuration apply (positions resolved
-    against predicted logical sizes — same math wlroots uses)."""
-    dims = {}
-    for t in targets:
-        if t.enabled:
-            dims[t.name] = predicted_dims(t, state, wire="fixed")
-    pos = resolve_positions(targets, dims)
-    wlr.apply({t.name: t for t in targets}, pos)
+class SwayBackend:
+    """The sway/i3 IPC backend in the shape all four of them share:
+    snapshot, predicted_dims, verify, apply, close and a name.
+
+    It holds the IPC socket and, when the compositor also speaks
+    zwlr_output_management, the connection whose head data enriches a query
+    with what sway IPC does not report (physical mm, preferred flags,
+    make/model/serial)."""
+
+    name = "sway"
+
+    def __init__(self, ipc: SwayIPC, wlr: WlrOutputs | None = None):
+        self.ipc = ipc
+        self.wlr = wlr
+
+    @property
+    def sockpath(self) -> str:
+        """The IPC socket: what the state file is keyed by in the one
+        session that has no wayland socket to key it by."""
+        return self.ipc.sockpath
+
+    def snapshot(self, state: State) -> list:
+        return snapshot_sway(self.ipc, state, self.wlr)
+
+    def predicted_dims(self, t: Target, state: State) -> tuple:
+        return predicted_dims(t, state)
+
+    def verify(self, state: State, targets: list):
+        """--dryrun: sway has nothing to validate against ahead of time.
+        RUN_COMMAND is the only request there is, and running it would be
+        the apply."""
+
+    def apply(self, state: State, targets: list, persistent: bool = False) -> list:
+        """The two-phase RUN_COMMAND apply, and the fresh snapshot it
+        re-reads. `persistent` is accepted for contract parity and ignored:
+        a sway layout lives in sway's own config, which is not ours to
+        write."""
+        return apply_sway(self.ipc, state, targets)
+
+    def close(self):
+        for handle in (self.ipc, self.wlr):
+            if handle is None:
+                continue
+            try:
+                handle.close()
+            except OSError:
+                pass
 
 
 # -- query rendering ----------------------------------------------------------
@@ -1251,8 +1407,7 @@ def mode_xid(ids: dict, m: Mode) -> int:
     return ids.get((m.display_name, m.w, m.h, m.refresh_mhz), 0)
 
 
-def render_output_header(o: OutputState, primary: str | None,
-                         verbose=False, ids=None) -> str:
+def render_output_header(o: OutputState, primary: str | None, verbose=False, ids=None) -> str:
     line = o.name + " connected"
     if primary == o.name:
         line += " primary"
@@ -1309,8 +1464,7 @@ def render_verbose_block(o: OutputState, state: State, crtc_index) -> list:
     # restored the neutral ramp, so stale 0.50 would be a lie.
     pid = g.get("pid")
     if pid is not None:
-        from wxrandr import gamma as _gammamod
-        if _gammamod._proc_starttime(pid) != g.get("start"):
+        if procs.proc_starttime(pid) != g.get("start"):
             gam, bright = [1.0, 1.0, 1.0], 1.0
     lines = [
         "\tIdentifier: 0x%x" % o.ident,
@@ -1322,8 +1476,7 @@ def render_verbose_block(o: OutputState, state: State, crtc_index) -> list:
     ]
     if o.active and crtc_index is not None:
         lines.append("\tCRTC:       %d" % crtc_index)
-    lines.append("\tCRTCs:      %d" % (crtc_index if crtc_index is not None
-                                       else 0))
+    lines.append("\tCRTCs:      %d" % (crtc_index if crtc_index is not None else 0))
     lines += [
         "\tTransform:  %f %f %f" % (1.0, 0.0, 0.0),
         "\t            %f %f %f" % (0.0, 1.0, 0.0),
@@ -1337,8 +1490,7 @@ def render_verbose_block(o: OutputState, state: State, crtc_index) -> list:
 def render_prop_block(o: OutputState) -> list:
     """--prop block: only properties honestly derivable from the compositor
     (trailing space after values matches xrandr's value printer)."""
-    return ["\tnon-desktop: %d " % (1 if o.non_desktop else 0),
-            "\t\tsupported: 0, 1"]
+    return ["\tnon-desktop: %d " % (1 if o.non_desktop else 0), "\t\tsupported: 0, 1"]
 
 
 def render_verbose_mode(m: Mode, ids: dict, current: bool) -> list:
@@ -1376,8 +1528,7 @@ def render_verbose_mode(m: Mode, ids: dict, current: bool) -> list:
     ]
 
 
-def render_query(outputs, state: State, screen_num=0, verbose=False,
-                 props=False, fb=None) -> list:
+def render_query(outputs, state: State, screen_num=0, verbose=False, props=False, fb=None) -> list:
     lines = [render_screen_line(screen_num, outputs, fb)]
     ids = _mode_ids(outputs)
     crtc = 0
@@ -1464,21 +1615,18 @@ def render_q1(outputs, state: State) -> list:
     mm_h = screen_mm(o.current.h) if o and o.current else 0
     lines = [" SZ:    Pixels          Physical       Refresh"]
     for i, (w, h, rates) in enumerate(sizes):
-        row = "%c%-2d %5d x %-5d  (%4dmm x%4dmm )" % (
-            "*" if i == cur_idx else " ", i, w, h, mm_w, mm_h)
+        row = "%c%-2d %5d x %-5d  (%4dmm x%4dmm )" % ("*" if i == cur_idx else " ", i, w, h, mm_w, mm_h)
         if rates:
             row += "  "
         for r in rates:
-            row += "%c%-4d" % ("*" if i == cur_idx and r == cur_rate else " ",
-                               r)
+            row += "%c%-4d" % ("*" if i == cur_idx and r == cur_rate else " ", r)
         lines.append(row)
     return lines
 
 
 def render_q1_state(o: OutputState) -> list:
     rot, refl = RANDR_VIEW.get(o.transform, ("normal", "normal"))
-    refl_word = {"normal": "none", "x": "X axis", "y": "Y axis",
-                 "xy": "X and Y axis"}[refl]
+    refl_word = {"normal": "none", "x": "X axis", "y": "Y axis", "xy": "X and Y axis"}[refl]
     return ["Current rotation - %s" % rot,
             "Current reflection - %s" % refl_word,
             "Rotations possible - normal left inverted right ",

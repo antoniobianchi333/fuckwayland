@@ -103,8 +103,7 @@ def script_notes(layout, backend):
         shared = []
         for a, b in pairs:
             x, y, w, h = layout.shared_region(a, b)
-            shared.append("%s and %s share %dx%d at +%d+%d"
-                          % (a, b, w, h, x, y))
+            shared.append("%s and %s share %dx%d at +%d+%d" % (a, b, w, h, x, y))
         notes.append("warandr: partial overlap (%s)" % "; ".join(shared))
         notes.append(backend.overlap_note())
     return notes
@@ -142,9 +141,7 @@ def write_script(layout, path, word=None, notes=None):
         path += ".sh"
     text = layout.to_script(word, notes)
     real = os.path.realpath(path)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real) or ".",
-                               prefix=".%s."
-                               % os.path.basename(real)[:64])
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real) or ".", prefix=".%s." % os.path.basename(real)[:64])
     try:
         with os.fdopen(fd, "w") as f:
             os.fchmod(f.fileno(), stat.S_IRWXU)
@@ -169,8 +166,7 @@ def _main(argv=None):
         backend.set_display(args.randr_display)
         if args.print_backend:
             backend.identify()
-            for line in (backend.report() if args.verbose
-                         else [backend.name]):
+            for line in (backend.report() if args.verbose else [backend.name]):
                 print(line)
             return 0
         if args.save or args.command:
@@ -191,8 +187,7 @@ def _main(argv=None):
                 parent = os.path.dirname(os.path.abspath(args.save))
                 if parent:
                     os.makedirs(parent, exist_ok=True)
-                write_script(layout, args.save, backend.word,
-                             script_notes(layout, backend))
+                write_script(layout, args.save, backend.word, script_notes(layout, backend))
             return 0
     except (randr.RandrError, LayoutError, OSError) as e:
         sys.stderr.write("warandr: %s\n" % e)
