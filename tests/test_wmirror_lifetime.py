@@ -505,6 +505,101 @@ class HelperEnvironment(Base):
             self.assertIn("wayland=/run/user/4242/wayland-9", f.read())
 
 
+class SpawnDetached(unittest.TestCase):
+    """procs.spawn_detached() on its own, under an interrupt.
+
+    WMIRROR.md promises an interrupted start stays stoppable, and that rests
+    on two things this pins directly rather than through a supervisor: every
+    line reaches `on_line` as it arrives (so the record naming the child is
+    already written when the Ctrl-C lands), and the read end of the status
+    pipe is closed on the way out however the call ends -- otherwise a
+    long-running warandr or wmirror leaks one fd per interrupted start, and
+    the child's later writes block on a pipe nobody will ever read instead
+    of getting EPIPE."""
+
+    @staticmethod
+    def fds():
+        return set(os.listdir("/proc/self/fd"))
+
+    def test_every_line_arrives_before_the_next_one_is_written(self):
+        def child(fd):
+            os.write(fd, b"pid 4242\n")
+            time.sleep(0.3)
+            os.write(fd, b"ready\n")
+
+        seen = []
+
+        def on_line(line):
+            seen.append((line, time.monotonic()))
+            return line.startswith("pid ")     # claimed: not the verdict
+
+        start = time.monotonic()
+        status = procs.spawn_detached(child, 5.0, on_line)
+        self.assertEqual(status, "ready")
+        self.assertEqual([line for line, _t in seen], ["pid 4242", "ready"])
+        # the first line was acted on while the start was still running
+        self.assertLess(seen[0][1] - start, 0.25)
+
+    def test_an_interrupt_mid_start_still_closes_the_pipe(self):
+        def child(fd):
+            os.write(fd, b"pid 4242\n")
+            time.sleep(0.3)
+            os.write(fd, b"ready\n")
+            time.sleep(2)
+
+        seen = []
+
+        def on_line(line):
+            seen.append(line)
+            if len(seen) == 2:
+                raise KeyboardInterrupt
+            return True
+
+        before = self.fds()
+        with self.assertRaises(KeyboardInterrupt):
+            procs.spawn_detached(child, 5.0, on_line)
+        # the child named itself first, and that line was delivered
+        self.assertEqual(seen, ["pid 4242", "ready"])
+        self.assertEqual(self.fds(), before)
+
+    def test_an_interrupt_before_any_line_closes_the_pipe_too(self):
+        def child(fd):
+            time.sleep(2)
+
+        def boom(_line):
+            raise AssertionError("no line should have arrived")
+
+        real_select = procs.select.select
+
+        class Shim:
+            @staticmethod
+            def select(*a, **kw):
+                raise KeyboardInterrupt
+
+        before = self.fds()
+        with mock.patch.object(procs, "select", Shim):
+            with self.assertRaises(KeyboardInterrupt):
+                procs.spawn_detached(child, 5.0, boom)
+        self.assertEqual(self.fds(), before)
+        self.assertIs(procs.select.select, real_select)
+
+    def test_a_child_that_says_nothing_gives_up_at_the_deadline(self):
+        before = self.fds()
+        start = time.monotonic()
+        status = procs.spawn_detached(lambda fd: time.sleep(2), 0.5,
+                                      lambda line: True)
+        self.assertIsNone(status)
+        self.assertLess(time.monotonic() - start, 2.0)
+        self.assertEqual(self.fds(), before)
+
+    def test_a_child_that_closes_the_pipe_ends_the_start_at_once(self):
+        start = time.monotonic()
+        status = procs.spawn_detached(lambda fd: None, 30.0,
+                                      lambda line: True)
+        self.assertIsNone(status)
+        self.assertLess(time.monotonic() - start, 5.0)
+
+
 class MirrorCli:
     """cli.main() with the compositor faked out and real processes
     underneath. Not a TestCase: mixed into the ones below."""

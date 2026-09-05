@@ -6,14 +6,16 @@ No compositor needed."""
 import contextlib
 import io
 import os
+import signal
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import time
 
-from wdotool import cli, window_cmds
+from wdotool import backend, cli, window_cmds
 from wdotool.backend import Window, WindowBackend
 from wdotool.ctx import CmdError, Context, NoSessionError, SoftCmdError
 
@@ -780,6 +782,66 @@ class WindowreparentHelpTest(unittest.TestCase):
                                   "[window_source=%1] window_destination\n",
                              flag)
 
+
+
+class UnexercisedActionTest(unittest.TestCase):
+    """windowfocus, windowquit, windowkill and windowlower: four commands the
+    registry knew about and nothing here ever ran. Each is a different shape
+    -- an alias with a --sync predicate, an alias without one, the only
+    command that leaves the compositor entirely, and one the backend refuses
+    -- and none of those shapes was covered by the commands that were."""
+
+    def test_windowfocus_is_activate_and_takes_sync(self):
+        rc, _o, _e, ctx = run(["windowfocus", "22"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(ctx._backend.calls[-1], ("activate", 22))
+        # --sync waits on the same `focused` flag activate() sets, so it
+        # returns rather than spinning
+        rc, _o, _e, ctx = run(["windowfocus", "--sync", "22"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(ctx._backend.windows[22].focused)
+
+    def test_windowfocus_defaults_to_the_stack(self):
+        rc, _o, _e, ctx = run(["search", "--class", "beta", "windowfocus"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(ctx._backend.calls[-1], ("activate", 22))
+
+    def test_windowquit_closes_politely(self):
+        # Wayland has one way to close a window, so quit is close -- but it
+        # is its own command with its own usage line.
+        rc, _o, _e, ctx = run(["windowquit", "22"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(ctx._backend.calls[-1], ("close", 22))
+        self.assertNotIn(22, ctx._backend.windows)
+
+    def test_windowkill_signals_the_pid(self):
+        killed = []
+        with mock.patch.object(backend.os, "kill",
+                               lambda pid, sig: killed.append((pid, sig))):
+            rc, _o, _e, _ctx = run(["windowkill", "22"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(killed, [(202, signal.SIGKILL)])
+
+    def test_windowkill_without_a_pid_is_one_line(self):
+        b = make_backend()
+        b.windows[22].pid = 0
+        rc, _o, err, _ctx = run(["windowkill", "22"], backend=b)
+        self.assertEqual((rc, err), (1, "no pid for window 22\n"))
+
+    def test_windowlower_is_refused_by_a_backend_without_it(self):
+        rc, _o, err, _ctx = run(["windowlower", "22"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(err, "windowlower is not supported by the fake "
+                              "backend\n")
+
+    def test_the_four_answer_h_with_their_own_name(self):
+        for cmd, usage in (("windowfocus", "Usage: windowfocus [window=%1]\n"),
+                           ("windowquit", "Usage: windowquit [window=%1]\n"),
+                           ("windowkill", "Usage: windowkill [window=%1]\n"),
+                           ("windowlower", "Usage: windowlower [window=%1]\n")):
+            rc, out, _e, _ctx = run([cmd, "-h"])
+            self.assertEqual(rc, 0, cmd)
+            self.assertTrue(out.startswith(usage), (cmd, out))
 
 # ---------------------------------------------------------------------------
 # From the window/chain torture pass: window stack reference edge cases,

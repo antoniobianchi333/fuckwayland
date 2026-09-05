@@ -127,6 +127,82 @@ class ParseErrors(unittest.TestCase):
         self.assertEqual((code2, out2), (0, out))
 
 
+class UnnamedOptions(unittest.TestCase):
+    """The seventeen xrandr options no test named.
+
+    Every one is a real-xrandr option wxrandr accepts. Three are swallowed
+    in silence, four are warned about and dropped, ten do something -- and
+    all of them share one thing that has to keep working: `_ARITY`, the
+    look-ahead that decides where an X11 session's argv gets split before it
+    is handed to the real xrandr, has to agree with parse() about how many
+    arguments each one eats. The sentinel `--output LAST` at the end of
+    every case is what proves that: if an option ate one argument too few or
+    too many, the sentinel would not be the last stanza (or would not parse
+    at all).
+
+    `opts` is what the parse result must carry, `stanza` what the *first*
+    stanza must carry, `warn` a fragment of the line it prints on stderr.
+    """
+
+    OUT = ["--output", "X"]
+
+    #: (argv fragment, {Opts attribute: value}, {Stanza attribute: value}, warning)
+    CASES = [
+        # accepted, and quietly does nothing (xrandr's own no-ops)
+        (["--nograb"], {}, {}, ""),
+        (["--q12"], {}, {}, ""),
+        (OUT + ["--crtc", "0"], {}, {}, ""),
+        # accepted, and says on stderr that Wayland has nowhere to put it
+        (OUT + ["--transform", "1,0,0,0,1,0,0,0,1"], {}, {},
+         "--transform is not supported on Wayland; ignoring\n"),
+        (OUT + ["--panning", "1920x1080"], {}, {},
+         "--panning is not supported on Wayland; ignoring\n"),
+        (["--setprovideroutputsource", "1", "2"], {"action": True}, {},
+         "--setprovideroutputsource is not supported on Wayland; ignoring\n"),
+        (["--setprovideroffloadsink", "1", "2"], {"action": True}, {},
+         "--setprovideroffloadsink is not supported on Wayland; ignoring\n"),
+        # accepted, and acted on
+        (["--current"], {"current": True}, {}, ""),
+        (["--q1"], {"query_1": True}, {}, ""),
+        (["--prop"], {"props": True}, {}, ""),
+        (["--properties"], {"props": True}, {}, ""),
+        (["--orientation", "left"], {"rot": 1, "setit": True}, {}, ""),
+        (["--refresh", "75"], {"rate": 75.0, "setit": True}, {}, ""),
+        (["--listactivemonitors"], {"monitor_op": ("listactive",)}, {}, ""),
+        (["--delmonitor", "M"], {"monitor_op": ("del", "M")}, {}, ""),
+        (OUT + ["--preferred"], {}, {"preferred": True}, ""),
+        (OUT + ["--filter", "bilinear"], {}, {"props": [("__filter", "bilinear")]}, ""),
+    ]
+
+    def test_each_is_accepted_and_consumes_its_own_arguments(self):
+        for argv, opts, stanza, warn in self.CASES:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                o = cli.parse(argv + ["--output", "LAST"])
+            for attr, want in opts.items():
+                self.assertEqual(getattr(o, attr), want, (argv, attr))
+            if stanza:
+                for attr, want in stanza.items():
+                    self.assertEqual(getattr(o.stanzas[0], attr), want,
+                                     (argv, attr))
+            self.assertEqual(err.getvalue(),
+                             ("xrandr: " + warn) if warn else "", argv)
+            # the sentinel survived: the option ate exactly its own arguments
+            self.assertEqual(o.stanzas[-1].name, "LAST", argv)
+
+    def test_the_table_agrees_with_the_arity_table(self):
+        for argv, _o, _s, _w in self.CASES:
+            opt = argv[len(self.OUT)] if argv[:len(self.OUT)] == self.OUT else argv[0]
+            rest = argv[argv.index(opt) + 1:]
+            self.assertEqual(len(rest), cli._ARITY.get(opt, 0), opt)
+
+    def test_every_option_appears_once(self):
+        named = [argv[len(self.OUT)] if argv[:len(self.OUT)] == self.OUT
+                 else argv[0] for argv, _o, _s, _w in self.CASES]
+        self.assertEqual(len(named), len(set(named)))
+        self.assertEqual(len(named), 17)
+
+
 class TransformMapping(unittest.TestCase):
     """The sway<->RandR table was verified against XWayland's own RandR
     translation (sway 90 shows as `right`, flipped as `normal X axis`,
