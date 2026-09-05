@@ -3,11 +3,11 @@
 Two rigs live here:
 
 * **`vmctl`** (this document): full, default-configured Ubuntu desktops in QEMU/KVM —
-  **ten flavors**: nine over four desktops (GNOME, KDE Plasma, Xfce, sway) and two releases,
-  built from an Ubuntu *cloud* image plus a desktop metapackage, and one
-  (**`resolute-gnome-iso`**) installed from the Ubuntu 26.04 desktop **ISO by the Ubuntu
-  installer itself** — the image a claim about "a default Ubuntu desktop install" has to rest
-  on. Each with autologin of user `test` — on a **multi-head virtio-vga** whose monitors are
+  **twelve flavors**: ten over four desktops (GNOME, KDE Plasma, Xfce, sway) and three
+  releases, built from an Ubuntu *cloud* image plus a desktop metapackage, and two
+  (**`resolute-gnome-iso`**, **`noble-gnome-iso`**) installed from the Ubuntu 26.04 and 24.04
+  desktop **ISOs by the Ubuntu installer itself** — the images a claim about "a default Ubuntu
+  desktop install" has to rest on, one per supported LTS. Each with autologin of user `test` — on a **multi-head virtio-vga** whose monitors are
   plugged, unplugged and resized from the host at runtime, plus host-side screenshots of
   every head. This is the rig for testing `wxrandr`/`wwmctl`/`wdotool`/`wxprop` against
   real Wayland *and* X11 sessions, and for the X-parity oracles (every golden image also
@@ -26,6 +26,7 @@ Two rigs live here:
 $ vm/vmctl build noble-gnome            # ~7 min, once; golden image -> ~/vm-data/golden/
 $ vm/vmctl build resolute-kde           # any of the nine cloud-image flavors (see Flavors below)
 $ vm/build-iso-golden.sh resolute-gnome-iso   # ~14 min: the real installer, off the desktop ISO
+$ vm/build-iso-golden.sh noble-gnome-iso      # ~21 min: the same, off the 24.04 desktop ISO
 $ vm/vmctl start gnome1 --flavor noble-gnome --heads 3
 vmctl: gnome1: QEMU pid 1234, flavor noble-gnome, 3 vCPU/4G, ssh port 2400, bus ...
 vmctl: gnome1: heads: 0=1920x1080, 1=1920x1080, 2=1920x1080  (guest connectors Virtual-1, Virtual-2, Virtual-3; set before the guest boots)
@@ -49,7 +50,8 @@ $ vm/vmctl user gnome1 -- python3 /home/test/wxrandr.pyz --query
 $ vm/vmctl stop gnome1                       # or: destroy (also deletes the overlay)
 $ vm/selftest.sh noble-gnome                 # the whole thing end to end, ~40 s (see below)
 $ vm/selftest.sh resolute-kde                # same check, Plasma's own tools (see below)
-$ vm/selftest.sh resolute-gnome-iso          # ...and on the installer-built default install
+$ vm/selftest.sh resolute-gnome-iso          # ...and on the installer-built default installs
+$ vm/selftest.sh noble-gnome-iso             # ...both of them
 ```
 
 Host requirements: `qemu-system-x86_64` (8.2+, with the **dbus** display
@@ -58,10 +60,11 @@ backend and PNG screendump), `qemu-img`, `cloud-localds` (cloud-image-utils),
 KVM access, and the Ubuntu cloud images in `~/images/`
 (`noble-server-cloudimg-amd64.img`, `ubuntu-26.04-server-cloudimg-amd64.img`;
 override the directory with `VMIMAGES=`). `vmctl` is stdlib-only Python.
-The ISO flavor additionally needs `isoinfo` (genisoimage) and the desktop ISO its yaml
-names, in the same `~/images/`: `ubuntu-26.04.1-desktop-amd64.iso`, 6.1 GB, from
-<https://releases.ubuntu.com/26.04/> — `vm/build-iso-golden.sh` checks its sha256 against the
-one in the flavor before it boots anything.
+The ISO flavors additionally need `isoinfo` (genisoimage) and the desktop ISO each yaml
+names, in the same `~/images/`: `ubuntu-26.04.1-desktop-amd64.iso` (6.1 GB) from
+<https://releases.ubuntu.com/26.04/> and `ubuntu-24.04.4-desktop-amd64.iso` (6.2 GB) from
+<https://releases.ubuntu.com/24.04/> — `vm/build-iso-golden.sh` checks each one's sha256
+against the one in the flavor before it boots anything.
 `selftest.sh` additionally wants ImageMagick's `identify` (to prove a screenshot is not a flat colour).
 
 ## Fresh host setup
@@ -98,7 +101,7 @@ time comfortably; 8 vCPU / 32 GB runs four.
 | `vm/build-iso-golden.sh` | host-side builder for the **ISO flavors** (`# vmctl-iso:` in the yaml): runs the real Ubuntu desktop installer off the release ISO, unattended and headless, then configures the result. `vmctl build` cannot make these and says so. |
 | `vm/build-iso-image.sh` | guest-side stage 2 of that build; copied into the freshly installed system and run once as root over ssh (the installer switches cloud-init off in the target, so nothing else can run it). Deliberately tiny: an ISO flavor may not be tidied up. |
 | `vm/flavors/<flavor>.yaml` | cloud-init user-data template per flavor (`@@ROOT_PUBKEY@@`, `@@BUILD_SCRIPT@@` placeholders; `# vmctl-base:` names the base cloud image, `# vmctl-desktop:` the desktop **and its session type** — `gnome`, `kde`, `kde-x11`, `xfce` or `sway`). An **ISO flavor** has `# vmctl-iso:`/`# vmctl-iso-sha256:` instead of `# vmctl-base:`, and its body is not user-data for a build VM but the **autoinstall description the live installer reads**. |
-| `vm/reference/<flavor>-packages.txt` | `dpkg-query -W -f='${binary:Package}\n'` of the finished golden image: **exactly what that image contains**, nothing more. For `resolute-gnome-iso` that is also what a default Ubuntu 26.04 desktop install contains (one package added: `openssh-server`); for the cloud-image flavors it is *not* — those are an Ubuntu cloud image plus a desktop metapackage, which is close to but measurably not the same thing (226 packages a default install does not have, 55 it has and the cloud image has not, a different kernel with no firmware at all, and 8 snaps against the default 13 — see *The default install* below). Multi-arch names carry their `:amd64` suffix (`libei1:amd64`), so grep for exact names with `^name(:amd64)?$`. |
+| `vm/reference/<flavor>-packages.txt` | `dpkg-query -W -f='${binary:Package}\n'` of the finished golden image: **exactly what that image contains**, nothing more. For `resolute-gnome-iso` and `noble-gnome-iso` that is also what a default Ubuntu 26.04 / 24.04 desktop install contains (one package added: `openssh-server`); for the cloud-image flavors it is *not* — those are an Ubuntu cloud image plus a desktop metapackage, which is close to but measurably not the same thing (226 packages a default install does not have, 55 it has and the cloud image has not, a different kernel with no firmware at all, and 8 snaps against the default 13 — see *The default install* below). Multi-arch names carry their `:amd64` suffix (`libei1:amd64`), so grep for exact names with `^name(:amd64)?$`. |
 | `vm/selftest.sh <flavor> [name]` | end-to-end check of any flavor's golden image: boot 3 heads, autologin, monitors/primary in that desktop's own display tool, no stray first-run window, real screenshots, hotplug (details below) |
 
 State (never in the repo) lives under `$VMDATA` (default `~/vm-data`):
@@ -135,16 +138,17 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 
 ## Flavors
 
-Eleven golden images. **Ten** are four desktops over three Ubuntu releases — Plasma twice on
+Twelve golden images. **Ten** are four desktops over three Ubuntu releases — Plasma twice on
 each LTS, once on Wayland and once on Xorg — each an Ubuntu *cloud* image plus that desktop's
-metapackage; the **eleventh**, `resolute-gnome-iso`, is a real Ubuntu 26.04 desktop
-**installation**, done by the Ubuntu installer off the release ISO with every question left
-alone. The ten exist because one script gets four desktops out of them; the eleventh exists
-because "it works out of the box on a default Ubuntu 26.04 desktop" is a claim about an
-*installed* system, and a cloud image plus `ubuntu-desktop` is not one (it differs by 226
-packages a default install does not have, 55 it has and the cloud image has not, a different
-kernel with no firmware at all, and 8 snaps against the default 13 — *The default install*,
-below).
+metapackage; the other **two**, `resolute-gnome-iso` and `noble-gnome-iso`, are real Ubuntu
+26.04 and 24.04 desktop **installations**, done by the Ubuntu installer off the release ISOs
+with every question left alone. The ten exist because one script gets four desktops out of
+them; the two exist because "it works out of the box on a default Ubuntu desktop" is a claim
+about an *installed* system — one per supported LTS, because the two releases install
+differently — and a cloud image plus `ubuntu-desktop` is not one (26.04: 226 packages a
+default install does not have, 55 it has and the cloud image has not, a different kernel with
+no firmware at all, 8 snaps against the default 13; 24.04: 240 / 55 and the same story —
+*The default install* and *The second default install*, below).
 
 A flavor is one `vm/flavors/<flavor>.yaml` (cloud-init user-data). Its `# vmctl-base:` header
 names the base cloud image — or, for an ISO flavor, `# vmctl-iso:` names the ISO — and its
@@ -166,8 +170,9 @@ native tool reports monitors.
 | `resolute-sway` | 26.04 LTS | sway 1.11 / wlroots, Xwayland, `foot`, `grim` | greetd | Wayland | `swaymsg -t get_outputs` |
 | `stonking-kde` | 26.10 | Plasma 6.7 / KWin 6.7 (`kde-plasma-desktop`) | SDDM | Wayland | `kscreen-doctor -o` |
 | **`resolute-gnome-iso`** | 26.04 LTS | **GNOME Shell 50.1 / mutter 50.1 — installed from `ubuntu-26.04.1-desktop-amd64.iso` by the Ubuntu installer, default source `ubuntu-desktop-minimal`** | GDM | Wayland | the same |
+| **`noble-gnome-iso`** | 24.04 LTS | **GNOME Shell 46.0 / mutter 46 — installed from `ubuntu-24.04.4-desktop-amd64.iso` by the Ubuntu installer, default source `ubuntu-desktop-minimal`** | GDM | Wayland | the same |
 
-The ten cloud-image flavors (`resolute-gnome-iso` keeps its installer's defaults instead —
+The ten cloud-image flavors (the two ISO flavors keep their installer's defaults instead —
 see below for what that changes):
 
 * user `test` (uid 1000, password `test`, groups `adm,sudo`, bash, `NOPASSWD` sudo); root ssh by key
@@ -485,6 +490,246 @@ both want scheduling:
    4.20260303.1. Settle it against a 4.x binary first; if upstream applies each option, fix
    the loop, and either way say which in the README, because the current text says nothing.
 
+**The second default install** (`noble-gnome-iso`)
+
+The same question one release earlier: "does this work on **a default Ubuntu 24.04 LTS
+desktop**, freshly installed and updated?", answered the only way it can be — by being one.
+`ubuntu-24.04.4-desktop-amd64.iso`, the Ubuntu installer, every question left alone, nothing
+taken away. The repo supports 24.04 and 26.04, so it needs a default install of each; this
+is the 24.04 half, and `resolute-gnome-iso` above is the model it is built to.
+
+*How it is built* — `vm/build-iso-golden.sh noble-gnome-iso`, **21 minutes** on 2 vCPU/4 GB
+(stage 1 17.9 min, stage 2 3.7 min), no display, no keyboard, nothing to click. Same two
+stages, the same **eight** deviations numbered the same way, and a flavor yaml that differs
+from `resolute-gnome-iso`'s only in the ISO it names, that ISO's sha256, and the hostname.
+The installer behaves the same: subiquity **revision 494** of `ubuntu-desktop-bootstrap`
+(the same snap revision as on the 26.04 ISO), `autoinstall` on the kernel command line
+(`boot=casper autoinstall console=ttyS0,115200`), the description picked up from cloud-config,
+and — measured in `/var/log/installer/subiquity-server-debug.log` — `loaded 2 sources from
+'/cdrom/casper/install-sources.yaml'`. Those two are `ubuntu-desktop-minimal` ("Ubuntu Desktop
+(minimized)", `default: true`) and `ubuntu-desktop` (`default: false`): **the same two ids
+with the same defaults as 26.04.1's**, so "the default install source" means the same thing
+on both, and it is the minimal one.
+
+Two things stage 2 had to learn for 24.04. Both are *reported* by the script, not worked
+around:
+
+* **`gnome-initial-setup` 46 has no `-upgrade-login` unit.** It ships only
+  `gnome-initial-setup-first-login.service` and `-copy-worker.service`, and both are
+  conditioned on the *same* `~/.config/gnome-initial-setup-done` marker. So deviation 8 —
+  "complete the first run, do not remove it" — writes **one** marker here where 26.04 needed
+  two, and the loop that reads the second unit's `ConditionPathExists` finds no such unit and
+  writes nothing. The build log says so: `first-run: markers written
+  (gnome-initial-setup-done )`. There is no "Welcome to Ubuntu 24.04 LTS!" dialog at the
+  second login to guard against, because there is no unit that would draw one.
+* **The installer leaves cloud-init off differently.** On both releases the target's *first*
+  boot runs cloud-init once from `/etc/cloud/cloud.cfg.d/99-installer.cfg`
+  (`datasource_list: [None]`) and that run writes `/etc/cloud/cloud-init.disabled` itself —
+  so the file the installer is usually said to write is written by cloud-init, one boot
+  later. What each release additionally leaves behind differs: 26.04 leaves
+  `90-installer-network.cfg` (cloud-init networking disabled), **24.04 leaves the live
+  session's own network configuration**, which that first run rendered into
+  `/etc/netplan/50-cloud-init.yaml`. A default 24.04 desktop therefore has **two** netplan
+  files — `01-network-manager-all.yaml` and `50-cloud-init.yaml` — and a second entry in
+  `/etc/cloud/clean.d/`, `99-installer-use-networkmanager`. Deviation 7 undoes it exactly as
+  on 26.04, with the installer's own `clean.d` scripts and `cloud-init clean`; afterwards
+  NetworkManager still owns `ens3` (`netplan-ens3`), `systemd-networkd` is disabled, and
+  `cloud.cfg.d` holds only `05_logging.cfg`, `90_dpkg.cfg`, `curtin-preserve-sources.cfg`,
+  `README` and vmctl's own `99-vmctl-no-network.cfg`.
+
+*What the finished image is* — measured on it, not assumed:
+
+| | `noble-gnome-iso` |
+|---|---|
+| release / media | Ubuntu **24.04.4** LTS, `Ubuntu 24.04.4 LTS "Noble Numbat" - Release amd64 (20260210)` |
+| kernel | **`7.0.0-31-generic`** (`linux-image-generic-hwe-24.04`), all **19** `linux-firmware-*`, `amd64-microcode`, `intel-microcode`, `thermald` |
+| packages / snaps | **1510** debs, **12** snaps (`bare core22 core24 firefox firmware-updater gnome-42-2204 gnome-46-2404 gtk-common-themes mesa-2404 snap-store snapd snapd-desktop-integration`) |
+| session | **GNOME Shell 46.0** / GDM 46.2 on Wayland, `Service=gdm-autologin`, logind `Type=wayland`, seat0/tty2, `XDG_CURRENT_DESKTOP=ubuntu:GNOME` |
+| sessions offered | `wayland-sessions`: `ubuntu.desktop`, `ubuntu-wayland.desktop`; **`xsessions`: `ubuntu.desktop`, `ubuntu-xorg.desktop`** — a default 24.04 install still ships a GNOME **Xorg** session (and `xserver-xorg-core`, `xinit`, `x11-apps`, `xinput`); 26.04's does not |
+| Python / GTK | python3 **3.12.3**-0ubuntu2.1 (binary 3.12.3), `python3-gi` 3.48.2-1, GTK 3 **3.24.41**, GTK 4 **4.14.5**, glib 2.80.0, `libei1` 1.2.1 |
+| `python3-setuptools` | **absent** — see *the install guide* below; 26.04's default install has it (78.1.1) |
+| X tools | `x11-utils`, `x11-xserver-utils` present; **no `xdotool`, no `wmctrl`**, as on 26.04 |
+| pip / venv / pipx / git / curl | all absent, as on 26.04 |
+| Xwayland | 2:23.2.6, **not running at login** — mutter starts it on the first X client, and `gsd-xsettings`, `ibus-x11` and `mutter-x11-frames` come up with it. No `-enable-ei-portal` on its command line (26.04's 24.1.10 has it) |
+| `/dev/uinput` | `crw------- root root`, `CONFIG_INPUT_UINPUT=y` — **built in, no `modules-load.d` line needed**, same as 26.04 |
+| shell extensions | 4 enabled: `ding`, `tiling-assistant`, `ubuntu-appindicators`, `ubuntu-dock` (26.04 has 7 — it adds `snapd-prompting`, `snapd-search-provider`, `web-search-provider`) |
+| user `test` | installer groups `adm cdrom sudo dip plugdev users lpadmin` — **no `lxd`** (26.04's default install adds it); sudo by password |
+| left running | `apt-daily.timer`, `apt-daily-upgrade.timer`, `unattended-upgrades.service`, `motd-news.timer` all enabled **and active**; snap auto-refresh `timer: 00:00~24:00/4`; `update-notifier` running in the session |
+| lock / idle / suspend | `lock-enabled` **true**, `idle-activation-enabled` **true**, `lock-delay` 0, `idle-delay` **300**, `sleep-inactive-ac-type` **`'suspend'`** — identical to 26.04's defaults, and it bites (below) |
+
+*How far the cloud-image flavor is from it.* `vm/reference/noble-gnome-iso-packages.txt`
+against `vm/reference/noble-gnome-packages.txt` — same release, same desktop, built the two
+ways: **1695** packages against **1510**. **240** the cloud-image flavor has that a default
+install does not (the server cloud image's own set — `ubuntu-server`, `cloud-initramfs-*`,
+`overlayroot`, `landscape-common`, `open-iscsi`, `lxd-*`, `open-vm-tools`, `needrestart`,
+`multipath-tools`, `mdadm`, `lvm2`, `cryptsetup`, `btrfs-progs`, `curl`, `git`, `htop`,
+`gawk`; the `linux-image-virtual` 6.8.0-138 kernel; the 24 `libreoffice-*`, `rhythmbox*`,
+`deja-dup`, `gnome-calendar`, `file-roller`, `gnome-snapshot` and friends that the *full*
+`ubuntu-desktop` metapackage brings and the default source does not; and `xdotool`, `wmctrl`
+on purpose). **55** a default install has that it does not: the whole `linux-firmware` set
+(19 packages), the `7.0.0-31` HWE kernel with headers and tools (11), `amd64-microcode`,
+`intel-microcode`, `iucode-tool`, `thermald`, the English language packs and input-method
+data (`language-pack-en*`, `language-pack-gnome-en*`, `m17n-db`, `libm17n-0`, `libpinyin*`,
+`libchewing*`, `ibus-table-cangjie*`, `wbritish`) and `firmware-sof-signed`. The shape of the
+difference is the same as 26.04's; only the names move.
+
+*And against the ISO's own manifest.* `casper/minimal.manifest` minus what the `en` layer
+removes (43 non-English language packs and input methods) is **1448** debs and **9** snaps.
+The golden is that set **plus 63, minus 1**. Of the 63, **four are ours** — `openssh-server`,
+`openssh-sftp-server`, `ssh-import-id`, `ncurses-term` (deviation 2 and what it pulls) — one
+is the installer's own language-support step (`wbritish`), and the other **58 are what the
+installer puts on disk that the live layer never carries**: the HWE kernel `7.0.0-31` with
+its headers, tools and `ubuntu-kernel-accessories` (`bpfcc-tools`, `bpftrace`, `libc6-dev`,
+`manpages-dev`, …), the 19 `linux-firmware-*`, both microcode packages, `thermald`, `hwdata`,
+`grub-pc`/`grub2-common` for the target's boot mode, and `libclang`/`libllvm` for Mesa. The
+one subtraction is `libwoff1`, dropped by the day-one update (deviation 5: 86 upgraded, 1
+newly installed, 0 removed; 5 snaps refreshed, which is where `core24`, `gnome-46-2404` and
+`mesa-2404` join the manifest's 9). Nothing else is missing from it.
+
+*What a default 24.04 install has and lacks against a default 26.04 one.*
+`noble-gnome-iso-packages.txt` against `resolute-gnome-iso-packages.txt` — 1510 against 1506,
+12 snaps against 13, and the two sets differ by **186 / 182**. What matters for these six
+tools:
+
+| | `noble-gnome-iso` (24.04) | `resolute-gnome-iso` (26.04) |
+|---|---|---|
+| shell / mutter | GNOME Shell 46.0, `libmutter-14-0` | GNOME Shell 50.1, `libmutter-18-0` |
+| python3 | 3.12.3 | 3.14.4 |
+| terminal in the default source | **`gnome-terminal`** | **`ptyxis`** (24.04's default source has no ptyxis; 26.04's has no gnome-terminal) |
+| viewers | `evince`, `eog` | `papers`, `loupe` |
+| Xorg | **`xorg`, `xserver-xorg-core`, `xinit`, `x11-apps`, `xinput`, `xserver-xephyr` and a GNOME Xorg session** | none of them — 26.04's default install is Wayland-only |
+| `python3-setuptools` | **absent** | present (78.1.1) |
+| `sudo` | `sudo` 1.9.15p5 | `sudo-rs` |
+| snaps | 12 | 13 — 24.04 has no `prompting-client`, no `desktop-security-center`, no `hwctl` (**so a default 24.04 desktop has no AppArmor prompting to test against**), and carries `core22` + `gnome-42-2204` for Firefox alongside `core24` + `gnome-46-2404` |
+| shell extensions enabled | 4 | 7 |
+| netplan | two files (`01-network-manager-all.yaml`, `50-cloud-init.yaml`) | one |
+
+*What a run on it actually found.* The repo README's install guide was followed on this image
+**verbatim**, as a reader would, and then all **six** tools were exercised against a real
+`gnome-terminal` window on the three-head layout, with a screenshot of each looked at. The
+same script was then run on the cloud-image `noble-gnome`.
+
+Everything the guide tells you to type worked and produced what it says it produces: `sudo
+apt install git python3-venv` (7 new packages, `python3.12-venv` among them), `git clone`,
+`python3 -m venv --system-site-packages`, `pip install -e .` (`Successfully installed
+fuckwayland-0.2.0`), the six `/usr/local/bin` symlinks, `warandr.desktop`, `sh
+gnome/install-bridge.sh` printing exactly the documented "log out and back in" text and exit
+1, one session restart, `sudo sh gnome/install-bridge.sh --udev` → `uinput usable by test:
+yes (logind ACL)`. After the relogin `--check` said `loaded in shell: yes (state 1)` /
+`org.fuckwayland.Bridge owned: yes` / `bridge version: 2`; the extension's own
+`metadata.json` lists shell versions `45`–`50`, so **46 is inside its declared range and 24.04
+needs no change to it**. The six version strings printed exactly what *Check it worked* says,
+`wxrandr --print-backend --verbose` said `mutter`, typing landed in the terminal, the
+`warandr` GUI opened with `backend: mutter (Wayland)`, a monitor dragged in it and applied
+with a click moved the real one (`Virtual-3` from `1920,1080` to `0,1080`), `warandr --save`
+wrote an arandr-compatible script, and that script bound to `<Ctrl><Super>F7` and pressed
+with `wdotool key ctrl+super+F7` restored its layout. `wmirror --check` correctly refuses the
+session — `capture: this compositor advertises neither zwlr_screencopy_manager_v1 nor
+ext_image_copy_capture_manager_v1`, `outputs: this compositor does not advertise
+zwlr_output_manager_v1`, exit 1 — which is [(k)](../README.md#desktop-support) working as
+documented, on GNOME 46 as on GNOME 50.
+
+**Three things had to be adapted, and all three are the guide's, not the tools'** (all three
+are fixed in `README.md` on this branch):
+
+1. **`pip install --no-build-isolation -e .` does not work on 24.04, on either image.** The
+   guide offers it as the offline-ish shortcut "on a desktop image, which ships
+   `python3-setuptools`". A default 24.04 desktop **has no `python3-setuptools`**, so it ends
+   `ModuleNotFoundError: No module named 'setuptools'` → `BackendUnavailable`, exit 2. On
+   `noble-gnome`, which *does* have it (68.1.2), it gets one step further and ends `error:
+   invalid command 'bdist_wheel'` → `metadata-generation-failed`, exit 1, because setuptools
+   68 still needs the separate `wheel` package. Plain `pip install -e .` — what the guide
+   actually tells you to run — works on both.
+2. **`python3 -m venv` run *bare* does not name the versioned package.** With `python3-venv`
+   removed, `python3 -m venv` prints argparse's `venv: error: the following arguments are
+   required: ENV_DIR` and nothing else; the `apt install python3.12-venv` line appears only
+   when a directory is given. The claim was right about the package name, wrong about how to
+   see it.
+3. **The `wxrandr --print-backend --verbose` block in *Check it worked* is missing its last
+   line**, `available: yes`. Present on `noble-gnome-iso`, `noble-gnome` and `resolute-gnome-iso`
+   alike, so the block has been short a line since it was written.
+
+And one thing a **user must accept**, which the 26.04 run recorded and this one walked
+straight into: **a default install locks itself in the middle of the install guide.** `sudo
+apt install git python3-venv` took 3 min 27 s on this mirror; with the rest of the clone and
+venv steps that is past `idle-delay 300`, and the very next command, `wwmctl -l`, answered
+`gnome backend: the fuckwayland bridge is unavailable while the screen is locked (GNOME Shell
+disables extensions behind the lock screen); unlock the session`, rc 1. The host screenshot at
+that moment is not a lock screen but QEMU's `Display output is not active.` — a default
+desktop switches the outputs off as well, so an unattended screenshot after five idle minutes
+is black on every head. Injection is unaffected and is the way out: `wdotool key Escape`,
+`wdotool type test`, `wdotool key Return` unlocked the session from the host with no keyboard,
+`LockedHint=no`, and the desktop came back. `wxrandr`, `warandr` and every `wdotool` input
+command keep working throughout.
+
+*The same script on `noble-gnome`.* 251 lines of output, **19 differ**, and every one is the
+environment rather than a tool:
+
+| what differs | `noble-gnome-iso` | `noble-gnome` |
+|---|---|---|
+| `command -v xdotool` | nothing — a default install has neither `xdotool` nor `wmctrl` | `/usr/bin/xdotool` |
+| screen lock / idle / suspend | `lock-enabled true`, `idle-delay 300`, `sleep-inactive-ac-type 'suspend'` | `false`, `0`, `'nothing'` (gschema override) |
+| window ids, the `/dev/uinput` timestamp | differ per boot | differ per boot |
+
+Everything else — the six version strings, the backend line, `wwmctl -l/-lx/-lG`,
+`getdisplaygeometry` `5760 1080`, every `windowmove`/`windowsize`/`windowstate` result, both
+maximize misbehaviours below, `getmouselocation`, all of `wxprop`, the dynamic-workspaces
+warning, all nine `wxrandr` layout operations, `warandr --command`/`--save`, the hotkey, all
+four `wmirror` answers, and the locked-screen messages — is **byte-identical**. And against
+the 26.04 pair, the only tool-output line that differs at all is
+`_NET_SUPPORTING_WM_CHECK`: `0x0` on **both** 24.04 images, `0x400001`/`0x200001` on the
+26.04 ones. That is Xwayland's lifetime, not a tool: 24.04 starts no Xwayland at login, and
+`wxprop` says `0x0` because there is no X server to own a supporting-WM window. Start one
+(`xdpyinfo`) and `wxprop -root _NET_SUPPORTING_WM_CHECK` and the real `xprop -root
+_NET_SUPPORTING_WM_CHECK` both answer `0x600001`, character for character.
+
+### Tool defects these runs found
+
+Numbering continues the two the 26.04 run found, above. All three are in tool code this
+infrastructure branch deliberately does not touch, and all three want scheduling.
+
+1. **`wwmctl -b remove,maximized_vert,maximized_horz` removes only the horizontal half and
+   corrupts the saved size** — *reproduces on `noble-gnome-iso` and `noble-gnome` exactly as
+   written above for 26.04*, on GNOME 46 as on GNOME 50. A window at `200 150 900 600`
+   maximized both ways and then un-maximized both ways in one command lands at `200 32 894
+   1039`, full height; `-b remove,maximized_vert`, `wdotool windowstate --remove
+   MAXIMIZED_VERT` and `--toggle MAXIMIZED_VERT` twice then all change nothing, and only an
+   explicit `windowsize` gets the height back. Four images, two GNOME releases, same
+   behaviour: it is `extension.js`'s `setMaximized()` sending the two axes as two `SetState`
+   calls, not anything about the desktop.
+2. **`wdotool windowstate` honours only the last `--add`/`--remove`/`--toggle` on the line** —
+   also identical here: `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` gives `66 150 1854 600`,
+   horizontal only. Still unsettled for the same reason (both 24.04 goldens carry `xdotool
+   3.20160805.1`, which has no `windowstate`; parity is claimed against 4.20260303.1), and
+   still needs a 4.x binary to settle it against.
+3. **The locked-screen message hides the "extension not installed" one, on the exact path a
+   first-time reader takes.** New here, and only a default install can show it. On
+   `noble-gnome-iso`, with the extension not yet installed *and* the screen locked after the
+   guide's own `apt install`, `wwmctl -l` answered
+
+   ```
+   gnome backend: the fuckwayland bridge is unavailable while the screen is locked
+   (GNOME Shell disables extensions behind the lock screen); unlock the session
+   ```
+
+   where `noble-gnome`, unlocked, answered the message the guide's troubleshooting table
+   sends you to act on:
+
+   ```
+   gnome backend: the fuckwayland bridge extension is not running in GNOME Shell;
+   run gnome/install-bridge.sh and restart the session (log out and back in)
+   ```
+
+   Both statements were true; the one printed is the one the reader can do least with,
+   because unlocking will not make the command work. The backend cannot tell the two apart
+   *from the bus* — behind the lock screen the shell disables every extension, ours included
+   — but it can tell them apart from disk, which is exactly what `install-bridge.sh --check`
+   does: the extension directory under `~/.local/share/gnome-shell/extensions` and
+   `org.gnome.shell enabled-extensions`. The fix is to look, and to say both when both are
+   true ("…while the screen is locked; unlock the session — and the bridge extension is not
+   installed either: run gnome/install-bridge.sh"). The fix belongs in the message, so it is
+   left here rather than papered over in the guide.
+
 Adding a flavor: copy a yaml, change `hostname`, `# vmctl-base:`, `# vmctl-desktop:` and
 `/etc/vmctl-build.env` (`DESKTOP`, `DESKTOP_PKG`, `EXTRA_PKGS`). A new *desktop* additionally
 needs a branch in `build-image.sh`, an entry in `vmctl`'s `DESKTOPS` table (session kind, logind
@@ -504,10 +749,11 @@ order, using that desktop's own tools:
    Plasma's `priority 1` are required; sway has no primary, so its focused output stands in, and
    Xorg only marks one if something asked it to.
 3. no first-run window in the session: `gnome-initial-setup`, `plasma-welcome`, or a window whose
-   title looks like Xfce's "new display" dialog. On `resolute-gnome-iso` this is the one assertion that needed a deviation
+   title looks like Xfce's "new display" dialog. On both ISO flavors this is the one assertion that needed a deviation
    to hold (number 8): a default install *does* run `gnome-initial-setup` at the first login,
    and with the first-login marker alone it then runs it again as `--upgrade-user` at every
-   login after that. Both were seen on this image before the markers were written.
+   login after that. Both were seen on `resolute-gnome-iso` before the markers were written;
+   on `noble-gnome-iso` only the first, because GNOME 46 ships no `-upgrade-login` unit.
 4. `vmctl user` gives a working session environment: `XDG_SESSION_ID` whose logind `Type` is the
    flavor's (`wayland`, `x11`, or `wayland`/`tty` for sway), `XDG_SESSION_TYPE` exactly `wayland`
    or `x11`, the display sockets (`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`, `$SWAYSOCK`) and an X
