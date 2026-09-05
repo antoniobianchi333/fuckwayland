@@ -59,7 +59,6 @@ Mapping to the wxrandr model (core.OutputState / core.Target):
                          mode with the same size (and rate) -> `cannot find mode`
 """
 
-import math
 import struct
 
 from wdotool import session as wsession

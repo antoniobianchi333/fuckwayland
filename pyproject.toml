@@ -18,3 +18,18 @@ wmirror = "wmirror.cli:main"
 
 [tool.setuptools]
 packages = ["wdotool", "wwmctl", "wxprop", "wxrandr", "warandr", "wmirror"]
+
+# Lint only, never format: `ruff format` at 120 was measured on this tree and
+# rewrites 45 of 59 files, makes the code 520 lines longer and flattens 338
+# aligned comments. 120 is the hard limit; new code aims at 110.
+[tool.ruff]
+line-length = 120
+exclude = ["wdotool/keysyms.py"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"wdotool/us_keymap.py" = ["E501", "W191"]   # a generated table, tab-indented
+"wdotool/input_cmds.py" = ["W291"]          # xdotool's own trailing space
+"warandr/gui.py" = ["E402"]                 # gi.require_version before import

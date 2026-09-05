@@ -33,10 +33,10 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, GObject, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GLib, GObject, Gtk, Pango
 
-from . import VERSION, cli, randr  # noqa: E402
-from .model import (REFLECTIONS, ROTATIONS, SCALES, LayoutError,  # noqa: E402
+from . import VERSION, cli, randr
+from .model import (REFLECTIONS, ROTATIONS, SCALES, LayoutError,
                     fmt_rate)
 
 TITLE = "Screen Layout Editor"
