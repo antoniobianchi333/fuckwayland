@@ -165,25 +165,11 @@ class Core:
         for v in views:
             win = v.window
             xid = int(v.xid or 0)
-            if xid:
-                cls = _dot_class(v.instance or None, v.cls or None)
-            elif v.app_id:
-                cls = "%s.%s" % (v.app_id, v.app_id)
-            else:
-                cls = _dot_class(v.instance or None, v.cls or None)
-            out.append(UWindow(
-                id=xid if xid else win.id,
-                node_id=win.id,
-                is_x=bool(xid),
-                title=win.title,
-                class_=cls,
-                machine=host,
-                pid=win.pid,
-                x=win.x, y=win.y, w=win.w, h=win.h,
-                desktop=win.desktop,
-                focused=win.focused,
-                fx=win.x, fy=win.y, fw=win.w, fh=win.h,
-            ))
+            # only a native view falls back to its app id; an XWayland view
+            # has a real WM_CLASS pair, and so does a native one that set it
+            cls = ("%s.%s" % (v.app_id, v.app_id) if not xid and v.app_id
+                   else _dot_class(v.instance or None, v.cls or None))
+            out.append(_uwindow(win, host, xid, cls, win.title))
         return out
 
     def windows(self) -> list[UWindow]:
@@ -213,19 +199,8 @@ class Core:
                     cls = _dot_class(wp.get("instance"), wp.get("class"))
                     if node.get("app_id"):
                         cls = "%s.%s" % (node["app_id"], node["app_id"])
-                    out.append(UWindow(
-                        id=xid if xid else win.id,
-                        node_id=win.id,
-                        is_x=bool(xid),
-                        title=node.get("name"),
-                        class_=cls,
-                        machine=host,
-                        pid=win.pid,
-                        x=win.x, y=win.y, w=win.w, h=win.h,
-                        desktop=win.desktop,
-                        focused=win.focused,
-                        fx=win.x, fy=win.y, fw=win.w, fh=win.h,
-                    ))
+                    out.append(_uwindow(win, host, xid, cls,
+                                        node.get("name")))
             except (TypeError, ValueError, KeyError) as e:
                 self.vprint("_nodes() has an unexpected shape (%s: %s); "
                             "using the generic backend listing\n"
@@ -235,13 +210,7 @@ class Core:
             out = []
             for win in backend.list():
                 cls = "%s.%s" % (win.class_, win.class_) if win.class_ else None
-                out.append(UWindow(
-                    id=win.id, node_id=win.id, is_x=False,
-                    title=win.title or None, class_=cls, machine=host,
-                    pid=win.pid, x=win.x, y=win.y, w=win.w, h=win.h,
-                    desktop=win.desktop, focused=win.focused,
-                    fx=win.x, fy=win.y, fw=win.w, fh=win.h,
-                ))
+                out.append(_uwindow(win, host, 0, cls, win.title or None))
         self._enrich(out)
         self._check_id_clash(out)
         return out
@@ -1117,6 +1086,31 @@ def _hostname() -> str | None:
         return socket.gethostname() or None
     except OSError:
         return None
+
+
+def _uwindow(win, host: str | None, xid: int | None, cls: str | None,
+             title: str | None) -> UWindow:
+    """A UWindow over one backend Window, for all three listing sources.
+
+    `xid` is the window's X id when it has one (0/None for a native view):
+    it becomes the printed id and decides is_x, while the compositor's node
+    id stays in node_id, which is what every action addresses. `title` is a
+    parameter and not just `win.title` because the three sources disagree
+    about the absent title -- sway carries it on the tree node and the
+    generic listing folds "" to None -- and -l prints None as "N/A"."""
+    return UWindow(
+        id=xid if xid else win.id,
+        node_id=win.id,
+        is_x=bool(xid),
+        title=title,
+        class_=cls,
+        machine=host,
+        pid=win.pid,
+        x=win.x, y=win.y, w=win.w, h=win.h,
+        desktop=win.desktop,
+        focused=win.focused,
+        fx=win.x, fy=win.y, fw=win.w, fh=win.h,
+    )
 
 
 def _dot_class(instance: str | None, class_: str | None) -> str | None:
