@@ -48,3 +48,46 @@ the real compositor: unpack a tree at `/home/test/<name>` and
 | `disp-layout2-wlr-scale-placement.sh` | `--right-of` off by 1-10 px at 149 of 201 fractional scales on the wlr backend | a headless sway (`$SWAYENV`) |
 | `disp-sway-vm.sh before\|after` | the five sway/wlr findings in one pass, against the real compositor | `resolute-sway` |
 | `disp-gnome-vm.sh before\|after` | `--same-as` relocating the primary, and the adjacency message | `noble-gnome` |
+
+## The scaling pass
+
+Which pixel space `wdotool`s pointer lives in, under fractional and HiDPI
+
+## The scaling pass
+
+Which pixel space `wdotool`'s pointer lives in, under fractional and HiDPI
+scaling, measured on `resolute-gnome-iso` (26.04 / GNOME 50),
+`noble-gnome-iso` (24.04 / GNOME 46) and `resolute-kde` (Plasma 6.6): scale 1,
+2 and 1.5, on one head and on two of different scales, one VM at a time.
+
+Every target is read four ways, and the last of them shares nothing with the
+tools:
+
+| reading | where it comes from |
+|---|---|
+| `daemon` | the input daemon's model of what it injected (`DaemonClient.pointer()`), read first because `getmouselocation` reseeds it |
+| `query` | `wdotool getmouselocation` |
+| `comp` | the compositor itself: Mutter's `global.get_pointer()` through the bridge, KWin's `workspace.cursorPos` |
+| `hw` | the **KMS cursor plane**, `/sys/kernel/debug/dri/*/state`, device pixels on the scanout (vm/README.md's oracle; the path is not always `dri/0`). Where the compositor draws its own cursor instead of using that plane — KWin at 200%, whose sprite does not fit the 64x64 virtio-gpu one — a QMP screendump differenced against a parked one |
+
+The KMS oracle is blind in two places, and both are the oracle's doing rather
+than a coordinate's: the plane goes dark within one hotspot of a head's
+top-left corner (virtio-gpu cannot place it at a negative `crtc-pos`), and for
+the four pixels either side of a seam Mutter keeps the sprite on the left-hand
+head.
+
+| script | what it is |
+|---|---|
+| `scale-probe.py` | guest side, run as **root** against a repo tree at `$FW` (default `/root/fw`): takes the four readings for a list of targets and prints JSON. A target is `[x, y]`, or `{"frac": [fx, fy]}` of the layout box, or `{"mon": i, "off": [dx, dy]}` from one monitor's own origin |
+| `scale-runmatrix.py` | host side: `scale-runmatrix.py <vm> <outdir> <configs.json>` applies each layout (heads, scales) and runs the probe in the guest |
+| `scale-spaces.py` | scores every reading against BOTH candidate maps — `dev = (asked - origin) * scale` and `dev = asked - origin` — and reports the one whose residual is *constant*. It determines the pixel space rather than assuming one: the constant is the cursor hotspot, the spread is the error |
+| `scale-summary.py` | one line per config: the worst error each reading showed |
+| `scale-shotcursor.py` | the screendump oracle, for a compositor that composites its own cursor |
+| `scale-wldump.py` | `wl_output` and `zxdg_output_v1` side by side — the two numbers `_wayland_bbox()` chooses between |
+| `scale-1-gnome46-xdg-output-stale.sh` | **the one that fails.** Walks GNOME 46 through turning "Fractional Scaling" on while the monitor is already at 200%, printing the layout box, Mutter's two reports of the same thing and where the cursor really went, at each step |
+
+Everything agreed to 0 px on 26.04 and on Plasma 6.6, at every scale and on
+both layouts, and on 24.04 in each of its two layout modes taken by itself.
+What does not work is the *change* between 24.04's two modes: see
+`tests/test_scale_spaces.py::StaleXdgOutput`, which replays it on the wire.
+The raw readings behind all of it are in `tests/fixtures/scaling/`.

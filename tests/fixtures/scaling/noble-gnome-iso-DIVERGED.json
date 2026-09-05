@@ -1,0 +1,629 @@
+{
+ "label": "noble-diverged",
+ "targets": [
+  {
+   "asked": [
+    100,
+    100
+   ],
+   "move_rc": 0,
+   "daemon": [
+    100,
+    100
+   ],
+   "hw": {
+    "crtc-0": [
+     180,
+     178,
+     64,
+     64
+    ]
+   },
+   "comp": [
+    100,
+    100
+   ],
+   "query": [
+    100,
+    100
+   ],
+   "query_rc": 0
+  },
+  {
+   "asked": [
+    200,
+    100
+   ],
+   "move_rc": 0,
+   "daemon": [
+    200,
+    100
+   ],
+   "hw": {
+    "crtc-0": [
+     380,
+     178,
+     64,
+     64
+    ]
+   },
+   "comp": [
+    200,
+    100
+   ],
+   "query": [
+    200,
+    100
+   ],
+   "query_rc": 0
+  },
+  {
+   "asked": [
+    400,
+    100
+   ],
+   "move_rc": 0,
+   "daemon": [
+    400,
+    100
+   ],
+   "hw": {
+    "crtc-0": [
+     780,
+     178,
+     64,
+     64
+    ]
+   },
+   "comp": [
+    400,
+    100
+   ],
+   "query": [
+    400,
+    100
+   ],
+   "query_rc": 0
+  },
+  {
+   "asked": [
+    800,
+    100
+   ],
+   "move_rc": 0,
+   "daemon": [
+    800,
+    100
+   ],
+   "hw": {
+    "crtc-0": [
+     1580,
+     178,
+     64,
+     64
+    ]
+   },
+   "comp": [
+    800,
+    100
+   ],
+   "query": [
+    800,
+    100
+   ],
+   "query_rc": 0
+  },
+  {
+   "asked": [
+    960,
+    540
+   ],
+   "move_rc": 0,
+   "daemon": [
+    960,
+    540
+   ],
+   "hw": {
+    "crtc-0": [
+     1914,
+     1074,
+     64,
+     64
+    ]
+   },
+   "comp": [
+    960,
+    540
+   ],
+   "query": [
+    960,
+    540
+   ],
+   "query_rc": 0
+  },
+  {
+   "asked": [
+    1200,
+    700
+   ],
+   "move_rc": 0,
+   "daemon": [
+    1200,
+    700
+   ],
+   "hw": {},
+   "hw_raw": [
+    {
+     "plane": "plane-0",
+     "crtc": "crtc-0",
+     "fb": "64",
+     "crtc_pos": [
+      1920,
+      1080,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-1",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      64,
+      64,
+      1914,
+      1074
+     ]
+    },
+    {
+     "plane": "plane-2",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      1920,
+      1080,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-3",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      64,
+      64,
+      629,
+      348
+     ]
+    },
+    {
+     "plane": "plane-4",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-5",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-6",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-7",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    }
+   ],
+   "comp": [
+    1200,
+    700
+   ],
+   "query": [
+    1200,
+    700
+   ],
+   "query_rc": 0
+  },
+  {
+   "asked": [
+    1600,
+    1000
+   ],
+   "move_rc": 0,
+   "daemon": [
+    1600,
+    1000
+   ],
+   "hw": {},
+   "hw_raw": [
+    {
+     "plane": "plane-0",
+     "crtc": "crtc-0",
+     "fb": "64",
+     "crtc_pos": [
+      1920,
+      1080,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-1",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      64,
+      64,
+      1914,
+      1074
+     ]
+    },
+    {
+     "plane": "plane-2",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      1920,
+      1080,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-3",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      64,
+      64,
+      629,
+      348
+     ]
+    },
+    {
+     "plane": "plane-4",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-5",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-6",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-7",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    }
+   ],
+   "comp": [
+    1600,
+    1000
+   ],
+   "query": [
+    1600,
+    1000
+   ],
+   "query_rc": 0
+  },
+  {
+   "asked": [
+    1919,
+    1079
+   ],
+   "move_rc": 0,
+   "daemon": [
+    1919,
+    1079
+   ],
+   "hw": {},
+   "hw_raw": [
+    {
+     "plane": "plane-0",
+     "crtc": "crtc-0",
+     "fb": "64",
+     "crtc_pos": [
+      1920,
+      1080,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-1",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      64,
+      64,
+      1914,
+      1074
+     ]
+    },
+    {
+     "plane": "plane-2",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      1920,
+      1080,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-3",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      64,
+      64,
+      629,
+      348
+     ]
+    },
+    {
+     "plane": "plane-4",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-5",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-6",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "plane": "plane-7",
+     "crtc": "(null)",
+     "fb": "0",
+     "crtc_pos": [
+      0,
+      0,
+      0,
+      0
+     ]
+    }
+   ],
+   "comp": [
+    1919,
+    1079
+   ],
+   "query": [
+    1919,
+    1079
+   ],
+   "query_rc": 0
+  }
+ ],
+ "getdisplaygeometry": {
+  "rc": 0,
+  "W": "1920",
+  "H": "1080",
+  "raw": "WIDTH=1920\nHEIGHT=1080",
+  "err": ""
+ },
+ "daemon_bbox": [
+  0,
+  0,
+  1920,
+  1080
+ ],
+ "monitors": [
+  {
+   "index": 0,
+   "x": 0,
+   "y": 0,
+   "width": 1920,
+   "height": 1080,
+   "scale": 2,
+   "primary": true,
+   "connector": ""
+  }
+ ],
+ "wxrandr_query": "Screen 0: minimum 16 x 16, current 960 x 540, maximum 32767 x 32767\nVirtual-1 connected primary 960x540+0+0 (normal left inverted right x axis y axis) 480mm x 270mm\n   5120x2160     50.00  \n   4096x2160     50.00  \n   3840x2160     60.00    59.94    50.00  \n   2560x1080     50.00  \n   2048x1152     60.00  \n   1920x1440     60.00  \n   1920x1200     59.88  \n   1920x1080     75.00*+  60.00    50.00  \n   1856x1392     59.99  \n   1792x1344     60.00  \n   1680x1050     59.95  \n   1600x1200     60.00  \n   1440x900      59.89  \n   1400x1050     59.98  \n   1360x768      60.02  \n   1280x1024     60.02  \n   1280x960      60.00  \n   1280x768      59.87  \n   1024x768      60.00  \n   800x600       60.32",
+ "drm_state_path": "/sys/kernel/debug/dri/0000:00:04.0/state",
+ "planes_first": [
+  {
+   "plane": "plane-0",
+   "crtc": "crtc-0",
+   "fb": "64",
+   "crtc_pos": [
+    1920,
+    1080,
+    0,
+    0
+   ]
+  },
+  {
+   "plane": "plane-1",
+   "crtc": "crtc-0",
+   "fb": "65",
+   "crtc_pos": [
+    64,
+    64,
+    780,
+    178
+   ]
+  },
+  {
+   "plane": "plane-2",
+   "crtc": "(null)",
+   "fb": "0",
+   "crtc_pos": [
+    1920,
+    1080,
+    0,
+    0
+   ]
+  },
+  {
+   "plane": "plane-3",
+   "crtc": "(null)",
+   "fb": "0",
+   "crtc_pos": [
+    64,
+    64,
+    629,
+    348
+   ]
+  },
+  {
+   "plane": "plane-4",
+   "crtc": "(null)",
+   "fb": "0",
+   "crtc_pos": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "plane": "plane-5",
+   "crtc": "(null)",
+   "fb": "0",
+   "crtc_pos": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "plane": "plane-6",
+   "crtc": "(null)",
+   "fb": "0",
+   "crtc_pos": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "plane": "plane-7",
+   "crtc": "(null)",
+   "fb": "0",
+   "crtc_pos": [
+    0,
+    0,
+    0,
+    0
+   ]
+  }
+ ],
+ "resolved_targets": [
+  [
+   100,
+   100
+  ],
+  [
+   200,
+   100
+  ],
+  [
+   400,
+   100
+  ],
+  [
+   800,
+   100
+  ],
+  [
+   960,
+   540
+  ],
+  [
+   1200,
+   700
+  ],
+  [
+   1600,
+   1000
+  ],
+  [
+   1919,
+   1079
+  ]
+ ]
+}
