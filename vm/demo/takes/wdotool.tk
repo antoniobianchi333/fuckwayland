@@ -1,0 +1,18 @@
+# take 3: wdotool and wwmctl driving a stock GNOME 26.04 desktop
+~ 0.8
+> # every move, keystroke and click below is wdotool
+~ 1.0
+> gnome-text-editor 2>/dev/null &
+~ 3.0
+> wdotool search --sync --name Editor sleep 1.2 windowsize %@ 600 330 sleep 0.5 windowmove %@ 640 370
+~ 2.2
+> wdotool search --name Editor windowactivate %@ sleep 0.4 type -- "typed by wdotool"
+~ 2.4
+> wwmctl -l -G
+~ 2.0
+> wwmctl -r Editor -b toggle,fullscreen
+~ 2.2
+> wwmctl -r Editor -b toggle,fullscreen
+~ 1.6
+> wdotool mousemove 940 470 sleep 0.2 mousemove 560 260 sleep 0.3 click 1
+~ 2.4

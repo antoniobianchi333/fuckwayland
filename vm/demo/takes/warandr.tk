@@ -1,0 +1,17 @@
+# take 2: warandr, the arandr replacement, dragging a monitor on a two head 26.04 desktop
+~ 1.2
+> warandr &
+~ 3.8
+% sh wa-drag.sh\r
+~ 4.6
+% sh wa-apply.sh\r
+~ 3.8
+% clear\r
+% wdotool search --name "Screen Layout Editor" windowmove %@ 300 790 sleep 2.2 windowmove %@ 313 98\r
+~ 4.4
+% wdotool mousemove 700 300 sleep 0.25 mousemove 900 180 sleep 0.2 mousemove 1015 117 sleep 0.6 click 1\r
+~ 2.6
+> warandr --save ~/.screenlayout/stacked.sh
+~ 1.5
+> cat ~/.screenlayout/stacked.sh
+~ 3.4

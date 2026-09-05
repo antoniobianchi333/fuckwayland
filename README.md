@@ -59,6 +59,12 @@ why the extension and the rule are handled the way they are, is
 [debian/README.Debian](debian/README.Debian) and
 [docs/Technical.md § 11](docs/Technical.md#11-installing-what-each-route-costs).
 
+![one apt command on a default Ubuntu 26.04 desktop, then the six tools answering their version](media/install-demo.gif)
+
+*The whole of it on a default Ubuntu 26.04 desktop, in real time: one `apt` command,
+the package explaining the one manual step, and the six tools answering
+`--version`.*
+
 ### What your desktop needs
 
 Whichever route you took, your desktop wants a piece of its own, and on three of the
@@ -363,7 +369,15 @@ follows is what each one is for.
 xdotool, but it works on Wayland. Drop-in: same commands, same flags, same output
 bytes, same chaining, same scripts. Installed
 [over the original](#installing-over-the-originals), your scripts do not know the
-difference. That is the recording at the top of this page.
+difference.
+
+<p align="center">
+<img src="media/wdotool-demo.gif" width="720" alt="wdotool driving a default Ubuntu 26.04 GNOME desktop">
+</p>
+
+*wdotool and wwmctl on a default Ubuntu 26.04 GNOME desktop: a window placed and
+sized where it was told, text typed into it, the window list with geometry,
+fullscreen on and off, then the pointer moved and clicked.*
 
 ```console
 # wdotool search --class foot windowactivate --sync type 'echo hello from wayland'
@@ -545,6 +559,12 @@ $ warandr --command            # what Apply would run, no GUI
 wxrandr --output DP-1 --primary --mode 1920x1080 --pos 0x0 --rotate normal --output HDMI-A-1 --mode 1280x1024 --pos 1920x0 --rotate left
 $ warandr --save ~/.screenlayout/desk.sh   # an arandr-compatible layout script
 ```
+
+![warandr dragging the second monitor under the first, applying it, and saving the layout as a script](media/warandr-demo.gif)
+
+*Two monitors on a default Ubuntu 26.04 desktop, dragged from side by side to
+stacked and applied, and the layout saved as a script. The window that dives off the
+bottom of the screen lands on the monitor that is now below it.*
 
 On top of arandr's menu (Active, Primary, Resolution, Orientation) every output also
 gets Refresh rate, Reflection, Mirror of, and, on Wayland only, Scale (1 to 3, the

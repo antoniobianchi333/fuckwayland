@@ -1,0 +1,19 @@
+# take 1: the one command install, then the six tools answering their version
+~ 1.4
+> sudo apt install ./fuckwayland_0.3.0_all.deb
+? password for	4	test
+? ontinue\?	4	Y
+@ \$ $ 180
+~ 1.6
+> wdotool --version
+~ 0.6
+> wwmctl --version
+~ 0.6
+> wxprop -version
+~ 0.6
+> wxrandr --version
+~ 0.9
+> warandr --version
+~ 0.6
+> wmirror --version
+~ 2.6
