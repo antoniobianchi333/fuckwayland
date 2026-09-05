@@ -1,0 +1,59 @@
+#!/bin/sh
+# Enable the fuckwayland GNOME Shell bridge extension for this user -- once.
+#
+# Why this exists at all: the extension is a per-user setting
+# (org.gnome.shell enabled-extensions, in the user's own dconf) and dpkg runs
+# as root, at a moment when there may be no user session on the machine at
+# all.  So the package installs the extension system-wide, where gnome-shell
+# finds it at login, and leaves the one per-user act to this script, which
+# /etc/xdg/autostart/fuckwayland-enable-bridge.desktop runs inside the user's
+# first GNOME session after the install.  gnome-shell scans extension
+# directories only at login, so that first login is also the moment the
+# extension can be loaded -- which is why "log out and back in once" is the
+# whole of the manual procedure.
+#
+# It runs once per user per installation: after a run it writes a stamp and
+# leaves the setting alone, so a user who later disables the extension stays
+# in charge of it.  What resets that is a re-install and nothing else --
+# postrm drops /var/lib/fuckwayland/installed when the package is removed and
+# postinst writes a fresh one, so a system stamp newer than the user's means
+# this is a different installation from the one that user was set up for, and
+# the setting (which the removal may well have taken with it) is made again.
+# An upgrade keeps the system stamp, so it does not disturb anyone's choice.
+# Remove the user stamp to have it run again by hand.
+set -eu
+
+UUID='fuckwayland-bridge@fuckwayland'
+STAMP_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fuckwayland"
+STAMP="$STAMP_DIR/bridge-enabled"
+SYSTEM_STAMP='/var/lib/fuckwayland/installed'
+
+if [ -e "$STAMP" ] && [ ! "$SYSTEM_STAMP" -nt "$STAMP" ]; then exit 0; fi
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Not a GNOME Shell session (the autostart entry is OnlyShowIn=GNOME, but a
+# session that ignores that must not be touched either): leave no stamp, so
+# the user's next GNOME login still gets the setting.
+have gsettings || exit 0
+gsettings list-schemas 2>/dev/null | grep -qx 'org.gnome.shell' || exit 0
+
+cur=$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null || echo '[]')
+case $cur in
+    *"'$UUID'"*) ;;    # already there: the user, or an install-bridge.sh run
+    *)
+        # gnome-extensions is the supported front end; it refuses a uuid the
+        # running shell has never seen (a fresh install before the relogin),
+        # and then the gsettings list is edited directly -- the same fallback
+        # gnome/install-bridge.sh uses.
+        if ! (have gnome-extensions && gnome-extensions enable "$UUID" >/dev/null 2>&1); then
+            case $cur in
+                '@as []'|'[]') gsettings set org.gnome.shell enabled-extensions "['$UUID']" ;;
+                *)             gsettings set org.gnome.shell enabled-extensions "${cur%]}, '$UUID']" ;;
+            esac
+        fi
+        ;;
+esac
+
+mkdir -p "$STAMP_DIR"
+: > "$STAMP"

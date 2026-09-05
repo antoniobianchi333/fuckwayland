@@ -1,0 +1,135 @@
+fuckwayland for Debian/Ubuntu
+=============================
+
+One package, both releases
+--------------------------
+
+The package is Architecture: all and every module it ships is pure Python
+standard library, installed into the version-independent
+/usr/lib/python3/dist-packages.  The same .deb therefore installs on Ubuntu
+24.04 (Python 3.12) and 26.04 (Python 3.14); nothing in it is compiled against
+one of them.  The .pyc files are made on your machine, by your python3, when
+the package is configured.
+
+What is installed where
+-----------------------
+
+  /usr/bin/{wdotool,wwmctl,wxprop,wxrandr,warandr,wmirror}
+        the six commands.  Under their own names only: no file of xdotool,
+        wmctrl, x11-utils or x11-xserver-utils is touched or replaced, which
+        is what keeps the X11 handover working.
+  /usr/lib/python3/dist-packages/{wdotool,wwmctl,wxprop,wxrandr,warandr,wmirror}/
+        the code.
+  /usr/share/gnome-shell/extensions/fuckwayland-bridge@fuckwayland/
+        the GNOME Shell bridge extension, system-wide.
+  /usr/lib/fuckwayland/enable-bridge
+  /usr/lib/fuckwayland/enable-bridge.desktop
+        the once-per-user helper that enables the extension (see below) and
+        its autostart entry, which reaches /etc/xdg/autostart as a symlink:
+        a regular file under /etc is a conffile, and a conffile outlives
+        `apt remove` -- an autostart entry pointing at a helper the removal
+        has just deleted.  The symlink goes when the package goes.
+  /usr/lib/udev/rules.d/60-fuckwayland-uinput.rules
+  /usr/lib/modules-load.d/fuckwayland-uinput.conf
+        /dev/uinput for the user at the active seat.
+  /usr/share/applications/warandr.desktop
+        the menu entry for the GUI.
+
+The GNOME extension, and why a re-login is the one manual step
+--------------------------------------------------------------
+
+gnome-shell scans extension directories only when a session starts, and
+whether an extension is enabled is a per-user dconf setting.  dpkg runs as
+root, possibly with no user session on the machine at all, so it can do
+neither of those things itself.  What the package does instead:
+
+  * installs the extension where gnome-shell will find it at the next login
+    (the system directory -- no user's home is written to);
+  * ships an autostart entry that runs /usr/lib/fuckwayland/enable-bridge
+    inside each user's first GNOME session after the install.  That script
+    adds the uuid to org.gnome.shell enabled-extensions once, writes a stamp
+    in ~/.config/fuckwayland, and then leaves the setting alone -- so if you
+    later disable the extension, it stays disabled.
+
+    Once per installation, that is: removing the package deletes the system
+    stamp /var/lib/fuckwayland/installed, installing writes a fresh one, and
+    the helper enables the extension again for any user whose own stamp is
+    older than it.  Without that, a remove (which takes the extension with it,
+    and with it the reason for the uuid to stay in anyone's dconf) followed by
+    an install would leave the user with a stamp, no setting and no extension
+    -- and the install's own message promising it had been enabled for them.
+    An upgrade keeps the system stamp and so disturbs nobody's choice.
+
+So: install, log out, log back in, and the window commands work.  Before that
+relogin wxrandr, warandr and wdotool's input commands already work, and the
+window commands say the bridge is not running.
+
+  gnome-extensions list --enabled | grep fuckwayland   # is it on for me?
+  sh gnome/install-bridge.sh --check                   # the full report
+
+If you had previously installed the extension per user with
+gnome/install-bridge.sh (no --system), that copy lives in
+~/.local/share/gnome-shell/extensions and shadows the packaged one.  Remove it
+with `sh gnome/install-bridge.sh --uninstall` to use the package's copy.
+
+/dev/uinput
+-----------
+
+The rule tags the node `uaccess`, so systemd-logind hands the user of the
+active seat an ACL on it at every login; postinst applies it to the running
+system as well, so no reboot is needed.  The node itself stays root:root 0600
+-- no `input` group, no standing grant to anyone who is not at the seat.
+Removing the package puts the node back to root:root 0600 with no ACL.
+
+Anyone who can open /dev/uinput can type as you.  That is the trade these
+tools exist to make, and it is spelled out in the threat model in
+/usr/share/doc/fuckwayland/README.md.gz.  If it is the wrong trade on this
+machine, remove the rule and run the input commands under sudo instead:
+
+  sudo rm /usr/lib/udev/rules.d/60-fuckwayland-uinput.rules
+  sudo udevadm control --reload-rules
+
+Alongside a pip install from the clone
+--------------------------------------
+
+The package and a venv install of the same source live together: /usr/local/bin
+comes before /usr/bin on Ubuntu's PATH, so the symlinks the README's pip route
+makes keep winning for the six command names, dpkg owns nothing under
+/usr/local, and `dpkg -V fuckwayland` stays clean either way.
+
+One thing is worth knowing if the clone is what you are working on.  A venv made
+with --system-site-packages sees /usr/lib/python3/dist-packages, and setuptools'
+editable install (`pip install -e .`) works by appending a finder to
+sys.meta_path -- after the ordinary path finder.  So once this package is
+installed, `import wdotool` inside that venv resolves to the packaged copy, not
+to your clone, and the venv's own commands run the packaged code.  Measured on
+both releases: 24.04 with Python 3.12 and 26.04 with Python 3.14.  Either do
+not install the package on the machine you develop on, or point at the clone
+explicitly:
+
+  PYTHONPATH=/path/to/the/clone ~/.venvs/fuckwayland/bin/wdotool ...
+
+A non-editable install into the venv (`pip install .`) is not affected: those
+files are in the venv's own site-packages, which comes first.
+
+wmirror and wl-mirror
+---------------------
+
+wmirror drives wl-mirror, which is a Suggests and not a Depends: it is only
+useful where the compositor offers a screencopy protocol, which the wlroots
+family does and GNOME does not.  On GNOME `wmirror --check` says so in full --
+"this compositor advertises neither zwlr_screencopy_manager_v1 nor
+ext_image_copy_capture_manager_v1" -- with or without wl-mirror installed.
+
+Installing over the originals
+-----------------------------
+
+Deliberately not done by the package.  /usr/local/bin comes first on Ubuntu's
+PATH, so it is one symlink per tool and no packaged file is disturbed:
+
+  sudo ln -sfn /usr/bin/wdotool /usr/local/bin/xdotool
+  sudo ln -sfn /usr/bin/wwmctl  /usr/local/bin/wmctrl
+  sudo ln -sfn /usr/bin/wxprop  /usr/local/bin/xprop
+  sudo ln -sfn /usr/bin/wxrandr /usr/local/bin/xrandr
+
+ -- Antonio Bianchi <antonio.bianchi.333@gmail.com>

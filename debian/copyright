@@ -1,0 +1,19 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: fuckwayland
+Upstream-Contact: Antonio Bianchi <antonio.bianchi.333@gmail.com>
+Source: https://github.com/antoniobianchi333/fuckwayland
+
+Files: *
+Copyright: 2026 Antonio Bianchi
+License: no-licence-yet
+
+License: no-licence-yet
+ The upstream source carries no licence statement: there is no LICENSE or
+ COPYING file in the repository, and no licence header in any source file.
+ Until upstream publishes terms, all rights are reserved by the copyright
+ holder above.
+ .
+ This package is therefore built for installation from a clone of the
+ upstream repository by people who already have it; it is not redistributable
+ as it stands, and it must not be uploaded to an archive until upstream says
+ under what terms.
