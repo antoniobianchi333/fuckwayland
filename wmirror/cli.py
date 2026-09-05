@@ -28,7 +28,7 @@ def _err(lines):
     if isinstance(lines, str):
         lines = [lines]
     for i, line in enumerate(lines):
-        sys.stderr.write(("wmirror: " if i == 0 else "  ") + line + "\n")
+        stdio.warn(("wmirror: " if i == 0 else "  ") + line + "\n")
 
 
 def parser() -> argparse.ArgumentParser:

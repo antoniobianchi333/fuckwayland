@@ -208,7 +208,7 @@ def main(argv=None):
     except BrokenPipeError:
         code = 1
     except Exception as e:
-        sys.stderr.write("warandr: %s\n" % e)
+        stdio.warn("warandr: %s\n" % e)
         # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
         # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)

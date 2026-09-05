@@ -185,7 +185,8 @@ def cmd_search(ctx, args):
             if want_name:
                 conds.append(rx.search(w.title or "") is not None)
             if want_class:
-                # WM_CLASS class for X clients, app_id for native toplevels.
+                # WM_CLASS class for X clients; for native toplevels Mutter's wm_class (the app id the
+                # client gave), which is what an X11 script's --class pattern was written against.
                 conds.append(rx.search(w.class_ or "") is not None)
             if want_classname:
                 # WM_CLASS *instance* -- `xterm -name myinst` is findable by "myinst" like it is under X11 (B4).

@@ -613,7 +613,9 @@ All six tools in this repo share one more rule, and it is
 in full: whatever the command decided, the *last* thing every `main()` does is
 `stdio.flush_stdout(prog)`, so output that never reached its reader makes the status
 1 — a full disk, a quota, `>/dev/full` — while a reader that closed a pipe is silent,
-as the originals are. No tool prints a traceback and none exits 120.
+as the originals are. No tool prints a traceback and none exits 120. That holds
+when stderr has gone with it (`wdotool help >/dev/full 2>&1`): the diagnostic is
+dropped rather than raised, and the status is all that is left to say it.
 
 ## `--sync` waits are bounded
 
@@ -1067,7 +1069,12 @@ Daemon notes:
 - **wlr**: `zwlr_foreign_toplevel_management_unstable_v1` via `wayland_mini`. IDs:
   1000000 + enumeration order. list/activate/close/fullscreen/minimize only; geometry
   unknown (0,0 + output size); move/resize → CmdError.
-- `search`: `re.search` on title (`--name`), app_id (`--class`, `--classname`);
+- `search`: `re.search`, case-insensitive like xdotool's `REG_ICASE`, on title
+  (`--name`) and on the class (`--class`; `--classname` takes the WM_CLASS instance
+  where there is one). The class of a native toplevel is Mutter's `wm_class` and only
+  then `gtk_app_id`, which is the opposite order from the app id `wwmctl -lx` prints;
+  the two differ on Ubuntu 24.04's `gnome-terminal` and agree on 26.04's Ptyxis, and
+  `wm_class` is the X-parity answer ([WWMCTL.md](WWMCTL.md) says which is which);
   `--pid`, `--all/--any`, `--limit N`, `--onlyvisible`, `--sync`. Writes `ctx.stack`.
   Exact output formats for search/getwindowgeometry/getmouselocation (+ `--shell`
   variants): copy from the manpage and `cmd_*.c`.

@@ -148,23 +148,31 @@ untouched) and the generic `list()` fallback.
   top (real wmctrl prints `_NET_CLIENT_LIST`, i.e. creation order — the
   ids are the same, the order is not).
 * **Columns.** `-x`: `instance.class` from the X plane's `WM_CLASS` for
-  XWayland windows (the bridge's `wm_class_instance`/`wm_class` pair stands
-  in when Xwayland cannot be reached), `app_id.app_id` for native windows
-  (Mutter reports the Wayland app id as `wm_class`; GTK apps without one
-  fall back to `gtk_app_id`). `-p`: Mutter's pid, `_NET_WM_PID` only as a
-  fallback. `-G`: the X client rectangle (GetGeometry + TranslateCoordinates,
-  root coordinates) for XWayland windows — one titlebar below the frame,
-  Mutter being a reparenting WM — and the bridge's `get_frame_rect()` for
-  native ones (logical pixels, no CSD shadows). Machine column: the
-  `WM_CLIENT_MACHINE` of X windows, the local hostname otherwise,
-  right-aligned to the *longest* one in the list. Real wmctrl 1.07 sizes
-  that column from the *last* row (a bug in its `main.c`), which looks
-  stable only because its rows come from `_NET_CLIENT_LIST`, i.e. creation
-  order; our rows are in stacking order, so copying the quirk would re-flow
-  the column by the difference in hostname lengths every time a window is
-  raised. On a session where every client is local — every session with
-  XWayland or Wayland clients — the two rules print the same bytes. The desktop column is the workspace index,
-  `-1` for a sticky window — Mutter's dense 0-based indices are exactly
+  XWayland windows (the bridge's `wm_class_instance`/`wm_class` pair stands in
+  when Xwayland cannot be reached), `app_id.app_id` for native windows (the
+  bridge's `gtk_app_id`, and Mutter's `wm_class` — the app id a Wayland client
+  gave — for a window that has no `gtk_app_id`). Those two are usually the
+  same string and sometimes are not: Ubuntu 24.04's `gnome-terminal` reports
+  `gtk_app_id` `org.gnome.Terminal` and `wm_class` `gnome-terminal-server`, so
+  `wwmctl -lx` prints `org.gnome.Terminal.org.gnome.Terminal` for a window
+  that `wdotool search --class`, which matches `wm_class` first
+  ([WDOTOOL.md](WDOTOOL.md)), finds as `gnome-terminal-server` — which is the
+  string real `xdotool` matches for the same application on an X11 session,
+  and the reason a ported script keeps working. Match on a substring
+  (`gnome-terminal`, case-insensitively) and both answer. `-p`: Mutter's pid,
+  `_NET_WM_PID` only as a fallback. `-G`: the X client rectangle (GetGeometry
+  + TranslateCoordinates, root coordinates) for XWayland windows — one
+  titlebar below the frame, Mutter being a reparenting WM — and the bridge's
+  `get_frame_rect()` for native ones (logical pixels, no CSD shadows). Machine
+  column: the `WM_CLIENT_MACHINE` of X windows, the local hostname otherwise,
+  right-aligned to the *longest* one in the list. Real wmctrl 1.07 sizes that
+  column from the *last* row (a bug in its `main.c`), which looks stable only
+  because its rows come from `_NET_CLIENT_LIST`, i.e. creation order; our rows
+  are in stacking order, so copying the quirk would re-flow the column by the
+  difference in hostname lengths every time a window is raised. On a session
+  where every client is local — every session with XWayland or Wayland clients
+  — the two rules print the same bytes. The desktop column is the workspace
+  index, `-1` for a sticky window — Mutter's dense 0-based indices are exactly
   wmctrl's, so GNOME has none of the sway id-mapping hole.
 * **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge
   reports (`XInfo`: gnome-shell's own environment, else Mutter's

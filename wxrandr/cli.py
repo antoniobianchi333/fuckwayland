@@ -1351,11 +1351,11 @@ def main(argv=None) -> int:
         stdio.exit_after_flush("xrandr", e)
         raise                   # unreachable; the line above raises
     except ArgErr as e:
-        sys.stderr.write("xrandr: %s" % e.args[0])
-        sys.stderr.write("Try 'xrandr --help' for more information.\n")
+        stdio.warn("xrandr: %s" % e.args[0])
+        stdio.warn("Try 'xrandr --help' for more information.\n")
         code = 1
     except Fatal as e:
-        sys.stderr.write("xrandr: %s" % e.args[0])
+        stdio.warn("xrandr: %s" % e.args[0])
         code = 1
     except BrokenPipeError:
         code = 1
@@ -1364,7 +1364,7 @@ def main(argv=None) -> int:
     except Exception as e:
         # never a traceback: an out-of-range --pos/--rate/--scale that trips a struct pack, a lost compositor
         # connection mid-apply, malformed IPC — all become one-line xrandr: fatals, like the real thing.
-        sys.stderr.write("xrandr: %s\n" % e)
+        stdio.warn("xrandr: %s\n" % e)
         # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
         # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)

@@ -35,6 +35,11 @@ UDEV_RULE='60-fuckwayland-uinput.rules'
 UDEV_DEST="/etc/udev/rules.d/$UDEV_RULE"
 MODLOAD_SRC='modules-load-uinput.conf'
 MODLOAD_DEST='/etc/modules-load.d/fuckwayland-uinput.conf'
+# Where the .deb puts the same two files.  --udev and --udev --uninstall own
+# the /etc copies and nothing else, but --check has to look here as well, or
+# it reports "no" to someone whose package-installed rule is working.
+UDEV_PKG="/usr/lib/udev/rules.d/$UDEV_RULE"
+MODLOAD_PKG='/usr/lib/modules-load.d/fuckwayland-uinput.conf'
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/$UUID"
@@ -346,8 +351,13 @@ can_write_uinput() {
 }
 
 udev_status() {
-    if [ -f "$UDEV_DEST" ]; then u=yes; else u=no; fi
-    if [ -f "$MODLOAD_DEST" ]; then m=yes; else m=no; fi
+    uwhere=$UDEV_DEST; mwhere=$MODLOAD_DEST
+    if [ -f "$UDEV_DEST" ]; then u=yes
+    elif [ -f "$UDEV_PKG" ]; then u=yes; uwhere="$UDEV_PKG, from the package"
+    else u=no; fi
+    if [ -f "$MODLOAD_DEST" ]; then m=yes
+    elif [ -f "$MODLOAD_PKG" ]; then m=yes; mwhere="$MODLOAD_PKG, from the package"
+    else m=no; fi
     if [ -e /dev/uinput ]; then
         n=$(stat -c '%U:%G %a' /dev/uinput 2>/dev/null || echo '?')
         # with an ACL on the node the group bits of the mode are the ACL mask
@@ -356,8 +366,8 @@ udev_status() {
     if grep -qw '^uinput' /proc/modules 2>/dev/null; then l='module loaded'
     elif [ "$(modinfo -n uinput 2>/dev/null)" = '(builtin)' ]; then l='driver built into the kernel'
     else l='module not loaded'; fi
-    echo "udev rule:        $u ($UDEV_DEST)"
-    echo "modules-load:     $m ($MODLOAD_DEST)"
+    echo "udev rule:        $u ($uwhere)"
+    echo "modules-load:     $m ($mwhere)"
     echo "/dev/uinput:      $n, $l"
     [ -e /dev/uinput ] || return 0
     su=$(seat_user)

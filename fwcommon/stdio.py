@@ -15,9 +15,14 @@ in a status no original ever produces, or in silence where output was lost:
 * fd 1 (or fd 2) was closed before the interpreter started (``>&-``, a
   daemon that closed its descriptors).  ``sys.stdout`` is then None and the
   first ``print()`` is an AttributeError.
+* stderr cannot take the diagnostic either (``tool >/dev/full 2>&1``, a cron
+  job whose log filled the disk).  The failed write escaped ``main()`` as a
+  traceback, and the exit-time flush of the bytes still in that buffer made
+  the status 120 as surely as stdout's does.
 
-`repair_std()` answers the third at the top of ``main()``; `flush_stdout()`
-answers the first two at the bottom of it.  It CLOSES the stream on failure,
+`repair_std()` answers the third at the top of ``main()``; `warn()` answers
+the fourth wherever a tool reports; `flush_stdout()` answers the first two at
+the bottom of ``main()``.  It CLOSES the stream on failure,
 which is the part that matters: the interpreter skips a *closed* stdout when
 it flushes the standard files at exit, and flushes -- and fails on, and
 turns into exit 120 -- an open one.  So nothing may print after it.
@@ -43,6 +48,32 @@ def repair_std() -> None:
                 pass
 
 
+def warn(text: str) -> None:
+    """Write one diagnostic to stderr, and never raise or leave 120 behind.
+
+    `main()`'s except-blocks are the last place a tool speaks, and `tool >/dev/full 2>&1` (a full disk, a quota,
+    a cron job whose log filled up) is the case where that write itself fails: the OSError escaped `main()` as a
+    traceback, and the interpreter's exit-time flush of the failed buffer turned the status into 120 -- the one
+    the module docstring above says no original produces.  So the write is guarded, and on failure the stream is
+    CLOSED, for the same reason `flush_stdout()` closes stdout: a closed stderr is skipped by that exit-time
+    flush, an open one with unwritable bytes still in it is not.  Nothing may print after it, which is why this
+    is for the diagnostic that ends the run.
+    """
+    err = getattr(sys, "stderr", None)
+    if err is None:                       # `2>&-` without repair_std()
+        return
+    try:
+        err.write(text)
+        err.flush()
+        return
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        err.close()
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 def flush_stdout(prog: str, quiet: bool = False) -> bool:
     """Push out what was printed, and say whether it got there.
 
@@ -63,12 +94,8 @@ def flush_stdout(prog: str, quiet: bool = False) -> bool:
     except BrokenPipeError:
         pass
     except (OSError, ValueError, AttributeError) as e:
-        err = None if quiet else getattr(sys, "stderr", None)
-        if err is not None:
-            try:
-                err.write("%s: %s\n" % (prog, e))
-            except (OSError, ValueError):
-                pass                      # stderr is gone too; nothing to do
+        if not quiet:
+            warn("%s: %s\n" % (prog, e))   # itself guarded: stderr may be gone too
     try:
         out.close()                       # flushes again, and may fail again
     except (OSError, ValueError, AttributeError):

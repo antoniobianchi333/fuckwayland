@@ -498,12 +498,12 @@ def main(argv: list[str] | None = None) -> int:
     except BrokenPipeError:
         code = 1
     except CmdError as e:
-        sys.stderr.write("%s\n" % e)
+        stdio.warn("%s\n" % e)
         code = getattr(e, "exit_code", 1) or 1
     except Exception as e:
         # one line, never a traceback: an out-of-range `sleep`, a compositor that drops the connection
         # mid-command, a keymap that will not parse.
-        sys.stderr.write("%s: %s\n" % (prog, e))
+        stdio.warn("%s: %s\n" % (prog, e))
         # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
         # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)
