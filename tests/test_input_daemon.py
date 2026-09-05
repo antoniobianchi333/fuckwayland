@@ -5,7 +5,6 @@ import contextlib
 import io
 import json
 import os
-import signal
 import socket
 import sys
 import tempfile
@@ -18,7 +17,8 @@ sys.path.insert(0, ROOT)
 
 from fwcommon import session
 from fwcommon.errors import CmdError
-from support import FakeEvdev, RecorderDev, abs_report, key_bitmap
+from support import (FakeEvdev, RecorderDev, abs_report, key_bitmap,
+                     stop_daemons_under)
 from wdotool import daemon, keymap, keystate, uinput
 
 # The suite never hands a tool over to the real X11 one: see
@@ -119,11 +119,6 @@ def compositor_pixel(axis_value: int, span: int) -> int:
 def _close_quietly(fd):
     with contextlib.suppress(OSError):
         os.close(fd)
-
-
-def _kill_quietly(pid):
-    with contextlib.suppress(OSError):
-        os.kill(pid, signal.SIGTERM)
 
 
 
@@ -821,6 +816,14 @@ class TestSpawnHygiene(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="wdotool-spawn-")
+        # Registered here, before anything is spawned, and in this order:
+        # cleanups run last-in-first-out, so the daemons go first and the
+        # directory they listen in goes second. tearDown cannot do this --
+        # unittest runs it *before* the cleanups -- and a daemon that
+        # outlives its own socket directory is unreachable, which used to
+        # mean immortal (tests/test_daemon_lifetime.py).
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(stop_daemons_under, self.tmp.name)
         self.backup = {k: os.environ.get(k)
                        for k in ("XDG_RUNTIME_DIR", "WDOTOOL_UINPUT_PATH",
                                  "WDOTOOL_FAKE_UINPUT", "WAYLAND_DISPLAY",
@@ -840,7 +843,6 @@ class TestSpawnHygiene(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        self.tmp.cleanup()
 
     def test_clean_env_keeps_only_what_the_daemon_needs(self):
         env = daemon.clean_env()
@@ -880,7 +882,6 @@ class TestSpawnHygiene(unittest.TestCase):
         client = daemon.DaemonClient.connect_or_spawn()
         self.addCleanup(client.close)
         pid = client._rpc(op="ping")["pid"]
-        self.addCleanup(_kill_quietly, pid)
 
         fds = sorted(int(n) for n in os.listdir("/proc/%d/fd" % pid))
         targets = []
@@ -907,6 +908,13 @@ class TestProtocol(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix="wdotool-test-")
+        # Before the spawn, and in this order (cleanups run
+        # last-in-first-out): stop the daemons, then remove the directory
+        # they listen in. Class cleanups also run when setUpClass itself
+        # raises half way through, which tearDownClass does not -- and the
+        # spawn is below, so that was a daemon nothing would ever stop.
+        cls.addClassCleanup(cls.tmp.cleanup)
+        cls.addClassCleanup(stop_daemons_under, cls.tmp.name)
         cls.env_backup = {
             k: os.environ.get(k)
             for k in ("XDG_RUNTIME_DIR", "WDOTOOL_UINPUT_PATH", "WDOTOOL_FAKE_UINPUT",
@@ -941,14 +949,11 @@ class TestProtocol(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.client.close()
-        with contextlib.suppress(OSError):
-            os.kill(cls.pid, signal.SIGTERM)
         for k, v in cls.env_backup.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        cls.tmp.cleanup()
 
     def test_geometry_fallback(self):
         stderr = io.StringIO()

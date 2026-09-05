@@ -10,8 +10,10 @@ sys.path, and eight of the files that need it carry no repo-root bootstrap.
 
 What lives here is only what was written more than once and byte-identical
 in behaviour: the recorder uinput device and its tablet reader, the
-environment context manager, the faked evdev layer, and the headless sway
-rig the four XWayland live files boot. Doubles that differ between their
+environment context manager, the faked evdev layer, the headless sway
+rig the four XWayland live files boot, and stopping a spawned input
+daemon -- which three files do, all three differently and none of them
+reliably (see the daemon section below). Doubles that differ between their
 callers stay where they are -- `make_daemon` (three shapes of `geom`),
 `FakeDaemon` (two protocols), `FakeBackend`, the compositor fakes.
 """
@@ -189,6 +191,110 @@ class FakeEvdev:
 
     def release(self, path, *codes):
         self.nodes[path].setdefault("held", set()).difference_update(codes)
+
+
+# -- the input daemon, spawned and stopped ------------------------------------
+#
+# Every test that spawns a real daemon stops it through these, and no test
+# may spawn one any other way. A daemon nobody stops is not one stray
+# process for the length of one test: its socket sits in a temporary
+# runtime directory the test then deletes, and a daemon whose socket file
+# is gone cannot be reached by anybody -- 161 of them were found alive at
+# once on the test rig, ~3GB between them, the oldest 18 hours old.
+# `wdotool/daemon.py` now notices that and exits by itself; these keep the
+# suite from leaning on it.
+
+DAEMON_ARGV = "__daemon"
+
+
+def daemon_runtime_dir(pid):
+    """$XDG_RUNTIME_DIR the process was started with, or None.
+
+    /proc/<pid>/environ is the environment at exec(), which is exactly
+    what the daemon computed its socket path from."""
+    try:
+        with open("/proc/%d/environ" % pid, "rb") as f:
+            raw = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    for kv in raw.split("\0"):
+        if kv.startswith("XDG_RUNTIME_DIR="):
+            return kv.split("=", 1)[1]
+    return None
+
+
+def daemon_pids(rtdir=None):
+    """pids of this euid's wdotool input daemons; with `rtdir`, only the
+    ones spawned into that runtime directory.
+
+    Read out of /proc rather than matched with `pkill -f __daemon`: that
+    pattern also matches the shell that runs it and anything else carrying
+    the word, and a test that knows which directory it spawned into can
+    simply name its own processes."""
+    me = os.geteuid()
+    out = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        try:
+            if os.stat("/proc/%d" % pid).st_uid != me:
+                continue
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                argv = f.read().decode("utf-8", "replace").split("\0")
+        except OSError:
+            continue           # it exited while we were reading it
+        if DAEMON_ARGV not in argv:
+            continue
+        if rtdir is not None and daemon_runtime_dir(pid) != rtdir:
+            continue
+        out.append(pid)
+    return sorted(out)
+
+
+def stop_daemon(pid, timeout=5.0):
+    """SIGTERM, then SIGKILL, and do not return until the process is
+    really gone. True when it is.
+
+    The waiting is the point. A daemon that has been signalled but has not
+    gone yet is still holding its socket, and a test that removes its
+    runtime directory in between leaves exactly the unreachable daemon
+    this exists to prevent. (A daemon spawned by a client is double-forked
+    and reparented, so it is nobody's child and there is no zombie to wait
+    for: kill(pid, 0) is the whole answer.)"""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False       # not ours to kill; the caller says so
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            except OSError:
+                return False
+            time.sleep(0.02)
+    return False
+
+
+def stop_daemons_under(rtdir, timeout=5.0):
+    """Stop every daemon spawned into `rtdir`, and wait for them.
+
+    Register it with addCleanup/addClassCleanup *before* whatever removes
+    the directory (cleanups run last-in-first-out, and unittest runs
+    tearDown before any of them) and before the spawn itself, so that a
+    test which dies half way through its own setup still takes its daemon
+    with it."""
+    left = [pid for pid in daemon_pids(rtdir)
+            if not stop_daemon(pid, timeout)]
+    if left:
+        raise AssertionError(
+            "wdotool daemon(s) %s spawned into %s could not be stopped"
+            % (left, rtdir))
 
 
 # -- a headless sway with XWayland --------------------------------------------
