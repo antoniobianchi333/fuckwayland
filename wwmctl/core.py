@@ -28,7 +28,6 @@ Output strings below are byte-parity copies of wmctrl 1.07 (main.c)."""
 import dataclasses
 import os
 import re
-import socket
 import struct
 import sys
 import time
@@ -36,7 +35,7 @@ import time
 from wdotool import backend_detect, session
 from wdotool.backend import warn as _warn
 from wdotool.ctx import CmdError
-from wdotool.x11_mini import XUnavailable
+from wdotool.x11_mini import XUnavailable, hostname
 
 # _NET_WM_STATE actions (EWMH)
 STATE_REMOVE = 0
@@ -174,7 +173,7 @@ class Core:
 
     def windows(self) -> list[UWindow]:
         backend = self.backend()
-        host = _hostname()
+        host = hostname() or None   # UWindow.machine: None means unknown
         out = None
         views_fn = getattr(backend, "views", None)
         if callable(views_fn):  # typed View records (GNOME bridge)
@@ -328,8 +327,7 @@ class Core:
             # sentence on every backend (a click on GNOME and KDE, the next
             # focus change on sway), so the backend supplies it.
             b = self.backend()
-            _warn(getattr(b, "select_window_hint",
-                          "click the target window to select it"))
+            _warn(b.select_window_hint)
             node = b.select_window()
             for w in self.windows():
                 if w.node_id == node:
@@ -1080,13 +1078,6 @@ class Core:
 
 
 # -- small parsing/format helpers -------------------------------------------
-
-def _hostname() -> str | None:
-    try:
-        return socket.gethostname() or None
-    except OSError:
-        return None
-
 
 def _uwindow(win, host: str | None, xid: int | None, cls: str | None,
              title: str | None) -> UWindow:

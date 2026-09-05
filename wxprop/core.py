@@ -31,16 +31,22 @@ and -root merges the real X root with the bridge's view of all windows
 
 import os
 import queue
-import socket
 import struct
 import sys
 import threading
 
 from wxprop.fmt import FatalError
 
-try:  # the X error classes, for narrow catches in the -name DFS
-    from wdotool.x11_mini import X11Error, XUnavailable
+try:  # the X error classes for narrow catches in the -name DFS, the X
+    # error text for -id on a dead window, and this machine's name
+    from wdotool.x11_mini import (X11Error, X_ERROR_TEXT, XUnavailable,
+                                  hostname)
 except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
+    X_ERROR_TEXT = {}
+
+    def hostname() -> str:
+        return ""
+
     class X11Error(Exception):
         pass
 
@@ -51,26 +57,6 @@ except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
 SPY_EVENT_MASK = 0x420000
 
 # -- Xlib's default error report (what xprop shows on e.g. BadWindow) -------
-
-_X_ERROR_TEXT = {
-    1: "BadRequest (invalid request code or no such operation)",
-    2: "BadValue (integer parameter out of range for operation)",
-    3: "BadWindow (invalid Window parameter)",
-    4: "BadPixmap (invalid Pixmap parameter)",
-    5: "BadAtom (invalid Atom parameter)",
-    6: "BadCursor (invalid Cursor parameter)",
-    7: "BadFont (invalid Font parameter)",
-    8: "BadMatch (invalid parameter attributes)",
-    9: "BadDrawable (invalid Pixmap or Window parameter)",
-    10: "BadAccess (attempt to access private resource denied)",
-    11: "BadAlloc (insufficient resources for operation)",
-    12: "BadColor (invalid Colormap parameter)",
-    13: "BadGC (invalid GC parameter)",
-    14: "BadIDChoice (invalid resource ID chosen for this connection)",
-    15: "BadName (named color or font does not exist)",
-    16: "BadLength (poly request too large or internal Xlib length error)",
-    17: "BadImplementation (server does not implement operation)",
-}
 
 _X_OPCODE_NAMES = {
     2: "X_ChangeWindowAttributes", 14: "X_GetGeometry", 15: "X_QueryTree",
@@ -84,7 +70,7 @@ _X_RESOURCE_ERRORS = {3, 4, 6, 7, 9, 12, 13, 14}
 
 
 def x_error_report(err) -> str:
-    text = _X_ERROR_TEXT.get(err.code, "%s (unknown error)" % err.name)
+    text = X_ERROR_TEXT.get(err.code, "%s (unknown error)" % err.name)
     seq = getattr(err, "sequence", 0)
     lines = ["X Error of failed request:  %s" % text,
              "  Major opcode of failed request:  %d (%s)"
@@ -167,13 +153,6 @@ def _progname() -> str:
     if not argv0 or os.path.basename(argv0) in ("__main__.py", "-c", "-m"):
         return "wxprop"
     return argv0
-
-
-def _hostname() -> str:
-    try:
-        return socket.gethostname() or ""
-    except OSError:
-        return ""
 
 
 def _xwayland_running() -> bool:
@@ -618,7 +597,7 @@ class NativeViewTarget(NativeTarget):
         pid = node.get("pid") or getattr(win, "pid", 0)
         if pid:
             props[b"_NET_WM_PID"] = _p_cardinal([pid])
-        host = _hostname()
+        host = hostname()
         if host:
             props[b"WM_CLIENT_MACHINE"] = _p_string(host)
         wp = node.get("window_properties") or {}
@@ -1025,8 +1004,7 @@ def select_target(sess: Session, prog: str):
                          "backend; use -root, -id or -name")
     # The instruction differs by backend: click on GNOME and KDE, focus the
     # window on sway, whose IPC has no picker (see WindowBackend).
-    sys.stderr.write("%s: %s\n" % (prog, getattr(
-        b, "select_window_hint", "click the target window to select it")))
+    sys.stderr.write("%s: %s\n" % (prog, b.select_window_hint))
     sys.stderr.flush()
     try:
         node_id = b.select_window()

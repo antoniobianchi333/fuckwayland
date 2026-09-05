@@ -120,7 +120,7 @@ class CliTestBase(unittest.TestCase):
         out = _CapStdout()
         err = io.StringIO()
         with mock.patch.object(core, "_detect_backend", det), \
-                mock.patch.object(core, "_hostname",
+                mock.patch.object(core, "hostname",
                                   lambda: hostname), \
                 mock.patch.object(sys, "stdout", out), \
                 mock.patch.object(sys, "stderr", err):
@@ -650,7 +650,7 @@ class IdCollisionTest(CliTestBase):
         out = _CapStdout()
         err = io.StringIO()
         with mock.patch.object(core, "_detect_backend", lambda: fake), \
-                mock.patch.object(core, "_hostname", lambda: "testhost"), \
+                mock.patch.object(core, "hostname", lambda: "testhost"), \
                 mock.patch.object(sys, "stdout", out), \
                 mock.patch.object(sys, "stderr", err):
             code = cli.main(list(args))

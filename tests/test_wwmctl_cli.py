@@ -234,11 +234,11 @@ def run(argv, backend=None, x11=None, argv0="wmctrl", env=None):
     backend = backend if backend is not None else FakeSwayBackend(
         [dict(s) for s in SPECS])
     old_detect, old_x11 = core._detect_backend, core._x11_connect
-    old_host, old_argv = core._hostname, sys.argv
+    old_host, old_argv = core.hostname, sys.argv
     old_env = {}
     core._detect_backend = lambda: backend
     core._x11_connect = lambda: x11
-    core._hostname = lambda: "testhost"
+    core.hostname = lambda: "testhost"
     sys.argv = [argv0]
     for k, v in (env or {}).items():
         old_env[k] = os.environ.get(k)
@@ -249,7 +249,7 @@ def run(argv, backend=None, x11=None, argv0="wmctrl", env=None):
             rc = cli.main(list(argv))
     finally:
         core._detect_backend, core._x11_connect = old_detect, old_x11
-        core._hostname, sys.argv = old_host, old_argv
+        core.hostname, sys.argv = old_host, old_argv
         for k, v in old_env.items():
             if v is None:
                 os.environ.pop(k, None)

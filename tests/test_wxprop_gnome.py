@@ -201,7 +201,7 @@ class GnomeXpropBase(_Base):
             mock.patch.object(core, "_detect_backend",
                               detect or (lambda: self.backend)),
             mock.patch.object(core, "_x11_connect", connect),
-            mock.patch.object(core, "_hostname", lambda: "testhost"),
+            mock.patch.object(core, "hostname", lambda: "testhost"),
         ]
         os.environ.pop("WXPROP_NO_X", None)
         if xwayland is not None:
@@ -676,7 +676,7 @@ class ErrorPathTests(_Base):
                 mock.patch.object(core, "_x11_connect",
                                   lambda display, xauthority=None: x), \
                 mock.patch.object(core, "_xwayland_running", lambda: False), \
-                mock.patch.object(core, "_hostname", lambda: "testhost"), \
+                mock.patch.object(core, "hostname", lambda: "testhost"), \
                 mock.patch.object(sys, "stdout", out), \
                 mock.patch.object(sys, "stderr", err):
             os.environ.pop("WXPROP_NO_X", None)
