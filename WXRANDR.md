@@ -10,9 +10,8 @@ the point, not an afterthought. House rules per Technical.md.
 - **sway/i3-compatible (flagship)**: query from `GET_OUTPUTS` (+ `fwcommon.wayland_mini`
   wl_output for physical mm sizes); mutate via `output ...` IPC commands
   (mode/--custom, position, transform, scale, enable/disable, dpms).
-- **Generic wlroots**: `zwlr_output_management_unstable_v1` over `wayland_mini`
-  (ADDITIVE-ONLY changes there; wdotool's 257 input tests must stay green) — atomic
-  apply of whole-layout configurations, which is exactly xrandr's model. This is the
+- **Generic wlroots**: `zwlr_output_management_unstable_v1` over `wayland_mini` —
+  atomic apply of whole-layout configurations, which is exactly xrandr's model. This is the
   backend that makes crazy configs atomic: build the full config, apply once, handle
   `succeeded/failed/cancelled` events.
 - **wlroots scale arithmetic** (`core.wlr_scale` / `core.logical_size`, both

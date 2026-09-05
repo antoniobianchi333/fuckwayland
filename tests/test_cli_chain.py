@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent A: chain driver — dispatch, consumed-token accounting, error/exit
+"""chain driver — dispatch, consumed-token accounting, error/exit
 semantics, window-stack integration. Plain asserts, no pytest."""
 
 import contextlib

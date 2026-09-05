@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent C: window/desktop command unit tests against a fake in-memory
+"""window/desktop command unit tests against a fake in-memory
 backend — output byte-parity, arg consumption, stack semantics, exit codes.
 No compositor needed."""
 

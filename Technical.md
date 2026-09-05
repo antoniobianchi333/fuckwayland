@@ -700,6 +700,14 @@ hold across all of them and are enforced by tests of their own:
 | `procs.py`, `stdio.py` | `test_wmirror_lifetime`, `test_stdout_gone` | real forks; `>/dev/full`, `\| head -1`, `>&-` |
 | the no-dialog guarantee | `test_no_portal` | nothing — it is a static check that no package here names the portal or PolicyKit |
 
+Two environments run these. **In the development shell** (`nix develop`), a container
+with no `/dev/uinput`, `WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 sway` gives a
+real Wayland compositor for the backend and protocol tests, with `swaymsg`, `foot`,
+`grim`, XWayland and the real `xdotool`, `wmctrl`, `xprop` and `xrandr` alongside it
+as the byte oracles. **On the rig** (`vm/vmctl`), the same tools run against real
+desktops with real input, which is where `WLR_BACKENDS=headless,libinput` matters:
+libinput has to be listed or sway does not pick up the uinput devices at all.
+
 ## 10. The VM rig
 
 `vm/` is where every "it works on GNOME" sentence in this repo comes from.

@@ -1,4 +1,4 @@
-"""OWNER: Agent W. Unified window model + wmctrl semantics over the wdotool
+"""Unified window model + wmctrl semantics over the wdotool
 compositor backend, with X11 enrichment for XWayland windows when available.
 
 Dual-plane design per WWMCTL.md:

@@ -1,4 +1,4 @@
-"""OWNER: wxprop builder. xprop-compatible option parsing and dispatch.
+"""xprop-compatible option parsing and dispatch.
 
 xprop has a hand-rolled parser (xprop.c main + dsimple.c) and order
 matters; this is a straight port of the 1.2.8 RELEASE binary (verified

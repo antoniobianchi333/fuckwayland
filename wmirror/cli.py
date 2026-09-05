@@ -1,4 +1,4 @@
-"""OWNER: wmirror. The command line.
+"""The command line.
 
     wmirror SOURCE --to TARGET [--region WxH+X+Y] [--scaling fit|cover|exact]
     wmirror --list | --stop TARGET | --stop-all | --check

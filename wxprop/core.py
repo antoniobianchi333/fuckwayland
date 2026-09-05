@@ -1,4 +1,4 @@
-"""OWNER: wxprop builder. Plane resolution, property assembly, -spy loops.
+"""Plane resolution, property assembly, -spy loops.
 
 Two planes, per WXPROP.md:
 

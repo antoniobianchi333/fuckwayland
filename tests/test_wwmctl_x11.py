@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent X: tests for wdotool.x11_mini, the pure-stdlib X11 wire client.
+"""tests for wdotool.x11_mini, the pure-stdlib X11 wire client.
 
 Two layers:
 

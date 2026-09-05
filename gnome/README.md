@@ -639,7 +639,7 @@ Verified on Ubuntu 24.04 (GNOME 46, kernel 6.8):
 
 * uinput is **built into the Ubuntu kernel** (`modinfo -n uinput` →
   `(builtin)`), so `/dev/uinput` exists from boot and the "module must be
-  loaded before login" worry (PLAN.md critique 11) does not arise there;
+  loaded before login" worry does not arise there;
   `systemd-modules-load` simply ignores the builtin. The `static_node` /
   `modules-load.d` pieces are for kernels that build it as a module.
 * Installing the rule inside a running session: `getfacl /dev/uinput`

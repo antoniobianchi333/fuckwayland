@@ -78,7 +78,7 @@ else
     note "no /dev/kvm either, as expected without the CPU feature"
 fi
 if [ -z "$kvm_ok" ]; then
-    note "Without KVM nothing in vm/ boots: vmctl, build-iso-golden.sh and run.sh all pass"
+    note "Without KVM nothing in vm/ boots: vmctl and build-iso-golden.sh both pass"
     note "-enable-kvm, and QEMU then stops at 'failed to initialize kvm' instead of falling back to"
     note "software emulation. Everything below is still checked so that the rest is ready."
 fi

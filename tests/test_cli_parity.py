@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent A: byte-for-byte parity vs the real xdotool (help, version, usage,
+"""byte-for-byte parity vs the real xdotool (help, version, usage,
 option errors, exec/sleep semantics, script mode). Needs the real xdotool on
 PATH (nix develop); skips cleanly otherwise. Cases that need input injection
 or a window backend are out of scope here."""

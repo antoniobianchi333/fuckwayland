@@ -1,4 +1,4 @@
-"""Shared command context. FROZEN — edit only if broken.
+"""Shared command context: the object every cmd_* function is handed.
 
 Command function contract (all *_cmds.py modules):
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent C: integration tests against a real headless sway — sway backend
+"""integration tests against a real headless sway — sway backend
 (search/activate/move/resize/scratchpad/desktops/selectwindow) plus a smoke
 pass of the wlr foreign-toplevel backend against the same compositor.
 

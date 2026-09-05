@@ -1,4 +1,4 @@
-"""OWNER: wdotool. Detached children, and the /proc facts that outlive them.
+"""Detached children, and the /proc facts that outlive them.
 
 Two of these tools start a process that must outlive the command that
 started it: the gamma holder that keeps a zwlr_gamma_control alive for as

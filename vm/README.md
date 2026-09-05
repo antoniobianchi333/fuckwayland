@@ -1,8 +1,6 @@
 # vm/ — test VMs
 
-Two rigs live here:
-
-* **`vmctl`** (this document): full, default-configured Ubuntu desktops in QEMU/KVM —
+**`vmctl`** is the rig: full, default-configured Ubuntu desktops in QEMU/KVM —
   **twelve flavors**: ten over four desktops (GNOME, KDE Plasma, Xfce, sway) and three
   releases, built from an Ubuntu *cloud* image plus a desktop metapackage, and two more
   (**`resolute-gnome-iso`**, **`noble-gnome-iso`**) installed from the Ubuntu 26.04 and 24.04
@@ -15,11 +13,6 @@ Two rigs live here:
   tools currently manage on each desktop — including where they have no backend at all —
   is written down per flavor under *What the six tools do on each flavor*, which is the
   measurement behind the *Desktop support* matrix in the repo README.
-* **`mkvm.sh` / `run.sh` / `compositor.sh` / `ssh.sh` / `scp.sh` / `stop.sh`**:
-  the original headless-sway rig (single VM in this directory, root runs sway).
-  Unchanged; the two rigs do not share state or ports (sway rig: 2222,
-  vmctl: 2400-2499).
-
 ## Quickstart
 
 ```console

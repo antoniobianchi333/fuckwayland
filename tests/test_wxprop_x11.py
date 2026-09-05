@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""wxprop builder: tests for the ADDITIVE wdotool.x11_mini extensions
+"""tests for the wdotool.x11_mini extensions wxprop needs
 (list_properties, get_atom_name, read_property, delete_property,
 generalized change_property, select_input/next_event).
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""wxprop builder: unit tests for wxprop.fmt — xprop's formatting machinery.
+"""unit tests for wxprop.fmt — xprop's formatting machinery.
 
 Every expected byte string below was captured from real xprop 1.2.8 in the
-devshell (see SCRATCH/reference/xprop-*.out in the prep notes) or derived
+devshell, or derived
 from xprop.c with the live oracle confirming the whole pipeline. These run
 offline: property data is reconstructed to match what the X server handed
 the oracle.
