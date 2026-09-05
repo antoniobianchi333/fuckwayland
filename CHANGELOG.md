@@ -35,7 +35,12 @@ documentation set that no longer disagrees with itself.
   `type --file -` on bytes that are not UTF-8, a keysym past the end of Unicode,
   `__keymap --group`, and a layout script saved non-atomically. And no tool prints a
   traceback or exits 120 when its own stdout is gone: the status is 1, or silence for
-  a closed pipe, as the originals do.
+  a closed pipe, as the originals do. The release check on a default 26.04 desktop
+  found the other half of that still open — `tool >/dev/full 2>&1`, where the one-line
+  diagnostic about the lost output cannot land either — tracebacking in all six and
+  exiting 120 in five, with apport filing crash reports for two of them. Every last
+  word a tool writes now goes through `fwcommon/stdio.py`'s `warn()`, which closes
+  stderr when it cannot write to it.
 - **One package for Ubuntu 24.04 and 26.04**, `Architecture: all`, built by
   `scripts/build-deb.sh` into `release/` and committed there, so a clone is already
   installable. It carries the six tools, the GNOME bridge extension, the udev rule and
@@ -55,7 +60,7 @@ documentation set that no longer disagrees with itself.
   cloud image plus `ubuntu-desktop` measurably is not one. Running the install guide
   verbatim on the 24.04 one corrected three sentences of it. `vm/SETUP.md` is how to
   stand the rig up on a machine of your own.
-- **2260 tests**, up from 2085, on a suite that now shares its fakes instead of
+- **2262 tests**, up from 2085, on a suite that now shares its fakes instead of
   keeping seven of them: one recorder device, one `env()`, one evdev fake, one
   headless sway, and one Wayland marshaller library with a server base. Four files
   that were scripts became test cases, so one broken assertion no longer aborts the

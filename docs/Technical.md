@@ -628,7 +628,12 @@ because the originals die of SIGPIPE without a word. `repair_std()` at the top o
 each `main()` is the other half: an fd 1 or 2 closed before the interpreter started
 (`>&-`) leaves `sys.stdout` as `None`, and the work still gets done. The result is
 that no tool here prints a traceback and none exits 120, which is the interpreter's
-own "the exit-time flush of stdout failed".
+own "the exit-time flush of stdout failed". `stdio.warn()` is the same trick for the
+other stream: every line a `main()` writes as its last word goes through it, because
+`tool >/dev/full 2>&1` is a real case (a cron job whose log filled the disk) and the
+diagnostic about the lost output cannot land there either. It swallows the failure and
+**closes** stderr, since unwritten bytes left in *that* buffer are flushed again on the
+way out and make the status 120 exactly as stdout's do.
 
 ## 8. The environment
 
@@ -663,7 +668,7 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2260 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2262 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite

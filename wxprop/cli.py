@@ -442,11 +442,11 @@ def main(argv=None) -> int:
         raise                       # unreachable; the line above raises
     except UsageError as e:
         if e.msg:
-            sys.stderr.write("%s: %s\n\n" % (prog, e.msg))
+            stdio.warn("%s: %s\n\n" % (prog, e.msg))
         print_help(prog)
         code = 1
     except FatalError as e:
-        sys.stderr.write("%s: error: %s\n" % (prog, e))
+        stdio.warn("%s: error: %s\n" % (prog, e))
         code = 1
     except KeyboardInterrupt:
         code = 130
@@ -456,9 +456,9 @@ def main(argv=None) -> int:
         # X protocol errors print Xlib's classic block; anything else is a
         # one-line fatal (never a traceback).
         if hasattr(e, "code") and hasattr(e, "major"):
-            sys.stderr.write(core.x_error_report(e))
+            stdio.warn(core.x_error_report(e))
         else:
-            sys.stderr.write("%s: error: %s\n" % (prog, e))
+            stdio.warn("%s: error: %s\n" % (prog, e))
         # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
         # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)

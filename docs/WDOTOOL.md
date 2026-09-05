@@ -613,7 +613,9 @@ All six tools in this repo share one more rule, and it is
 in full: whatever the command decided, the *last* thing every `main()` does is
 `stdio.flush_stdout(prog)`, so output that never reached its reader makes the status
 1 — a full disk, a quota, `>/dev/full` — while a reader that closed a pipe is silent,
-as the originals are. No tool prints a traceback and none exits 120.
+as the originals are. No tool prints a traceback and none exits 120. That holds
+when stderr has gone with it (`wdotool help >/dev/full 2>&1`): the diagnostic is
+dropped rather than raised, and the status is all that is left to say it.
 
 ## `--sync` waits are bounded
 

@@ -408,7 +408,7 @@ def main(argv=None) -> int:
     except Exception as e:
         # never a traceback: a listing whose write to a full stdout
         # failed, a compositor that went away mid-query.
-        sys.stderr.write("%s: %s\n" % (_prog(), e))
+        stdio.warn("%s: %s\n" % (_prog(), e))
         # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
         # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)

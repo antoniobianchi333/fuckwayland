@@ -343,7 +343,7 @@ Mutter and KWin reference count key state across the seat's devices. So it clear
 what it holds itself, and it says which foreign modifier is in the way when it can
 read that, and it is silent with identical behaviour when it cannot.
 
-## 2260 tests, and what 0.3 took away
+## 2262 tests, and what 0.3 took away
 
 The suite is the reason any of the sentences above can be written as facts. It has
 byte parity oracles that run the real `xdotool`, `wmctrl`, `xprop` and `xrandr` and

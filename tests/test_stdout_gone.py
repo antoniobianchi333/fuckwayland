@@ -15,7 +15,13 @@ Every one of them printed something no original ever prints:
   main() through SystemExit;
 - `wdotool help >&-` (fd 1 closed before the interpreter starts, so
   `sys.stdout` is None) tracebacked with an AttributeError;
-- Ctrl-C during `wdotool sleep 5` printed a KeyboardInterrupt traceback.
+- Ctrl-C during `wdotool sleep 5` printed a KeyboardInterrupt traceback;
+- `tool >/dev/full 2>&1` (0.3, live on 26.04): the diagnostic the guard
+  itself prints could not land either, so the OSError left main() as a
+  traceback and the interpreter's exit-time flush of that failed stderr
+  buffer turned five of the six into exit 120 -- apport filed crash reports
+  for two of them on a default desktop.  `stdio.warn()` writes the last
+  word every tool says, and closes stderr when it cannot.
 
 What they do now is in fwcommon/stdio.py: repair a missing stdout at the top
 of main(), and flush -- and, on failure, CLOSE -- at the bottom of it, one
@@ -94,6 +100,54 @@ class FullStdout(NoTracebackEver):
                 self.assertEqual(len(lines), 1, err)
                 self.assertTrue(lines[0].startswith(prog + ": "), err)
                 self.assertIn("No space left on device", err)
+
+
+#: a command per tool that reports a diagnostic and exits non-zero without
+#: needing a session -- the last thing a tool ever writes, which is the write
+#: `stdio.warn()` exists for.
+FAILING = [
+    ("wdotool", ["nosuchcommand"], 1),
+    ("wwmctl", ["-Z"], 1),
+    ("wxprop", ["-nosuchopt"], 1),
+    ("wxrandr", ["--output"], 1),
+    ("warandr", ["--save", "/nonexistent-dir/x.sh"], 1),
+    ("wmirror", ["--stop", "nosuch"], 1),
+]
+
+
+class FullStderr(NoTracebackEver):
+    """The other half of bug 3: stderr cannot take the diagnostic either.
+
+    `tool >/dev/full 2>&1` is the cron job whose disk filled up, and it used to
+    end in a traceback and exit 120 -- the status the module docstring of
+    fwcommon/stdio.py says no original produces.  Nothing can be printed here,
+    so the whole of the contract is the exit status."""
+
+    def setUp(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("no /dev/full")
+
+    def run_tool(self, mod, argv, out, err):
+        p = subprocess.run([sys.executable, "-m", mod] + argv,
+                           stdout=out, stderr=err,
+                           env=child_env(), text=True, timeout=60)
+        return p.returncode
+
+    def test_both_streams_full(self):
+        """`tool >/dev/full 2>&1`: output lost, so exit 1, never 120."""
+        for mod, argv, _prog in TOOLS:
+            with self.subTest(tool=mod):
+                with open("/dev/full", "w") as full:
+                    rc = self.run_tool(mod, argv, full, full)
+                self.assertEqual(rc, 1, "%s -> %d" % (mod, rc))
+
+    def test_a_diagnostic_that_cannot_land(self):
+        """stdout is fine, stderr is not: the tool's own status survives."""
+        for mod, argv, want in FAILING:
+            with self.subTest(tool=mod):
+                with open("/dev/full", "w") as full:
+                    rc = self.run_tool(mod, argv, subprocess.DEVNULL, full)
+                self.assertEqual(rc, want, "%s -> %d" % (mod, rc))
 
 
 class ClosedStdout(NoTracebackEver):
