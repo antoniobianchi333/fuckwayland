@@ -7,10 +7,9 @@ Desktops are workspaces: xdotool desktop N == workspace number N+1."""
 import json
 import socket
 import struct
-import sys
 
 from wdotool import session
-from wdotool.backend import Window, WindowBackend
+from wdotool.backend import Window, WindowBackend, warn
 from wdotool.ctx import CmdError, SoftCmdError
 
 _MAGIC = b"i3-ipc"
@@ -276,16 +275,12 @@ class SwayBackend(WindowBackend):
         if floating:
             self.run("[con_id=%d] focus" % wid)
         else:
-            sys.stderr.write(
-                "wdotool: windowraise: tiled sway windows have no stacking "
-                "order; ignoring\n"
-            )
+            warn("windowraise: tiled sway windows have no stacking "
+                 "order; ignoring")
 
     def lower(self, wid: int):
         self._node(wid)
-        sys.stderr.write(
-            "wdotool: windowlower: sway cannot lower windows; ignoring\n"
-        )
+        warn("windowlower: sway cannot lower windows; ignoring")
 
     def set_state(self, wid: int, state: str, action: int):
         node, _win, _f, ws_name = self._node(wid)

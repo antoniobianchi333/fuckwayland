@@ -388,8 +388,9 @@ def find_x_display(e=None, uid=None):
     `$DISPLAY` when its socket is there (or when it names another host: a
     forwarded or remote display is an X11 session as far as we are concerned —
     the original works over it and we must not shadow that), else logind's
-    recorded `DISPLAY=`, else the lowest-numbered `/tmp/.X11-unix/X*` owned by
-    the target user or root."""
+    recorded `DISPLAY=`, else the lowest-numbered `/tmp/.X11-unix/X*` owned
+    by the target user (a root-owned one only when the user owns none: see
+    below)."""
     e = os.environ if e is None else e
     d = (e.get("DISPLAY") or "").strip()
     if display_ok(d):
@@ -399,7 +400,7 @@ def find_x_display(e=None, uid=None):
         sd = sess.get("DISPLAY", "").strip()
         if sd:
             return sd
-    found = []
+    mine, root = [], []
     try:
         names = os.listdir(_X11_SOCK_DIR)
     except OSError:
@@ -410,8 +411,20 @@ def find_x_display(e=None, uid=None):
         owner = _owner(os.path.join(_X11_SOCK_DIR, n))
         if owner is None:
             continue
-        if uid is None or owner == uid or owner == 0:
-            found.append(int(n[1:]))
+        if uid is None or owner == uid:
+            mine.append(int(n[1:]))
+        elif owner == 0:
+            root.append(int(n[1:]))
+    # The target user's own socket first, and only then a root-owned one:
+    # the order `session.find_x_display()` already uses, for the same
+    # reason. A Wayland compositor creates the listening socket for its
+    # Xwayland itself, as the session user, while a display manager leaves
+    # its greeter's root-owned Xorg behind on the *lower* number (SDDM on
+    # KDE). "lowest wins, root accepted" therefore handed `sudo warandr`
+    # -- and every handover -- a DISPLAY the session's cookie cannot open,
+    # so the X plane silently vanished from the answers. A plain X11
+    # session's Xorg *is* root-owned, so that stays the fallback.
+    found = mine or root
     if found:
         return ":%d" % min(found)
     return None

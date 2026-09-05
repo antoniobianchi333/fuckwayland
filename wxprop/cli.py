@@ -32,7 +32,7 @@ import re
 import struct
 import sys
 
-from wdotool import passthrough, stdio
+from wdotool import backend, passthrough, stdio
 from wxprop import core
 from wxprop import fmt as fmtmod
 from wxprop.fmt import FatalError
@@ -443,6 +443,7 @@ def _set_property(formatter, target, prog: str, utf8_locale: bool,
 def main(argv=None) -> int:
     stdio.repair_std()      # fd 1 or 2 closed before Python started
     prog = _progname()
+    backend.set_program(prog)
     # X11 session: hand over to the real xprop. Unlike the other three we do
     # have a native X11 path (core.Session talks to $DISPLAY directly), so a
     # box with no x11-utils installed keeps working instead of exiting 127.

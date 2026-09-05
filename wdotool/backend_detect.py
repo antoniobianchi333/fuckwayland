@@ -17,6 +17,7 @@ message with "the compositor does not offer wlr-foreign-toplevel"."""
 import os
 
 from wdotool import session
+from wdotool.backend import program
 from wdotool.ctx import CmdError, NoSessionError
 
 KWIN_NAME = "org.kde.KWin"
@@ -140,7 +141,8 @@ def detect():
     # rc 2, not 1: "there is no session to talk to" is a different answer to
     # a script than "the session is up and nothing matched" (B5).
     raise NoSessionError(
-        "wdotool: no Wayland session found: no sway/i3 IPC socket, %s, and "
+        "%s: no Wayland session found: no sway/i3 IPC socket, %s, and "
         "the compositor does not offer wlr-foreign-toplevel. "
-        "Set WDOTOOL_BACKEND=sway|wlr|kwin|gnome to force one." % bus_note
+        "Set WDOTOOL_BACKEND=sway|wlr|kwin|gnome to force one."
+        % (program(), bus_note)
     )

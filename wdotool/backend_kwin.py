@@ -69,12 +69,12 @@ import json
 import os
 import re
 import struct
-import sys
 import tempfile
 import time
 
 from wdotool import kwin_js, session
-from wdotool.backend import View, Window, WindowBackend, Workspace
+from wdotool.backend import (View, Window, WindowBackend, Workspace,
+                             warn as _warn)
 from wdotool.ctx import CmdError, NoSessionError
 from wdotool.dbus_mini import (ERR, METHOD_CALL, NAME_FLAG_DO_NOT_QUEUE,
                                NO_REPLY_EXPECTED, Bus, DBusError)
@@ -1266,10 +1266,6 @@ def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
               "other in the X client list; their X ids are left unset"
               % len(blocked))
     return out
-
-
-def _warn(msg: str):
-    sys.stderr.write("wdotool: %s\n" % msg)
 
 
 def _no_bus_text(e: DBusError) -> str:

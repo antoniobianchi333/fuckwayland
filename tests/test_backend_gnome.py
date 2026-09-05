@@ -955,6 +955,19 @@ class SessionReadinessTests(_Base):
 
 
 class ConstructorTests(_Base):
+    def setUp(self):
+        # Every case here but the not-installed ones describes a session
+        # where the extension *is* on disk and the diagnosis has to come
+        # from the bus. Whether the box running the tests happens to have a
+        # copy installed is not part of any of them.
+        self.real_installed = backend_gnome.extension_installed
+        self.installed(True)
+
+    def installed(self, yes):
+        orig = backend_gnome.extension_installed
+        backend_gnome.extension_installed = lambda: yes
+        self.addCleanup(setattr, backend_gnome, "extension_installed", orig)
+
     def test_no_bridge_gives_the_install_hint_without_touching_eval(self):
         # review finding 4: the common "installed, needs a re-login" path
         # must not probe org.gnome.Shell.Eval
@@ -1012,6 +1025,82 @@ class ConstructorTests(_Base):
                     self.assertNotIn("locked", str(cm.exception), kw)
             finally:
                 bridge.close()
+
+    def test_a_missing_extension_beats_the_lock_message(self):
+        """Not installed *and* the screen locked (live, 24.04, on the exact
+        path a first-time reader takes: the guide's own `apt install` runs
+        past `idle-delay 300`). Both statements are true, and the lock is
+        the one the reader can act on least -- unlocking will not make the
+        command work. From the bus the two are indistinguishable: behind the
+        lock screen the shell disables every extension, ours included."""
+        self.installed(False)
+        cases = [dict(shell_mode="unlock-dialog"),                    # 50
+                 dict(shell_mode="ubuntu", screensaver_active=True),  # 46
+                 dict(shell_mode="user", screensaver_active=True),
+                 # even reported as merely inactive, which is what a
+                 # locked-out extension looks like
+                 dict(shell_mode="unlock-dialog",
+                      ext_info={"uuid": EXT_UUID, "state": 2})]
+        for kw in cases:
+            bridge = MockBridge(self.mock, own_bridge=False, **kw)
+            try:
+                with self.assertRaises(CmdError) as cm:
+                    GnomeBackend()
+                msg = str(cm.exception)
+                self.assertIn("extension is not running in GNOME Shell", msg, kw)
+                self.assertIn("gnome/install-bridge.sh", msg, kw)
+                self.assertEqual(msg.count("\n"), 0, msg)   # still one line
+                # the lock is still said -- it is true, and it is why the
+                # re-login is needed anyway -- but it no longer leads
+                self.assertIn("locked", msg, kw)
+                self.assertLess(msg.index("install-bridge.sh"),
+                                msg.index("locked"), msg)
+            finally:
+                bridge.close()
+
+    def test_an_unlocked_missing_extension_says_nothing_about_locks(self):
+        self.installed(False)
+        bridge = MockBridge(self.mock, own_bridge=False, shell_mode="ubuntu")
+        try:
+            with self.assertRaises(CmdError) as cm:
+                GnomeBackend()
+            self.assertEqual(str(cm.exception), backend_gnome._HINT)
+        finally:
+            bridge.close()
+
+    def test_the_greeter_is_still_the_greeter(self):
+        """gdm's own shell: the per-user directory we would look in is the
+        greeter's, so "not installed" says nothing there and the greeter
+        diagnosis stays first."""
+        self.installed(False)
+        bridge = MockBridge(self.mock, own_bridge=False, shell_mode="gdm")
+        try:
+            with self.assertRaises(CmdError) as cm:
+                GnomeBackend()
+            self.assertIn("GDM greeter", str(cm.exception))
+        finally:
+            bridge.close()
+
+    def test_extension_installed_reads_the_same_places_as_the_script(self):
+        """`extension_installed()` is the tools' copy of install-bridge.sh's
+        `files:` line: <data dir>/gnome-shell/extensions/<uuid>/extension.js,
+        per-user first, then the system data dirs."""
+        d = tempfile.mkdtemp(prefix="wdotool-ext-")
+        self.addCleanup(shutil.rmtree, d, True)
+        orig = backend_gnome._extension_dirs
+        backend_gnome._extension_dirs = lambda: [d]
+        self.addCleanup(setattr, backend_gnome, "_extension_dirs", orig)
+        self.assertFalse(self.real_installed())
+        p = os.path.join(d, "gnome-shell", "extensions", EXT_UUID)
+        os.makedirs(p)
+        self.assertFalse(self.real_installed())   # a directory is not a copy
+        open(os.path.join(p, "extension.js"), "w").close()
+        self.assertTrue(self.real_installed())
+        # and the real search path is the script's two destinations
+        backend_gnome._extension_dirs = orig
+        dirs = backend_gnome._extension_dirs()
+        self.assertTrue(any(x.endswith("/.local/share") for x in dirs), dirs)
+        self.assertIn("/usr/share", dirs)
 
     def test_no_shell_at_all(self):
         bridge = MockBridge(self.mock, own_shell=False, own_bridge=False)

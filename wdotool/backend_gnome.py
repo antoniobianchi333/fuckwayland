@@ -43,13 +43,13 @@ never probes that privileged interface."""
 
 import json
 import os
+import pwd
 import re
 import struct
-import sys
 import time
 
 from wdotool import session
-from wdotool.backend import View, Window, WindowBackend, Workspace
+from wdotool.backend import View, Window, WindowBackend, Workspace, warn
 from wdotool.ctx import CmdError, NoSessionError
 from wdotool.dbus_mini import ERR, Bus, DBusError
 
@@ -66,6 +66,14 @@ _HINT = ("gnome backend: the fuckwayland bridge extension is not running in "
 _GONE = ("gnome backend: the fuckwayland bridge vanished from the session bus "
          "(extension disabled, screen locked, or shell restarting); run "
          "gnome/install-bridge.sh --check")
+#: appended to _HINT when the screen is locked as well: true, and the reason
+#: a re-login is needed anyway, but not the thing to say first
+_ALSO_LOCKED = ("; the screen is locked as well, and GNOME Shell disables "
+                "extensions behind the lock screen, so unlocking alone will "
+                "not be enough")
+#: install-bridge.sh's own two destinations, both
+#: <data dir>/gnome-shell/extensions/<uuid>
+_EXT_FILE = os.path.join("gnome-shell", "extensions", EXT_UUID, "extension.js")
 
 CALL_TIMEOUT = 10.0     # every bridge call answers in milliseconds
 AUTOLOAD_WAIT = 3.0     # after a successful Eval(loadExtension)
@@ -120,6 +128,40 @@ _AUTOLOAD_JS = """\
   return p.then(() => { em.enableExtension(uuid); return 'ok'; });
 })()
 """ % EXT_UUID
+
+
+def _extension_dirs() -> list:
+    """XDG data directories a copy of the bridge could live in, per-user
+    first. The per-user one is the *session* user's, which under `sudo` is
+    not ours -- the same rule `install-bridge.sh` applies with $SUDO_USER."""
+    dirs = []
+    uid = session.session_uid()
+    try:
+        home = pwd.getpwuid(os.getuid() if uid is None else uid).pw_dir
+    except (KeyError, OverflowError, TypeError):
+        home = os.environ.get("HOME") or ""
+    if home:
+        dirs.append(os.path.join(home, ".local", "share"))
+    xdh = os.environ.get("XDG_DATA_HOME")
+    if xdh and xdh not in dirs:
+        dirs.append(xdh)
+    system = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    dirs.extend(d for d in system.split(":") if d and d not in dirs)
+    return dirs
+
+
+def extension_installed() -> bool:
+    """Is a copy of the bridge extension on disk? The question
+    `gnome/install-bridge.sh --check` answers with its `files:` line, asked
+    of the same places and without a subprocess.
+
+    Worth asking only on the error path, and there it decides which of two
+    true sentences to print: behind the lock screen GNOME Shell disables
+    every extension, so from the *bus* a bridge that was never installed
+    and one that is merely asleep look exactly alike (live, 24.04). From
+    disk they do not."""
+    return any(os.path.isfile(os.path.join(d, _EXT_FILE))
+               for d in _extension_dirs())
 
 
 class GnomeBackend(WindowBackend):
@@ -200,22 +242,33 @@ class GnomeBackend(WindowBackend):
         """Why is the bridge name missing? Extensions only run in the shell's
         `user` session mode (the name goes away behind the lock screen), and
         an installed extension may simply be disabled; both are readable by
-        anyone on the bus. Falls back to the generic install hint."""
+        anyone on the bus. Falls back to the generic install hint.
+
+        A locked screen is not the answer when the extension was never
+        installed. Both are true then, and blaming the lock is the one a
+        reader can act on least -- unlocking will not make the command work,
+        and a first-time reader on a default desktop hits exactly that pair
+        (the install guide's own `apt install` outlasts `idle-delay 300`;
+        live on 24.04). The bus cannot tell the two apart, so the disk is
+        asked, and the lock stays in the message as a clause."""
         try:
             mode = str(self.bus.get_property(SHELL_NAME, "/org/gnome/Shell",
                                              SHELL_NAME, "Mode",
                                              timeout=CALL_TIMEOUT) or "")
         except DBusError:
             mode = ""
-        if mode in _LOCKED_MODES:
-            return ("gnome backend: the fuckwayland bridge is unavailable while "
-                    "GNOME Shell is in '%s' mode (screen locked?); extensions run "
-                    "only in the unlocked session" % mode)
         if mode in _GREETER_MODES:
             return ("gnome backend: the GNOME Shell on this session bus is the "
                     "GDM greeter ('%s' mode): nobody is logged in there, and "
                     "extensions do not run in the greeter" % mode)
-        if self._screen_locked():
+        locked = mode in _LOCKED_MODES or self._screen_locked()
+        if not extension_installed():
+            return _HINT + (_ALSO_LOCKED if locked else "")
+        if mode in _LOCKED_MODES:
+            return ("gnome backend: the fuckwayland bridge is unavailable while "
+                    "GNOME Shell is in '%s' mode (screen locked?); extensions run "
+                    "only in the unlocked session" % mode)
+        if locked:
             return ("gnome backend: the fuckwayland bridge is unavailable while "
                     "the screen is locked (GNOME Shell disables extensions "
                     "behind the lock screen); unlock the session")
@@ -412,8 +465,8 @@ class GnomeBackend(WindowBackend):
         if applied:
             return
         if state in _COSMETIC_STATES:
-            sys.stderr.write("wdotool: windowstate %s: Mutter cannot set it on "
-                             "Wayland; ignoring\n" % state)
+            warn("windowstate %s: Mutter cannot set it on Wayland; "
+                 "ignoring" % state)
             return
         raise CmdError("windowstate %s is not supported by the gnome backend (%s)"
                        % (state, _GAP_REASONS.get(state, "Mutter has no API for it")))

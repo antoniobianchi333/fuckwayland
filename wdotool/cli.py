@@ -9,7 +9,7 @@ import os
 import re
 import sys
 
-from wdotool import commands, passthrough, stdio
+from wdotool import backend, commands, passthrough, stdio
 from wdotool.ctx import CmdError, Context
 
 # What `version`/-v prints. Must match the real xdotool byte-for-byte so
@@ -499,6 +499,7 @@ def main(argv: list[str] | None = None) -> int:
     closed before we started (`>&-`) are ordinary exits here, and the
     last thing that happens is the flush that says whether the output
     arrived (wdotool/stdio.py)."""
+    backend.set_program("wdotool")
     stdio.repair_std()
     prog = _prog_name(argv)
     quiet = False

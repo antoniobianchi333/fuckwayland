@@ -29,7 +29,7 @@ import getopt
 import os
 import sys
 
-from wdotool import passthrough, stdio
+from wdotool import backend, passthrough, stdio
 from wdotool.ctx import CmdError
 
 from wwmctl import core
@@ -396,6 +396,7 @@ def main(argv=None) -> int:
     (stdout may be a closed fd or a broken pipe; wmctrl dies of SIGPIPE or
     lets printf fail silently — we exit quietly instead of tracing back)."""
     stdio.repair_std()      # fd 1 or 2 closed before Python started
+    backend.set_program("wwmctl")
     # X11 session: hand over to the real wmctrl (argv here is already
     # sys.argv[1:], wmctrl's own convention).
     rc = passthrough.maybe_exec_real(

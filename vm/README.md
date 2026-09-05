@@ -725,12 +725,17 @@ infrastructure branch deliberately does not touch, and all three want scheduling
    Both statements were true; the one printed is the one the reader can do least with,
    because unlocking will not make the command work. The backend cannot tell the two apart
    *from the bus* — behind the lock screen the shell disables every extension, ours included
-   — but it can tell them apart from disk, which is exactly what `install-bridge.sh --check`
-   does: the extension directory under `~/.local/share/gnome-shell/extensions` and
-   `org.gnome.shell enabled-extensions`. The fix is to look, and to say both when both are
-   true ("…while the screen is locked; unlock the session — and the bridge extension is not
-   installed either: run gnome/install-bridge.sh"). The fix belongs in the message, so it is
-   left here rather than papered over in the guide.
+   — but it can tell them apart from disk, which is what `install-bridge.sh --check`
+   does with its `files:` line: the extension directory under
+   `~/.local/share/gnome-shell/extensions`, or the system one.
+
+   **Fixed** (`backend_gnome.extension_installed()`, the same two places, no subprocess and
+   no gsettings): with no copy on disk the actionable sentence leads and the lock follows it
+   as a clause, so both are still said — `gnome backend: the fuckwayland bridge extension is
+   not running in GNOME Shell; run gnome/install-bridge.sh and restart the session (log out
+   and back in); the screen is locked as well, and GNOME Shell disables extensions behind the
+   lock screen, so unlocking alone will not be enough`. With a copy on disk the lock message
+   is unchanged, and the GDM greeter still gets its own.
 
 Adding a flavor: copy a yaml, change `hostname`, `# vmctl-base:`, `# vmctl-desktop:` and
 `/etc/vmctl-build.env` (`DESKTOP`, `DESKTOP_PKG`, `EXTRA_PKGS`). A new *desktop* additionally

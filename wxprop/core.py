@@ -909,12 +909,26 @@ def resolve_id(sess: Session, wid: int):
     """xprop -id N: a compositor node id resolves through the node (an
     XWayland node redirects to its real X window id); otherwise the id is
     handed to the X server, exactly like xprop. The error wording for a
-    hopeless id is xprop's own (grammar and all)."""
-    for node, win in sess.nodes():
-        xid = node.get("window")
-        if win.id == wid or xid == wid:
+    hopeless id is xprop's own (grammar and all).
+
+    X ids are matched first, across all nodes, before any compositor id.
+    `-id` is an X window id in every xprop manual there is, and the two
+    spaces are not disjoint: KWin mints its own toplevel ids and Mutter's
+    are Mutter's, so one window's compositor id can equal another window's
+    X id, and a single pass in node order then answered about whichever of
+    the two the compositor happened to list first."""
+    nodes = list(sess.nodes())
+    for node, win in nodes:
+        if node.get("window") == wid:
+            x = sess.x11()      # an X window is listed: Xwayland is up
+            if x is not None:
+                return XTarget(x, wid)
+            return NativeViewTarget(sess, NativeAtoms(), node, win)
+    for node, win in nodes:
+        if win.id == wid:
+            xid = node.get("window")
             if xid:
-                x = sess.x11()  # an X window is listed: Xwayland is up
+                x = sess.x11()
                 if x is not None:
                     return XTarget(x, xid)
             return NativeViewTarget(sess, NativeAtoms(), node, win)

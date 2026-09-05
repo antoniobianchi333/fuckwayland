@@ -1048,7 +1048,14 @@ def diagnostic_main(argv) -> int:
         else:
             print("us bypass:     no")
         if not bypass:
-            rmap = reverse(km, snap.group)
+            try:
+                rmap = reverse(km, snap.group)
+            except XkbError as e:
+                # --group 3 on a two-group keymap, a keymap with nothing
+                # typable in it: the diagnostic reports what it found, like
+                # every other failure here, and never tracebacks.
+                sys.stderr.write("wdotool: %s\n" % e)
+                return 1
             names = {MOD_SHIFT: "shift", MOD_LEVEL3: "level3", MOD_LEVEL5: "level5"}
             mods = ", ".join(f"{names[b]}=key {rmap.mod_keys[b]}"
                              for b in MOD_BITS if rmap.mod_keys.get(b))
@@ -1068,7 +1075,11 @@ def diagnostic_main(argv) -> int:
                 hit = _keymap.char_to_key(ch)
                 return None if hit is None else [(hit[0], MOD_SHIFT if hit[1] else 0)]
         else:
-            lookup = reverse(km, snap.group).lookup_char
+            try:
+                lookup = reverse(km, snap.group).lookup_char
+            except XkbError as e:
+                sys.stderr.write("wdotool: %s\n" % e)
+                return 1
         for ch in want_chars:
             seq = lookup(ch)
             if seq is None:

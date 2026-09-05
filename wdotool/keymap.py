@@ -287,6 +287,13 @@ def _keysym_value_to_key(ks: int, layout=None) -> tuple[int, bool] | None:
             cp = ks & 0xFFFFFF
         else:
             return None
+    if not 0 <= cp <= 0x10FFFF:
+        # The Unicode keysym space (0x01000000 | codepoint) is 24 bits wide
+        # and Unicode is 21: `wdotool key 0x01ffffff` is a syntactically
+        # valid keysym naming no character, and chr() raises ValueError on
+        # it. Unreachable, like any other keysym this layout cannot type --
+        # not a traceback.
+        return None
     return CHAR_TO_KEY.get(chr(cp))
 
 

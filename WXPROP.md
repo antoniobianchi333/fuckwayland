@@ -91,7 +91,11 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
   which are native. `-id` takes an X id or a bridge id: an XWayland
   window's bridge id (`wdotool search` output) redirects to its X id and
   the real X properties, exactly as a sway node id does; a native window
-  gets the synthesized set. An id the bridge does not know is handed to
+  gets the synthesized set. **X ids match first**, across every window,
+  before any bridge or node id: `-id` is an X window id in xprop's manual,
+  and the two number spaces are not disjoint — KWin mints its own ids and
+  Mutter's are Mutter's — so one window's compositor id can equal
+  another's X id. An id the bridge does not know is handed to
   the X server like xprop would — but only when Xwayland is actually
   running (a typo must not spawn a server; see below), else `window id #
   0x… does not exists!`.

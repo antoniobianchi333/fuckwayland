@@ -16,7 +16,7 @@ import threading
 import unittest
 from unittest import mock
 
-from wdotool import daemon, keymap, uinput
+from wdotool import backend, daemon, keymap, uinput
 from wdotool.ctx import CmdError
 from wdotool.keysyms import NAME_TO_KEYSYM
 
@@ -354,6 +354,89 @@ class TestXF86Keysyms(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # keyboard registers every keycode the keymap can emit (1..255)
+
+
+class TestKeysymsAboveUnicode(unittest.TestCase):
+    """The Unicode keysym space is `0x01000000 | codepoint`, 24 bits wide;
+    Unicode is 21. `wdotool key 0x01ffffff` is therefore a well-formed
+    keysym naming no character at all, and chr() answered it with a
+    ValueError out of the middle of a key line."""
+
+    def test_a_keysym_past_the_last_codepoint_is_just_unreachable(self):
+        for ks in (0x01110000, 0x0117FFFF, 0x01FFFFFF):
+            self.assertIsNone(keymap._keysym_value_to_key(ks), hex(ks))
+
+    def test_the_key_command_warns_and_carries_on(self):
+        msg = keymap.resolve_token("0x01ffffff")
+        self.assertIsInstance(msg, str)          # the "ignoring it" warning
+        self.assertIn("not reachable", msg)
+
+    def test_the_last_real_codepoint_still_resolves_the_same(self):
+        # the guard must not shave anything off the range that works
+        self.assertEqual(keymap._keysym_value_to_key(0x01000061),
+                         keymap._keysym_value_to_key(0x61))
+        self.assertIsNotNone(keymap._keysym_value_to_key(0x01000061))
+
+
+class TestWarningsNameTheRunningTool(unittest.TestCase):
+    """The window backends are shared by three CLIs, and their warnings
+    hard-coded "wdotool:". A `wmctrl -b` run on KWin answered in the name
+    of a tool that was not on the command line, and `wwmctl -l` with no
+    session said "wdotool: no Wayland session found". One warn(), and the
+    name is whichever main() is running."""
+
+    def setUp(self):
+        self.addCleanup(backend.set_program, backend.program())
+
+    def run_main(self, main, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                main(list(argv))
+            except SystemExit:
+                pass
+        return backend.program()
+
+    def test_each_main_names_itself(self):
+        from wdotool import cli as wdotool_cli
+        from wwmctl import cli as wwmctl_cli
+        from wxprop import cli as wxprop_cli
+
+        backend.set_program("nobody")
+        self.assertEqual(self.run_main(wwmctl_cli.main, ["--version"]),
+                         "wwmctl")
+        # wxprop answers to argv[0], like the xprop it replaces
+        with mock.patch.dict(os.environ, {"WXPROP_ARGV0": "xprop"}):
+            self.assertEqual(self.run_main(wxprop_cli.main, ["-version"]),
+                             "xprop")
+        self.assertEqual(
+            self.run_main(wdotool_cli.main, ["wdotool", "version"]), "wdotool")
+
+    def test_warn_writes_one_line_in_that_name(self):
+        backend.set_program("wwmctl")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            backend.warn("windowlower: sway cannot lower windows; ignoring")
+        self.assertEqual(err.getvalue(), "wwmctl: windowlower: sway cannot "
+                                         "lower windows; ignoring\n")
+
+    def test_no_backend_carries_a_tool_name_of_its_own(self):
+        """The rule, not one instance of it: a new warning must not bring
+        back a hard-coded prefix (three of them were spread over kwin, sway
+        and gnome, plus the detect message all three tools print)."""
+        pkg = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "wdotool")
+        for name in sorted(n for n in os.listdir(pkg)
+                           if n.startswith("backend") and n.endswith(".py")):
+            with open(os.path.join(pkg, name)) as f:
+                for i, line in enumerate(f, 1):
+                    if line.lstrip().startswith("#"):
+                        continue
+                    for tool in ("wdotool", "wwmctl", "wxprop"):
+                        self.assertNotIn('"%s: ' % tool, line,
+                                         "%s:%d" % (name, i))
+                        self.assertNotIn("'%s: " % tool, line,
+                                         "%s:%d" % (name, i))
 
 
 class TestKeycodeRegistration(unittest.TestCase):
