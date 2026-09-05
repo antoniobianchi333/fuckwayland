@@ -448,6 +448,8 @@ def probe(sock_path: str | None = None):
 class KwinOutputs:
     """Snapshot + one-shot atomic apply over kde_output_management_v2."""
 
+    name = "kwin"
+
     def __init__(self, conn=None, socket_path: str | None = None):
         from wdotool.wayland_mini import WlConn
         self._own_conn = conn is None

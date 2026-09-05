@@ -241,6 +241,82 @@ class SharedModeResolver(unittest.TestCase):
             mutter.MutterOutputs.resolve_mode(None, t2, mk_state())
 
 
+class BackendShape(unittest.TestCase):
+    """All four display backends are one shape, so the CLI can hold one of
+    them and never ask which. sway and wlroots were module-level functions
+    and a connection object until they were given the names Mutter and KWin
+    already answered to."""
+
+    BACKENDS = (core.SwayBackend, core.WlrOutputs,
+                mutter.MutterOutputs, kwin.KwinOutputs)
+
+    METHODS = {"snapshot": ["state"],
+               "predicted_dims": ["t", "state"],
+               "verify": ["state", "targets"],
+               "apply": ["state", "targets", "persistent"],
+               "close": []}
+
+    def test_every_backend_answers_to_the_same_names(self):
+        import inspect
+        for cls in self.BACKENDS:
+            for meth, params in sorted(self.METHODS.items()):
+                fn = getattr(cls, meth, None)
+                self.assertTrue(callable(fn), "%s.%s" % (cls.__name__, meth))
+                got = [p for p in inspect.signature(fn).parameters
+                       if p != "self"]
+                self.assertEqual(got, params, "%s.%s" % (cls.__name__, meth))
+
+    def test_the_name_is_the_compositor_the_query_prints(self):
+        self.assertEqual([c.name for c in self.BACKENDS],
+                         ["sway", "wlroots", "mutter", "kwin"])
+
+    def test_the_wlr_wire_call_is_send_not_apply(self):
+        """WlrOutputs.apply() used to be the zwlr configuration request; the
+        backend method took that name, so the request is `send` now and
+        nothing calls the old one by accident."""
+        import inspect
+        self.assertEqual(
+            [p for p in inspect.signature(core.WlrOutputs.send).parameters
+             if p != "self"], ["targets", "positions"])
+
+    def test_the_two_wires_predict_different_logical_sizes(self):
+        """The one thing the sway and wlroots backends really disagree on:
+        `--scale 1.03` reaches sway as text and runs as 1.0333, and reaches
+        zwlr as a wl_fixed and runs as 1.025."""
+        o = OutputState(name="DP-1", active=True,
+                        modes=[Mode(w=1920, h=1080, refresh_mhz=60000)])
+        t = core.Target(output=o, stanza=None, mode=o.modes[0], scale=1.03,
+                        enabled=True)
+        sway = core.SwayBackend.predicted_dims(None, t, mk_state())
+        wlr = core.WlrOutputs.predicted_dims(None, t, mk_state())
+        self.assertEqual(sway, (1858, 1045))
+        self.assertEqual(wlr, (1873, 1053))
+
+    def test_the_sway_backend_closes_both_of_its_sockets(self):
+        """The IPC socket and the zwlr connection the query enrichment
+        opened -- and one that fails on the way out does not keep the other
+        one open."""
+        class Handle:
+            def __init__(self, boom=False):
+                self.closed, self.boom = 0, boom
+
+            def close(self):
+                self.closed += 1
+                if self.boom:
+                    raise OSError("already gone")
+        ipc, wlr = Handle(boom=True), Handle()
+        core.SwayBackend(ipc, wlr).close()
+        self.assertEqual((ipc.closed, wlr.closed), (1, 1))
+        ipc = Handle()
+        core.SwayBackend(ipc).close()          # no enrichment connection
+        self.assertEqual(ipc.closed, 1)
+
+    def test_the_session_holds_one_handle(self):
+        self.assertIsNone(cli.Session.impl)
+        for gone in ("ipc", "wlr", "mutter", "kwin"):
+            self.assertFalse(hasattr(cli.Session, gone), gone)
+
+
 class ModelineMath(unittest.TestCase):
     def test_refresh_formula(self):
         # the classic CVT 1280x720 modeline: 74.50MHz 1664x748 -> 59.86Hz

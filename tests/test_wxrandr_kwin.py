@@ -694,8 +694,7 @@ class KwinCase(unittest.TestCase):
 
         def fake_init(sess, forced=None):
             sess.backend = cli.canonical_backend(forced) or "kwin"
-            sess.ipc = sess.wlr = sess.mutter = None
-            sess.kwin = tc.outputs()
+            sess.impl = tc.outputs()
             sess.persistent = os.environ.get("WXRANDR_PERSIST", "") not in (
                 "", "0")
             sess.state = tc.state()
@@ -2191,15 +2190,15 @@ class Detection(unittest.TestCase):
     def tearDown(self):
         cli.Session.__init__ = self.orig_init
         for sess in self.sessions:
-            if sess.kwin is not None:
-                sess.kwin.close()
+            if sess.impl is not None:
+                sess.impl.close()
                 # Session adopts the connection _probe_kwin() opened, and
                 # KwinOutputs only closes one it opened itself, so the CLI
                 # leaves this one to process exit. Nothing exits here: close
                 # it, or the collector reports it as unclosed at some
                 # unrelated point later in a shared runner.
                 try:
-                    sess.kwin.conn.close()
+                    sess.impl.conn.close()
                 except OSError:
                     pass
         for mod, name, orig in self.patched:
@@ -2230,7 +2229,7 @@ class Detection(unittest.TestCase):
         live = sorted(p.name for p in sess.probes.values()
                       if p.handle is not None)
         self.assertEqual(live, ["kwin"])
-        self.assertIs(sess.probes["kwin"].handle, sess.kwin.conn)
+        self.assertIs(sess.probes["kwin"].handle, sess.impl.conn)
 
     def test_probe(self):
         conn = kwin.probe(self.svc.path)
@@ -2242,9 +2241,7 @@ class Detection(unittest.TestCase):
         sess = self.session()
         self.assertEqual((sess.backend, sess.compositor_name),
                          ("kwin", "kwin"))
-        self.assertIsNone(sess.ipc)
-        self.assertIsNone(sess.wlr)
-        self.assertIsNone(sess.mutter)
+        self.assertIsInstance(sess.impl, kwin.KwinOutputs)
         self.assertFalse(sess.persistent)
         self.assertEqual([o.name for o in sess.snapshot()], ["eDP-1", "DP-1"])
 

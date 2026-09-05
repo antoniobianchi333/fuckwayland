@@ -589,6 +589,8 @@ class WlrOutputs:
     model/serial — data sway IPC lacks) and apply whole-layout configurations
     atomically (the generic-wlroots backend)."""
 
+    name = "wlroots"
+
     def __init__(self, conn=None):
         from wdotool.wayland_mini import WlConn
         self.conn = conn
@@ -679,9 +681,9 @@ class WlrOutputs:
                 return h
         return None
 
-    # -- atomic apply --------------------------------------------------------
+    # -- the wire ------------------------------------------------------------
 
-    def apply(self, targets: dict, positions: dict):
+    def send(self, targets: dict, positions: dict):
         """One zwlr_output_configuration_v1: enable/disable + mode + position
         + transform + scale, applied atomically; waits for succeeded/failed/
         cancelled. The protocol demands EVERY head be configured, so `targets`
@@ -758,6 +760,43 @@ class WlrOutputs:
     def close(self):
         if self._own_conn:
             self.conn.close()
+
+    # -- the backend shape ---------------------------------------------------
+
+    def snapshot(self, state: "State | None" = None) -> list:
+        return snapshot_wlr(self, state)
+
+    def predicted_dims(self, t: "Target", state: "State") -> tuple:
+        """wlroots computes the logical size from the fixed-point scale on
+        the wire and truncates, where sway rounds the decimal it was typed."""
+        return predicted_dims(t, state, wire="fixed")
+
+    def verify(self, state: "State", targets: list):
+        """--dryrun: zwlr_output_management can only be asked by applying,
+        and an apply is what a dryrun must not do, so there is nothing to
+        send here."""
+
+    def apply(self, state: "State", targets: list,
+              persistent: bool = False) -> list:
+        """Single atomic zwlr_output_configuration apply (positions resolved
+        against predicted logical sizes — same math wlroots uses), then the
+        fresh snapshot. `persistent` is accepted for contract parity and
+        ignored: wlroots stores no layout of its own."""
+        dims = {}
+        for t in targets:
+            if t.enabled:
+                dims[t.name] = predicted_dims(t, state, wire="fixed")
+        pos = resolve_positions(targets, dims)
+        self.send({t.name: t for t in targets}, pos)
+        # re-read the heads for the post-apply query.  A compositor that
+        # accepted the configuration and then stopped answering gets a
+        # sentence rather than the socket's own `timed out`.
+        try:
+            self.conn.roundtrip()
+            return snapshot_wlr(self, state)
+        except OSError:
+            raise Fatal("the compositor applied the output configuration "
+                        "and then stopped responding\n")
 
 
 def wlr_snapshot_safe():
@@ -1316,15 +1355,54 @@ def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
     return snapshot_sway(ipc, state)
 
 
-def apply_wlr(wlr: WlrOutputs, state: State, targets: list):
-    """Single atomic zwlr_output_configuration apply (positions resolved
-    against predicted logical sizes — same math wlroots uses)."""
-    dims = {}
-    for t in targets:
-        if t.enabled:
-            dims[t.name] = predicted_dims(t, state, wire="fixed")
-    pos = resolve_positions(targets, dims)
-    wlr.apply({t.name: t for t in targets}, pos)
+class SwayBackend:
+    """The sway/i3 IPC backend in the shape all four of them share:
+    snapshot, predicted_dims, verify, apply, close and a name.
+
+    It holds the IPC socket and, when the compositor also speaks
+    zwlr_output_management, the connection whose head data enriches a query
+    with what sway IPC does not report (physical mm, preferred flags,
+    make/model/serial)."""
+
+    name = "sway"
+
+    def __init__(self, ipc: SwayIPC, wlr: WlrOutputs | None = None):
+        self.ipc = ipc
+        self.wlr = wlr
+
+    @property
+    def sockpath(self) -> str:
+        """The IPC socket: what the state file is keyed by in the one
+        session that has no wayland socket to key it by."""
+        return self.ipc.sockpath
+
+    def snapshot(self, state: State) -> list:
+        return snapshot_sway(self.ipc, state, self.wlr)
+
+    def predicted_dims(self, t: Target, state: State) -> tuple:
+        return predicted_dims(t, state)
+
+    def verify(self, state: State, targets: list):
+        """--dryrun: sway has nothing to validate against ahead of time.
+        RUN_COMMAND is the only request there is, and running it would be
+        the apply."""
+
+    def apply(self, state: State, targets: list,
+              persistent: bool = False) -> list:
+        """The two-phase RUN_COMMAND apply, and the fresh snapshot it
+        re-reads. `persistent` is accepted for contract parity and ignored:
+        a sway layout lives in sway's own config, which is not ours to
+        write."""
+        return apply_sway(self.ipc, state, targets)
+
+    def close(self):
+        for handle in (self.ipc, self.wlr):
+            if handle is None:
+                continue
+            try:
+                handle.close()
+            except OSError:
+                pass
 
 
 # -- query rendering ----------------------------------------------------------

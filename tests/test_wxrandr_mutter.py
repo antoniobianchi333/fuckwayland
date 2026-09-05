@@ -513,8 +513,7 @@ class MutterCase(unittest.TestCase):
 
         def fake_init(sess, forced=None):
             sess.backend = cli.canonical_backend(forced) or "mutter"
-            sess.ipc = sess.wlr = None
-            sess.mutter = tc.outputs()
+            sess.impl = tc.outputs()
             sess.persistent = os.environ.get("WXRANDR_PERSIST", "") not in ("", "0")
             sess.state = tc.state()
         env = env or {}
@@ -1431,8 +1430,8 @@ class Detection(MutterCase):
 
         def recording_init(sess, forced=None):
             self.orig_init(sess, forced)
-            if sess.mutter is not None:
-                opened.append(sess.mutter)
+            if sess.impl is not None:
+                opened.append(sess.impl)
         cli.Session.__init__ = recording_init
 
     def main(self, *argv):
@@ -1467,8 +1466,7 @@ class Detection(MutterCase):
     def test_auto_detect_picks_mutter(self):
         sess = cli.Session()
         self.assertEqual((sess.backend, sess.compositor_name), ("mutter", "mutter"))
-        self.assertIsNone(sess.ipc)
-        self.assertIsNone(sess.wlr)
+        self.assertIsInstance(sess.impl, mutter.MutterOutputs)
         self.assertFalse(sess.persistent)
         self.assertEqual([o.name for o in sess.snapshot()], ["eDP-1", "DP-1"])
 

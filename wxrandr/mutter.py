@@ -310,6 +310,8 @@ def wl_output_info(sock_path: str | None = None) -> dict:
 class MutterOutputs:
     """Snapshot + one-call atomic apply over org.gnome.Mutter.DisplayConfig."""
 
+    name = "mutter"
+
     def __init__(self, bus: Bus | None = None, addr: str | None = None,
                  wl_socket=None):
         """`wl_socket`: Wayland socket path for the wl_output enrichment

@@ -818,10 +818,10 @@ class Session:
 
     BACKENDS = WAYLAND_BACKENDS
 
-    # the handles close() drops, as class defaults: __init__ always rebinds
-    # them, and a Session built any other way (the backend tests stub
+    # the backend object close() drops, as a class default: __init__ always
+    # rebinds it, and a Session built any other way (the backend tests stub
     # __init__ with their own fake) is still closeable
-    ipc = wlr = mutter = kwin = None
+    impl = None
     probes: dict = {}
 
     def __init__(self, forced=None):
@@ -861,10 +861,7 @@ class Session:
         for p in probes.values():
             if p.handle is not None and id(p.handle) not in keep:
                 p.close()
-        self.ipc = None
-        self.wlr = None
-        self.mutter = None
-        self.kwin = None
+        self.impl = None
         self.persistent = os.environ.get("WXRANDR_PERSIST", "") not in ("", "0")
         # OSError as well as Fatal: WlConn's connect() can raise
         # ConnectionRefusedError on a stale-but-present socket, and sway IPC
@@ -872,10 +869,12 @@ class Session:
         # never a traceback.
         if self.backend == "sway":
             try:
-                self.ipc = core.SwayIPC(sway_sock)
+                ipc = core.SwayIPC(sway_sock)
             except (Fatal, OSError):
                 self._cant_open()
-            self.wlr = core.wlr_snapshot_safe()
+            # the enrichment connection is opened only once the IPC is up: a
+            # session without sway has already left through _cant_open()
+            self.impl = core.SwayBackend(ipc, core.wlr_snapshot_safe())
         elif self.backend == "kwin":
             from wxrandr import kwin as kwin_mod
             if kprobe is None and wsession.find_wayland_socket() is None:
@@ -884,7 +883,7 @@ class Session:
                 # a socket without kde_output_management_v2 raises Fatal with
                 # a one-line explanation; an unusable one is "Can't open
                 # display", like everywhere else
-                self.kwin = kwin_mod.KwinOutputs(conn=kprobe)
+                self.impl = kwin_mod.KwinOutputs(conn=kprobe)
             except (OSError, RuntimeError, ValueError):
                 self._cant_open()
         elif self.backend == "mutter":
@@ -892,18 +891,19 @@ class Session:
             try:
                 # no bus at all -> "Can't open display"; a bus without
                 # DisplayConfig raises Fatal with a one-line explanation
-                self.mutter = mutter_mod.MutterOutputs(bus=probe)
+                self.impl = mutter_mod.MutterOutputs(bus=probe)
             except (mutter_mod.DBusError, OSError, ValueError):
                 self._cant_open()
         else:
             try:
-                self.wlr = core.WlrOutputs(conn=wprobe)
+                self.impl = core.WlrOutputs(conn=wprobe)
             except (Fatal, OSError):
                 self._cant_open()
         # state is keyed by the compositor's wayland socket so all backends
-        # share one primary/custom-mode store per session
+        # share one primary/custom-mode store per session; sway is the only
+        # one that can run without such a socket, and it keys by its own
         hit = wsession.find_wayland_socket()
-        key = hit[2] if hit else (self.ipc.sockpath if self.ipc else "?")
+        key = hit[2] if hit else getattr(self.impl, "sockpath", "?")
         self.state = core.State(key)
 
     @staticmethod
@@ -913,24 +913,13 @@ class Session:
         raise SystemExit(1)
 
     def snapshot(self):
-        if self.backend == "sway":
-            return core.snapshot_sway(self.ipc, self.state, self.wlr)
-        if self.backend == "mutter":
-            return self.mutter.snapshot(self.state)
-        if self.backend == "kwin":
-            return self.kwin.snapshot(self.state)
-        return core.snapshot_wlr(self.wlr, self.state)
+        return self.impl.snapshot(self.state)
 
     def dims(self, t) -> tuple:
         """Pending logical size of an enabled target in the backend's own
         coordinate space (Mutter and KWin round, and Mutter may not scale at
         all; wlroots truncates)."""
-        if self.backend == "mutter":
-            return self.mutter.predicted_dims(t, self.state)
-        if self.backend == "kwin":
-            return self.kwin.predicted_dims(t, self.state)
-        return core.predicted_dims(
-            t, self.state, wire="fixed" if self.backend == "wlr" else "text")
+        return self.impl.predicted_dims(t, self.state)
 
     def positions(self, targets, dims) -> dict:
         """Pending positions the way the backend will lay them out: xrandr's
@@ -958,47 +947,27 @@ class Session:
         return pos
 
     def close(self):
-        """Drop the compositor connections.  SwayIPC, WlrOutputs, KwinOutputs
-        and MutterOutputs all have a close() and nothing called any of them,
-        so every run handed its socket (and, on sway, a second one for the
-        wlr enrichment) to the garbage collector -- which reports it as a
-        ResourceWarning whenever it gets round to it.  Idempotent: the probe
-        objects hold the same handles and swallow a second close."""
-        for handle in (self.ipc, self.wlr, self.mutter, self.kwin):
-            closer = getattr(handle, "close", None)
-            if closer is None:
-                continue
+        """Drop the compositor connections.  Every backend has a close() and
+        nothing called any of them, so every run handed its socket (and, on
+        sway, a second one for the wlr enrichment) to the garbage collector
+        -- which reports it as a ResourceWarning whenever it gets round to
+        it.  Idempotent: the probe objects hold the same handles and swallow
+        a second close."""
+        if self.impl is not None:
             try:
-                closer()
+                self.impl.close()
             except OSError:
                 pass
-        self.ipc = self.wlr = self.mutter = self.kwin = None
+        self.impl = None
         for probe in self.probes.values():
             probe.close()
 
     def apply(self, targets):
-        if self.backend == "sway":
-            return core.apply_sway(self.ipc, self.state, targets)
-        if self.backend == "mutter":
-            return self.mutter.apply(self.state, targets, self.persistent)
-        if self.backend == "kwin":
-            return self.kwin.apply(self.state, targets, self.persistent)
-        core.apply_wlr(self.wlr, self.state, targets)
-        # refresh the head snapshot for the post-apply query.  A compositor
-        # that accepted the configuration and then stopped answering gets a
-        # sentence rather than the socket's own `timed out`.
-        try:
-            self.wlr.conn.roundtrip()
-            return self.snapshot()
-        except OSError:
-            raise Fatal("the compositor applied the output configuration "
-                        "and then stopped responding\n")
+        return self.impl.apply(self.state, targets, self.persistent)
 
     @property
     def compositor_name(self):
-        if self.backend in ("mutter", "kwin"):
-            return self.backend
-        return "sway" if self.backend == "sway" else "wlroots"
+        return self.impl.name
 
 
 # -- action helpers -----------------------------------------------------------
@@ -1182,7 +1151,7 @@ def _apply_gamma(sess: Session, opts: Opts, outputs):
             core.warn("--brightness/--gamma are not supported on Mutter "
                       "(no gamma LUT API); ignoring for %s\n" % s.name)
             continue
-        if sess.backend == "kwin" and not sess.kwin.has_gamma:
+        if sess.backend == "kwin" and not sess.impl.has_gamma:
             # probed, not assumed: kde-output-management-v2 carries no LUT
             # call and KWin advertises no zwlr_gamma_control_manager_v1 either
             core.warn("--brightness/--gamma are not supported on KWin "
@@ -1232,34 +1201,32 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
     # send, and the dryrun branch puts this back before it saves.
     primary_before = sess.state.primary
     if opts.noprimary:
-        if (sess.backend == "mutter" and sess.mutter.primary
+        if (sess.backend == "mutter" and sess.impl.primary
                 and not any(s.primary for s in opts.stanzas)):
             core.warn("GNOME requires a primary output; keeping %s\n"
-                      % sess.mutter.primary)
-        if (sess.backend == "kwin" and sess.kwin.primary
+                      % sess.impl.primary)
+        if (sess.backend == "kwin" and sess.impl.primary
                 and not any(s.primary for s in opts.stanzas)):
             # neither set_priority nor set_primary_output has an inverse:
             # KWin's output order always has a first entry
             core.warn("KWin keeps a primary output; keeping %s\n"
-                      % sess.kwin.primary)
+                      % sess.impl.primary)
         sess.state.primary = None
     for s in opts.stanzas:
         if s.primary and any(t.name == s.name and t.stanza is s
                              for t in targets):
             sess.state.primary = s.name
     if opts.dryrun:
+        # what a verify can promise is the backend's business: Mutter really
+        # validates, with method 0, the exact call a real run would make
+        # (adjacency, overlap, primary, scales), and a rejection is the same
+        # one-line `xrandr: <mutter message>` the apply would give; KWin has
+        # no such request and re-runs the plan client-side (mode resolution,
+        # the last-output refusal); sway and wlroots have nothing to ask.
+        sess.impl.verify(sess.state, targets)
         if sess.backend == "mutter":
-            # method 0: Mutter validates the exact call a real run would
-            # make (adjacency, overlap, primary, scales); a rejection is the
-            # same one-line `xrandr: <mutter message>` the apply would give.
-            # The verdict goes to stderr: stdout stays xrandr's dryrun bytes.
-            sess.mutter.verify(sess.state, targets)
+            # the verdict goes to stderr: stdout stays xrandr's dryrun bytes
             sys.stderr.write("mutter verify: ok\n")
-        elif sess.backend == "kwin":
-            # KWin has no verify request, and building a configuration
-            # without applying it changes nothing, so this runs the plan
-            # client-side only (mode resolution, the last-output refusal).
-            sess.kwin.verify(sess.state, targets)
         # Nothing was sent, so nothing may be claimed about the compositor --
         # including the primary: a --dryrun that recorded one would make the
         # next --query name a primary the compositor was never asked for.
@@ -1270,7 +1237,7 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
         sess.state.save()
         return outputs
     for cmd in filter_cmds:
-        sess.ipc.run(cmd)
+        sess.impl.ipc.run(cmd)
     fresh = sess.apply(targets)
     still = {o.name for o in fresh}
     if sess.state.primary and sess.state.primary not in still:
