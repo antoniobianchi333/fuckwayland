@@ -33,11 +33,11 @@ import sys
 import time
 
 from fwcommon import session
+from fwcommon.errors import CmdError
 from wdotool import backend_detect
 from wdotool.backend import state_steps as _backend_state_steps
 from wdotool.backend import warn as _warn
 from wdotool.cnum import atoi as _atoi
-from wdotool.ctx import CmdError
 from wdotool.x11_mini import XUnavailable, hostname
 
 # _NET_WM_STATE actions (EWMH)

@@ -11,7 +11,7 @@ import stat
 import sys
 import tempfile
 
-from wdotool import stdio
+from fwcommon import stdio
 
 from . import VERSION, randr
 from .model import LayoutError
@@ -195,7 +195,7 @@ def main(argv=None):
     text still buffered: the interpreter's own exit-time flush then failed on a full or closed stdout and turned
     exit 0 into exit 120, with an "Exception ignored" block nobody can act on.  Everything else -- Ctrl-C on the
     way to the window, a reader that left, an unexpected error out of GTK -- becomes one `warandr: ...` line
-    (wdotool/stdio.py)."""
+    (fwcommon/stdio.py)."""
     stdio.repair_std()
     quiet = False
     try:

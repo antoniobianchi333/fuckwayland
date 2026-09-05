@@ -15,9 +15,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import time
 
+from fwcommon.errors import CmdError
 from wdotool import backend, cli, window_cmds
 from wdotool.backend import Window, WindowBackend
-from wdotool.ctx import CmdError, Context, NoSessionError, SoftCmdError
+from wdotool.ctx import Context, NoSessionError, SoftCmdError
 
 
 # The suite never hands a tool over to the real X11 one: see

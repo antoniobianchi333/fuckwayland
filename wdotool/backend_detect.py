@@ -14,8 +14,9 @@ precise message with "the compositor does not offer wlr-foreign-toplevel"."""
 import os
 
 from fwcommon import session
+from fwcommon.errors import CmdError
 from wdotool.backend import program
-from wdotool.ctx import CmdError, NoSessionError
+from wdotool.ctx import NoSessionError
 
 KWIN_NAME = "org.kde.KWin"
 GNOME_NAME = "org.gnome.Shell"

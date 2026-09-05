@@ -706,7 +706,7 @@ sh scripts/build-pyz.sh
 ```
 
 builds `dist/wdotool`, `dist/wwmctl`, `dist/wxprop`, `dist/wxrandr`,
-`dist/warandr` and `dist/wmirror`: six self-contained executables, 0.8–1.1 MB
+`dist/warandr` and `dist/wmirror`: six self-contained executables, 0.4–0.9 MB
 each, needing nothing but the `python3` that is already on the machine — no
 pip, no venv, no apt, not even a package to add. (`warandr` still imports the
 system GTK bindings at run time, so the GUI wants `python3-gi` and

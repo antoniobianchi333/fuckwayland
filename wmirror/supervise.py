@@ -1,6 +1,6 @@
 """OWNER: wmirror. The detached supervisor that owns one wl-mirror process.
 
-The detaching, the status pipe and the /proc identity checks are wdotool.procs -- the same protocol the gamma
+The detaching, the status pipe and the /proc identity checks are fwcommon.procs -- the same protocol the gamma
 holder runs on, written once and documented there.
 
 One thing the holder does not have: the thing we spawn is not us, it is wl-mirror. So the record carries TWO
@@ -21,10 +21,10 @@ import subprocess
 import tempfile
 import time
 
-from wdotool import procs
+from fwcommon import procs
 # the detach protocol and the pid-reuse guards, imported rather than copied: one implementation of "is that
 # still the process we started?", and one of "start something that outlives us", in the tree.
-from wdotool.procs import alive, proc_starttime
+from fwcommon.procs import alive, proc_starttime
 from wxrandr import core as wxcore
 
 from . import core

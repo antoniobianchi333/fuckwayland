@@ -3,9 +3,9 @@ compositor workspaces, 0-based like EWMH (sway workspace N -> desktop N-1)."""
 
 import sys
 
+from fwcommon.errors import CmdError
 from wdotool.cli import _opts
 from wdotool.cnum import atoi as _atoi, strtol as _strtol
-from wdotool.ctx import CmdError
 from wdotool.window_cmds import _SEE_STACK, _out, _warn_noop, _window_arg
 
 

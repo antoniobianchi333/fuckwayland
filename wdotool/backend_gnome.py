@@ -50,8 +50,9 @@ import time
 
 from fwcommon import session
 from fwcommon.dbus_mini import ERR, Bus, DBusError, no_bus_text
+from fwcommon.errors import CmdError
 from wdotool.backend import View, Window, WindowBackend, Workspace, warn
-from wdotool.ctx import CmdError, NoSessionError
+from wdotool.ctx import NoSessionError
 
 BUS_NAME = "org.fuckwayland.Bridge"
 OBJECT_PATH = "/org/fuckwayland/Bridge"

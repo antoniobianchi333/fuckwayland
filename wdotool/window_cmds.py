@@ -8,10 +8,11 @@ import re
 import sys
 import time
 
+from fwcommon.errors import CmdError
 from wdotool import commands
 from wdotool.cli import ChainAbort, GetoptError, _opts, getopt_long_only
 from wdotool.cnum import atoi as _atoi, strtol as _strtol
-from wdotool.ctx import CmdError, SoftCmdError
+from wdotool.ctx import SoftCmdError
 
 _SEE_STACK = "If no window is given, %1 is used. See WINDOW STACK in xdotool(1)\n"
 

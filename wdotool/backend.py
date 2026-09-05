@@ -11,7 +11,7 @@ import os
 import signal
 import sys
 
-from wdotool.ctx import CmdError
+from fwcommon.errors import CmdError
 
 #: The name the backends put in front of their own warnings. wwmctl and
 #: wxprop drive these same backends, and a line reading "wdotool: ..." in

@@ -24,9 +24,9 @@ from contextlib import redirect_stderr, redirect_stdout
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from fwcommon.errors import CmdError
 from wdotool.backend import Window
 from wdotool.backend_sway import SwayBackend
-from wdotool.ctx import CmdError
 from wwmctl import cli, core
 from wwmctl.cli import WMCTRL_VERSION
 

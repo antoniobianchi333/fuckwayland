@@ -871,7 +871,7 @@ class TheQueryThatComesBeforeTheMove(unittest.TestCase):
     1 and moved nothing, every time, however well the protocol worked."""
 
     def _ctx(self, calls):
-        from wdotool.ctx import CmdError
+        from fwcommon.errors import CmdError
 
         class Ctx:
             stack: list = []
@@ -917,7 +917,7 @@ class TheQueryThatComesBeforeTheMove(unittest.TestCase):
 
     def test_restore_says_so_rather_than_moving_to_nowhere(self):
         from wdotool import input_cmds
-        from wdotool.ctx import CmdError
+        from fwcommon.errors import CmdError
         calls = []
         ctx = self._ctx(calls)
         input_cmds.cmd_mousemove(ctx, ["100", "200"])

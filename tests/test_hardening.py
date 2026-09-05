@@ -20,9 +20,9 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from fwcommon.errors import CmdError
 from support import RecorderDev
 from wdotool import backend, daemon, keymap, uinput
-from wdotool.ctx import CmdError
 from wdotool.keysyms import NAME_TO_KEYSYM
 
 # The suite never hands a tool over to the real X11 one: see

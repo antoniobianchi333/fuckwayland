@@ -263,7 +263,8 @@ positionals from the remaining argv and returns how many tokens it consumed:
 def cmd_foo(ctx: Context, args: list[str]) -> int   # tokens consumed, excluding command name
 ```
 
-Failure: `raise CmdError(msg)` — driver prints to stderr, aborts the chain, exits 1.
+Failure: `raise CmdError(msg)` (`fwcommon/errors.py`, because the display tools raise
+and catch it too) — driver prints to stderr, aborts the chain, exits 1.
 Non-fatal failure (`search` with no matches): set `ctx.exit_code = 1`, consume args
 normally. `Context` (frozen, `ctx.py`) provides `stack`, `resolve_window(arg|None)`,
 `resolve_windows` (`%@` → whole stack), lazy `backend()` and `daemon()`.
@@ -850,7 +851,7 @@ difference between "not logged in yet" and "no such window" for a script.
 
 Ctrl-C is 130 (128 + SIGINT). Whatever the command decided, the *last* thing
 every one of the six `main()`s does is `stdio.flush_stdout(prog)`
-(`wdotool/stdio.py`): output that never reached its reader makes the status 1,
+(`fwcommon/stdio.py`): output that never reached its reader makes the status 1,
 however well the command itself went. A reader that closed a pipe is silent —
 the originals die of `SIGPIPE` without a word — and everything else (a full
 disk, a quota, `>/dev/full`) is one `prog: message` line on stderr. No tool

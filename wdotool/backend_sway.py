@@ -9,8 +9,9 @@ import socket
 import struct
 
 from fwcommon import session
+from fwcommon.errors import CmdError
 from wdotool.backend import Window, WindowBackend, Workspace, warn
-from wdotool.ctx import CmdError, SoftCmdError
+from wdotool.ctx import SoftCmdError
 
 _MAGIC = b"i3-ipc"
 RUN_COMMAND = 0

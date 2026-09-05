@@ -24,10 +24,10 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from fwcommon.errors import CmdError
 from fwcommon.wayland_mini import Cursor, WlConn
 from wl_fake import msg, wstr
 from wdotool import backend_sway
-from wdotool.ctx import CmdError
 
 
 def _tmpsock(prefix):

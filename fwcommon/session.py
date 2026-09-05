@@ -37,7 +37,7 @@ import os
 import pwd
 import stat
 
-from wdotool.ctx import CmdError
+from fwcommon.errors import CmdError
 
 X11_SOCKET_DIR = "/tmp/.X11-unix"
 #: test seam (production value): the per-user runtime directories

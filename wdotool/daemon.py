@@ -28,8 +28,8 @@ import threading
 import time
 import traceback
 
+from fwcommon.errors import CmdError
 from wdotool import keymap, keystate, uinput, vkbd, vptr, xkbmap
-from wdotool.ctx import CmdError
 
 # Per-euid log path: /tmp is shared, and a root-owned log must not break (or
 # leak into) another user's daemon spawn.

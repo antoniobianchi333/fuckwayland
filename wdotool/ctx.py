@@ -5,19 +5,15 @@ Command function contract (all *_cmds.py modules):
     def cmd_foo(ctx: Context, args: list[str]) -> int
 
 The return value is the number of argv tokens the command consumed (NOT counting
-the command name itself). Raise CmdError(msg) on failure: the driver prints the
-message to stderr, aborts the rest of the chain, and exits 1.
+the command name itself). Raise errors.CmdError(msg) on failure: the driver
+prints the message to stderr, aborts the rest of the chain, and exits 1. That
+class lives in fwcommon/errors.py, because the display tools catch it too.
 """
 
-
-class CmdError(Exception):
-    """A command failed. The driver prints str(self) and exits with
-    `exit_code` (1 unless a subclass says otherwise)."""
-
-    exit_code = 1
+from fwcommon import errors
 
 
-class SoftCmdError(CmdError):
+class SoftCmdError(errors.CmdError):
     """"The compositor cannot do this to *this* window" -- not a failure of the request, a shape of the desktop.
     sway refusing to move or resize a tiled container is the case that exists.
 
@@ -26,7 +22,7 @@ class SoftCmdError(CmdError):
     window" (both used to exit 0 out of windowmove)."""
 
 
-class NoSessionError(CmdError):
+class NoSessionError(errors.CmdError):
     """No Wayland session / window-management backend could be found at all (B5). Distinct from "the session is
     fine but nothing matched", which stays rc 1, so a script can tell "not logged in yet / no bridge" from "no
     such window" -- see SESSION READINESS in README.md."""
@@ -65,7 +61,7 @@ class Context:
             self._daemon = DaemonClient.connect_or_spawn()
         return self._daemon
 
-    def _no_stack(self, ref: str) -> CmdError:
+    def _no_stack(self, ref: str) -> errors.CmdError:
         """xdotool's empty-stack refusal, all three lines of it: the message, the reference that could not be
         resolved, and the command's own usage (window_get_arg() records it in `cmd_usage`). Scripts grep for
         this."""
@@ -73,7 +69,7 @@ class Context:
         usage = getattr(self, "cmd_usage", None)
         if usage:
             msg += "\n" + usage.rstrip("\n")
-        return CmdError(msg)
+        return errors.CmdError(msg)
 
     def _resolve_one(self, arg: str) -> int:
         if arg.startswith("%"):
@@ -85,23 +81,23 @@ class Context:
             try:
                 n = int(ref)
             except ValueError:
-                raise CmdError(f"Invalid window stack reference '{arg}'") from None
+                raise errors.CmdError(f"Invalid window stack reference '{arg}'") from None
             # Negative refs count from the end, like xdotool's window_list():
             # index = len(stack) + n, valid when it lands in [1, len(stack)].
             idx = len(self.stack) + n if n < 0 else n
             if idx <= 0 or idx > len(self.stack):
-                raise CmdError(
+                raise errors.CmdError(
                     f"Invalid window stack reference '{arg}' (stack has {len(self.stack)} windows)"
                 )
             return self.stack[idx - 1]
         try:
             wid = int(arg, 0)
         except ValueError:
-            raise CmdError(f"Invalid window id '{arg}'") from None
+            raise errors.CmdError(f"Invalid window id '{arg}'") from None
         # B8: a negative or out-of-range id used to reach the bridge and blow up in the D-Bus marshaller
         # ("cannot marshal -5 as 't'"); one line and rc 1 instead.
         if not 0 <= wid <= _MAX_WINDOW_ID:
-            raise CmdError(f"Invalid window id '{arg}'")
+            raise errors.CmdError(f"Invalid window id '{arg}'")
         return wid
 
     def resolve_window(self, arg: str | None = None) -> int:

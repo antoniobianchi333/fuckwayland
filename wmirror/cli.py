@@ -14,8 +14,7 @@ import argparse
 import shlex
 import sys
 
-from fwcommon import session
-from wdotool import stdio
+from fwcommon import session, stdio
 
 from . import VERSION, core, supervise
 

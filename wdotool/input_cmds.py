@@ -8,11 +8,11 @@ import math
 import sys
 import time
 
+from fwcommon.errors import CmdError
 from wdotool import backend as _backend
 from wdotool import commands
 from wdotool.cli import ChainAbort, _opts
 from wdotool.cnum import atoi as _atoi, strtol as _strtonum
-from wdotool.ctx import CmdError
 
 # ---------------------------------------------------------------------------
 # option parsing, via cli.py's glibc getopt_long_only clone

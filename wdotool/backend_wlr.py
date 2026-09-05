@@ -5,9 +5,9 @@ desktops. Window ids are 1000000 + arrival order and are only stable within one 
 import struct
 
 from fwcommon import session
+from fwcommon.errors import CmdError
 from fwcommon.wayland_mini import WlConn
 from wdotool.backend import Window, WindowBackend
-from wdotool.ctx import CmdError
 
 BASE_ID = 1000000
 

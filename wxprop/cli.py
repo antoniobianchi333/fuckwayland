@@ -32,8 +32,8 @@ import re
 import struct
 import sys
 
-from fwcommon import passthrough
-from wdotool import backend, stdio
+from fwcommon import passthrough, stdio
+from wdotool import backend
 from wdotool.cnum import atoi as _atoi
 from wxprop import core
 from wxprop import fmt as fmtmod

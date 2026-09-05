@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 from fwcommon import dbus_mini, session
 from fwcommon.dbus_mini import ERR, Bus, DBusError, Message, Variant
+from fwcommon.errors import CmdError
 from test_dbus_mini import MockBus
 from wdotool import backend_detect, backend_kwin, kwin_js
 from wdotool.backend import View, Window, Workspace, hit_test
@@ -39,7 +40,7 @@ from wdotool.backend_kwin import (BUS_NAME, IFACE, KWIN_IFACE,
                                   SCRIPTING_IFACE, SCRIPTING_PATH,
                                   SCRIPT_IFACE, VD_IFACE, VD_PATH,
                                   KwinBackend)
-from wdotool.ctx import CmdError, NoSessionError
+from wdotool.ctx import NoSessionError
 
 # See tests/conftest.py: no test process ever hands itself to the real xdotool.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
