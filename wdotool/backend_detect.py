@@ -48,8 +48,7 @@ def _gnome():
     return GnomeBackend(bus=session_bus(), names=session_names())
 
 
-_MAKERS = {"sway": _sway, "i3": _sway, "wlr": _wlr, "kwin": _kwin,
-           "gnome": _gnome}
+_MAKERS = {"sway": _sway, "i3": _sway, "wlr": _wlr, "kwin": _kwin, "gnome": _gnome}
 
 
 def reset():
@@ -93,10 +92,7 @@ def detect():
     if forced:
         maker = _MAKERS.get(forced.strip().lower())
         if maker is None:
-            raise CmdError(
-                "WDOTOOL_BACKEND=%s is not one of: sway, wlr, kwin, gnome"
-                % forced
-            )
+            raise CmdError("WDOTOOL_BACKEND=%s is not one of: sway, wlr, kwin, gnome" % forced)
         return maker()
     if session.find_sway_socket():
         try:

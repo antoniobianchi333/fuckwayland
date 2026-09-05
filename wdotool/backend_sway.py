@@ -31,8 +31,7 @@ IPC_TIMEOUT = 10.0
 
 def _lost(e) -> CmdError:
     """Any wire-level failure of the i3/sway IPC socket, as one clear line."""
-    return CmdError("sway backend: lost the connection to the compositor (%s)"
-                    % e)
+    return CmdError("sway backend: lost the connection to the compositor (%s)" % e)
 
 
 def _wedged() -> CmdError:
@@ -69,9 +68,7 @@ class SwayBackend(WindowBackend):
             s.connect(self.sockpath)
         except OSError as e:
             s.close()
-            raise CmdError(
-                "sway backend: cannot connect to %s: %s" % (self.sockpath, e)
-            ) from None
+            raise CmdError("sway backend: cannot connect to %s: %s" % (self.sockpath, e)) from None
         return s
 
     @staticmethod
@@ -89,8 +86,7 @@ class SwayBackend(WindowBackend):
         if isinstance(payload, str):
             payload = payload.encode()
         try:
-            sock.sendall(_MAGIC + struct.pack("<II", len(payload), mtype)
-                         + payload)
+            sock.sendall(_MAGIC + struct.pack("<II", len(payload), mtype) + payload)
         except TimeoutError:
             raise _wedged() from None
         except OSError as e:
@@ -129,9 +125,7 @@ class SwayBackend(WindowBackend):
         results = self._msg(RUN_COMMAND, command)
         for r in results or []:
             if not r.get("success"):
-                raise CmdError(
-                    "sway: %s" % (r.get("error") or "command failed: %s" % command)
-                )
+                raise CmdError("sway: %s" % (r.get("error") or "command failed: %s" % command))
 
     # -- tree ---------------------------------------------------------------
 
@@ -228,8 +222,7 @@ class SwayBackend(WindowBackend):
                 "(floating enable it first)"
             )
         self._refuse_fullscreen(node, "move")
-        self.run("[con_id=%d] move absolute position %d %d"
-                 % (wid, x, y - self._deco_h(node)))
+        self.run("[con_id=%d] move absolute position %d %d" % (wid, x, y - self._deco_h(node)))
 
     def resize(self, wid: int, w: int, h: int):
         node, win, floating, _ws = self._node(wid)
@@ -243,13 +236,11 @@ class SwayBackend(WindowBackend):
                 "(floating enable it first)"
             )
         self._refuse_fullscreen(node, "resize")
-        self.run("[con_id=%d] resize set %d px %d px"
-                 % (wid, w, h + self._deco_h(node)))
+        self.run("[con_id=%d] resize set %d px %d px" % (wid, w, h + self._deco_h(node)))
         # sway resizes floating windows around their center; xdotool (X11)
         # keeps the top-left corner fixed. Move it back where it was.
         node2 = self._node(wid)[0]
-        self.run("[con_id=%d] move absolute position %d %d"
-                 % (wid, win.x, win.y - self._deco_h(node2)))
+        self.run("[con_id=%d] move absolute position %d %d" % (wid, win.x, win.y - self._deco_h(node2)))
 
     def minimize(self, wid: int):
         self.unmap(wid)
@@ -275,8 +266,7 @@ class SwayBackend(WindowBackend):
         if floating:
             self.run("[con_id=%d] focus" % wid)
         else:
-            warn("windowraise: tiled sway windows have no stacking "
-                 "order; ignoring")
+            warn("windowraise: tiled sway windows have no stacking order; ignoring")
 
     def lower(self, wid: int):
         self._node(wid)
@@ -302,9 +292,7 @@ class SwayBackend(WindowBackend):
             elif action == 0 and hidden:
                 self.run("[con_id=%d] scratchpad show" % wid)
         else:
-            raise CmdError(
-                "windowstate %s is not supported by the sway backend" % state
-            )
+            raise CmdError("windowstate %s is not supported by the sway backend" % state)
 
     def window_desktop(self, wid: int) -> int:
         return self._node(wid)[1].desktop
@@ -357,8 +345,7 @@ class SwayBackend(WindowBackend):
             if not o.get("active"):
                 continue
             rect = o.get("rect") or {}
-            boxes.append((rect.get("x", 0), rect.get("y", 0),
-                          rect.get("width", 0), rect.get("height", 0)))
+            boxes.append((rect.get("x", 0), rect.get("y", 0), rect.get("width", 0), rect.get("height", 0)))
         if not boxes:
             raise CmdError("sway backend: no active outputs")
         # Bounding box of the full layout; origins can be non-zero/negative.

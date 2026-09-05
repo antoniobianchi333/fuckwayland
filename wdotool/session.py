@@ -80,8 +80,7 @@ def runtime_dir() -> str:
         st = os.lstat(d)
     except OSError as e:
         raise CmdError(f"cannot stat {d}: {e}") from None
-    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid()
-            or st.st_mode & 0o077):
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077):
         raise CmdError(
             f"{d} is not a private directory owned by uid {os.getuid()}; "
             "refusing to put the wdotool socket there")
@@ -107,8 +106,7 @@ def _sudo_uid():
 
 def _has_wayland_socket(d: str) -> bool:
     try:
-        return any(n.startswith("wayland-") and not n.endswith(".lock")
-                   for n in os.listdir(d))
+        return any(n.startswith("wayland-") and not n.endswith(".lock") for n in os.listdir(d))
     except OSError:
         return False
 
@@ -189,9 +187,7 @@ def find_sway_socket() -> str | None:
         p = os.environ.get(var)
         if p and os.path.exists(p):
             return p
-    hit = _scan(
-        lambda n: (n.startswith("sway-ipc.") or n.startswith("i3-ipc.")) and n.endswith(".sock")
-    )
+    hit = _scan(lambda n: (n.startswith("sway-ipc.") or n.startswith("i3-ipc.")) and n.endswith(".sock"))
     return hit[1] if hit else None
 
 
@@ -398,8 +394,7 @@ def find_xauthority(uid: int | None = None) -> str | None:
         return env_p
     rd = _runtime_dir_of(uid)
     if rd:
-        cands = glob.glob(os.path.join(rd, ".mutter-Xwaylandauth.*")) + \
-            glob.glob(os.path.join(rd, "xauth_*"))
+        cands = glob.glob(os.path.join(rd, ".mutter-Xwaylandauth.*")) + glob.glob(os.path.join(rd, "xauth_*"))
         best, best_m = None, -1.0
         for c in cands:
             try:

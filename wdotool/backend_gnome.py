@@ -86,8 +86,7 @@ _ACTIONS = {0: "remove", 1: "add", 2: "toggle"}
 # may rely on, and Mutter does not implement it at all -- a real capability
 # gap, like BELOW. Everything else the bridge cannot apply is a gap too.
 _COSMETIC_STATES = {"SKIP_TASKBAR", "SKIP_PAGER", "MODAL"}
-_GAP_REASONS = {"SHADED": "Mutter does not implement window shading",
-                "BELOW": "Mutter has no API for it"}
+_GAP_REASONS = {"SHADED": "Mutter does not implement window shading", "BELOW": "Mutter has no API for it"}
 # Opt-in for the Eval-based auto-load of an installed extension (__init__).
 AUTOLOAD_ENV = "WDOTOOL_GNOME_AUTOLOAD"
 # org.gnome.Shell Mode values in which no user session runs extensions. The
@@ -158,15 +157,13 @@ def extension_installed() -> bool:
     every extension, so from the *bus* a bridge that was never installed
     and one that is merely asleep look exactly alike (live, 24.04). From
     disk they do not."""
-    return any(os.path.isfile(os.path.join(d, _EXT_FILE))
-               for d in _extension_dirs())
+    return any(os.path.isfile(os.path.join(d, _EXT_FILE)) for d in _extension_dirs())
 
 
 class GnomeBackend(WindowBackend):
     name = "gnome"
 
-    def __init__(self, bus: Bus | None = None, names: list[str] | None = None,
-                 settle: float = 0.5):
+    def __init__(self, bus: Bus | None = None, names: list[str] | None = None, settle: float = 0.5):
         """`bus`/`names`: reuse backend_detect's connection and its ListNames
         result (one round trip per process). `settle`: how long activate()
         waits for the focus change to land before returning (Mutter animates
@@ -197,19 +194,16 @@ class GnomeBackend(WindowBackend):
 
     # -- plumbing -----------------------------------------------------------
 
-    def _call(self, member: str, sig: str = "", args=(),
-              timeout: float | None = CALL_TIMEOUT) -> tuple:
+    def _call(self, member: str, sig: str = "", args=(), timeout: float | None = CALL_TIMEOUT) -> tuple:
         try:
-            return self.bus.call(BUS_NAME, OBJECT_PATH, IFACE, member, sig, args,
-                                 timeout=timeout)
+            return self.bus.call(BUS_NAME, OBJECT_PATH, IFACE, member, sig, args, timeout=timeout)
         except DBusError as e:
             raise self._map_error(member, e) from None
         except (ValueError, OverflowError, struct.error) as e:
             # An argument the wire format cannot carry (a negative or
             # >64-bit window id reached us from somewhere): one line, rc 1,
             # never a marshalling traceback (B8).
-            raise CmdError("gnome backend: %s: invalid argument: %s"
-                           % (member, e)) from None
+            raise CmdError("gnome backend: %s: invalid argument: %s" % (member, e)) from None
 
     @staticmethod
     def _map_error(member: str, e: DBusError) -> CmdError:
@@ -232,8 +226,7 @@ class GnomeBackend(WindowBackend):
             return CmdError("gnome backend: %s: no reply from the bridge within "
                             "the timeout (is gnome-shell hung?)" % member)
         if n == ERR + "Disconnected":
-            return CmdError("gnome backend: session bus connection lost (%s)"
-                            % e.message)
+            return CmdError("gnome backend: session bus connection lost (%s)" % e.message)
         return CmdError("gnome backend: %s failed: %s" % (member, e))
 
     def _missing_bridge_text(self) -> str:
@@ -464,8 +457,7 @@ class GnomeBackend(WindowBackend):
         if applied:
             return
         if state in _COSMETIC_STATES:
-            warn("windowstate %s: Mutter cannot set it on Wayland; "
-                 "ignoring" % state)
+            warn("windowstate %s: Mutter cannot set it on Wayland; ignoring" % state)
             return
         raise CmdError("windowstate %s is not supported by the gnome backend (%s)"
                        % (state, _GAP_REASONS.get(state, "Mutter has no API for it")))
@@ -588,8 +580,7 @@ class GnomeBackend(WindowBackend):
         root-level watcher (wxprop -root -spy) needs one stream only."""
         bus = Bus(self.bus.address)
         try:
-            bus.add_match("type='signal',interface='%s',path='%s'"
-                          % (IFACE, OBJECT_PATH))
+            bus.add_match("type='signal',interface='%s',path='%s'" % (IFACE, OBJECT_PATH))
             for m in bus.messages(timeout):
                 if m.interface != IFACE:
                     continue
