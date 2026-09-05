@@ -3,7 +3,7 @@
 Drop-in `arandr` clone that works on **Wayland** (through `wxrandr`) and on
 **X11** (through `xrandr`). Same window, same menus, same `~/.screenlayout/*.sh`
 files — arandr's layout scripts load here and ours load in arandr. House rules
-per DESIGN.md, with one exception spelled out below.
+per Technical.md, with one exception spelled out below.
 
 ## Toolkit rule (the exception)
 
@@ -294,9 +294,10 @@ new geometry), and re-bases on the *current* outputs like arandr (unknown
 output/mode → error). A stanza with `--primary` moves the primary (the
 previous one is cleared even when the script does not mention it, as
 xrandr does); a mentioned output without `--primary` loses it (arandr). Saving appends `.sh`, chmods 0700, defaults to
-`~/.screenlayout/` — all arandr habits. The directory itself is not created: a
-`--save` into one that is not there is a `warandr: [Errno 2] No such file or
-directory` line and rc 1, so `mkdir -p ~/.screenlayout` first. The command word on
+`~/.screenlayout/` — all arandr habits. **The directory is created if it is not
+there** (`os.makedirs(parent, exist_ok=True)`), which is what the GUI's Save As has
+always done and what a fresh account needs, so `--save` is the same recipe without a
+window rather than one that fails for want of one directory. The command word on
 save is the
 current backend's, so an X11 arandr file re-saved on Wayland says `wxrandr`.
 arandr itself can load our files when they use only arandr's vocabulary
@@ -337,6 +338,73 @@ window was talking to when the layout was captured, so that a hotkey script
 that misbehaves on another machine says why. To pin the backend in a script,
 edit the command word's line yourself (`wxrandr --backend mutter --output
 ...`) — on that machine, where it is true.
+
+### A layout script on a key
+
+Saving a layout and binding it to a key is how a layout comes back, on all four
+desktops. Nothing here restores one on its own, and what each desktop does with a
+layout of its own accord is
+[WXRANDR.md § Keeping a layout](WXRANDR.md#keeping-a-layout).
+
+```console
+$ warandr --save ~/.screenlayout/desk.sh     # or Save As, from the window
+$ sh ~/.screenlayout/desk.sh                 # run it once before binding it
+```
+
+`--save` creates `~/.screenlayout` if it is not there, which is what the GUI's Save
+As has always done and what a fresh account needs. The saved script calls bare
+`wxrandr` (bare `xrandr` on an X11 session), so that has to be on `PATH`: install
+`dist/wxrandr` as `/usr/local/bin/wxrandr`, or take the `.deb`, which puts it in
+`/usr/bin`. An output the script has to switch back on needs `--auto` in its line,
+not only a position.
+
+Then bind it:
+
+- **GNOME** — Settings ▸ Keyboard ▸ Custom Shortcuts, or from a terminal:
+
+  ```console
+  $ K=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/
+  $ S=org.gnome.settings-daemon.plugins.media-keys
+  $ gsettings set $S custom-keybindings "['$K']"
+  $ gsettings set $S.custom-keybinding:$K name 'restore desk layout'
+  $ gsettings set $S.custom-keybinding:$K command "$HOME/.screenlayout/desk.sh"
+  $ gsettings set $S.custom-keybinding:$K binding '<Super>F8'
+  ```
+
+  Bind a chord Mutter does not own: `<Ctrl><Alt>F1` to `<Ctrl><Alt>F12` are its VT
+  switches, on every hotkey in this repo.
+
+- **sway** — one line in `~/.config/sway/config`, then a reload:
+
+  ```console
+  $ echo 'bindsym $mod+F8 exec ~/.screenlayout/desk.sh' >> ~/.config/sway/config
+  $ swaymsg reload
+  ```
+
+  The reload itself drops the current layout, so press the key afterwards.
+
+- **Xfce** — Settings ▸ Keyboard ▸ Application Shortcuts, or live, with no restart:
+
+  ```console
+  $ xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/<Super>F8" \
+      -n -t string -s "$HOME/.screenlayout/desk.sh"
+  ```
+
+- **KDE Plasma** — System Settings ▸ Shortcuts, as a custom shortcut. This is the one
+  desktop where the shortcut cannot be set up from the command line: an entry written
+  into `kglobalshortcutsrc` does register, and running it over D-Bus does start the
+  script, but the key never fires it. KDE is also the desktop that needs the script
+  least, since KWin already has the layout after a reboot.
+
+Test it by pressing the key and reading the screen back with `wxrandr --query`. Two
+things to expect. The shortcut is dead until the session is up: the first press after
+a reboot is silently lost on GNOME and on Xfce (about 24 s from `reboot` on the test
+rig), while sway ran the script on the first press. And the script itself is quick,
+0.13 s to 0.76 s for three heads across the four desktops, 0.7 s to 2 s end to end
+from the key press.
+
+One GNOME habit to know: an Apply that turns a monitor off or on makes Mutter move
+the keyboard focus off the window, so click it before the next Ctrl+S.
 
 ## GUI (`warandr/gui.py`)
 

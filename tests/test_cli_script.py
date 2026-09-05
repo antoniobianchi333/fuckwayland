@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent A: script mode — tokenizing, quoting, $N/$ENV expansion, per-line
+"""script mode — tokenizing, quoting, $N/$ENV expansion, per-line
 execution, stack persistence, stdin form, script-vs-args detection."""
 
 import contextlib

@@ -1,6 +1,7 @@
 """Minimal pure-stdlib Wayland wire-protocol client. Shared by daemon.py (output
-geometry) and backend_wlr.py (foreign-toplevel). Owner: shared — coordinate via
-DESIGN.md before changing the API; fixes for wire-level bugs are fair game.
+geometry), backend_wlr.py (foreign-toplevel), vkbd.py/vptr.py, wxrandr's wlr and KWin
+backends and wxrandr/gamma.py. Technical.md section 3 describes what it is for; fixes for
+wire-level bugs are fair game, and an API change reaches six callers.
 
 Usage sketch:
 
@@ -139,7 +140,7 @@ class WlConn:
 
     def send_fds(self, obj_id: int, opcode: int, args, fds):
         """Like send(), but passes file descriptors as SCM_RIGHTS ancillary data (fd-typed request arguments
-        occupy no payload bytes). ADDITIVE helper for wxrandr's zwlr_gamma_control set_gamma(fd)."""
+        occupy no payload bytes). Helper for wxrandr's zwlr_gamma_control set_gamma(fd)."""
         body = _marshal(args)
         msg = struct.pack("<II", obj_id, ((8 + len(body)) << 16) | opcode) + body
         self.sock.sendmsg(

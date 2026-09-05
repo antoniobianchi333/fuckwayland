@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""wxprop builder: offline tests for wxprop.cli + wxprop.core.
+"""offline tests for wxprop.cli + wxprop.core.
 
 Everything here runs without a compositor or X server: the X plane is
 disabled via WXPROP_NO_X and the compositor is a fake sway backend injected
 through core._detect_backend. Error strings and exit codes were captured
-from real xprop 1.2.8 (SCRATCH/reference/xprop-*.err); the deliberate
+from real xprop 1.2.8; the deliberate
 deviations (native plane, -version identity, -font, click-select) are
 covered as their own contracts.
 """

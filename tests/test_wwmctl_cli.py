@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent W: wwmctl CLI + core unit tests (no compositor needed).
+"""wwmctl CLI + core unit tests (no compositor needed).
 
 Byte-parity checks follow wmctrl 1.07 main.c and the reference dumps; when
 the real wmctrl binary is on PATH (nix develop) the help text is compared

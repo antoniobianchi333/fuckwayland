@@ -1,4 +1,4 @@
-"""OWNER: wmirror. Detection, policy, output model and the wl-mirror argv.
+"""Detection, policy, output model and the wl-mirror argv.
 
 wmirror drives the external `wl-mirror` -- an unprivileged wlroots
 screen-copy client, packaged in Ubuntu universe -- and owns its lifetime.

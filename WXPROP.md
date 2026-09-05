@@ -3,8 +3,8 @@
 Drop-in `xprop` clone for Wayland: works on **XWayland windows** (real X properties,
 byte-parity with real xprop) and **native Wayland windows** (a synthesized property
 set printed in xprop's exact formats, so `xprop -id N WM_CLASS`-style script parsing
-just works). Same house rules as DESIGN.md/WWMCTL.md: pure-stdlib Python, nix-only
-toolchain, byte-parity oracles, agents never commit.
+just works). Same house rules as the rest of the tree (Technical.md): pure-stdlib
+Python, nix-only toolchain, byte-parity oracles.
 
 ## Planes
 
@@ -22,44 +22,12 @@ toolchain, byte-parity oracles, agents never commit.
   exit 1 (can't fake a property store). `-spy` on native: sway IPC window-event
   subscription, reprint a synthesized property when its source changes.
 - Window selection: `-id` (0x-hex/decimal), `-name` (exact match on title, then on
-  instance/class like dsimple.c's Window_With_Name semantics — check source),
-  `-root` (X root when X is up: real root properties; without X: synthesized
-  _NET_SUPPORTING_WM_CHECK-ish minimal set — document), no selector = click-to-select
-  → compositor next-focus selection with the stderr hint (reuse the wwmctl pattern).
-  `-frame` is a no-op flag (no reparenting frames on wlroots) — accept it.
-
-## Files
-
-- `wxprop/__init__.py`, `wxprop/__main__.py` — skeleton (done).
-- `wxprop/cli.py` — option parsing exactly per xprop (it has its own hand-rolled
-  parser; order matters, `-f name format [dformat]` triples, trailing
-  `[format [dformat]] atom` groups), usage/-help/-grammar text byte-parity.
-  `-version` is the one exception and is deliberate: it prints `xprop 1.2.8`
-  on every flavor so a version-sniffing script sees a clone that implements
-  everything it may ask for, while the oracle installed there is 1.2.6
-  (24.04) or 1.2.7 (26.04).
-- `wxprop/core.py` — plane resolution, property assembly, -spy loops.
-- `wxprop/fmt.py` — THE parity heart: xprop's formatting machinery from xprop.c:
-  per-type default formats (0s/8s/32x/32c/32a...), dformats, the built-in fallback
-  table (WM_HINTS and WM_SIZE_HINTS structured dumps, ATOM lists, WINDOW
-  "window id # 0x%x", quoted strings with escape rules, COMPOUND_TEXT, multi-value
-  comma joins, `-len` truncation (Xlib word-cap + an 8-byte-per-32-bit-item byte
-  budget — NO "..." ellipsis; it just yields fewer/shorter fields, verified against
-  the oracle and xprop.c), _NET_WM_ICON's ASCII-art icon
-  renderer — yes, really, xprop draws the icon; copy the algorithm from xprop.c).
-- `wdotool/x11_mini.py` — ADDITIVE-ONLY extensions allowed (it is shared with
-  wwmctl; the full suite must stay green): `list_properties(win)`,
-  `get_atom_name(atom)`, `read_property(win, name) -> (type_name, format, bytes) | None`,
-  `delete_property(win, name)`, `change_property(...)` generalization if needed,
-  `select_input(win, event_mask)` + `next_event(timeout) -> parsed PropertyNotify`.
-- `tests/test_wxprop*.py` — unit (formatting table against captured oracle bytes),
-  live (own headless sway + xwayland, xterm vs foot, real xprop oracle diffs).
-
-## Parity references
-
-Prep drops these in SCRATCH/reference/: xprop manpage, cloned xprop source
-(gitlab.freedesktop.org/xorg/app/xprop), oracle dumps (full default dump on xterm,
--notype, -len N, -root, -spy transcript, error paths). The devshell has real xprop.
+  instance/class, dsimple.c's Window_With_Name semantics), `-root` (the X root when X
+  is up: real root properties; without X, a synthesized minimal set built around
+  `_NET_SUPPORTING_WM_CHECK`), and no selector at all, which is click-to-select
+  through the backend's own picker with the stderr hint (the wwmctl pattern).
+  `-frame` is a no-op flag: there are no reparenting frames on wlroots, and it is
+  accepted.
 
 ## Notes
 

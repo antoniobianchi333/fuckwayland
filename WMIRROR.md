@@ -3,7 +3,7 @@
 Mirror an output, or a **region** of one, onto another output on wlroots
 compositors, by running the existing [`wl-mirror`](https://github.com/Ferdi265/wl-mirror)
 and owning its lifetime. Pure stdlib (wl-mirror is a program we drive, never
-a module we import). House rules per DESIGN.md.
+a module we import). House rules per Technical.md.
 
 It is the one tool in this box that clones nothing: there is no X11 original
 called `wmirror`, and `xrandr` has no syntax for what it does.

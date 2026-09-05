@@ -43,7 +43,7 @@ $ systemd-detect-virt                     # none on a physical machine; otherwis
 
 Without it nothing here boots as written. QEMU can run these guests without KVM
 (`-accel tcg`, its software emulation), many times slower; the scripts do not fall back
-to it. `vmctl`, `build-iso-golden.sh` and `run.sh` all pass `-enable-kvm -cpu host`, and
+to it. `vmctl` and `build-iso-golden.sh` both pass `-enable-kvm -cpu host`, and
 QEMU then stops at once —
 
 ```

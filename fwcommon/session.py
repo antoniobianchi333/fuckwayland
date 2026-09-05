@@ -1,8 +1,9 @@
 """Discovery of the graphical session's sockets, tolerant of running under sudo
 (where XDG_RUNTIME_DIR etc. point at root's empty runtime dir or are unset).
-FROZEN — edit only if broken.
+Every tool here starts by asking this module which session it is aimed at, so a
+change reaches all six: Technical.md section 2 is the contract.
 
-Additive fixes (gnome-bridge), each broken on a stock GNOME box:
+Four cases that were each broken on a stock GNOME box, and are each a rule now:
 
 * `ssh root@box` (no sudo): pam_systemd gives root its own
   XDG_RUNTIME_DIR=/run/user/0 with a `bus` in it, so the old "trust

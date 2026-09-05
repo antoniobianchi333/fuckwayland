@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent W: wwmctl live tests against a real headless sway with XWayland.
+"""wwmctl live tests against a real headless sway with XWayland.
 
 foot (native Wayland) and xterm (legacy X via XWayland) run side by side;
 wwmctl must list BOTH planes with correct classes/ids/geometry, the real

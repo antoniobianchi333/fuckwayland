@@ -2,8 +2,8 @@
 
 Drop-in `wmctrl` clone for Wayland, handling **both** native Wayland apps and legacy X
 apps (XWayland) as first-class citizens. Lives in this repo beside wdotool and reuses
-its machinery. Pure-stdlib Python, same rules as DESIGN.md (nix-only toolchain, no
-home-dir installs, byte-parity output, no commits by agents).
+its machinery. Pure-stdlib Python, same rules as the rest of the tree
+(Technical.md): nix-only toolchain, no home-dir installs, byte-parity output.
 
 ## The dual-plane trick
 
@@ -34,44 +34,15 @@ and `swaymsg -t get_tree` exposes XWayland clients with their **real X11 window 
   filled-in than real wmctrl, which prints "N/A" whenever the property is
   missing — deliberate, since the hostname is always correct here.
 
-## Files (all new; nothing outside these except pyproject/flake already done)
+## The X11 wire client
 
-- `wwmctl/__init__.py`, `wwmctl/__main__.py` — done (skeleton).
-- `wwmctl/cli.py` — wmctrl option parsing (plain getopt, combined flags), usage/help
-  byte-parity, dispatch. Owner: Agent W.
-- `wwmctl/core.py` — UWindow model, unified listing, selection (`-r STR`, `:ACTIVE:`,
-  `:SELECT:`, `-i` ids, `-F` exact, `-x` class matching), actions, output formatting.
-  Owner: Agent W.
-- `wdotool/x11_mini.py` — pure-stdlib X11 client. Owner: Agent X. API is FROZEN:
-
-```python
-class XUnavailable(Exception): ...
-
-class X11Conn:
-    def __init__(self, display: str | None = None): ...
-        # $DISPLAY, else probe /tmp/.X11-unix; auth via XAUTHORITY/~/.Xauthority
-        # (MIT-MAGIC-COOKIE-1) with graceful cookie-less fallback; XUnavailable if no server
-    def root(self) -> int: ...
-    def atom(self, name: str, only_if_exists: bool = False) -> int: ...
-    def client_list(self) -> list[int]: ...          # _NET_CLIENT_LIST on root
-    def get_prop_ints(self, win: int, name: str) -> list[int]: ...
-    def get_prop_string(self, win: int, name: str) -> str: ...   # UTF8_STRING or latin-1
-    def get_wm_class(self, win: int) -> tuple[str, str]: ...     # (instance, class)
-    def get_client_machine(self, win: int) -> str: ...
-    def get_pid(self, win: int) -> int: ...
-    def get_geometry(self, win: int) -> tuple[int, int, int, int]: ...  # root-relative x,y,w,h
-    def set_name(self, win: int, name: str, icon: bool, long_: bool) -> None: ...
-    def send_root_message(self, win: int, type_name: str, data: list[int]) -> None: ...
-        # ClientMessage fmt 32 to root, SubstructureNotify|SubstructureRedirect
-    def close(self) -> None: ...
-```
-
-X11 wire notes for Agent X: unix socket `/tmp/.X11-unix/X<n>`; connection setup with
-auth from XAUTHORITY (parse the binary xauth format; try matching + wildcard cookies,
-then empty auth). Requests needed: InternAtom, GetProperty, ChangeProperty, SendEvent,
-GetGeometry, TranslateCoordinates, QueryTree (fallback when _NET_CLIENT_LIST is
-absent). Handle the 32-byte reply/event/error framing, big-requests not needed,
-byte order 'l'. Keep it ~400 tight lines.
+`wdotool/x11_mini.py` is the pure-stdlib X11 client wwmctl reads the X plane with.
+It lives under `wdotool/` because it already imports `fwcommon.session`, and it has
+three callers: wwmctl (identity, geometry, EWMH ClientMessages), wxprop (all of its
+X-window work) and `wdotool.backend_kwin` (the XWayland ids KWin 6 does not export).
+What it speaks, what it does not, and its two-class error model are
+[Technical.md section 3](Technical.md#3-the-wire-clients-and-their-error-models); the
+module docstring is the API.
 
 ## wmctrl surface (byte-parity against wmctrl 1.07)
 
@@ -96,7 +67,10 @@ Debian 13+ ship 1.07+git20240228, which adds `-j` (print the current desktop,
 answer `1.07` to `-V`. wwmctl implements the **union** on every flavor — being a
 drop-in that rejects `wmctrl -j` on one distro is worse than accepting it on
 both — so `-S` is accepted and does nothing (our `-l` is already stacking order,
-see below) and `-k`'s argument error always names `toggle`. Only `--help`, which
+see below) and `-k toggle` is accepted everywhere. `-k`'s argument *error* is the one
+place the extension is not advertised: it stays wmctrl's own `The argument to the -k
+option must be either "on" or "off"`, because that string is parity-checked against
+both generations, and naming a third value in it would fail the oracle. Only `--help`, which
 documents a specific upstream release rather than any behavior, follows the
 oracle installed on the box: `wmctrl --help` is consulted once and cached, and
 `$WWMCTL_WMCTRL_GENERATION=1.07|git` forces the answer. With no oracle installed
@@ -133,17 +107,15 @@ sway's own "workspace current".
 
 ## Testbed
 
-- Sandbox devshell now ships xwayland/xterm/xprop/xwininfo/xeyes and the real wmctrl.
-  Headless sway with `xwayland enable` in its config starts XWayland lazily (first X
-  client); DISPLAY is announced in `swaymsg -t get_tree`-visible env or sway's log —
-  export it and real X apps run. Real wmctrl (an X client) then works against the
-  same session: it is the live oracle for list formats AND for which actions work on
-  XWayland windows.
-- VM: stage 1 of the workflow installs xwayland+wmctrl+xterm there and re-enables
-  xwayland in vm/compositor.sh for final validation and, later, the mixed X+Wayland
-  demo gif.
-- Build: `scripts/build-pyz.sh` also emits `dist/wwmctl` (extend it: same zipapp
-  pattern, entry `wwmctl.cli:main`).
+- The devshell ships xwayland, xterm, xprop, xwininfo, xeyes and the real wmctrl.
+  Headless sway with `xwayland enable` in its config starts XWayland lazily (at the
+  first X client); DISPLAY is announced in `swaymsg -t get_tree`-visible env or in
+  sway's log — export it and real X apps run. Real wmctrl (an X client) then works
+  against the same session: it is the live oracle for list formats AND for which
+  actions work on XWayland windows.
+- Full desktops: `vm/vmctl`, whose golden images all carry the real `wmctrl`,
+  `xdotool` and `x11-utils` for exactly this. `vm/README.md` has the flavors and
+  what each tool does on each.
 
 ## GNOME
 
@@ -310,14 +282,18 @@ untouched) and the generic `list()` fallback.
   XWayland windows over the X plane (Mutter re-reads them at once); on
   native windows they warn `native window; ignoring` and exit 0 — Wayland
   has no way to rename another client's toplevel.
-* **`:SELECT:`** is the bridge's `SelectWindow`: wwmctl prints `focus the
-  target window to select it` and returns with the next window that gains
-  focus (focus a *different* window, as on sway). `:ACTIVE:` is Mutter's
-  focus window.
-  **Limitation, not a bug:** `:SELECT:` returns when focus moves to a
-  *different* window. Real wmctrl grabs the pointer and waits for a click,
-  which can land on the window that already has focus; the bridge waits on
-  a focus *change*, so re-selecting the focused window never returns. No
+* **`:SELECT:`** is the bridge's `SelectWindow`, and since bridge v2 it is a
+  **click-to-pick**, like real wmctrl's: the extension takes a stage grab and
+  resolves the pick with the window under the pointer at the next button press,
+  so clicking the window that already has focus answers it. Escape, the 30 second
+  cap, a second concurrent picker and a shell that is already modal (the overview,
+  a menu) are all rc 1 with the reason. wwmctl prints the hint the *backend*
+  supplies (`b.select_window_hint`), because the sentence is not the same
+  everywhere: a click on GNOME and KDE, the next focus change on sway, whose IPC
+  has no picker, no pointer position and no way to grab input from outside the
+  compositor. `:ACTIVE:` is Mutter's focus window.
+  **Limitation, not a bug, and on sway only:** there `:SELECT:` returns when focus
+  moves to a *different* window, so re-selecting the focused window never returns. No
   Wayland compositor lets a client grab the pointer for another client's
   windows, and the shell exports no click-to-pick API.
 * **Errors.** Every failure is one line on stderr, exit 1: the bridge not

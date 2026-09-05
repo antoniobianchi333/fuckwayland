@@ -347,7 +347,7 @@ def _main(argv: list[str] | None = None) -> int:
     # because it is one decision and the daemon makes it the same way for both. Same shape and same place as
     # --layout, and documented next to it: `off` is the kernel device (/dev/uinput) whatever the compositor
     # offers, `on` is zwp_virtual_keyboard_v1 / zwlr_virtual_pointer_v1 or a clean error, `auto` is the default.
-    _FLAGS = (("layout", "us, auto or xkb"), ("vkbd", "auto, on or off"))
+    _FLAGS = (("layout", "us, fixed, auto or xkb"), ("vkbd", "auto, on or off"))
     modes = {"layout": None, "vkbd": None}
     rest = []
     i = 1
@@ -381,7 +381,7 @@ def _main(argv: list[str] | None = None) -> int:
         layout_mode = layout_mode.strip().lower()
         if layout_mode not in ("us", "fixed", "auto", "xkb"):
             sys.stderr.write("wdotool: --layout: invalid argument %r; "
-                             "valid: us, auto, xkb\n" % layout_mode)
+                             "valid: us, fixed, auto, xkb\n" % layout_mode)
             return 1
     if vkbd_mode is not None:
         vkbd_mode = vkbd_mode.strip().lower()

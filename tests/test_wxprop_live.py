@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""wxprop builder: live tests against a real headless sway with XWayland.
+"""live tests against a real headless sway with XWayland.
 
 xterm (X plane, via XWayland) and foot (native Wayland) run side by side.
 The X-plane contract is BYTE parity: for the same window state, wxprop's

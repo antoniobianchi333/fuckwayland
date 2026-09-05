@@ -1,4 +1,4 @@
-"""OWNER: Agent W. wmctrl-compatible option parsing and dispatch.
+"""wmctrl-compatible option parsing and dispatch.
 
 Byte-parity target: wmctrl 1.07 (the binary in the devshell is the oracle;
 its --help output is embedded verbatim below, and error strings/exit codes

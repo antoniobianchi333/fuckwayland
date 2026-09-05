@@ -1,6 +1,6 @@
-"""Window-management backend interface. FROZEN — edit only if broken.
+"""Window-management backend interface: four backends implement it, three tools drive them.
 
-Additive extension (gnome-bridge): the View/Workspace dataclasses and the optional hooks at the end of
+The View/Workspace dataclasses and the optional hooks at the end of
 WindowBackend (views, workspaces, x_info, events). They let a backend that knows more than Window carries (X ids
 of XWayland windows, WM_CLASS instance/class, workspace names) hand it to wwmctl/wxprop/getmouselocation without
 those tools reaching into backend privates (sway's `_nodes()` tuple). Every hook defaults to "not available";

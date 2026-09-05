@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent A: misc commands — exec (incl. --sync/--args/--terminator), sleep,
+"""misc commands — exec (incl. --sync/--args/--terminator), sleep,
 getdisplaygeometry, and the shared getopt clone."""
 
 import contextlib

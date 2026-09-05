@@ -1,30 +1,26 @@
 # vm/ — test VMs
 
-Two rigs live here:
+**`vmctl`** is the rig: full, default-configured Ubuntu desktops in QEMU/KVM, in
+**twelve flavors**. Ten are four desktops (GNOME, KDE Plasma, Xfce, sway) over three
+releases, built from an Ubuntu *cloud* image plus a desktop metapackage. The other two
+(**`resolute-gnome-iso`**, **`noble-gnome-iso`**) are installed from the Ubuntu 26.04 and
+24.04 desktop **ISOs by the Ubuntu installer itself** — the images a claim about "a default
+Ubuntu desktop install" has to rest on, one per supported LTS.
 
-* **`vmctl`** (this document): full, default-configured Ubuntu desktops in QEMU/KVM —
-  **twelve flavors**: ten over four desktops (GNOME, KDE Plasma, Xfce, sway) and three
-  releases, built from an Ubuntu *cloud* image plus a desktop metapackage, and two
-  (**`resolute-gnome-iso`**, **`noble-gnome-iso`**) installed from the Ubuntu 26.04 and 24.04
-  desktop **ISOs by the Ubuntu installer itself** — the images a claim about "a default Ubuntu
-  desktop install" has to rest on, one per supported LTS. Each with autologin of user `test` — on a **multi-head virtio-vga** whose monitors are
-  plugged, unplugged and resized from the host at runtime, plus host-side screenshots of
-  every head. This is the rig for testing `wxrandr`/`wwmctl`/`wdotool`/`wxprop` against
-  real Wayland *and* X11 sessions, and for the X-parity oracles (every golden image also
-  carries the real `xdotool`, `wmctrl`, `x11-utils`, `x11-xserver-utils`). What the five
-  tools currently manage on each desktop — including where they have no backend at all —
-  is written down per flavor under *What the five tools do on each flavor*, which is the
-  measurement behind the *Desktop support* matrix in the repo README.
-* **`mkvm.sh` / `run.sh` / `compositor.sh` / `ssh.sh` / `scp.sh` / `stop.sh`**:
-  the original headless-sway rig (single VM in this directory, root runs sway).
-  Unchanged; the two rigs do not share state or ports (sway rig: 2222,
-  vmctl: 2400-2499).
+Each autologins user `test` on a **multi-head virtio-vga** whose monitors are plugged,
+unplugged and resized from the host at runtime, with host-side screenshots of every head.
+This is the rig for testing all six tools against real Wayland *and* X11 sessions, and for
+the X-parity oracles: every golden image also carries the real `xdotool`, `wmctrl`,
+`x11-utils` and `x11-xserver-utils`. What the six tools currently manage on each desktop —
+including where they have no backend at all — is written down per flavor under *What the six
+tools do on each flavor*, which is the measurement behind the *Desktop support* matrix in the
+repo README.
 
 ## Quickstart
 
 ```console
 $ vm/vmctl build noble-gnome            # ~7 min, once; golden image -> ~/vm-data/golden/
-$ vm/vmctl build resolute-kde           # any of the nine cloud-image flavors (see Flavors below)
+$ vm/vmctl build resolute-kde           # any of the ten cloud-image flavors (see Flavors below)
 $ vm/build-iso-golden.sh resolute-gnome-iso   # ~14 min: the real installer, off the desktop ISO
 $ vm/build-iso-golden.sh noble-gnome-iso      # ~21 min: the same, off the 24.04 desktop ISO
 $ vm/vmctl start gnome1 --flavor noble-gnome --heads 3
@@ -788,7 +784,7 @@ order, using that desktop's own tools:
 Roughly 40 s for GNOME; a desktop that starts more slowly takes correspondingly longer. The VM
 is left running so a failure can be inspected — `vmctl stop <flavor>-t` when done.
 
-## What the five tools do on each flavor
+## What the six tools do on each flavor
 
 The point of the extra flavors is to see where `wxrandr`, `wwmctl`, `wdotool`, `wxprop`
 and `warandr` stand outside GNOME. This is the measured state, honest gaps included: the

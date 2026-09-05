@@ -1,4 +1,4 @@
-"""OWNER: wmirror. The detached supervisor that owns one wl-mirror process.
+"""The detached supervisor that owns one wl-mirror process.
 
 The detaching, the status pipe and the /proc identity checks are fwcommon.procs -- the same protocol the gamma
 holder runs on, written once and documented there.

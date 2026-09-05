@@ -1,4 +1,4 @@
-"""OWNER: wxprop builder. xprop's formatting machinery, ported from xprop.c
+"""xprop's formatting machinery, ported from xprop.c
 (1.2.8) with byte parity as the goal — including the jank.
 
 Everything here is pure computation over bytes; no X, no compositor. The

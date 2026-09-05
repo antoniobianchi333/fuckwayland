@@ -1,13 +1,13 @@
 """Input-injection daemon + client.
 
-The daemon owns the uinput devices (device creation costs ~500ms of compositor hotplug latency — paid once),
+The daemon owns the uinput devices (device creation costs ~600ms of compositor hotplug latency — paid once),
 tracks the injected pointer position, and serves one JSON object per line on a unix socket. `{"ok":true,...}` or
 `{"ok":false,"error":"..."}`; a response may carry `"warnings":[...]` which the client prints to its stderr.
 
 The daemon owns the pointer *model* (px, py): the position it last injected. It is only a model -- REL events, a
 physical mouse, or another daemon move the compositor's pointer behind its back -- so clients that can ask the
 compositor for the real position (the GNOME bridge's GetPointer) push it back with the `seed_pointer` op before
-a relative move (see B1/B6 in DESIGN.md). Neither injection path can ask: `zwlr_virtual_pointer_v1` has no
+a relative move (see B1/B6 in WDOTOOL.md). Neither injection path can ask: `zwlr_virtual_pointer_v1` has no
 events and sway's IPC carries no cursor position, so a daemon that has moved nothing refuses the `pointer` op
 instead of inventing an answer.
 

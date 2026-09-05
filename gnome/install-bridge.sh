@@ -20,7 +20,7 @@
 # extension it already knows is instant (EnableExtension over D-Bus). A
 # directory that appeared after login is invisible until the next login —
 # unless the shell is put into unsafe mode and told to load it (--try-unsafe,
-# see bootstrap_unsafe below; documented in notes/PLAN.md §2 (c)).
+# see bootstrap_unsafe below).
 set -eu
 
 UUID='fuckwayland-bridge@fuckwayland'
@@ -222,7 +222,7 @@ disable_setting() {
 }
 
 # --- Looking Glass bootstrap (the only no-logout path for a NEW directory) ---
-# notes/PLAN.md §2 (c): Alt+F2 -> "lg" -> `global.context.unsafe_mode = true`
+# Alt+F2 -> "lg" -> `global.context.unsafe_mode = true`
 # -> Escape; then org.gnome.Shell.Eval loads the extension object from its
 # directory and EnableExtension turns it on; finally unsafe mode goes back off.
 # Fragile by nature: needs wdotool with working input injection (root, or the

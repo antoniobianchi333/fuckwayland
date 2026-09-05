@@ -984,7 +984,7 @@ def _us_keysym(tok: str):
 # us", "which group is it using", "why is that character skipped") is one
 # `wdotool __keymap` away, and because the test fixtures were captured with it.
 
-_KEYMAP_USAGE = """Usage: wdotool __keymap [--info] [--chars STRING] [--group N]
+_KEYMAP_USAGE = """Usage: wdotool __keymap [--info] [--chars STRING] [--group N] [--keymap PATH]
 Diagnostic: dump the keymap the compositor hands its clients.
 
 --info          summarise instead of dumping: source, groups, active group,
