@@ -820,7 +820,7 @@ class Core:
             if x is not None:
                 try:
                     vals = x.get_prop_ints(x.root(), "_NET_DESKTOP_VIEWPORT")
-                except Exception:                              # noqa: BLE001
+                except Exception:
                     vals = []
         out = []
         for i in range(n):

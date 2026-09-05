@@ -1230,7 +1230,7 @@ def spy_merged_root(formatter, target: MergedRootTarget, specs):
                 q.put(item)
                 if stop.is_set():
                     return
-        except Exception as e:  # noqa: BLE001 -- surfaced by the main loop
+        except Exception as e:  # surfaced by the main loop
             q.put(("error", str(e)))
 
     if hook is not None:
