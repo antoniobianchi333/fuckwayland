@@ -1,7 +1,7 @@
 """zwp_virtual_keyboard_v1: the wire, and the policy that selects it.
 
 Everything here runs against a **real Wayland socket** served by a fake
-compositor that speaks the wire format (`FakeCompositor` below): our client is
+compositor that speaks the wire format (`KeyboardCompositor` below): our client is
 `fwcommon/wayland_mini.py` unmodified, the keymap really travels as an fd over
 SCM_RIGHTS, and every assertion is about the bytes the compositor received. A
 mock of our own client would have proved only that we can call our own
@@ -14,11 +14,8 @@ what types.
 """
 
 import os
-import socket
 import struct
 import sys
-import tempfile
-import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,6 +28,7 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 # session would have the kernel-path daemon read that session's keymap.
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
+import wl_fake  # noqa: E402
 from support import RecorderDev  # noqa: E402
 from wdotool import cli, daemon, keymap, us_keymap, vkbd, xkbmap  # noqa: E402
 
@@ -48,16 +46,13 @@ UINPUT_ERROR = ("cannot create uinput devices: [Errno 13] Permission denied: "
 # a compositor, on the wire
 
 
-def _pad(n):
-    return -n % 4
-
-
-class FakeCompositor:
+class KeyboardCompositor(wl_fake.Server):
     """Enough of a Wayland compositor to be a virtual keyboard's peer.
 
-    Serves wl_display.sync/get_registry, wl_registry.bind, wl_seat, and
-    zwp_virtual_keyboard_manager_v1 + zwp_virtual_keyboard_v1, recording every
-    request made on the keyboard. Knobs:
+    On top of wl_fake.Server's wl_display/wl_registry: a wl_seat, a
+    wl_output, and zwp_virtual_keyboard_manager_v1 +
+    zwp_virtual_keyboard_v1, recording every request made on the keyboard.
+    Knobs:
 
       manager_version  None -> the global is not advertised at all (Mutter,
                        KWin 6.6.6: measured, they do not implement it)
@@ -65,161 +60,34 @@ class FakeCompositor:
       refuse_keymap    answer keymap() with a protocol error
     """
 
+    MANAGER = vkbd.MANAGER
+    PREFIX = "wdotool-vk-"
+
     def __init__(self, manager_version=1, refuse_create=False,
                  refuse_keymap=False, with_seat=True):
-        self.manager_version = manager_version
         self.refuse_create = refuse_create
         self.refuse_keymap = refuse_keymap
         self.with_seat = with_seat
-        self.dir = tempfile.mkdtemp(prefix="wdotool-vk-")
-        self.path = os.path.join(self.dir, "wayland-fake")
-        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.srv.bind(self.path)
-        self.srv.listen(4)
-        # A blocking accept() is not woken by close() on Linux, so poll
-        # instead: the suite creates one of these per test and must not pay a
-        # join timeout for each.
-        self.srv.settimeout(0.05)
-        self.connections = 0
-        self.mgr_name = None     # registry name the manager was advertised as
-        self._registries = []    # (conn, registry id) per live client
-        self.binds = []          # (interface, version)
         self.created = []        # vk object ids
         self.keymaps = []        # (format, bytes)
         self.keys = []           # (keycode, state)
         self.mods = []           # (depressed, latched, locked, group)
-        self.destroyed = 0
-        self.events = []         # every keyboard request, in order
-        self._clients = []
-        self._stop = False
-        self._lock = threading.Lock()
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
+        super().__init__(manager_version)
 
-    # -- lifecycle
-    def close(self):
-        self._stop = True
-        try:
-            self.srv.close()
-        except OSError:
-            pass
-        self._thread.join(timeout=5)
-        self.drop_clients()
-        for f in (self.path,):
-            try:
-                os.unlink(f)
-            except OSError:
-                pass
-        try:
-            os.rmdir(self.dir)
-        except OSError:
-            pass
+    def advertise(self):
+        return ([("wl_seat", 7)] if self.with_seat else []) + [("wl_output", 4)]
 
-    def withdraw_manager(self):
-        """wl_registry.global_remove for the manager, on every live
-        connection -- a compositor withdrawing the protocol mid-session."""
-        with self._lock:
-            regs = list(self._registries)
-        for conn, reg in regs:
-            self._send(conn, reg, 1, struct.pack("<I", self.mgr_name or 0))
+    def new_state(self):
+        return {"seat": None, "mgr": None, "vk": None}
 
-    def drop_clients(self):
-        """Hang up on everyone -- what a compositor restart looks like to a
-        client that was holding a virtual keyboard."""
-        with self._lock:
-            socks = list(self._clients)
-        for s in socks:
-            try:
-                s.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                s.close()
-            except OSError:
-                pass
+    def on_bind(self, conn, state, name, iface, version, new_id):
+        if iface == "wl_seat":
+            state["seat"] = new_id
+            self._send(conn, new_id, 0, struct.pack("<I", 3))  # caps: kb|ptr
+        elif iface == self.MANAGER:
+            state["mgr"] = new_id
 
-    # -- the server
-
-    def _serve(self):
-        while not self._stop:
-            try:
-                conn, _ = self.srv.accept()
-            except TimeoutError:
-                continue
-            except OSError:
-                return
-            with self._lock:
-                self._clients.append(conn)
-            self.connections += 1
-            threading.Thread(target=self._client, args=(conn,),
-                             daemon=True).start()
-
-    def _client(self, conn):
-        buf = b""
-        fds: list[int] = []
-        state = {"registry": None, "seat": None, "mgr": None, "vk": None}
-        try:
-            while not self._stop:
-                data, anc, _flags, _addr = conn.recvmsg(65536, 4096)
-                if not data:
-                    return
-                for level, typ, fddata in anc:
-                    if level == socket.SOL_SOCKET and typ == socket.SCM_RIGHTS:
-                        n = len(fddata) // 4
-                        fds.extend(struct.unpack(f"{n}i", fddata[:n * 4]))
-                buf += data
-                while len(buf) >= 8:
-                    oid, sizeop = struct.unpack_from("<II", buf)
-                    size, opcode = sizeop >> 16, sizeop & 0xFFFF
-                    if len(buf) < size:
-                        break
-                    body, buf = buf[8:size], buf[size:]
-                    self._request(conn, state, fds, oid, opcode, body)
-        except OSError:
-            return
-        finally:
-            for fd in fds:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            try:
-                conn.close()
-            except OSError:
-                pass
-
-    # -- one request
-    def _request(self, conn, state, fds, oid, opcode, body):
-        if oid == 1 and opcode == 0:            # wl_display.sync(callback)
-            (cb,) = struct.unpack_from("<I", body)
-            self._send(conn, cb, 0, struct.pack("<I", 0))   # callback.done
-            self._send(conn, 1, 1, struct.pack("<I", cb))   # delete_id
-            return
-        if oid == 1 and opcode == 1:            # wl_display.get_registry
-            (reg,) = struct.unpack_from("<I", body)
-            state["registry"] = reg
-            name = 1
-            if self.with_seat:
-                self._global(conn, reg, name, "wl_seat", 7)
-                name += 1
-            self._global(conn, reg, name, "wl_output", 4)
-            name += 1
-            if self.manager_version is not None:
-                self.mgr_name = name
-                self._global(conn, reg, name, vkbd.MANAGER,
-                             self.manager_version)
-            with self._lock:
-                self._registries.append((conn, reg))
-            return
-        if oid == state["registry"] and opcode == 0:   # wl_registry.bind
-            name, iface, ver, new_id = _unpack_bind(body)
-            self.binds.append((iface, ver))
-            if iface == "wl_seat":
-                state["seat"] = new_id
-                self._send(conn, new_id, 0, struct.pack("<I", 3))  # caps: kb|ptr
-            elif iface == vkbd.MANAGER:
-                state["mgr"] = new_id
-            return
+    def on_request(self, conn, state, oid, opcode, body, fds):
         if oid == state["mgr"] and opcode == 0:  # create_virtual_keyboard
             _seat, new_id = struct.unpack_from("<II", body)
             if self.refuse_create:
@@ -261,41 +129,12 @@ class FakeCompositor:
             self.destroyed += 1
             self.events.append(("destroy",))
 
-    # -- wire helpers
-    def _send(self, conn, oid, opcode, body=b""):
-        msg = struct.pack("<II", oid, ((8 + len(body)) << 16) | opcode) + body
-        try:
-            conn.sendall(msg)
-        except OSError:
-            pass
-
-    def _global(self, conn, reg, name, iface, version):
-        b = iface.encode() + b"\0"
-        body = (struct.pack("<I", name) + struct.pack("<I", len(b)) + b
-                + b"\0" * _pad(len(b)) + struct.pack("<I", version))
-        self._send(conn, reg, 0, body)
-
-    def _error(self, conn, oid, code, msg):
-        b = msg.encode() + b"\0"
-        body = (struct.pack("<II", oid, code) + struct.pack("<I", len(b)) + b
-                + b"\0" * _pad(len(b)))
-        self._send(conn, 1, 0, body)
-
     # -- readers used by the tests
     def key_codes(self):
         return [c for c, st in self.keys]
 
     def pressed(self):
         return [c for c, st in self.keys if st == 1]
-
-
-def _unpack_bind(body):
-    name = struct.unpack_from("<I", body)[0]
-    n = struct.unpack_from("<I", body, 4)[0]
-    iface = body[8:8 + n - 1].decode()
-    off = 8 + n + _pad(n)
-    ver, new_id = struct.unpack_from("<II", body, off)
-    return name, iface, ver, new_id
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +167,7 @@ class VkbdTest(unittest.TestCase):
     comp_kw: dict = {}
 
     def setUp(self):
-        self.comp = FakeCompositor(manager_version=self.manager_version,
+        self.comp = KeyboardCompositor(manager_version=self.manager_version,
                                    **self.comp_kw)
         self.addCleanup(self.comp.close)
         self._env = {k: os.environ.get(k) for k in

@@ -505,7 +505,7 @@ class HelperEnvironment(Base):
             self.assertIn("wayland=/run/user/4242/wayland-9", f.read())
 
 
-class FakeCompositor:
+class MirrorCli:
     """cli.main() with the compositor faked out and real processes
     underneath. Not a TestCase: mixed into the ones below."""
 
@@ -532,7 +532,7 @@ class FakeCompositor:
             self.started.append(rec)
         return recs
 
-class Commands(FakeCompositor, Base):
+class Commands(MirrorCli, Base):
     """The transitions through the command line."""
 
     def test_start_list_stop(self):
@@ -604,7 +604,7 @@ class Commands(FakeCompositor, Base):
         self.assertIn("region 500x300+100+100", self.invoke(["--list"])[1])
 
 
-class Serialising(FakeCompositor, Base):
+class Serialising(MirrorCli, Base):
     """Two wmirrors at once.
 
     The state file is the only trace a mirror leaves -- wl-mirror is

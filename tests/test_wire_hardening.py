@@ -25,6 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from fwcommon.wayland_mini import Cursor, WlConn       # noqa: E402
+from wl_fake import msg, wstr                          # noqa: E402
 from wdotool.ctx import CmdError                       # noqa: E402
 
 
@@ -75,16 +76,7 @@ class _Server:
 
 # -- wayland --------------------------------------------------------------
 
-def wmsg(oid, op, body=b""):
-    return struct.pack("<II", oid, ((8 + len(body)) << 16) | op) + body
-
-
-def wstr(s):
-    b = s.encode() + b"\0"
-    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
-
-
-class FakeCompositor(_Server):
+class BrokenCompositor(_Server):
     """Enough of wl_display/wl_registry for WlrBackend's constructor.
 
     `mode` picks the failure: "silent" (accept, then never answer), "closes"
@@ -126,9 +118,9 @@ class FakeCompositor(_Server):
                 elif oid == 1 and op == 1:     # wl_display.get_registry
                     registry = struct.unpack_from("<I", pay)[0]
                     c.sendall(
-                        wmsg(registry, 0, struct.pack("<I", 1)
+                        msg(registry, 0, struct.pack("<I", 1)
                              + wstr("wl_output") + struct.pack("<I", 2))
-                        + wmsg(registry, 0, struct.pack("<I", 2)
+                        + msg(registry, 0, struct.pack("<I", 2)
                                + wstr("zwlr_foreign_toplevel_manager_v1")
                                + struct.pack("<I", 3)))
                     announced = True
@@ -138,15 +130,15 @@ class FakeCompositor(_Server):
                         c.close()
                         return
                     if self.mode == "shortmode" and output_oid:
-                        c.sendall(wmsg(output_oid, 1, b""))
-                    c.sendall(wmsg(cb, 0, struct.pack("<I", 0)))
+                        c.sendall(msg(output_oid, 1, b""))
+                    c.sendall(msg(cb, 0, struct.pack("<I", 0)))
 
 
 class WlConnDeadline(unittest.TestCase):
     def test_a_compositor_that_never_answers_does_not_hang(self):
         """WlConn used to leave the socket blocking, so roundtrip() waited
         forever with no message and no exit code."""
-        srv = FakeCompositor("silent")
+        srv = BrokenCompositor("silent")
         self.addCleanup(srv.close)
         c = WlConn(srv.path, timeout=0.4)
         self.addCleanup(c.close)
@@ -156,7 +148,7 @@ class WlConnDeadline(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 5.0)
 
     def test_the_default_is_a_deadline_not_blocking(self):
-        srv = FakeCompositor("silent")
+        srv = BrokenCompositor("silent")
         self.addCleanup(srv.close)
         c = WlConn(srv.path)
         self.addCleanup(c.close)
@@ -165,7 +157,7 @@ class WlConnDeadline(unittest.TestCase):
     def test_dispatch_restores_the_callers_timeout(self):
         """dispatch() used to restore None, leaving the connection blocking
         for every later read -- which kwin.py had to work around by hand."""
-        srv = FakeCompositor("silent")
+        srv = BrokenCompositor("silent")
         self.addCleanup(srv.close)
         c = WlConn(srv.path)
         self.addCleanup(c.close)
@@ -188,7 +180,7 @@ class CursorBounds(unittest.TestCase):
 
 class WlrBackendGuards(unittest.TestCase):
     def _backend(self, mode):
-        srv = FakeCompositor(mode)
+        srv = BrokenCompositor(mode)
         self.addCleanup(srv.close)
         old = os.environ.get("WAYLAND_DISPLAY")
         os.environ["WAYLAND_DISPLAY"] = srv.path

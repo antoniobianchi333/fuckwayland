@@ -22,6 +22,7 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from wl_fake import wstr                                         # noqa: E402
 from wxrandr import gamma as gammamod                            # noqa: E402
 from wxrandr.core import State                                   # noqa: E402
 
@@ -32,11 +33,6 @@ from wxrandr.core import State                                   # noqa: E402
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 GAMMA_SIZE = 256
-
-
-def _marshal_string(s: str) -> bytes:
-    b = s.encode() + b"\0"
-    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
 
 
 class MockCompositor(threading.Thread):
@@ -121,10 +117,10 @@ class MockCompositor(threading.Thread):
                         (registry,) = struct.unpack_from("<I", payload)
                         self._event(conn, registry, 0,
                                     struct.pack("<I", 1)
-                                    + _marshal_string("wl_output")
+                                    + wstr("wl_output")
                                     + struct.pack("<I", 4))
                         self._event(conn, registry, 0,
-                                    struct.pack("<I", 2) + _marshal_string(
+                                    struct.pack("<I", 2) + wstr(
                                         "zwlr_gamma_control_manager_v1")
                                     + struct.pack("<I", 1))
                     elif obj_id == registry and opcode == 0:  # bind
@@ -137,7 +133,7 @@ class MockCompositor(threading.Thread):
                             outputs[new_id] = "HEADLESS-1"
                             # wl_output v4 name event
                             self._event(conn, new_id, 4,
-                                        _marshal_string("HEADLESS-1"))
+                                        wstr("HEADLESS-1"))
                         else:
                             manager.add(new_id)
                     elif obj_id in manager and opcode == 0:

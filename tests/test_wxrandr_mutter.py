@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 from fwcommon import dbus_mini, session as wsession             # noqa: E402
 from fwcommon.dbus_mini import Bus, Message, Variant            # noqa: E402
 import test_dbus_mini as tdm                                    # noqa: E402
+from wl_fake import msg, wstr                                 # noqa: E402
 from wxrandr import cli, core, mutter                           # noqa: E402
 from wxrandr.core import Mode, Stanza, State                    # noqa: E402
 
@@ -370,15 +371,6 @@ class MutterMockBus(tdm.MockBus):
 
 # ---------------------------------------------------------------- fake wl_output server
 
-def _wl_string(v):
-    b = v.encode() + b"\0"
-    return struct.pack("<I", len(b)) + b + b"\0" * (-len(b) % 4)
-
-
-def _wl_msg(obj, op, payload=b""):
-    return struct.pack("<II", obj, ((8 + len(payload)) << 16) | op) + payload
-
-
 class FakeWayland:
     """A wl_display that advertises one wl_output v4 per entry of `outputs`
     ({connector: (mm_w, mm_h, subpixel, make, model)}) and answers
@@ -423,23 +415,23 @@ class FakeWayland:
                     if obj == 1 and op == 1:        # get_registry(new_id)
                         (registry,) = struct.unpack("<I", args)
                         for i, name in enumerate(names):
-                            c.sendall(_wl_msg(registry, 0, struct.pack("<I", i + 1)
-                                              + _wl_string("wl_output")
+                            c.sendall(msg(registry, 0, struct.pack("<I", i + 1)
+                                              + wstr("wl_output")
                                               + struct.pack("<I", self.version)))
                     elif obj == 1 and op == 0:      # sync(new_id)
                         (cb,) = struct.unpack("<I", args)
-                        c.sendall(_wl_msg(cb, 0, struct.pack("<I", 0)))
+                        c.sendall(msg(cb, 0, struct.pack("<I", 0)))
                     elif obj == registry and op == 0:   # bind(name, iface, ver, id)
                         (gname,) = struct.unpack_from("<I", args)
                         (new_id,) = struct.unpack_from("<I", args, len(args) - 4)
                         connector = names[gname - 1]
                         mm_w, mm_h, sub, make, model = self.outputs[connector]
-                        c.sendall(_wl_msg(new_id, 0, struct.pack("<iiiii", 0, 0, mm_w, mm_h, sub)
-                                          + _wl_string(make) + _wl_string(model)
+                        c.sendall(msg(new_id, 0, struct.pack("<iiiii", 0, 0, mm_w, mm_h, sub)
+                                          + wstr(make) + wstr(model)
                                           + struct.pack("<i", 0)))
-                        c.sendall(_wl_msg(new_id, 1, struct.pack("<Iiii", 1, 1920, 1080, 60000)))
-                        c.sendall(_wl_msg(new_id, 4, _wl_string(connector)))
-                        c.sendall(_wl_msg(new_id, 2))   # done
+                        c.sendall(msg(new_id, 1, struct.pack("<Iiii", 1, 1920, 1080, 60000)))
+                        c.sendall(msg(new_id, 4, wstr(connector)))
+                        c.sendall(msg(new_id, 2))   # done
         except OSError:
             pass
         finally:

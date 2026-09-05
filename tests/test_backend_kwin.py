@@ -97,7 +97,7 @@ def fixture_windows(six=True):
     ]
 
 
-class FakeKWin:
+class KwinScriptingService:
     """org.kde.KWin on a Bus of its own: /Scripting, the per-script object,
     /KWin and /VirtualDesktopManager. `plasma` picks the object-path shape
     (6: /Scripting/Script<id>, 5.27: /<id>) and the payload flavour."""
@@ -530,7 +530,7 @@ class _Base(unittest.TestCase):
             # up without waiting for that answers the next RequestName 3, not
             # 1, which is what made this file fail under load.
             old.close(self.mock)
-        self.kwin = FakeKWin(self.mock.address, **kw)
+        self.kwin = KwinScriptingService(self.mock.address, **kw)
         # with the mock, so the cleanup of one test cannot race the setUp of
         # the next: a new TestCase instance has no `kwin` to close itself
         self.addCleanup(self.kwin.close, self.mock)
@@ -683,7 +683,7 @@ class ScriptIdRaceTests(_Base):
 
     def test_the_fake_reproduces_kwins_id_reuse(self):
         """The premise. Without this the rest of the file proves nothing."""
-        k = FakeKWin(self.mock.address, own_name=False)
+        k = KwinScriptingService(self.mock.address, own_name=False)
         self.addCleanup(k.close)
         js = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
         js.write(backend_kwin.HEADER.encode() + b'{} */\n')
@@ -1845,7 +1845,7 @@ class DetectTests(_Base):
         backend_detect.reset()
 
     def test_kwin_is_detected_and_reuses_the_connection(self):
-        kwin = FakeKWin(self.mock.address)
+        kwin = KwinScriptingService(self.mock.address)
         self.addCleanup(kwin.close)
         b = backend_detect.detect()
         self.addCleanup(backend_detect.reset)
@@ -1855,7 +1855,7 @@ class DetectTests(_Base):
         self.assertEqual(self.wlr_calls, [])
 
     def test_a_kwin_failure_never_falls_through_to_wlr(self):
-        kwin = FakeKWin(self.mock.address, refuse_load=True)
+        kwin = KwinScriptingService(self.mock.address, refuse_load=True)
         self.addCleanup(kwin.close)
         b = backend_detect.detect()
         with self.assertRaises(CmdError) as cm:
@@ -1864,7 +1864,7 @@ class DetectTests(_Base):
         self.assertEqual(self.wlr_calls, [])
 
     def test_a_constructor_failure_is_the_error_the_user_sees(self):
-        kwin = FakeKWin(self.mock.address)
+        kwin = KwinScriptingService(self.mock.address)
         self.addCleanup(kwin.close)
         real = backend_detect._kwin
 
@@ -1880,7 +1880,7 @@ class DetectTests(_Base):
         self.assertEqual(self.wlr_calls, [])
 
     def test_no_kwin_name_is_a_session_error(self):
-        kwin = FakeKWin(self.mock.address, own_name=False)
+        kwin = KwinScriptingService(self.mock.address, own_name=False)
         self.addCleanup(kwin.close)
         bus = Bus(self.mock.address)
         self.addCleanup(bus.close)
@@ -1890,7 +1890,7 @@ class DetectTests(_Base):
         self.assertIn("org.kde.KWin", str(cm.exception))
 
     def test_env_override_reaches_the_kwin_backend(self):
-        kwin = FakeKWin(self.mock.address)
+        kwin = KwinScriptingService(self.mock.address)
         self.addCleanup(kwin.close)
         os.environ["WDOTOOL_BACKEND"] = "kwin"
         try:
