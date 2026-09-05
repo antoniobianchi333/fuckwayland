@@ -195,23 +195,24 @@ class Layout:
                     xkbmap.MOD_SHIFT if shifted else 0, ks)
 
     @classmethod
-    def load(cls):
+    def load(cls, keymap=None, group=None):
         """The layout, chosen by exactly the rules the typing path uses:
         `WDOTOOL_LAYOUT`, then the compositor's keymap, then the US bypass,
-        and the built-in US table as the floor (see daemon._layout)."""
-        mode = (os.environ.get("WDOTOOL_LAYOUT") or "auto").strip().lower()
-        if mode in ("us", "fixed"):
+        and the built-in US table as the floor (see daemon._layout).
+
+        `keymap`/`group` are --keymap/--group, passed rather than exported."""
+        mode = xkbmap.layout_mode()
+        if mode == "us":
             return cls.fixed("WDOTOOL_LAYOUT=us")
         try:
-            snap = xkbmap.fetch()
+            snap = xkbmap.fetch(keymap=keymap, group=group)
         except xkbmap.XkbError as e:
             return cls.fixed("the compositor's keymap could not be read (%s)" % e)
         try:
             km = xkbmap.parse(snap.text)
         except xkbmap.XkbError as e:
             return cls.fixed("the keymap could not be parsed (%s)" % e)
-        bypass = (mode != "xkb"
-                  and xkbmap.active_group_is_plain_us(snap.text, snap.group))
+        bypass = xkbmap.decide(snap.text, snap.group, mode)
         rmap = None
         note = None
         if bypass:
@@ -808,35 +809,13 @@ class _Args:
         return got[-1] if got else default
 
 
-def _with_env(**kw):
-    """Set WDOTOOL_XKB_* for one layout read and put back what was there, so
-    --keymap/--group override the environment without inheriting it away."""
-    old = {}
-    for k, v in kw.items():
-        old[k] = os.environ.get(k)
-        if v is not None:
-            os.environ[k] = v
-    return old
-
-
-def _restore_env(old):
-    for k, v in old.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
-
-
 def _load_layout(args):
     group = args.one("group")
     if group is not None and not str(group).isdigit():
         return None, "--group wants a number"
-    old = _with_env(WDOTOOL_XKB_KEYMAP=args.one("keymap"),
-                    WDOTOOL_XKB_GROUP=group)
-    try:
-        return Layout.load(), None
-    finally:
-        _restore_env(old)
+    # --keymap/--group are arguments to the read, not exports: the process
+    # environment comes back untouched because it was never touched.
+    return Layout.load(keymap=args.one("keymap"), group=group), None
 
 
 class _Done(Exception):

@@ -80,10 +80,40 @@ class Snapshot:
 
 
 # ---------------------------------------------------------------------------
+# which layout to type through
+
+
+def layout_mode(forced: str | None = None) -> str:
+    """"us", "xkb" or "auto" -- the layout the caller asked for, normalized.
+
+    `forced` is a client's --layout, which outranks WDOTOOL_LAYOUT: a command
+    line is the more specific statement of intent, and it is the only one that
+    can reach a daemon spawned with a different environment. "fixed" is a
+    spelling of "us", and anything unrecognized is "auto"."""
+    mode = (forced or os.environ.get("WDOTOOL_LAYOUT") or "auto").strip().lower()
+    if mode in ("us", "fixed"):
+        return "us"
+    return "xkb" if mode == "xkb" else "auto"
+
+
+def decide(text: str, group: int, mode: str) -> bool:
+    """THE BYPASS: is the fixed built-in US table the right answer here?
+
+    "us" says so outright and nothing is read or parsed; "auto" says so when
+    the active group is plain US, which is the common case and the fast one;
+    "xkb" never does, even on a US keymap -- that is what asking for it means.
+    """
+    if mode == "us":
+        return True
+    return mode != "xkb" and active_group_is_plain_us(text, group)
+
+
+# ---------------------------------------------------------------------------
 # fetching
 
 
-def fetch(timeout: float = 2.0, mods_wait: float = 0.08) -> Snapshot:
+def fetch(timeout: float = 2.0, mods_wait: float = 0.08,
+          keymap: str | None = None, group=None) -> Snapshot:
     """Read the active keymap + group. Raises XkbError, never hangs.
 
     `mods_wait` is how long to keep dispatching after the keymap arrives in
@@ -91,9 +121,12 @@ def fetch(timeout: float = 2.0, mods_wait: float = 0.08) -> Snapshot:
     Mutter (and wlroots, and KWin) only send that event to the client that
     holds keyboard focus, which a headless injector never does -- so the wait
     usually expires and the group has to be inferred; see `choose_group`.
+
+    `keymap` and `group` are what --keymap/--group pass; each falls back to
+    WDOTOOL_XKB_KEYMAP / WDOTOOL_XKB_GROUP when the caller says nothing.
     """
-    path = os.environ.get("WDOTOOL_XKB_KEYMAP")
-    forced = _env_group()
+    path = keymap if keymap is not None else os.environ.get("WDOTOOL_XKB_KEYMAP")
+    forced = _pinned_group(group)
     if path:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -115,8 +148,11 @@ def fetch(timeout: float = 2.0, mods_wait: float = 0.08) -> Snapshot:
     return Snapshot(text, group, "wayland", True, mods_seen)
 
 
-def _env_group():
-    raw = (os.environ.get("WDOTOOL_XKB_GROUP") or "").strip()
+def _pinned_group(forced=None):
+    """The caller's --group, else WDOTOOL_XKB_GROUP. Anything that is not a
+    plain 1..4 is not a pin, and the group gets inferred as usual."""
+    raw = str(forced) if forced is not None else (os.environ.get("WDOTOOL_XKB_GROUP") or "")
+    raw = raw.strip()
     if not raw.isdigit():
         return None
     n = int(raw)
@@ -994,7 +1030,7 @@ Diagnostic: dump the keymap the compositor hands its clients.
 def diagnostic_main(argv) -> int:
     import sys
 
-    want_info = want_chars = None
+    want_info = want_chars = keymap = None
     group = None
     args = list(argv)
     while args:
@@ -1011,15 +1047,14 @@ def diagnostic_main(argv) -> int:
             if not group.isdigit():
                 sys.stderr.write("wdotool __keymap: --group wants a number\n")
                 return 1
-            os.environ["WDOTOOL_XKB_GROUP"] = group
         elif a == "--keymap" and args:
-            os.environ["WDOTOOL_XKB_KEYMAP"] = args.pop(0)
+            keymap = args.pop(0)
         else:
             sys.stderr.write(f"wdotool __keymap: unknown option '{a}'\n")
             sys.stderr.write(_KEYMAP_USAGE)
             return 1
     try:
-        snap = fetch()
+        snap = fetch(keymap=keymap, group=group)
     except XkbError as e:
         sys.stderr.write(f"wdotool: {e}\n")
         return 2
@@ -1031,8 +1066,19 @@ def diagnostic_main(argv) -> int:
     except XkbError as e:
         sys.stderr.write(f"wdotool: {e}\n")
         return 1
-    forced = (os.environ.get("WDOTOOL_LAYOUT") or "").strip().lower() == "xkb"
-    bypass = not forced and active_group_is_plain_us(snap.text, snap.group)
+    # The same decision the typing path makes, so the diagnostic cannot
+    # describe a layout wdotool would not have used (B13).
+    mode = layout_mode()
+    bypass = decide(snap.text, snap.group, mode)
+    rmap = None
+
+    def reversed_map():
+        """reverse() at most once, however many of --info and --chars ask."""
+        nonlocal rmap
+        if rmap is None:
+            rmap = reverse(km, snap.group)
+        return rmap
+
     if want_info:
         print(f"source:        {snap.source}")
         print(f"keymap:        {len(snap.text)} bytes, {len(km.keycodes)} keycodes, "
@@ -1041,15 +1087,17 @@ def diagnostic_main(argv) -> int:
             mark = " <- active" + ("" if snap.group_known else " (assumed)")
             print(f"group {g.index}:      {g.name!r}"
                   + (mark if g.index == snap.group else ""))
-        if bypass:
+        if mode == "us":
+            print("us bypass:     yes -- WDOTOOL_LAYOUT=us asks for it")
+        elif bypass:
             print("us bypass:     yes -- the fixed US table is used")
-        elif forced and active_group_is_plain_us(snap.text, snap.group):
+        elif mode == "xkb" and active_group_is_plain_us(snap.text, snap.group):
             print("us bypass:     no -- WDOTOOL_LAYOUT=xkb overrides it")
         else:
             print("us bypass:     no")
         if not bypass:
             try:
-                rmap = reverse(km, snap.group)
+                rmap = reversed_map()
             except XkbError as e:
                 # --group 3 on a two-group keymap, a keymap with nothing
                 # typable in it: the diagnostic reports what it found, like
@@ -1076,7 +1124,7 @@ def diagnostic_main(argv) -> int:
                 return None if hit is None else [(hit[0], MOD_SHIFT if hit[1] else 0)]
         else:
             try:
-                lookup = reverse(km, snap.group).lookup_char
+                lookup = reversed_map().lookup_char
             except XkbError as e:
                 sys.stderr.write("wdotool: %s\n" % e)
                 return 1

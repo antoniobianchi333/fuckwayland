@@ -1319,16 +1319,11 @@ class _Daemon:
         compositor, an unreadable or unparsable keymap, a keymap with no
         typable character. The old path is the floor, never a traceback.
         """
-        # `forced` is the client's --layout, which outranks the environment:
-        # a command line is the more specific statement of intent, and it is
-        # the only one that can reach a daemon spawned with a different one.
-        mode = (forced or os.environ.get("WDOTOOL_LAYOUT")
-                or "auto").strip().lower()
-        if mode in ("us", "fixed"):
+        mode = xkbmap.layout_mode(forced)
+        if mode == "us":
             # Nothing is read, nothing is parsed and the bypass check itself
             # is skipped: --layout us is a promise that no layout code runs.
             return None
-        force = mode == "xkb"
         now = time.monotonic()
         if now < self._xkb_backoff:
             self._xkb_warn_degraded(warnings)
@@ -1360,7 +1355,7 @@ class _Daemon:
         rmap = None
         bypassed = False
         try:
-            if not force and xkbmap.active_group_is_plain_us(snap.text, snap.group):
+            if xkbmap.decide(snap.text, snap.group, mode):
                 bypassed = True  # THE BYPASS: nothing below this line runs
             else:
                 rmap = xkbmap.build(snap.text, snap.group)
@@ -1677,9 +1672,7 @@ class _Daemon:
         rather than obeyed into garbage."""
         if not vkbd_path:
             return self._layout(warnings, layout_mode)
-        mode = (layout_mode or os.environ.get("WDOTOOL_LAYOUT")
-                or "auto").strip().lower()
-        if mode == "xkb":
+        if xkbmap.layout_mode(layout_mode) == "xkb":
             self._xkb_say(
                 "vkbd-xkb",
                 "layout 'xkb' does not apply to the virtual-keyboard path: "
