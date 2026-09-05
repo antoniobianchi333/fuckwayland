@@ -55,8 +55,16 @@ _MAX_REQUEST = 16 << 20  # bytes per request line
 # client's argv -- is dropped: an input daemon that outlives the command that
 # started it must not pin that command's session state. WDOTOOL_* is kept as
 # a prefix (uinput path, fake-uinput mode, WDOTOOL_REL_MODE).
+#
+# SWAYSOCK/I3SOCK are session state the daemon needs for itself: _rel_absolute()
+# asks session.find_sway_socket() whether this is sway/i3, and answers "warp"
+# for everything else (B1). Without them that question falls back to scanning
+# the runtime dir, which finds sway's socket only because sway usually puts it
+# there and never finds i3's, which lives under /tmp -- so a daemon spawned
+# from a client warped where it had to send EV_REL.
 _KEEP_ENV = ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HOME", "PATH", "USER",
-             "LOGNAME", "LANG", "LC_ALL", "SUDO_UID", "PKEXEC_UID")
+             "LOGNAME", "LANG", "LC_ALL", "SUDO_UID", "PKEXEC_UID",
+             "SWAYSOCK", "I3SOCK")
 _DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
@@ -1860,7 +1868,12 @@ class _Daemon:
         return {"ok": True, "warnings": warnings}
 
     def serve_client(self, conn: socket.socket):
-        rfile = conn.makefile("r", encoding="utf-8")
+        # errors="replace": a request line that is not UTF-8 is a malformed
+        # request like any other, and gets the malformed-request answer. A
+        # strict decode raised UnicodeDecodeError out of readline() below,
+        # where only OSError is caught -- a traceback in the daemon log, the
+        # connection dropped, and EPIPE for the client's next request.
+        rfile = conn.makefile("r", encoding="utf-8", errors="replace")
         session: dict = {}   # per-connection state (see handle())
         try:
             while True:

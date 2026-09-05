@@ -10,8 +10,9 @@ import socket
 import tempfile
 import time
 import unittest
+from unittest import mock
 
-from wdotool import daemon, keymap, keystate, uinput
+from wdotool import daemon, keymap, keystate, session, uinput
 from wdotool.ctx import CmdError
 
 # The suite never hands a tool over to the real X11 one: see
@@ -932,6 +933,27 @@ class TestSpawnHygiene(unittest.TestCase):
         self.assertEqual(env.get("WDOTOOL_SPAWN_MARKER"), "kept")
         self.assertTrue(env.get("PATH"))
         self.assertEqual(daemon.clean_env({})["PATH"], daemon._DEFAULT_PATH)
+
+    def test_clean_env_keeps_the_compositor_ipc_socket(self):
+        """SWAYSOCK/I3SOCK were dropped with everything else, but the daemon
+        needs them for itself: _rel_absolute() asks find_sway_socket() whether
+        this is sway/i3 and warps everywhere else (B1). The runtime-dir scan
+        behind that question never finds i3's socket, which lives under /tmp
+        -- which is exactly where this one is."""
+        sock = tempfile.NamedTemporaryFile(prefix="wdotool-i3sock-")
+        self.addCleanup(sock.close)
+        self.assertNotEqual(os.path.dirname(sock.name),
+                            os.environ["XDG_RUNTIME_DIR"])
+        os.environ["I3SOCK"] = os.environ["SWAYSOCK"] = sock.name
+        env = daemon.clean_env()
+        self.assertEqual(env.get("SWAYSOCK"), sock.name)
+        self.assertEqual(env.get("I3SOCK"), sock.name)
+        # what it is kept for: the spawned daemon's own view of the session
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(session.find_sway_socket(), sock.name)
+        del env["SWAYSOCK"], env["I3SOCK"]
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIsNone(session.find_sway_socket())
 
     def test_spawned_daemon_drops_fds_cwd_and_env(self):
         # An fd the client had open: stands in for the session D-Bus socket
