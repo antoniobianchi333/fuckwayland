@@ -9,7 +9,7 @@ import os
 import re
 import sys
 
-from wdotool import commands, passthrough
+from wdotool import backend, commands, passthrough
 from wdotool.ctx import CmdError, Context
 
 # What `version`/-v prints. Must match the real xdotool byte-for-byte so
@@ -317,6 +317,7 @@ def script_main(argv: list[str], prog: str,
 
 
 def main(argv: list[str] | None = None) -> int:
+    backend.set_program("wdotool")
     entry = argv is None
     argv = list(sys.argv) if argv is None else list(argv)
 

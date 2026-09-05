@@ -884,6 +884,26 @@ class TestDiagnosticSubcommand(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("wdotool:", err)
 
+    def test_a_group_the_keymap_lacks_is_reported_not_raised(self):
+        """--group 3 on a two-group keymap: reverse() raises XkbError and
+        nothing caught it, so the diagnostic tracebacked -- where every
+        other failure in it prints one line and exits 1. Both the --info
+        and the --chars call sites."""
+        de = os.path.join(KEYMAPS, "de.xkb")
+        for extra in (["--info"], ["--chars", "z"],
+                      ["--info", "--chars", "z"]):
+            rc, out, err = self.run_it("--keymap", de, "--group", "3", *extra)
+            self.assertEqual(rc, 1, extra)
+            self.assertEqual(err, "wdotool: no group 3 in this keymap (2)\n",
+                             extra)
+            self.assertNotIn("Traceback", out)
+
+    def test_a_group_the_keymap_has_still_works(self):
+        rc, out, err = self.run_it("--keymap", os.path.join(KEYMAPS, "de.xkb"),
+                                   "--group", "2", "--info")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("group 2:      'English (US)' <- active", out)
+
     def test_it_is_not_a_command(self):
         """__keymap is hidden: not in the registry, not in help."""
         from wdotool import commands

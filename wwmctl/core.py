@@ -33,6 +33,7 @@ import sys
 import time
 
 from wdotool import backend_detect, session
+from wdotool.backend import warn as _warn
 from wdotool.ctx import CmdError
 from wwmctl.x11_mini import XUnavailable
 
@@ -47,10 +48,6 @@ _X_SETTLE = 0.4
 
 SELECT_WINDOW_MAGIC = ":SELECT:"
 ACTIVE_WINDOW_MAGIC = ":ACTIVE:"
-
-
-def _warn(msg: str):
-    sys.stderr.write("wwmctl: %s\n" % msg)
 
 
 # -- injection seams (unit tests monkeypatch these) --------------------------

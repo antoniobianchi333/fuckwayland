@@ -617,6 +617,60 @@ class NativePlaneTest(CliTestBase):
             b"_NET_WM_STATE_HIDDEN, _NET_WM_STATE_STICKY\n")
 
 
+class IdCollisionTest(CliTestBase):
+    """`-id N` is an X window id in every xprop manual there is, and a
+    compositor id is not an X id: KWin mints its own, Mutter's are Mutter's,
+    sway's are node ids. The two number spaces are not disjoint, so one
+    window's compositor id can equal another window's X id -- and a single
+    pass in the compositor's own listing order then answered about whichever
+    of the two it happened to list first."""
+
+    class _Collide(_FakeSway):
+        """The native window is numbered with the XWayland window's X id,
+        and the compositor lists it first."""
+
+        XID = 0x40000C
+
+        def __init__(self):
+            super().__init__()
+            self.xterm["window"] = self.XID
+            self.foot["id"] = self.XID
+
+        def _nodes(self):
+            return [
+                (self.foot, _FakeWin(id=self.XID, title="WL-Foot",
+                                     class_="footw", pid=4242, desktop=0,
+                                     focused=True), False, "1"),
+                (self.xterm, _FakeWin(id=5, title="XW-Xterm", pid=4243,
+                                      desktop=0), False, "1"),
+            ]
+
+    def run_collide(self, *args):
+        fake = self._Collide()
+        out = _CapStdout()
+        err = io.StringIO()
+        with mock.patch.object(core, "_detect_backend", lambda: fake), \
+                mock.patch.object(core, "_hostname", lambda: "testhost"), \
+                mock.patch.object(sys, "stdout", out), \
+                mock.patch.object(sys, "stderr", err):
+            code = cli.main(list(args))
+        return code, out.buffer.getvalue(), err.getvalue()
+
+    def test_the_x_window_wins(self):
+        code, out, err = self.run_collide("-id", str(self._Collide.XID),
+                                          "WM_CLASS")
+        self.assertEqual((code, err), (0, ""))
+        # the XWayland window's, not the native one's ("footw", "footw")
+        self.assertEqual(out, b'WM_CLASS(STRING) = "xterm", "XTerm"\n')
+
+    def test_a_compositor_id_nothing_else_claims_still_resolves(self):
+        """The second pass: 5 is the XWayland node's compositor id and no
+        window's X id, so it still answers, exactly as before."""
+        code, out, err = self.run_collide("-id", "5", "WM_CLASS")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, b'WM_CLASS(STRING) = "xterm", "XTerm"\n')
+
+
 class FormatFileTest(CliTestBase):
     def _file(self, content: bytes) -> str:
         f = tempfile.NamedTemporaryFile(delete=False, suffix=".fmt")

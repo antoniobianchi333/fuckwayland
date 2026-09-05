@@ -46,11 +46,10 @@ import os
 import pwd
 import re
 import struct
-import sys
 import time
 
 from wdotool import session
-from wdotool.backend import View, Window, WindowBackend, Workspace
+from wdotool.backend import View, Window, WindowBackend, Workspace, warn
 from wdotool.ctx import CmdError, NoSessionError
 from wdotool.dbus_mini import ERR, Bus, DBusError
 
@@ -466,8 +465,8 @@ class GnomeBackend(WindowBackend):
         if applied:
             return
         if state in _COSMETIC_STATES:
-            sys.stderr.write("wdotool: windowstate %s: Mutter cannot set it on "
-                             "Wayland; ignoring\n" % state)
+            warn("windowstate %s: Mutter cannot set it on Wayland; "
+                 "ignoring" % state)
             return
         raise CmdError("windowstate %s is not supported by the gnome backend (%s)"
                        % (state, _GAP_REASONS.get(state, "Mutter has no API for it")))

@@ -32,7 +32,7 @@ import re
 import struct
 import sys
 
-from wdotool import passthrough
+from wdotool import backend, passthrough
 from wxprop import core
 from wxprop import fmt as fmtmod
 from wxprop.fmt import FatalError
@@ -456,6 +456,7 @@ def _safe_flush():
 
 def main(argv=None) -> int:
     prog = _progname()
+    backend.set_program(prog)
     # X11 session: hand over to the real xprop. Unlike the other three we do
     # have a native X11 path (core.Session talks to $DISPLAY directly), so a
     # box with no x11-utils installed keeps working instead of exiting 127.

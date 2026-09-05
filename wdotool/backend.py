@@ -11,8 +11,32 @@ callers fall back to list()/find()."""
 import dataclasses
 import os
 import signal
+import sys
 
 from wdotool.ctx import CmdError
+
+#: The name the backends put in front of their own warnings. wwmctl and
+#: wxprop drive these same backends, and a line reading "wdotool: ..." in
+#: the middle of a `wmctrl -b` run names a tool the user did not run. Each
+#: CLI's main() sets it -- wxprop's to whatever argv[0] says, like the
+#: original it replaces -- so one process running two of them in turn (the
+#: in-process `main([...])` callers) still gets one name per run.
+_PROGRAM = "wdotool"
+
+
+def set_program(name) -> None:
+    """Name the running tool. Called once, first thing, by each main()."""
+    global _PROGRAM
+    _PROGRAM = str(name) if name else "wdotool"
+
+
+def program() -> str:
+    return _PROGRAM
+
+
+def warn(msg: str) -> None:
+    """One warning line on stderr, in the running tool's name."""
+    sys.stderr.write("%s: %s\n" % (_PROGRAM, msg))
 
 
 @dataclasses.dataclass

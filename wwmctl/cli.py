@@ -29,7 +29,7 @@ import getopt
 import os
 import sys
 
-from wdotool import passthrough
+from wdotool import backend, passthrough
 from wdotool.ctx import CmdError
 
 from wwmctl import core
@@ -399,6 +399,7 @@ def main(argv=None) -> int:
         sys.stdout = open(os.devnull, "w")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w")
+    backend.set_program("wwmctl")
     # X11 session: hand over to the real wmctrl (argv here is already
     # sys.argv[1:], wmctrl's own convention).
     rc = passthrough.maybe_exec_real(
