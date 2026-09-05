@@ -34,6 +34,12 @@ def _atof(s: str) -> float:
         return float.fromhex(t) if re.match(r"[+-]?0[xX]", t) else float(t)
     except ValueError:
         return 0.0
+    except OverflowError:
+        # C strtod() saturates to +-HUGE_VAL and sets ERANGE; only the hex
+        # spelling gets here, because float("1e400") already answers inf.
+        # `sleep 0x1p1024` used to end in "hexadecimal value too large to
+        # represent as a float" where the oracle returns 0 at once.
+        return -math.inf if t.startswith("-") else math.inf
 
 
 def _help_requested(opts) -> bool:
@@ -142,7 +148,19 @@ def cmd_sleep(ctx, args):
     # NaN passes straight through max() and inf overflows time_t: both used
     # to leave a traceback where the real tool sleeps for no time at all.
     secs = _atof(rest[0])
-    time.sleep(secs if math.isfinite(secs) and secs > 0.0 else 0.0)
+    if not math.isfinite(secs) or secs <= 0.0:
+        secs = 0.0
+    try:
+        time.sleep(secs)
+    except OverflowError:
+        # `sleep 1e300`: finite, positive, and still far outside time_t.
+        # The C code hands it to usleep(), whose useconds_t cannot hold
+        # it either, and the real xdotool returns at once with status 0
+        # (measured against 3.20160805.1: 1e300, inf and nan all take
+        # 0.00 s).  A value that *does* fit is still slept, which is the
+        # deliberate divergence already in this line: `sleep 3600` means
+        # an hour here and wraps in usleep's 32-bit argument there.
+        pass
     return nopts + 1
 
 

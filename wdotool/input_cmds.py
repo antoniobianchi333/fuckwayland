@@ -306,6 +306,27 @@ def _vkbd_kw(ctx):
     return {"vkbd_mode": mode} if mode else {}
 
 
+def _stdin_text() -> str:
+    """`type --file -`: everything on stdin, as text.
+
+    Decoded with errors="replace", exactly like the `--file PATH` branch
+    beside it: xdotool types what it is given, and a byte that is not
+    UTF-8 is no reason to end in a traceback -- which is what
+    `sys.stdin.read()` did, since its own decoder is strict under a UTF-8
+    locale (and only quietly surrogate-escaping under LANG=C).  The bytes
+    come from the buffer under the text layer where there is one; a test
+    double or an embedding caller may hand us a text stream with none.
+    An fd 0 that was closed before we started (`--file - <&-`) leaves
+    sys.stdin None and types nothing, as the C fread() does."""
+    stdin = getattr(sys, "stdin", None)
+    if stdin is None:
+        return ""
+    buf = getattr(stdin, "buffer", None)
+    if buf is None:
+        return stdin.read()
+    return buf.read().decode("utf-8", "replace")
+
+
 def cmd_type(ctx, args):
     cmdname = getattr(ctx, "cmd_name", "type")
     usage = _USAGE_TYPE % cmdname
@@ -336,7 +357,7 @@ def cmd_type(ctx, args):
     if file is not None:
         try:
             if file == "-":
-                data.append(sys.stdin.read())
+                data.append(_stdin_text())
             else:
                 with open(file, "r", encoding="utf-8", errors="replace") as f:
                     data.append(f.read())
