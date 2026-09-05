@@ -566,8 +566,14 @@ class Application:
         backend = self.backend
 
         def work():
-            backend.identify()
-            info = randr.probe_backends(backend.env)
+            try:
+                backend.identify()
+                info = randr.probe_backends(backend.env)
+            except Exception:
+                # the indicator keeps whatever it says now; a thread
+                # that dies here would print a traceback on a stderr
+                # nobody reads and leave the window none the wiser
+                return
             GLib.idle_add(self._identified, backend, info)
         threading.Thread(target=work, name="warandr-backend",
                          daemon=True).start()
@@ -610,7 +616,14 @@ class Application:
         def work():
             try:
                 result, error = read(), None
-            except (randr.RandrError, LayoutError, OSError) as e:
+            except Exception as e:
+                # every exception, not the three that were expected: an
+                # error this thread does not catch never reaches
+                # finish(), so _set_busy(False) never runs and Apply,
+                # Open and New stay dead for the rest of the session --
+                # with the traceback on a stderr a desktop launcher
+                # throws away.  A UnicodeDecodeError from a layout
+                # script that is not UTF-8 did exactly that.
                 result, error = None, e
             GLib.idle_add(finish, result, error)
 
@@ -1264,15 +1277,18 @@ class Application:
         layout = self.layout
 
         def work():
+            # `except Exception`, for the same reason as the reader
+            # thread above: whatever this one fails to catch leaves the
+            # toolbar greyed for good.
             try:
                 rc, out, err = self.backend.apply(layout)
-            except randr.RandrError as e:
+            except Exception as e:
                 rc, out, err = 1, "", str(e)
             fresh = exc = None
             if rc == 0:
                 try:
                     fresh = self.backend.snapshot()
-                except randr.RandrError as e:
+                except Exception as e:
                     exc = e
             GLib.idle_add(self._applied, layout, rc, out, err, fresh, exc)
         threading.Thread(target=work, name="warandr-apply",

@@ -1192,6 +1192,76 @@ class Cli(unittest.TestCase):
         self.assertIn("apt install python3-gi gir1.2-gtk-3.0", cli.GTK_HINT)
 
 
+class NonTextScript(unittest.TestCase):
+    """A layout script that is not UTF-8 (a latin-1 comment, or a file
+    that is not a script at all).  `--command` and `--save` tracebacked
+    with a UnicodeDecodeError out of `open().read()`; the fix refuses the
+    file by name instead of decoding it with `errors="replace"`, which
+    would write U+FFFD back over the user's script the next time it was
+    saved."""
+
+    LATIN1 = (b"#!/bin/sh\n# caf\xe9\nxrandr --output DP-1 --primary "
+              b"--mode 1920x1080 --pos 0x0 --rotate normal\n")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.env = dict(os.environ)
+        self.env["WARANDR_XRANDR"] = "%s %s" % (
+            sys.executable, os.path.join(FIXTURES, "fake_xrandr.py"))
+        self.env["FAKE_XRANDR_STATE"] = os.path.join(self.tmp, "state.json")
+        self.env["PYTHONPATH"] = ROOT
+
+    def run_cli(self, *args):
+        p = subprocess.run([sys.executable, "-m", "warandr"] + list(args),
+                           env=self.env, capture_output=True, text=True,
+                           timeout=60)
+        return p.returncode, p.stdout, p.stderr
+
+    def write(self, name, data):
+        path = os.path.join(self.tmp, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def test_command_refuses_it_in_one_line(self):
+        rc, out, err = self.run_cli("--command", self.write("l.sh",
+                                                            self.LATIN1))
+        self.assertEqual((rc, out), (1, ""))
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(len(err.strip().split("\n")), 1, err)
+        self.assertTrue(err.startswith("warandr: Not a text file: "), err)
+        self.assertIn("0xe9", err)
+
+    def test_save_refuses_it_and_writes_nothing(self):
+        src = self.write("l.sh", self.LATIN1)
+        target = os.path.join(self.tmp, "out")
+        rc, out, err = self.run_cli("--save", target, src)
+        self.assertEqual((rc, out), (1, ""))
+        self.assertTrue(err.startswith("warandr: Not a text file: "), err)
+        self.assertFalse(os.path.exists(target + ".sh"))
+
+    def test_a_file_that_is_not_a_script_at_all(self):
+        png = self.write("x.sh", b"\x89PNG\r\n\x1a\n" + bytes(range(256)))
+        rc, _out, err = self.run_cli("--command", png)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("Traceback", err)
+        self.assertTrue(err.startswith("warandr: Not a text file: "), err)
+
+    def test_utf8_survives_byte_for_byte(self):
+        """The reason the fix is not `errors="replace"`: a script with a
+        non-ASCII comment loads, and Save writes that comment back
+        unchanged."""
+        text = ("#!/bin/sh\n# caf\u00e9 \u2014 the desk layout\n"
+                + ARANDR_LINE + "\n")
+        src = self.write("u.sh", text.encode("utf-8"))
+        target = os.path.join(self.tmp, "again")
+        rc, _out, err = self.run_cli("--save", target, src)
+        self.assertEqual((rc, err), (0, ""))
+        with open(target + ".sh", "rb") as f:
+            self.assertEqual(f.read(), text.encode("utf-8"))
+
+
 class BuildScript(unittest.TestCase):
     """scripts/build-pyz.sh emits dist/warandr, and the zipapp runs the
     non-GUI paths (a temp copy, so parallel runs cannot race on dist/)."""

@@ -55,11 +55,32 @@ def _parser():
     return p
 
 
+def read_script(path):
+    """A layout script as text, or a LayoutError saying why not.
+
+    Scripts are read as UTF-8 and written back byte for byte, so a file
+    that is not text at all -- an image the file chooser was pointed at,
+    a layout somebody saved in latin-1 -- has to be refused rather than
+    mangled.  `errors="replace"` is not the fix: it turns every
+    undecodable byte into U+FFFD, and Save would then write that back
+    over the user's own file (the round trip is pinned byte for byte in
+    tests/test_warandr_model.py).
+
+    Refusing is also what keeps the GUI alive: the reader thread used to
+    die on the UnicodeDecodeError before it could hand anything back, so
+    the window stayed busy and Apply, Open and New became silent
+    no-ops."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError as e:
+        raise LayoutError("Not a text file: %s" % e) from None
+
+
 def load_layout(backend, savedfile):
     layout = backend.snapshot()
     if savedfile:
-        with open(savedfile) as f:
-            layout.load_script(f.read())
+        layout.load_script(read_script(savedfile))
     return layout
 
 

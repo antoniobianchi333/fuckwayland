@@ -38,9 +38,11 @@ SLEEP = 1.5
 
 
 class Stub(randr.Backend):
-    def __init__(self, wayland=False, rc=0, read_delay=0.0, read_error=None):
+    def __init__(self, wayland=False, rc=0, read_delay=0.0, read_error=None,
+                 apply_error=None):
         super().__init__(["stub"], wayland, env={}, source="stub")
         self.rc = rc
+        self.apply_error = apply_error   # ...or fails some other way
         self.read_delay = read_delay     # a compositor that answers slowly
         self.read_error = read_error     # ...or not at all
         self.snapshots = 0
@@ -56,6 +58,8 @@ class Stub(randr.Backend):
                                   hidpi=self.wayland, command_word=self.word)
 
     def apply(self, layout):
+        if self.apply_error:
+            raise self.apply_error
         self.applied.append(layout.args())
         time.sleep(SLEEP)
         return self.rc, "", "stub: configure crtc failed" if self.rc else ""
@@ -226,6 +230,37 @@ def main():
     pump(lambda: bool(dialogs), timeout=5)
     res["reload_fail_dialog"] = dialogs[-1] if dialogs else None
     res["reload_fail_keeps_layout"] = app.layout is not None
+    app.backend = backend
+
+    # -- a layout script that is not UTF-8 ----------------------------------
+    # the reader thread caught three exception types and a
+    # UnicodeDecodeError was none of them, so it died before finish()
+    # could clear the busy flag: no dialog, and Apply/Open/New dead for
+    # the rest of the session
+    dialogs.clear()
+    badtmp = tempfile.mkdtemp(prefix="warandr-latin1-")
+    bad = os.path.join(badtmp, "latin1.sh")
+    with open(bad, "wb") as f:
+        f.write(b"#!/bin/sh\n# caf\xe9\nxrandr --output DP-1 "
+                b"--mode 1920x1080 --pos 0x0 --rotate normal\n")
+    app.load_file(bad)
+    res["latin1_finished"] = pump(lambda: not app._busy, timeout=10)
+    pump(lambda: bool(dialogs), timeout=5)
+    res["latin1_dialog"] = dialogs[-1] if dialogs else None
+    res["latin1_apply_live"] = app.toolbuttons["apply"].get_sensitive()
+    res["latin1_keeps_layout"] = app.layout is not None
+    app.do_new()                       # the window still works after it
+    res["latin1_reload_after"] = pump(lambda: not app._busy, timeout=10)
+
+    # -- an Apply that fails with anything but a RandrError -----------------
+    dialogs.clear()
+    app.backend = Stub(apply_error=OSError(13, "Permission denied"))
+    app.do_apply()
+    res["apply_boom_finished"] = pump(lambda: not app._busy, timeout=10)
+    pump(lambda: bool(dialogs), timeout=5)
+    res["apply_boom_dialog"] = dialogs[-1] if dialogs else None
+    res["apply_boom_apply_live"] = \
+        app.toolbuttons["apply"].get_sensitive()
     app.backend = backend
 
     # -- a menu built before an Apply edits the layout that is live now -----
