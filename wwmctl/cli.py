@@ -399,8 +399,7 @@ def main(argv=None) -> int:
     backend.set_program("wwmctl")
     # X11 session: hand over to the real wmctrl (argv here is already
     # sys.argv[1:], wmctrl's own convention).
-    rc = passthrough.maybe_exec_real(
-        "wmctrl", sys.argv[1:] if argv is None else argv, entry=argv is None)
+    rc = passthrough.maybe_exec_real("wmctrl", sys.argv[1:] if argv is None else argv, entry=argv is None)
     if rc is not None:
         return rc
     quiet = False
@@ -445,8 +444,7 @@ def _run(argv=None) -> int:
             # option '-' (glibc prints exactly this, verified vs the oracle)
             sys.stderr.write("%s: invalid option -- '-'\n" % _prog())
         elif "requires argument" in str(e):
-            sys.stderr.write("%s: option requires an argument -- '%s'\n"
-                             % (_prog(), opt))
+            sys.stderr.write("%s: option requires an argument -- '%s'\n" % (_prog(), opt))
         else:
             sys.stderr.write("%s: invalid option -- '%s'\n" % (_prog(), opt))
         return 1
@@ -488,8 +486,7 @@ def _run(argv=None) -> int:
             action = c
         elif c == "r":
             param_window = val
-        elif c in ("t", "e", "y", "b", "N", "I", "T", "M", "s", "k", "o",
-                   "n", "g"):
+        elif c in ("t", "e", "y", "b", "N", "I", "T", "M", "s", "k", "o", "n", "g"):
             param = val
             action = c
         elif c == "w":

@@ -135,8 +135,7 @@ class Core:
             if params is None:
                 self._x11 = _x11_connect()
             else:
-                self._x11 = _x11_connect(display=params[0],
-                                         xauthority=params[1])
+                self._x11 = _x11_connect(display=params[0], xauthority=params[1])
         return self._x11
 
     def _x_is_up(self) -> bool:
@@ -198,8 +197,7 @@ class Core:
                     cls = _dot_class(wp.get("instance"), wp.get("class"))
                     if node.get("app_id"):
                         cls = "%s.%s" % (node["app_id"], node["app_id"])
-                    out.append(_uwindow(win, host, xid, cls,
-                                        node.get("name")))
+                    out.append(_uwindow(win, host, xid, cls, node.get("name")))
             except (TypeError, ValueError, KeyError) as e:
                 self.vprint("_nodes() has an unexpected shape (%s: %s); "
                             "using the generic backend listing\n"
@@ -647,8 +645,7 @@ class Core:
         try:
             atom = x.atom("_NET_WM_STATE_%s" % name)
             before = self._x_state_has(x, w.id, atom)
-            x.send_root_message(w.id, "_NET_WM_STATE",
-                                [action, atom, 0, 0, 0])
+            x.send_root_message(w.id, "_NET_WM_STATE", [action, atom, 0, 0, 0])
         except Exception as e:
             self.vprint("_NET_WM_STATE ClientMessage failed: %s\n" % e)
             return False
@@ -687,9 +684,7 @@ class Core:
                   "title; ignoring")
             return 0
         try:
-            x.set_name(w.id, title,
-                       icon=mode in ("T", "I"), long_=mode in ("T", "N"),
-                       utf8=self.utf8)
+            x.set_name(w.id, title, icon=mode in ("T", "I"), long_=mode in ("T", "N"), utf8=self.utf8)
         except Exception as e:
             _warn("cannot set the window title: %s; ignoring" % e)
         return 0
@@ -747,8 +742,7 @@ class Core:
             _warn("cannot set the window icon: %s; ignoring" % e)
         return 0
 
-    def list_windows(self, show_pid: bool, show_geometry: bool,
-                     show_class: bool) -> int:
+    def list_windows(self, show_pid: bool, show_geometry: bool, show_class: bool) -> int:
         wins = self.windows()
         # The machine column is right-aligned to the LONGEST
         # WM_CLIENT_MACHINE. wmctrl 1.07 uses the LAST row's instead (a bug
@@ -760,8 +754,7 @@ class Core:
         # Widths count BYTES like printf's %*s, not characters.
         machine_len = max([_blen(w.machine) for w in wins if w.machine] or [0])
         for w in wins:
-            sys.stdout.write(self._list_row(w, show_pid, show_geometry,
-                                            show_class, machine_len) + "\n")
+            sys.stdout.write(self._list_row(w, show_pid, show_geometry, show_class, machine_len) + "\n")
         return 0
 
     def list_current_desktop(self) -> int:  # -j (1.07+git)
@@ -863,17 +856,13 @@ class Core:
                     deadline = time.monotonic() + 2.0
                     while not sup and time.monotonic() < deadline:
                         time.sleep(0.05)
-                        sup = x.get_prop_ints(x.root(),
-                                              "_NET_SUPPORTING_WM_CHECK")
+                        sup = x.get_prop_ints(x.root(), "_NET_SUPPORTING_WM_CHECK")
                 if sup:
                     got_x = True
-                    name = _xtry(lambda: x.get_prop_string(
-                        sup[0], "_NET_WM_NAME")) or None
-                    class_ = _xtry(lambda: x.get_prop_string(
-                        sup[0], "WM_CLASS")) or None
+                    name = _xtry(lambda: x.get_prop_string(sup[0], "_NET_WM_NAME")) or None
+                    class_ = _xtry(lambda: x.get_prop_string(sup[0], "WM_CLASS")) or None
                     pid = _xtry(lambda: x.get_pid(sup[0])) or 0
-                    ints = _xtry(lambda: x.get_prop_ints(
-                        x.root(), "_NET_SHOWING_DESKTOP"))
+                    ints = _xtry(lambda: x.get_prop_ints(x.root(), "_NET_SHOWING_DESKTOP"))
                     showing = ints[0] if ints else None
             except Exception:
                 got_x = False
@@ -960,8 +949,7 @@ class Core:
         if self._showing_desktop() == want:
             return True          # already in that mode: nothing to ask for
         try:
-            x.send_root_message(x.root(), "_NET_SHOWING_DESKTOP",
-                                [want, 0, 0, 0, 0])
+            x.send_root_message(x.root(), "_NET_SHOWING_DESKTOP", [want, 0, 0, 0, 0])
         except Exception as e:
             self.vprint("_NET_SHOWING_DESKTOP ClientMessage failed: %s\n" % e)
             return False
@@ -1033,8 +1021,7 @@ class Core:
                       full_match: bool, show_pid: bool = False,
                       show_geometry: bool = False,
                       show_class: bool = False) -> int:
-        w = self.find_target(param_window, match_by_id, match_by_cls,
-                             full_match)
+        w = self.find_target(param_window, match_by_id, match_by_cls, full_match)
         if w is None:
             return 1  # wmctrl exits 1 silently when nothing matches
         self.vprint("Using window: 0x%08x\n" % w.id)
@@ -1061,13 +1048,11 @@ class Core:
             self.backend().lower(w.node_id)
             return 0
         if mode == "L":  # 1.07+git (distro patch): this window's -l row
-            return self.list_one_window(w, show_pid, show_geometry,
-                                        show_class)
+            return self.list_one_window(w, show_pid, show_geometry, show_class)
         if mode == "M":  # 1.07+git (distro patch): _NET_WM_ICON from an XPM
             return self.set_mini_icon(w, param or "")
         if mode == "E":  # 1.07+git, undocumented: print the title
-            sys.stdout.write("%s\n" % (w.title if w.title is not None
-                                        else ""))
+            sys.stdout.write("%s\n" % (w.title if w.title is not None else ""))
             return 0
         if mode == "b":
             return self.window_state(w, param or "")
@@ -1079,8 +1064,7 @@ class Core:
 
 # -- small parsing/format helpers -------------------------------------------
 
-def _uwindow(win, host: str | None, xid: int | None, cls: str | None,
-             title: str | None) -> UWindow:
+def _uwindow(win, host: str | None, xid: int | None, cls: str | None, title: str | None) -> UWindow:
     """A UWindow over one backend Window, for all three listing sources.
 
     `xid` is the window's X id when it has one (0/None for a native view):
