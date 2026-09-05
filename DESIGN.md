@@ -949,8 +949,8 @@ started (`>&-`) leaves `sys.stdout` None, and the work still gets done.
   "cancelled"). Extras for wwmctl/wxprop: `views()`, `workspaces()` (work areas
   from `workspace.clientArea(WorkArea, …)`, cached with the screen size),
   `x_info()` (the session scan — KWin publishes its Xwayland's DISPLAY nowhere),
-  `window_at()` (client-side over the same list, like GNOME, so it cannot drift
-  from the generic rule) and `events()` — a script that stays loaded for the
+  `backend.hit_test()` (client-side over the same list, like GNOME, so it cannot
+  drift from the generic rule) and `events()` — a script that stays loaded for the
   iteration, connects `workspace`'s and every window's Qt signals and `callDBus`es
   each one out on a second connection. `View.xid` for XWayland windows: `w.windowId`
   on 5.27; on 6 (`x11window.h` has no `Q_PROPERTY` left) by matching Xwayland's
@@ -971,8 +971,8 @@ started (`>&-`) leaves `sys.stdout` None, and the work still gets done.
   the Wayland app_id there), else `gtk_app_id`; geometry = `get_frame_rect()` in
   logical pixels, the same space as the daemon's pointer; `visible` = not
   minimized/show-desktop AND on the active workspace (X11 IsViewable), `is_mapped` =
-  not minimized. `list()` is stacking order bottom→top; `window_at()` looks through
-  DESKTOP/DOCK layers for `getmouselocation`. `activate` = `Meta.Window.activate`
+  not minimized. `list()` is stacking order bottom→top; `backend.hit_test()` looks
+  through DESKTOP/DOCK layers for `getmouselocation`. `activate` = `Meta.Window.activate`
   (switches workspace, unminimizes, raises) and waits ≤ 0.5 s for the focus to land;
   `focus` = `Meta.Window.focus` (no raise); `kill` = `Meta.Window.kill` (Mutter kills
   the client, works as any uid); map/unmap = unminimize/minimize; raise/lower real.
@@ -995,8 +995,8 @@ started (`>&-`) leaves `sys.stdout` None, and the work still gets done.
   DISPLAY/XAUTHORITY via the bridge, else `session.find_x_display/find_xauthority`),
   `events()` (bridge `WindowEvent` signals), `monitors()`, `real_pointer()`
   (diagnostic: the compositor's pointer vs the daemon's). The bridge exports no
-  hit-test; `window_at()` is client-side over `ListWindows` so it cannot drift
-  from the generic rule. Without the bridge name but with `org.gnome.Shell`
+  hit-test; `backend.hit_test()` is client-side over `ListWindows` so it cannot
+  drift from the generic rule. Without the bridge name but with `org.gnome.Shell`
   owned the constructor diagnoses (locked screen, disabled/broken extension, or
   "run `gnome/install-bridge.sh` and restart the session") without touching
   `org.gnome.Shell.Eval`; only `WDOTOOL_GNOME_AUTOLOAD=1` makes it try one Eval

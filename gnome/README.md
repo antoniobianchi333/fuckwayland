@@ -163,7 +163,7 @@ gdbus call --session --dest org.fuckwayland.Bridge --object-path /org/fuckwaylan
 | `SelectWindow` | `(u timeout_ms) → t` | **v2**: takes a stage grab and resolves with the window under the pointer at the next button press (`xdotool selectwindow`, including the window that already has focus); `0` when the press landed on no window. Escape, the deadline, a caller that disconnected and a disabled extension all come back as `Cancelled`. `timeout_ms = 0` means "as long as the user takes" and is still capped at 30 seconds, as is any larger value — a grab is never held indefinitely, and a finished selection leaves behind a quiet period as long as the grab it held, so a caller cannot re-arm in a loop (`Unsupported` until it passes). Set your D-Bus call timeout above it (the clients use none). v1 resolved on the next *focus change* instead. |
 
 There is no hit-test method on purpose: `getmouselocation`'s window is
-computed client-side from `ListWindows` (`GnomeBackend.window_at()`, looking
+computed client-side from `ListWindows` (`wdotool.backend.hit_test()`, looking
 through `DESKTOP`/`DOCK` windows) with the focused-first/topmost rule every
 backend shares, so the two cannot drift apart.
 
