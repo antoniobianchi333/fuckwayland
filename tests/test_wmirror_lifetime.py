@@ -680,7 +680,13 @@ class Commands(MirrorCli, Base):
         with mock.patch.dict(os.environ, {"WMIRROR_STUB_LIFE": "0.6"}):
             self.assertEqual(self.invoke(["A", "--to", "B"])[0], 0)
         recs = dict(self.live())
+        # Both, not just the helper: reap() drops a record only once the
+        # supervisor has gone too, and the supervisor goes a moment after
+        # the helper it was watching. Waiting for one of the two made this
+        # fail under load -- the query ran while the supervisor was still
+        # on its way out, and found the record still there.
         self.assertTrue(gone(recs["B"]["helper_pid"]))
+        self.assertTrue(gone(recs["B"]["pid"]))
         self.assertEqual(self.invoke(["--list"])[1], "")
         # ...and the target is free again
         self.assertEqual(self.invoke(["A", "--to", "B"])[0], 0)
