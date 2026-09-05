@@ -33,6 +33,7 @@ import sys
 import time
 
 from wdotool import backend_detect, session
+from wdotool.backend import state_steps as _backend_state_steps
 from wdotool.backend import warn as _warn
 from wdotool.cnum import atoi as _atoi
 from wdotool.ctx import CmdError
@@ -596,16 +597,14 @@ class Core:
         # The compositor stays the first choice: `hidden` really minimizes
         # through the bridge, where the X route is a no-op.
         skip = self._compositor_cannot_set() if w.is_x else frozenset()
-        for prop in (p1, p2):
-            if prop is None:
-                continue
-            name = prop.upper()
-            if name in skip and self._x_set_state(w, name, action):
+        names = [p.upper() for p in (p1, p2) if p is not None]
+        for name, atoms in self._state_steps(names):
+            if name in skip and self._x_set_states(w, atoms, action):
                 continue
             try:
                 why = self.backend().set_state(w.node_id, name, action)
             except CmdError as e:
-                if self._x_set_state(w, name, action):
+                if self._x_set_states(w, atoms, action):
                     continue
                 _warn("%s; ignoring" % e)
                 continue
@@ -613,9 +612,54 @@ class Core:
             # size hints a fullscreen cannot satisfy. Real wmctrl gets these
             # through, because the X plane is a different window manager --
             # so take that route before calling it a loss.
-            if why and not self._x_set_state(w, name, action):
+            if why and not self._x_set_states(w, atoms, action):
                 _warn("%s; ignoring" % why)
         return 0
+
+    def _state_steps(self, names):
+        """The -b properties as (state to ask the backend for, the EWMH
+        names it stands for) steps. One step per property, except that both
+        maximize axes together become a single request wherever the backend
+        has a name for the pair -- GNOME does, and there it is not an
+        optimization but the fix for a corrupted restore size.
+
+        Mutter unmaximizes to the window's *current* frame rect, taking
+        only the axis it is unmaximizing from the saved rectangle
+        (meta_window_set_unmaximize_flags, window.c). The second
+        single-axis call is issued microseconds after the first, long
+        before the Wayland client has answered its configure, so it reads a
+        frame rect that is still maximized and carries the maximized half
+        into its target; and once both flags are clear Mutter saves that
+        rectangle as the restore size (maybe_save_rect). Measured on GNOME
+        46 and 50: `-b remove,maximized_vert,maximized_horz` left a 200,150
+        900x600 window at 200,32 900x1048, and no later state change got
+        the height back. Reversing the two only moves the damage to the
+        other axis (67,150 1853x600).
+
+        Mutter's own EWMH path never splits the pair: it collects both
+        atoms of one _NET_WM_STATE ClientMessage into a single `directions`
+        bitmask and makes one meta_window_set_[un]maximize_flags() call
+        (window-x11.c) -- which is exactly what real wmctrl's single
+        message asks for, so folding here is parity, not a special case.
+
+        The grouping itself is backend.state_steps(), so that every command
+        that can be handed both axes at once gets it from one place."""
+        try:
+            b = self.backend()
+        except CmdError:
+            b = None            # no session: nothing to fold, and the loop
+                                # below reports it exactly as it did before
+        return _backend_state_steps(b, names)
+
+    def _x_set_states(self, w: UWindow, names, action: int) -> bool:
+        """_x_set_state for every EWMH name of one -b step; True when they
+        all went through. A folded maximize pair still names both atoms
+        here, so the X fallback stays byte for byte what it was."""
+        ok = True
+        for name in names:
+            if not self._x_set_state(w, name, action):
+                ok = False
+        return ok
 
     def _compositor_cannot_set(self):
         """_NET_WM_STATE names the compositor backend answers "not

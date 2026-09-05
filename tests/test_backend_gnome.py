@@ -23,7 +23,8 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 from test_dbus_mini import MockBus                                   # noqa: E402
 from wdotool import backend_detect, backend_gnome, dbus_mini, session  # noqa: E402
-from wdotool.backend import View, Window, Workspace, hit_test          # noqa: E402
+from wdotool.backend import (View, Window, WindowBackend, Workspace,   # noqa: E402
+                             hit_test, state_steps)
 from wdotool.backend_gnome import (BUS_NAME, EXT_UUID, IFACE,        # noqa: E402
                                    OBJECT_PATH, SHELL_NAME, GnomeBackend)
 from wdotool.ctx import CmdError, NoSessionError                       # noqa: E402
@@ -37,6 +38,12 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 XTERM, EDITOR, CALC, DESKTOP = 4194305, 4194306, 4194307, 4194301
 XTERM_XID = 0x400005
+# The fake's work area: the 1920x1080 screen minus a top panel. A window
+# maximized on an axis gets that axis of this rectangle, as Mutter's does.
+WORK_AREA = (0, 32, 1920, 1048)
+# state name -> (touches the horizontal axis, touches the vertical one)
+MAX_AXES = {"MAXIMIZED_HORZ": (True, False), "MAXIMIZED_VERT": (False, True),
+            "MAXIMIZED": (True, True)}
 
 
 def _rect(x, y, w, h):
@@ -91,7 +98,7 @@ class MockBridge:
     # The bridge's own hard cap on a window selection (extension.js
     # SELECT_MAX_MS); a test below checks the two have not drifted apart.
     SELECT_MAX_MS = 30000
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self, mock, own_shell=True, own_bridge=True,
                  eval_unsafe=False, select_delay=0.2, select_id=EDITOR,
@@ -104,6 +111,11 @@ class MockBridge:
         self.bus = Bus(mock.address)
         self.bus.serve_calls = True
         self.windows = fixture_windows()
+        #: id -> the rectangle a window is unmaximized back to, and id -> the
+        #: one Mutter still believes because its client has not answered the
+        #: last configure. See _maximize()/settle().
+        self.saved = {}
+        self.stale = {}
         self.calls = []
         self.active_ws = 0
         self.n_ws = 3
@@ -295,13 +307,60 @@ class MockBridge:
         d.update(x=x, y=y, width=w, height=h)
         return "", ()
 
+    def settle(self, wid=None):
+        """The clients answer the configures Mutter sent them: from here on
+        it reads the rectangles it asked for. Live this takes one round trip
+        of the Wayland connection, which two D-Bus calls in one process
+        never leave room for -- _maximize() is what that costs."""
+        self.stale = {} if wid is None else \
+            {k: v for k, v in self.stale.items() if k != wid}
+
+    def _maximize(self, d, state, want):
+        """Mutter's own maximize bookkeeping, measured on GNOME 46 and 50.
+
+        meta_window_set_[un]maximize_flags() builds its target from the
+        frame rect it currently believes and replaces only the axes it is
+        changing -- from the work area when maximizing, from the saved
+        rectangle when unmaximizing. `self.stale` is the rect it still
+        believes because the client has not answered the last configure
+        yet, so a second single-axis call in the same breath drags the
+        maximized half of the geometry into its target. Once neither flag
+        is left set, the result becomes the saved rectangle (maybe_save_rect
+        in meta-window-wayland.c) -- which is how the damage sticks."""
+        horz, vert = MAX_AXES[state]
+        h, v = d["maximized_h"], d["maximized_v"]
+        if not (horz and h != want) and not (vert and v != want):
+            return                       # neither axis would change
+        now = (d["x"], d["y"], d["width"], d["height"])
+        if want and not h and not v:
+            self.saved[d["id"]] = now    # saved on the way up
+        x, y, w, ht = self.stale.get(d["id"], now)
+        ax, ay, aw, ah = WORK_AREA if want else self.saved.get(d["id"], now)
+        if horz:
+            x, w, d["maximized_h"] = ax, aw, want
+        if vert:
+            y, ht, d["maximized_v"] = ay, ah, want
+        self.stale.setdefault(d["id"], now)
+        d.update(x=x, y=y, width=w, height=ht)
+        d["buffer_rect"] = _rect(x, y, w, ht)
+        if not d["maximized_h"] and not d["maximized_v"]:
+            self.saved[d["id"]] = (x, y, w, ht)
+
     def m_SetState(self, m, wid, state, action):
         d = self.find(wid)
         if action not in ("add", "remove", "toggle"):
             raise DBusError(IFACE + ".InvalidArgs",
                             "action must be add|remove|toggle, got %s" % action)
-        key = {"FULLSCREEN": "fullscreen", "MAXIMIZED_HORZ": "maximized_h",
-               "MAXIMIZED_VERT": "maximized_v", "HIDDEN": "minimized",
+        if state in MAX_AXES:
+            # a toggle of the pair goes the way the horizontal flag says,
+            # which is Mutter's rule for two atoms of one _NET_WM_STATE
+            # message (bridge v3; v1/v2 asked for "both are already set")
+            cur = d["maximized_v"] if state == "MAXIMIZED_VERT" \
+                else d["maximized_h"]
+            self._maximize(d, state,
+                           {"add": True, "remove": False}.get(action, not cur))
+            return "b", (True,)
+        key = {"FULLSCREEN": "fullscreen", "HIDDEN": "minimized",
                "ABOVE": "above", "STICKY": "on_all_workspaces",
                "DEMANDS_ATTENTION": "urgent"}.get(state)
         if key is None:
@@ -639,6 +698,46 @@ class BackendTests(_Base):
                           (XTERM, "FULLSCREEN", "toggle")])
         self.b.set_state(XTERM, "STICKY", 1)
         self.assertEqual(self.b.find(XTERM).desktop, -1)
+
+    def test_set_state_maximize_pair(self):
+        """MAXIMIZED is one Mutter call with both direction bits, and the
+        backend that has to use it is the one that names it: the base class
+        answers None, so KWin and sway -- which settle each axis before they
+        answer -- go on sending the axes separately."""
+        self.assertEqual(self.b.maximize_pair_state(), "MAXIMIZED")
+        self.assertIsNone(WindowBackend.maximize_pair_state(self.b))
+        d = self.bridge.find(XTERM)
+        start = (d["x"], d["y"], d["width"], d["height"])
+        self.b.set_state(XTERM, "MAXIMIZED", 1)
+        self.assertEqual((d["maximized_h"], d["maximized_v"]), (True, True))
+        self.assertEqual((d["x"], d["y"], d["width"], d["height"]), WORK_AREA)
+        self.b.set_state(XTERM, "MAXIMIZED", 0)
+        self.assertEqual((d["maximized_h"], d["maximized_v"]), (False, False))
+        self.assertEqual((d["x"], d["y"], d["width"], d["height"]), start)
+
+    def test_state_steps_groups_only_the_maximize_pair(self):
+        """backend.state_steps() is where every command that can be handed
+        both axes at once has to group them -- `wwmctl -b` today, `wdotool
+        windowstate` once it honours more than one option. Nothing else is
+        grouped, and a session-less caller gets its names back untouched."""
+        pair = ["MAXIMIZED_VERT", "MAXIMIZED_HORZ"]
+        self.assertEqual(state_steps(self.b, pair),
+                         [("MAXIMIZED", ["MAXIMIZED_VERT", "MAXIMIZED_HORZ"])])
+        self.assertEqual(state_steps(self.b, ["maximized_horz", "MAXIMIZED_VERT"]),
+                         [("MAXIMIZED", ["MAXIMIZED_HORZ", "MAXIMIZED_VERT"])])
+        self.assertEqual(
+            state_steps(self.b, ["MAXIMIZED_VERT", "MAXIMIZED_HORZ", "ABOVE"]),
+            [("MAXIMIZED", ["MAXIMIZED_VERT", "MAXIMIZED_HORZ"]),
+             ("ABOVE", ["ABOVE"])])
+        for names in (["MAXIMIZED_VERT"], ["MAXIMIZED_VERT", "FULLSCREEN"],
+                      ["MAXIMIZED_VERT", "MAXIMIZED_VERT"],
+                      ["MAXIMIZED_VERT", "ABOVE", "MAXIMIZED_HORZ"]):
+            self.assertEqual(state_steps(self.b, names),
+                             [(n, [n]) for n in names], names)
+        # a backend that settles each axis itself, and no backend at all
+        self.assertEqual(state_steps(WindowBackend(), pair),
+                         [(n, [n]) for n in pair])
+        self.assertEqual(state_steps(None, pair), [(n, [n]) for n in pair])
 
     def test_set_state_cosmetic_warns_and_succeeds(self):
         for state in ("SKIP_TASKBAR", "SKIP_PAGER", "MODAL"):
@@ -1431,9 +1530,12 @@ class ShippedFilesTests(unittest.TestCase):
         with open(os.path.join(self.EXT, "metadata.json")) as f:
             meta = _json.load(f)
         self.assertEqual(meta["version"], MockBridge.VERSION)
-        # the client refuses to hang on anything older
-        self.assertEqual(backend_gnome.GnomeBackend._SELECT_MIN_VERSION,
-                         MockBridge.VERSION)
+        # The client refuses to hang on a picker older than v2. It is not
+        # the current version: a bridge is bumped for any change to what a
+        # method does (v3: SetState folds the maximize pair), and only a
+        # change a client cannot live without moves a minimum.
+        self.assertLessEqual(backend_gnome.GnomeBackend._SELECT_MIN_VERSION,
+                             MockBridge.VERSION)
         self.assertIn("const SELECT_MAX_MS = %d;" % MockBridge.SELECT_MAX_MS, js)
 
     def test_a_selection_may_not_hold_the_grab_back_to_back(self):
