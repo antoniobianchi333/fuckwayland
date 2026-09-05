@@ -30,6 +30,7 @@ line to stderr, silence for a reader that left, and never a traceback.
 
 import io
 import os
+import pathlib
 import signal
 import subprocess
 import sys
@@ -205,11 +206,25 @@ class ControlC(NoTracebackEver):
         p = subprocess.Popen([sys.executable, "-m", "wdotool", "sleep", "5"],
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              env=child_env(), text=True)
-        deadline = time.time() + 10
-        while time.time() < deadline:            # let it reach the sleep
-            time.sleep(0.2)
-            if p.poll() is None:
+        # Wait for the child to really be in the sleep, rather than for a
+        # fixed moment: the signal handler is installed late, and a signal
+        # that arrives during the imports is a different test. The kernel
+        # knows -- a process inside time.sleep parks in hrtimer_nanosleep.
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if p.poll() is not None:             # died on its own: let the
+                break                            # assertions below say so
+            try:
+                if "nanosleep" in pathlib.Path(
+                        "/proc/%d/wchan" % p.pid).read_text():
+                    break
+            except OSError:                      # no procfs, or it just went
+                time.sleep(1.0)                  # away: fall back to waiting
                 break
+            time.sleep(0.02)
+        else:
+            p.kill()
+            self.fail("the child never reached the sleep")
         p.send_signal(signal.SIGINT)
         out, err = p.communicate(timeout=30)
         self.check("wdotool", err, p.returncode)
