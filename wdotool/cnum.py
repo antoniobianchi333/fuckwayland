@@ -21,8 +21,7 @@ _ATOI_RE = re.compile(_SPACE + r"([+-]?[0-9]+)")
 # strtol/strtoul with base 0: 0x-hex, then C octal, then decimal. The decimal
 # arm cannot start with 0 -- the octal arm has already taken that -- so it is
 # spelled [1-9] and no Unicode digit can reach int().
-_STRTOL_RE = re.compile(
-    _SPACE + r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)")
+_STRTOL_RE = re.compile(_SPACE + r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)")
 _ATOF_RE = re.compile(
     _SPACE + r"[+-]?(?:0[xX][0-9a-fA-F]*(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?[0-9]+)?"
     r"|(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"

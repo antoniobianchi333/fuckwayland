@@ -111,8 +111,7 @@ def decide(text: str, group: int, mode: str) -> bool:
 # fetching
 
 
-def fetch(timeout: float = 2.0, mods_wait: float = 0.08,
-          keymap: str | None = None, group=None) -> Snapshot:
+def fetch(timeout: float = 2.0, mods_wait: float = 0.08, keymap: str | None = None, group=None) -> Snapshot:
     """Read the active keymap + group. Raises XkbError, never hangs.
 
     `mods_wait` is how long to keep dispatching after the keymap arrives in
@@ -655,10 +654,7 @@ DEAD_DOUBLE = {
 
 # Characters that are keys, not text. xdotool's `type` sends these through the
 # named key, exactly as the fixed US table does.
-_CONTROL_KEYSYMS = {
-    "\n": 0xFF0D, "\r": 0xFF0D, "\t": 0xFF09,
-    "\b": 0xFF08, "\x1b": 0xFF1B, "\x7f": 0xFFFF,
-}
+_CONTROL_KEYSYMS = {"\n": 0xFF0D, "\r": 0xFF0D, "\t": 0xFF09, "\b": 0xFF08, "\x1b": 0xFF1B, "\x7f": 0xFFFF}
 
 
 class ReverseMap:

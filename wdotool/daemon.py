@@ -39,8 +39,7 @@ from wdotool.ctx import CmdError
 
 # Per-euid log path: /tmp is shared, and a root-owned log must not break (or
 # leak into) another user's daemon spawn.
-LOG_PATH = ("/tmp/wdotool-daemon.log" if os.geteuid() == 0
-            else f"/tmp/wdotool-daemon-{os.geteuid()}.log")
+LOG_PATH = "/tmp/wdotool-daemon.log" if os.geteuid() == 0 else f"/tmp/wdotool-daemon-{os.geteuid()}.log"
 FALLBACK_GEOMETRY = (0, 0, 1920, 1080)  # (min_x, min_y, width, height)
 
 # Per-request sanity bounds: one malicious/buggy request must not hold the
@@ -798,8 +797,7 @@ class _Daemon:
             except vkbd.VkbdError as e:
                 # Forced and impossible: say exactly what was asked for and
                 # what refused it, and do not quietly type through uinput.
-                raise RuntimeError(
-                    f"--vkbd on: cannot use zwp_virtual_keyboard_v1: {e}") from None
+                raise RuntimeError(f"--vkbd on: cannot use zwp_virtual_keyboard_v1: {e}") from None
         # auto: the kernel device unless it cannot be used at all.
         if self._vk is not None and self.down and self._down_virtual:
             # Never change sinks under a held key: a key held on the virtual
@@ -829,8 +827,7 @@ class _Daemon:
             # have to fix. The protocol's reason goes to the daemon log.
             # Its own tag: sharing one with the notice below meant a daemon
             # that started before the compositor never said it had switched.
-            self._xkb_say("vkbd-none",
-                          f"no virtual-keyboard protocol either: {e}")
+            self._xkb_say("vkbd-none", f"no virtual-keyboard protocol either: {e}")
             raise RuntimeError(why) from None
         self._xkb_say("vkbd", VKBD_CHOSE_WARNING % why, warnings)
         return dev, True
@@ -984,9 +981,7 @@ class _Daemon:
             except vptr.VptrError as e:
                 # Forced and impossible: say exactly what was asked for and
                 # what refused it, and do not quietly click through uinput.
-                raise RuntimeError(
-                    f"--vkbd on: cannot use zwlr_virtual_pointer_v1: {e}"
-                ) from None
+                raise RuntimeError(f"--vkbd on: cannot use zwlr_virtual_pointer_v1: {e}") from None
         # auto: the kernel devices unless they cannot be used at all.
         if self._vp is not None and self.btns and self._btns_virtual:
             # Never change sinks under a held button, for the same reason as
@@ -1013,8 +1008,7 @@ class _Daemon:
             # No kernel device and no protocol: the error the user gets is
             # the kernel device's, unchanged -- that is still the thing they
             # have to fix. The protocol's reason goes to the daemon log.
-            self._xkb_say("vptr-none",
-                          f"no virtual-pointer protocol either: {e}")
+            self._xkb_say("vptr-none", f"no virtual-pointer protocol either: {e}")
             raise RuntimeError(why) from None
         self._xkb_say("vptr", VPTR_CHOSE_WARNING % why, warnings)
         return vp, True
@@ -1365,8 +1359,7 @@ class _Daemon:
                 # precisely the one that types the wrong characters, and it
                 # is the bypass that takes it (B1). Once per layout state,
                 # so a switch is announced again.
-                name = (rmap.name if rmap is not None
-                        else xkbmap.group_name(snap.text, snap.group))
+                name = rmap.name if rmap is not None else xkbmap.group_name(snap.text, snap.group)
                 self._xkb_say_group(
                     key,
                     "the compositor does not say which keyboard layout is "
@@ -2040,9 +2033,8 @@ class DaemonClient:
                 import wdotool as _pkg
                 # The parent of the package directory; for a zipapp this is
                 # the .pyz itself, which is a valid PYTHONPATH entry too.
-                parent = os.path.dirname(
-                    os.path.dirname(os.path.abspath(_pkg.__file__)))
-            except Exception:  # noqa: BLE001 -- diagnostics only
+                parent = os.path.dirname(os.path.dirname(os.path.abspath(_pkg.__file__)))
+            except Exception:  # diagnostics only
                 parent = ""
             if parent:
                 menv["PYTHONPATH"] = parent
@@ -2074,9 +2066,7 @@ class DaemonClient:
                 # O_NOFOLLOW: never append through a planted symlink in
                 # /tmp -- and never into a regular file somebody else made
                 # there either (the log carries session diagnostics).
-                log = os.open(LOG_PATH,
-                              os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                              0o644)
+                log = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o644)
                 if os.fstat(log).st_uid != os.geteuid():
                     os.close(log)
                     raise OSError("log file is not ours")
@@ -2178,8 +2168,7 @@ class DaemonClient:
     # `vkbd_mode` is --vkbd, which selects the pointer path as well as the
     # keyboard one; sent only when the flag was given, so an absent flag
     # leaves the request byte-identical to what an older client sent.
-    def mousemove_abs(self, x: int, y: int, clearmods: bool = False,
-                      vkbd_mode: str | None = None):
+    def mousemove_abs(self, x: int, y: int, clearmods: bool = False, vkbd_mode: str | None = None):
         self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods, **self._modes(None, vkbd_mode))
 
     def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False, vkbd_mode: str | None = None):

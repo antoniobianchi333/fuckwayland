@@ -167,9 +167,7 @@ def cmd_search(ctx, args):
             # re.compile can also raise RecursionError (deeply nested groups)
             # and OverflowError (huge repetition counts); C regcomp fails
             # gracefully on those, so treat them all as a bad regex.
-            sys.stderr.write(
-                "Failed to compile regex: '%s'; error %s\n" % (pattern, e)
-            )
+            sys.stderr.write("Failed to compile regex: '%s'; error %s\n" % (pattern, e))
             rx_broken = True
 
     def matches(w):
@@ -197,8 +195,7 @@ def cmd_search(ctx, args):
                 # "myinst" like it is under X11 (B4). Native Wayland
                 # toplevels have no instance, so they keep matching their
                 # app_id and --class/--classname stay equivalent there.
-                conds.append(
-                    rx.search(w.instance or w.class_ or "") is not None)
+                conds.append(rx.search(w.instance or w.class_ or "") is not None)
             if want_role:
                 # Window roles do not exist on Wayland; match against ""
                 # exactly like libxdo does for a window with no role set.
@@ -343,10 +340,7 @@ def cmd_getwindowgeometry(ctx, args):
         "--prefix STR - use prefix for shell variables names (max 16 chars) \n"
         "%s" % (cmd, _SEE_STACK)
     )
-    parsed = _opts(
-        cmd, args, "h",
-        [("help", False), ("shell", False), ("prefix", True)], usage,
-    )
+    parsed = _opts(cmd, args, "h", [("help", False), ("shell", False), ("prefix", True)], usage)
     if parsed is None:
         return len(args)
     opts, nopts = parsed
@@ -539,8 +533,7 @@ def cmd_windowquit(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowquit")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
     # Wayland has only one way to close a window: a polite close request.
-    return _simple_action(ctx, args, cmd, usage,
-                          lambda c, wid: c.backend().close(wid))
+    return _simple_action(ctx, args, cmd, usage, lambda c, wid: c.backend().close(wid))
 
 
 def cmd_windowkill(ctx, args):
@@ -590,10 +583,7 @@ def cmd_windowmove(ctx, args):
         "coordinate will be used. This is useful for moving the window along\n"
         "only one axis.\n" % cmd
     )
-    parsed = _opts(
-        cmd, args, "h",
-        [("help", False), ("sync", False), ("relative", False)], usage,
-    )
+    parsed = _opts(cmd, args, "h", [("help", False), ("sync", False), ("relative", False)], usage)
     if parsed is None:
         return len(args)
     opts, nopts = parsed

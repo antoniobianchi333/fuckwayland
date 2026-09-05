@@ -457,7 +457,7 @@ def cmd_mousemove(ctx, args):
         if wid is None:
             # `mousemove restore` needs this; the move itself does not, so a
             # compositor that cannot be asked must not fail it (_pointer_opt).
-            ctx._last_mouse = _pointer_opt(ctx)  # noqa: SLF001 — restore state
+            ctx._last_mouse = _pointer_opt(ctx)  # restore state
         tx, ty = x, y
         if opts.get("polar"):
             if wid is not None:
