@@ -609,17 +609,19 @@ tools:
 `gnome-terminal` window on the three-head layout, with a screenshot of each looked at. The
 same script was then run on the cloud-image `noble-gnome`.
 
-Everything the guide tells you to type worked and produced what it says it produces: `sudo
-apt install git python3-venv` (7 new packages, `python3.12-venv` among them), `git clone`,
+This run was made on the 0.2 tree, so the two numbers below that belong to a release rather
+than to the image are 0.2's; both are re-measured on the shipping tree under *The package on a
+default install*, further down. Everything the guide tells you to type worked and produced what
+it says it produces: `sudo apt install git python3-venv` (7 new packages, `python3.12-venv` among them), `git clone`,
 `python3 -m venv --system-site-packages`, `pip install -e .` (`Successfully installed
 fuckwayland-0.2.0`), the six `/usr/local/bin` symlinks, `warandr.desktop`, `sh
 gnome/install-bridge.sh` printing exactly the documented "log out and back in" text and exit
 1, one session restart, `sudo sh gnome/install-bridge.sh --udev` → `uinput usable by test:
 yes (logind ACL)`. After the relogin `--check` said `loaded in shell: yes (state 1)` /
-`org.fuckwayland.Bridge owned: yes` / `bridge version: 2`; the extension's own
-`metadata.json` lists shell versions `45`–`50`, so **46 is inside its declared range and 24.04
-needs no change to it**. The six version strings printed exactly what *Check it worked* says,
-`wxrandr --print-backend --verbose` said `mutter`, typing landed in the terminal, the
+`org.fuckwayland.Bridge owned: yes` / `bridge version: 2` (the maximize pair has made it 3
+since); the extension's own `metadata.json` lists shell versions `45`–`50`, so **46 is inside its declared range and 24.04
+needs no change to it**. The six version strings printed exactly what *Check it worked* said
+then, `wxrandr --print-backend --verbose` said `mutter`, typing landed in the terminal, the
 `warandr` GUI opened with `backend: mutter (Wayland)`, a monitor dragged in it and applied
 with a click moved the real one (`Virtual-3` from `1920,1080` to `0,1080`), `warandr --save`
 wrote an arandr-compatible script, and that script bound to `<Ctrl><Super>F7` and pressed
@@ -736,6 +738,33 @@ infrastructure branch deliberately does not touch, and all three want scheduling
    lock screen, so unlocking alone will not be enough`. With a copy on disk the lock message
    is unchanged, and the GDM greeter still gets its own.
 
+### The package on a default install
+
+The runs above installed the tools the way a developer does, from a clone with pip. The way a
+reader does is the `.deb`, and that was measured separately, on a fresh `resolute-gnome-iso`
+instance with two heads at 1280x800. Baseline: no tool on `PATH`, `/dev/uinput`
+`crw------- root root`, no extension, no rule.
+
+`apt-get install -y ./fuckwayland_0.3.0_all.deb` → **rc 0**, and the package's own note about
+the one logout, the udev rule and the X11 originals. Straight away, with nothing else typed:
+`/dev/uinput` is `crw-rw----+` with `user:test:rw-` in its ACL and no reboot, and the six tools
+answer exactly what the README's *Check it worked* block says, `Server reports RandR version
+1.6` included. Before the relogin the window commands say the bridge is not running, which is
+what the note promises.
+
+One logout, taken as a reboot. `gnome-extensions info fuckwayland-bridge@fuckwayland` then says
+**Version: 3, Enabled: Yes, State: ACTIVE**, enabled by the package with nothing typed, and the
+bridge's own `GetVersion` over the session bus answers `(uint32 3,)`. `wxrandr --print-backend
+--verbose` prints the six lines of the README block verbatim (`mutter` / `session: wayland` /
+`chosen by: detection` / `compositor: Mutter` / `protocol: org.gnome.Mutter.DisplayConfig
+(D-Bus)` / `available: yes`); with a `gnome-text-editor` window open, `wwmctl -l -G -p -x` lists
+it with geometry, pid and class, and `wwmctl -m` ends `Window manager's "showing the desktop"
+mode: OFF` (with no window open at all that last line is `N/A`, which is the honest answer and
+not a defect).
+
+`apt-get remove -y fuckwayland` → rc 0: `wdotool` is gone from `PATH`, `/dev/uinput` is back to
+`crw------- root root` with no ACL, and the session in progress is still active.
+
 Adding a flavor: copy a yaml, change `hostname`, `# vmctl-base:`, `# vmctl-desktop:` and
 `/etc/vmctl-build.env` (`DESKTOP`, `DESKTOP_PKG`, `EXTRA_PKGS`). A new *desktop* additionally
 needs a branch in `build-image.sh`, an entry in `vmctl`'s `DESKTOPS` table (session kind, logind
@@ -785,14 +814,19 @@ order, using that desktop's own tools:
 Roughly 40 s for GNOME; a desktop that starts more slowly takes correspondingly longer. The VM
 is left running so a failure can be inspected — `vmctl stop <flavor>-t` when done.
 
-## What the six tools do on each flavor
+## What the tools do on each flavor
 
 The point of the extra flavors is to see where `wxrandr`, `wwmctl`, `wdotool`, `wxprop`
-and `warandr` stand outside GNOME. This is the measured state, honest gaps included: the
+and `warandr` stand outside GNOME. `wmirror` has no column here because it has no
+per-flavor answer to give: it is wlroots only by construction, `--check` says so on
+everything else, and *Where it does not exist* in
+[docs/WMIRROR.md](../docs/WMIRROR.md#where-it-does-not-exist) is the whole of it.
+
+This is the measured state, honest gaps included: the
 branch's own checkout copied into each guest and run as `python3 -m <tool>` **inside the
 session** (`vmctl user`), plus a second round as root over plain `vmctl ssh` with an empty
 environment (`env -i`). Every message below is verbatim. None of it is a rig defect —
-`selftest.sh` passes on all seven flavors. On the **X11 flavors** what is measured is the
+`selftest.sh` passes on all nine. On the **X11 flavors** what is measured is the
 passthrough: on a plain X11 session the tools hand over to the real `xdotool`/`wmctrl`/`xprop`/
 `xrandr` (repo README, *X11*), all four of which the goldens carry, so there they behave as the
 originals do.
@@ -813,7 +847,7 @@ Install the bridge extension on the GNOME flavors (`gnome/install-bridge.sh`, th
 session out and in) and both of them pass every cell of this table, on 46 and on 50 —
 `wwmctl -l/-d/-m`, every `wdotool` window command and `wxprop -id` on native windows, as
 `test` and as root. `sudo gnome/install-bridge.sh --udev` is what lets the desktop user
-open `/dev/uinput`; without it every injection command has to run as root, on all seven.
+open `/dev/uinput`; without it every injection command has to run as root, on all nine.
 
 **GNOME** — `wxrandr` prints the real listing through mutter's DisplayConfig
 (`Screen 0: minimum 16 x 16, current 5760 x 1080, maximum 32767 x 32767`,
@@ -959,7 +993,7 @@ rc 0. `windowmove` and `windowsize` on a *tiled* window warn and exit 0 without 
 (`swaymsg floating enable` first, and both land exactly); `windowraise` on a tiled window and
 `windowlower` on any window warn and do nothing. `/dev/uinput` on this golden is root-only —
 the udev rule that hands the seat user an ACL lives under `gnome/` but is not GNOME-specific
-(`sudo sh gnome/install-bridge.sh --udev` installs it on any of the seven).
+(`sudo sh gnome/install-bridge.sh --udev` installs it on any of the nine).
 
 ## The QEMU / D-Bus facts this rig relies on
 

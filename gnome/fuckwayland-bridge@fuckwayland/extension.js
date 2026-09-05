@@ -1,6 +1,8 @@
 // fuckwayland-bridge — GNOME Shell extension that exports Mutter's window,
 // workspace and monitor facts (and the matching actions) over D-Bus so that
-// wdotool / wwmctl / wxprop / wxrandr can drive a GNOME Wayland session.
+// wdotool / wwmctl / wxprop can drive a GNOME Wayland session.  wxrandr and
+// warandr are not clients of it: they go straight to Mutter's own
+// org.gnome.Mutter.DisplayConfig, which needs no extension.
 //
 // Why: GNOME has no window-management protocol, org.gnome.Shell.Eval is
 // disabled outside "unsafe mode", org.gnome.Shell.Introspect is read-only and

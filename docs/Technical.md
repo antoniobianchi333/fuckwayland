@@ -28,19 +28,17 @@ system GTK 3 bindings that `warandr` imports at run time.
 | `wmirror/` | `wmirror` | nothing — there is no X11 original | the external `wl-mirror`, whose lifetime it owns |
 | `fwcommon/` | — | — | shared by all six |
 
-`fwcommon/` holds the four modules every tool needs and no tool owns: `session.py`,
-`passthrough.py`, `dbus_mini.py`, `wayland_mini.py`. It is a package rather than a
-corner of `wdotool` because those four are exactly what the *display* tools use of
-it: they find a session, they talk D-Bus and Wayland, and they never type a key,
-never open a window backend and never start the input daemon. One edge is still
-attached: `session` raises `wdotool.ctx.CmdError`, the exception class every command
-already catches, so `wdotool/ctx.py` is the one module outside the package that any
-of these four names.
-
-`fwcommon/` holds what more than one tool needs and nothing else does: the session
-discovery, the X11 handover, the two wire clients, `errors.py` for the exception every
-tool raises, `stdio.py` for the exit-status rule and `procs.py` for detached children.
-It imports nothing outside the standard library.
+`fwcommon/` holds what more than one tool needs and nothing else does, in seven
+modules: `session.py` (which session is this, and where are its sockets), `passthrough.py`
+(the X11 handover), `dbus_mini.py` and `wayland_mini.py` (the two wire clients),
+`errors.py` (`CmdError`, the exception every command in the tree raises and catches),
+`stdio.py` (the exit-status rule for an output that never reached its reader) and
+`procs.py` (detached children). It is a package rather than a corner of `wdotool`
+because that list is exactly what the *display* tools use of it: they find a session,
+they talk D-Bus and Wayland, and they never type a key, never open a window backend
+and never start the input daemon. It imports nothing outside the standard library, and
+nothing in it imports anything of `wdotool`: the package is closed, which is what lets
+a zipapp of a display tool carry it and nothing else.
 
 `wdotool/` is a second shared layer, but only for the two window tools: `wwmctl` and
 `wxprop` drive its window backends and its X11 wire client (`wdotool/x11_mini.py`).
@@ -70,9 +68,9 @@ an original's name. What each bundle contains:
 | `dist/wdotool` | `fwcommon`, `wdotool` | the tool itself |
 | `dist/wwmctl` | `fwcommon`, `wdotool`, `wwmctl` | the window backends and `x11_mini` live in `wdotool` |
 | `dist/wxprop` | `fwcommon`, `wdotool`, `wxprop` | same |
-| `dist/wxrandr` | `fwcommon`, `wdotool`, `wxrandr` | `ctx.py`, `stdio.py`, `procs.py` |
-| `dist/warandr` | `fwcommon`, `wdotool`, `wxrandr`, `warandr` | on Wayland it runs the same interpreter with `-m wxrandr`, `PYTHONPATH` pointing at the zipapp itself |
-| `dist/wmirror` | `fwcommon`, `wdotool`, `wxrandr`, `wmirror` | it reads the layout through wxrandr's own wlr client, and the detached supervisor is this same zipapp re-entered by fork |
+| `dist/wxrandr` | `fwcommon`, `wxrandr` | the tool itself: nothing of `wdotool` is reached any more |
+| `dist/warandr` | `fwcommon`, `wxrandr`, `warandr` | on Wayland it runs the same interpreter with `-m wxrandr`, `PYTHONPATH` pointing at the zipapp itself |
+| `dist/wmirror` | `fwcommon`, `wxrandr`, `wmirror` | it reads the layout through wxrandr's own wlr client, and the detached supervisor is this same zipapp re-entered by fork |
 
 zipapp copies whole package directories, so a bundle that needs three files of
 `wdotool` carries all of it. Do not state a byte size for any of these here: the
@@ -114,8 +112,6 @@ is the *greeter's* and its cookie authorises nothing on the user's X server. uid
 never an answer from either source: `sudo -i` run *by* root leaves `SUDO_UID=0`
 behind, and believing it sends the search into `/root`.
 
-The rest of this section is the handover contract, verbatim from the design
-it was written under.
 ### The X11 handover (`fwcommon/passthrough.py`)
 
 We are installed **over** the originals, so on a plain X11 session (Xfce, i3,
@@ -636,9 +632,9 @@ own "the exit-time flush of stdout failed".
 
 ## 8. The environment
 
-Thirteen variables change behaviour at run time. The first six are documented in the
-README and the tool contracts; the rest are here because this is the only place they
-are written down.
+Seventeen rows below, and rather more names than rows, because some of them group.
+All but seven are also written down in the README, in a tool contract or in
+`gnome/README.md`; the seven in **bold** are written down only here.
 
 | variable | read by | effect |
 |---|---|---|
@@ -646,7 +642,7 @@ are written down.
 | `WDOTOOL_REAL_XDOTOOL` and friends | `passthrough` | where the original is. Also `WWMCTL_REAL_WMCTRL`, `WXPROP_REAL_XPROP`, `WXRANDR_REAL_XRANDR`. Set but unusable is an error naming the variable, never a silent fallback |
 | `WDOTOOL_LAYOUT`, `WDOTOOL_XKB_GROUP`, `WDOTOOL_XKB_KEYMAP` | the daemon | the character table, the layout group, a keymap from a file |
 | `WDOTOOL_VKBD` | the daemon | `auto` / `on` / `off`, for both injection halves |
-| `WDOTOOL_SYNC_TIMEOUT`, `WDOTOOL_REL_MODE`, `WDOTOOL_SELECT_TIMEOUT` | `wdotool` | the `--sync` deadline (`0` waits for ever), `abs`/`rel` for relative pointer moves, and how long a window picker waits |
+| `WDOTOOL_SYNC_TIMEOUT`, `WDOTOOL_REL_MODE`, `WDOTOOL_SELECT_TIMEOUT` | `wdotool` | the `--sync` deadline (`0` waits for ever), `abs`/`rel` for relative pointer moves, and how long KWin's window picker waits (2 minutes by default; GNOME's picker is the bridge's own, capped at 30 s inside the extension, and reads no variable) |
 | `WDOTOOL_BACKEND` | `backend_detect` | force a window backend, ahead of detection |
 | `WXRANDR_BACKEND`, `WXRANDR_PERSIST` | `wxrandr` | force a display backend (`--backend` beats it); make `--persistent` the default |
 | `WWMCTL_WMCTRL_GENERATION` | `wwmctl` | `1.07` or `git`: which upstream `--help` text to print, instead of consulting the installed oracle |
@@ -655,8 +651,8 @@ are written down.
 | **`WXPROP_ARGV0`** | `wxprop` | the program name in usage and error lines, overriding `argv[0]`. Real xprop prints the name it was invoked under, and `python -m wxprop` has none to print |
 | **`WDOTOOL_UINPUT_PATH`** | `wdotool.uinput` | the device node to open, default `/dev/uinput` |
 | **`WDOTOOL_FAKE_UINPUT=1`** | `wdotool.uinput` | skip the ioctls, so a regular file can stand in for the device. This is what lets the daemon's event stream be asserted byte for byte in a container that has no `/dev/uinput` |
-| **`WDOTOOL_NO_KEYSTATE=1`** | the daemon | force the `keystate.py` path (the foreign-modifier diagnostic) even where the `/dev/input` read would be skipped |
-| **`WDOTOOL_GNOME_AUTOLOAD=1`** | `backend_gnome` | opt in to one `org.gnome.Shell.Eval` that tries to load the installed extension. Eval is a privileged interface and this is off by default |
+| `WDOTOOL_NO_KEYSTATE=1` | the daemon | force the `keystate.py` path (the foreign-modifier diagnostic) even where the `/dev/input` read would be skipped |
+| `WDOTOOL_GNOME_AUTOLOAD=1` | `backend_gnome` | opt in to one `org.gnome.Shell.Eval` that tries to load the installed extension. Eval is a privileged interface and this is off by default |
 | **`XPROPFORMATS`** | `wxprop.cli` | a format file, exactly as real xprop's `-fs` and `$XPROPFORMATS` do |
 | **`DEBUG`** | `wdotool` | set to anything: print the traceback instead of the one-line error. Every `main()` catches broadly, which is right for users and wrong for whoever is debugging |
 
@@ -745,6 +741,7 @@ the README's support matrix is a summary of.
 
 [vm/SETUP.md](../vm/SETUP.md) is how to stand the rig up on a machine of your own, and
 `vm/setup-host.sh` does the mechanical part of it.
+
 ### The no-dialog measurement
 
 The README's [no authorization dialog](../README.md#no-authorization-dialog) is a
@@ -759,6 +756,7 @@ did not open, and not one portal call from anything of ours.** The same rig poin
 a real portal client and at `pkexec` produced both dialogs on every image, so it does
 see one when there is one. `tests/test_no_portal.py` is the static half of the same
 guarantee, and it runs everywhere.
+
 ## 11. Installing: what each route costs
 
 The [README](../README.md#install) is the guide, and this is what stands behind it:
@@ -782,7 +780,11 @@ the symlinks over the originals stay the user's choice.
 
 `sudo apt remove fuckwayland` takes the extension, the udev rule and the six commands
 with it, `/dev/uinput` goes back to `root:root 0600`, and the session in progress
-keeps running. `sudo apt purge fuckwayland` drops the last of its bookkeeping.
+keeps running. `sudo apt purge fuckwayland` drops the last of its bookkeeping. All of
+that paragraph and the one above it was run on a default Ubuntu 26.04 desktop and
+written down command by command in
+[vm/README.md § The package on a default
+install](../vm/README.md#the-package-on-a-default-install).
 
 Alongside a pip install of the same source, the two do not fight. The
 `/usr/local/bin` symlinks the pip route makes keep winning for the six names, because
@@ -881,8 +883,10 @@ real default install of either release (no pip, no venv, no pipx, no `git`, no
 `x11-xserver-utils` are all present, so `warandr`'s GUI comes up with nothing extra
 installed). All six tools then behaved **identically to the matching cloud image
 flavor**, as the desktop user and as root over ssh with an empty environment. The
-24.04 run corrected two sentences of the guide, both about the *optional*
-`--no-build-isolation` line and the bare `python3 -m venv` error.
+24.04 run corrected three sentences of the guide: the *optional*
+`--no-build-isolation` line, the bare `python3 -m venv` error, and the
+`wxrandr --print-backend --verbose` block in *Check it worked*, which had been one
+line short of what the tool prints since the day it was written.
 
 Two things about a default install are worth knowing before trusting a script on one,
 and neither is visible on the cloud image flavors, which switch both off:

@@ -64,7 +64,7 @@ Wayland forces a few honest approximations:
 | `search --role` | roles don't exist on Wayland; matches against empty string |
 | `windowraise`/`lower` | floating windows only (tiling has no z-order) |
 | `set_window`, `windowreparent`, viewport/desktop-count setters | warn and succeed (cosmetic on Wayland; scripts keep running) |
-| `behave`, `behave_screen_edge`, `windowmap --sync` waits on X events | unsupported, fail cleanly |
+| `behave`, `behave_screen_edge` | both wait on X events that do not exist here, so both are unsupported and fail cleanly. Every other `--sync`, `windowmap`'s included, is implemented and bounded: see [`--sync` waits are bounded](#--sync-waits-are-bounded) |
 | `selectwindow` | click-to-select on GNOME (a bridge grab, needs bridge v2 or newer) and on KDE (KWin's own picker); Escape cancels with rc 1, as does a second picker or a shell that is already modal (the GNOME overview, a menu). sway and i3 have no picker in their IPC, so there the wait ends on the next focus *change* and re-selecting the focused window never returns |
 
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
@@ -690,8 +690,8 @@ capability gaps in a detected backend: raise CmdError.
 
 ## The input daemon
 
-`daemon.py` implements this client API; every one of the six tools that
-injects anything goes through it.
+`daemon.py` implements this client API. `wdotool` is the only tool here that injects
+anything, and every command of it that does goes through the daemon.
 
 ```python
 class DaemonClient:

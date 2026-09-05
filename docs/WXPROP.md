@@ -3,8 +3,9 @@
 Drop-in `xprop` clone for Wayland: works on **XWayland windows** (real X properties,
 byte-parity with real xprop) and **native Wayland windows** (a synthesized property
 set printed in xprop's exact formats, so `xprop -id N WM_CLASS`-style script parsing
-just works). Same house rules as the rest of the tree (Technical.md): pure-stdlib
-Python, nix-only toolchain, byte-parity oracles.
+just works). Same house rules as the rest of the tree
+([Technical.md](Technical.md)): pure-stdlib Python, no third-party dependency,
+byte-parity oracles.
 
 ## Planes
 
@@ -19,8 +20,9 @@ Python, nix-only toolchain, byte-parity oracles.
   _NET_WM_STATE (fullscreen/hidden/sticky as applicable), WM_CLIENT_MACHINE,
   _NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_NORMAL. `-len`/`-notype`/format
   args apply identically. `-set`/`-remove` on a native window: one clear error line,
-  exit 1 (can't fake a property store). `-spy` on native: sway IPC window-event
-  subscription, reprint a synthesized property when its source changes.
+  exit 1 (can't fake a property store). `-spy` on native: the backend's own window-event stream
+  (sway IPC, the bridge's `WindowEvent` on GNOME, KWin's), reprinting a synthesized
+  property when its source changes.
 - Window selection: `-id` (0x-hex/decimal), `-name` (exact match on title, then on
   instance/class, dsimple.c's Window_With_Name semantics), `-root` (the X root when X
   is up: real root properties; without X, a synthesized minimal set built around

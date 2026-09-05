@@ -4,6 +4,70 @@ Every claim in this file was measured on the VM rig, or on a real desktop, befor
 was written down. The README keeps one short section per version; this is the long
 form.
 
+## Version 0.3
+
+A subtraction release. Nothing here is a new tool: the same six do the same things,
+with a thousand lines less code behind them, one package shape instead of two, and a
+documentation set that no longer disagrees with itself.
+
+- **`fwcommon/`, a package for what every tool shares.** Session discovery, the X11
+  handover, the D-Bus and Wayland wire clients, the exception every command raises,
+  the exit-status rule for an output that never arrived, and detached children. It
+  imports nothing outside the standard library and nothing of `wdotool`, which is
+  what let the three display tools stop carrying `wdotool` at all: built from the same
+  script on both releases, the `wxrandr` zipapp lost 63% of its bytes, `wmirror` 60%
+  and `warandr` 56%, because a bundle copies whole directories and those three used to
+  drag in the keysym table, the input daemon and every window backend for the sake of
+  three small modules.
+- **Four things written more than once became one each.** C's `atoi` and `strtol`,
+  which had six copies, became `wdotool/cnum.py` with C's semantics kept, including
+  `[0-9]` rather than `\d`, so a Unicode digit gives zero exactly as C does. Three
+  getopt wrappers became one. One pointer hit-test that had been written three times,
+  over three tables of which window layers to look through, became one function over
+  one table. The detach protocol both the gamma holder and the mirror supervisor
+  needed became `fwcommon/procs.py`. Two Wayland-to-RandR transform tables became one.
+  Four display backends grew the same six methods, so a session now holds one backend
+  instead of four handles and six name tests.
+- **Nine bugs in error paths**, all found by challenging the tree rather than by using
+  it: a wedged compositor that hung a sway command for ever, a bus that died mid
+  authentication and came back as a traceback, an unmarshallable KWin argument that
+  did the same, a missing bridge extension reported as a locked screen, `sleep 1e300`,
+  `type --file -` on bytes that are not UTF-8, a keysym past the end of Unicode,
+  `__keymap --group`, and a layout script saved non-atomically. And no tool prints a
+  traceback or exits 120 when its own stdout is gone: the status is 1, or silence for
+  a closed pipe, as the originals do.
+- **One package for Ubuntu 24.04 and 26.04**, `Architecture: all`, built by
+  `scripts/build-deb.sh` into `release/` and committed there, so a clone is already
+  installable. It carries the six tools, the GNOME bridge extension, the udev rule and
+  the `warandr` menu entry. Installed on a default 26.04 desktop it is one command:
+  the rule takes effect at once with no reboot, and after the single logout the
+  package asks for, the bridge is enabled and ACTIVE with nothing typed. `apt remove`
+  puts `/dev/uinput` back to `root:root 0600` with no ACL and leaves the running
+  session alone.
+- **The no-authorization-dialog guarantee, measured.** Six images, every command run
+  three ways, with the session bus, the system bus, the window list and both screens
+  watched throughout: no prompt, no window we did not open, not one portal call. The
+  same rig pointed at a real portal client and at `pkexec` raised both dialogs, so it
+  does see one when there is one. `tests/test_no_portal.py` is the static half.
+- **The rig grew a second default install.** Ubuntu 24.04 off the desktop ISO joins
+  the 26.04 one, both built by the real Ubuntu installer with every question left
+  alone, because "it works out of the box" is a claim about an installed system and a
+  cloud image plus `ubuntu-desktop` measurably is not one. Running the install guide
+  verbatim on the 24.04 one corrected three sentences of it. `vm/SETUP.md` is how to
+  stand the rig up on a machine of your own.
+- **2260 tests**, up from 2085, on a suite that now shares its fakes instead of
+  keeping seven of them: one recorder device, one `env()`, one evdev fake, one
+  headless sway, and one Wayland marshaller library with a server base. Four files
+  that were scripts became test cases, so one broken assertion no longer aborts the
+  whole collection.
+- **The documents were re-read against the code rather than against each other.**
+  The eight of them moved into `docs/`, the images into `media/`, everything about
+  installing collected into one section near the top of the README, and every count,
+  path, option and version string checked against what the tree does today.
+
+Measured on the same rig, now twelve images: ten built from an Ubuntu cloud image
+plus a desktop metapackage, and two installed by the Ubuntu desktop installer itself.
+
 ## Version 0.2
 
 Six tools, and on sway nothing wdotool injects needs a privilege at all.

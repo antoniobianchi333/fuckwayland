@@ -64,9 +64,10 @@ why the extension and the rule are handled the way they are, is
 
 ![one apt command on a default Ubuntu 26.04 desktop, then the six tools answering their version](media/install-demo.gif)
 
-*The whole of it on a default Ubuntu 26.04 desktop, in real time: one `apt` command,
-the package explaining the one manual step, and the six tools answering
-`--version`.*
+*The whole of it on a default Ubuntu 26.04 desktop, in real time: one `apt` command
+(the package copied to the home directory first, so the path typed there is shorter
+than the one above), the package explaining the one manual step, and the six tools
+answering `--version`.*
 
 ### What your desktop needs
 
@@ -570,9 +571,9 @@ stacked and applied, and the layout saved as a script. The window that dives off
 bottom of the screen lands on the monitor that is now below it.*
 
 On top of arandr's menu (Active, Primary, Resolution, Orientation) every output also
-gets Refresh rate, Reflection, Mirror of, and, on Wayland only, Scale (1 to 3, the
-compositor's HiDPI factor). **Overlapping outputs are allowed wherever the desktop
-allows them**, measured: X11, KWin and sway or wlroots all take the geometry *and*
+gets Refresh rate, Reflection, Mirror of, and, on Wayland only, Scale (1, 1.25, 1.5,
+1.75, 2 and 3, the compositor's HiDPI factor). **Overlapping outputs are allowed
+wherever the desktop allows them**, measured: X11, KWin and sway or wlroots all take the geometry *and*
 show the same pixels in the shared region, while GNOME's Mutter refuses any layout
 that is not edge adjacent and warandr reports that refusal in Mutter's name, not its
 own. The status bar says which of the four you are getting at the moment of the drop,
@@ -779,6 +780,20 @@ appears. KWin has no equivalent: it applies and saves at once, and says so.
 
 The long form of each release, with the measurements behind it, is
 [CHANGELOG.md](CHANGELOG.md).
+
+<!-- release-notes: 0.3 -->
+### 0.3
+
+A subtraction release: the same six tools, a thousand lines less code behind them, and
+a documentation set that agrees with itself. What every tool shares moved into one
+package, `fwcommon`, which is what let the three display tools stop carrying `wdotool`
+and shrank their single file builds by well over half. Six copies of C's `atoi`, three
+getopt wrappers, one hit-test written three times, two transform tables and two detach
+protocols became one each. Nine bugs went, all of them in error paths. The tools ship
+as one `Architecture: all` **.deb** for both Ubuntu LTS releases, built into `release/`
+and committed there. The **no authorization dialog** claim stopped being an argument
+and became a measurement on six images. And the rig grew a second default install,
+Ubuntu 24.04 off the desktop ISO beside the 26.04 one.
 
 <!-- release-notes: 0.2 -->
 ### 0.2
