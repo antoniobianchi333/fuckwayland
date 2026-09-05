@@ -173,6 +173,64 @@ sway's per-output workspaces would prevent mirroring was **wrong** — a
 workspace binds where the tiler *places* windows, not which pixels an output
 scans out.
 
+### Why Mutter refuses (and what the refusal is not)
+
+Read against stock GNOME 46.0 and 50.1. The refusal is **one validator on the
+way in**: `meta_verify_logical_monitor_config_list()`, in
+`src/backends/meta-monitor-config-utils.c`, walks the submitted logical
+monitors and requires each one to share an edge with another by *exact integer
+equality*. Adjacency is checked before anything else, which is why one
+sentence, `Logical monitors not adjacent`, covers a gap and an overlap alike.
+It is not a permission check and it is not something a client can route
+around: gnome-control-center's own Displays panel submits the same
+`ApplyMonitorsConfig` and gets the same sentence back.
+
+**Nothing else in Mutter needs the invariant.** Monitor lookup by point
+returns the first match, lookup by rectangle falls back to the primary,
+pointer constraints clamp only when the pointer is in no view at all, the
+screen size is a bounding box, and the renderer already builds several stage
+views over identical rectangles, because that is how mirroring works. GNOME's
+*Xorg* session goes further and never calls the verifier: it derives its
+logical monitors from whatever layout X reports, so overlapping logical
+monitors already exist inside Mutter the moment somebody runs plain `xrandr`
+on GNOME/X11. An overlap is therefore a state Mutter can hold perfectly well
+and one function declines to accept from a client, which is what makes it a
+limitation rather than a law of nature, and why the identical layout is taken
+as drawn by KWin, by wlroots and by X (the table above).
+
+Every supported route in runs through that same function: `ApplyMonitorsConfig`
+validates before it applies on all three methods, verify included, so
+`--dryrun` gets the same no. **The saved configuration file is worse than
+closed**, and that is the one thing here worth a warning of its own:
+
+> **Never hand-edit `~/.config/monitors.xml` to force an overlap.** Mutter's
+> parser calls the same verifier, and a failure discards the **entire file**,
+> so one bad entry silently destroys every other monitor arrangement the user
+> had saved, at every boot, with the only trace in the system journal. Mutter's
+> own writer does not validate, either: `meta_monitor_config_manager_save_current()`
+> will happily write an overlapping layout into the file that the reader then
+> rejects in full, for ever.
+
+A GNOME Shell extension can reach the non-introspected libmutter symbol behind
+all of this by shipping a typelib of its own, and that route was measured
+working on both versions with the shared region byte-identical, but it encodes
+a private struct offset and the library SONAME, and a wrong offset writes into
+the compositor's heap rather than raising an error, which on Wayland means
+losing the session at login, repeatedly, with the extension already enabled.
+It is not shipped and will not be. The long form, with the closed routes one
+by one, is [Technical.md § 6](Technical.md#why-mutter-refuses-monitors-that-share-area).
+
+**What to reach for instead: a mirrored region, which is not an overlap and is
+never called one here.** GNOME will not place two monitors so that they share
+area; the closest thing available is a mirrored region, where the pixels match
+exactly and that is the whole of the resemblance. The copy takes the clicks
+that land on it rather than passing them through to the window they came from,
+and where it is produced by capture rather than by the layout it lives only as
+long as that capture session, which a screen lock ends. On GNOME the layout
+itself still mirrors whole monitors (`--same-as`, identical mode, rotation and
+scale); a *region* there has only the desktop portal, which prompts once per
+session. On wlroots it is `wmirror`, below, with no prompt at all.
+
 An overlapping layout is also nothing special to the KWin backend's undo
 line: `restore_command` spells every position out absolutely, so the line
 printed while the *previous* layout overlapped replays into that same

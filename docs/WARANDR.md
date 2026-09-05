@@ -220,6 +220,42 @@ Verified live, end to end, on all four rows, each in its own VM:
   opened on the focused output's workspace, which is the only thing that
   stayed per-output.
 
+**Why GNOME's row reads that way, and what to tell the user instead.** The
+refusal is one validator on the way in, `meta_verify_logical_monitor_config_list()`
+in `src/backends/meta-monitor-config-utils.c`, which requires every submitted
+logical monitor to share an edge with another by exact integer equality, and
+which runs before anything is applied. It is not a permission problem and no
+client routes around it: GNOME's own Displays panel submits the same call and
+reads the same sentence. Nothing else in Mutter needs the rule — lookup by
+point takes the first match, lookup by rectangle falls back to the primary,
+pointer constraints clamp only when the pointer is in no view at all, the
+screen size is a bounding box, and the renderer already draws several stage
+views over identical rectangles because that is how mirroring works — and
+GNOME on Xorg never runs the verifier at all, deriving its logical monitors
+from the X layout, overlaps included. That is why the same drag is taken as
+drawn on the other three rows, and why the status bar says *Mutter refuses
+this* rather than *this cannot be done*.
+
+The honest substitute, and the answer for a user who asks the window for an
+overlap on GNOME: GNOME will not place two monitors so that they share area,
+and the closest thing available is a **mirrored region**, where the pixels
+match exactly, the copy takes the clicks that land on it instead of passing
+them to the window they came from, and a screen lock ends it where it is made
+by capture rather than by the layout. It is never called an overlap. Whole-monitor mirroring
+*is* in the layout on GNOME (`--same-as`, at an identical mode, rotation and
+scale) and warandr's *Mirror of* draws and saves it; a region is `wmirror` on
+wlroots, and on GNOME only through the desktop portal, which prompts once per
+session.
+
+> **Never hand-edit `~/.config/monitors.xml` to force an overlap**, and warandr
+> never writes it. Mutter's parser calls that same verifier and discards the
+> **entire file** on any error, so one bad entry silently destroys every other
+> monitor arrangement the user had saved, at every boot, with the only trace in
+> the system journal. Mutter's own writer does not validate, so a file that
+> kills itself this way can also be written by Mutter itself. The measurements
+> and the routes are
+> [Technical.md § 6](Technical.md#why-mutter-refuses-monitors-that-share-area).
+
 **Out of scope here: region mirroring, which now has its own command.**
 Making a region show the same pixels on a compositor that does not already do
 it is a resident helper capturing one output and painting it onto another
