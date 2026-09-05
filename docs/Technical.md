@@ -582,6 +582,74 @@ round-trip byte-identically, arandr's own files included. They cannot be one, be
 one is an editable model of a screen that does not exist yet and the other is a
 serialisation contract with a program from 2010.
 
+### Why Mutter refuses monitors that share area
+
+The one geometry the four backends do not agree on, and the long form the README and
+the two contracts point at. Read and measured against **stock GNOME 46.0 and 50.1**,
+three virtual heads, nothing patched.
+
+**One validator, on the way in.** `meta_verify_logical_monitor_config_list()`, in
+`src/backends/meta-monitor-config-utils.c`, walks the logical monitors a client
+submits and requires each one to share an edge with another by *exact integer
+equality*. Adjacency is tested before anything else, which is why one sentence,
+`Logical monitors not adjacent`, comes back for a gap and for an overlap alike, and
+why `Logical monitors overlap` needs a layout in which adjacency already holds. It is
+not a permission check: gnome-control-center's Displays panel is a D-Bus client like
+wxrandr and reads the same refusal.
+
+**Nothing else in the compositor needs the invariant.** Read at both versions:
+
+* monitor lookup by point returns the **first match**, not a unique one;
+* lookup by rectangle **falls back to the primary** when nothing wins;
+* pointer constraints clamp only when the pointer is in **no view at all**, not when
+  it is in two;
+* the screen size is a **bounding box**, computed the same way either way;
+* the renderer already builds **several stage views over identical rectangles**,
+  because that is exactly how mirroring is drawn.
+
+**And Mutter already holds overlapping logical monitors in practice.** GNOME on Xorg
+derives them from the X layout with no verification at all, so a plain `xrandr
+--output B --pos 960x0` on a GNOME/X11 session puts an overlapping set inside the
+very same data structures. The invariant is enforced at one door, not required by the
+building, which is what makes this a limitation rather than a law of nature, and why
+the identical layout is taken as drawn by KWin, by wlroots and by X.
+
+**Every supported route in is closed, and one is worse than closed.**
+
+| route | what happens |
+|---|---|
+| `ApplyMonitorsConfig` (D-Bus) | validates **before** it applies, on every method: 0 verify, 1 temporary, 2 persistent. `--dryrun` therefore gets exactly the answer an apply would |
+| `~/.config/monitors.xml` | the parser calls the **same verifier**, and a failure discards the **entire file** — see the warning below |
+| a GNOME Shell extension | can reach the non-introspected libmutter symbol by shipping a typelib of its own. Measured working on **both** versions, shared region byte-identical. It also encodes a private struct offset and the library SONAME, and a wrong offset **writes into the compositor's heap** rather than raising an error, which on Wayland means the user loses the session at login, repeatedly, with the extension already enabled. Not shipped, not going to be |
+
+> **The one warning worth its own line: never hand-edit `monitors.xml` to force an
+> overlap.** Mutter discards the whole file on any error, so one bad entry silently
+> destroys every other monitor arrangement the user had saved, on every boot, and the
+> only trace is a line in the system journal. Nothing warns at the time: the session
+> comes up with a layout Mutter has built from scratch, and every arrangement that
+> user had saved is gone.
+
+**The safety fact behind that warning: Mutter's own writer does not validate.**
+`meta_monitor_config_manager_save_current()` will happily write an overlapping layout
+into the file that the reader then rejects in full, for ever. Reader and writer
+disagree, and the disagreement is silent and permanent, which is the real reason
+nothing in this tree writes that file itself: `--persistent` asks *gnome-shell* for
+its "Keep changes?" dialog and lets Mutter write, and that is the only route we take
+([WXRANDR.md](WXRANDR.md#mutter-backend-wxrandrmutterpy)).
+
+**So what the tools say instead.** wxrandr keeps passing the layout on unchanged and
+attributing the refusal to Mutter by name; nothing here pretends to a workaround. The
+substitute the documents offer is a **mirrored region**, and it is never called an
+overlap: GNOME will not place two monitors so that they share area, and the closest
+thing available is a region whose pixels match exactly, where the copy takes the
+clicks that land on it rather than passing them to the window they came from, and
+where a copy made by capture rather than by the layout lives only as long as that
+capture session, which a screen lock ends. Whole-monitor mirroring is in the layout
+on GNOME (`--same-as`: one logical monitor, several members, identical mode, rotation
+and scale); a region is `wmirror` on wlroots ([WMIRROR.md](WMIRROR.md)), and on GNOME
+and KDE only through the desktop portal, which prompts once per session and is
+therefore useless from a hotkey.
+
 ## 7. Detached children, runtime paths and stdio
 
 **One detach protocol.** `fwcommon/procs.py` is the whole of it, and both callers use

@@ -517,7 +517,10 @@ because nothing is refused here, so a "no" is always the compositor's. Since Mut
 unlike X, allows neither gaps nor overlaps, an output that changes size keeps its
 neighbours touching it, with a warning. Changes are temporary like xrandr's and write
 nothing. `--persistent` makes GNOME ask *Keep changes?*, and only a confirmed dialog
-writes `monitors.xml`.
+writes `monitors.xml`, and that dialog is the only safe way that file is ever
+written. Why Mutter refuses monitors that share area, and what to reach for instead,
+is under
+[What your desktop will not let warandr do](#what-your-desktop-will-not-let-warandr-do).
 
 Which backend it is using is never a guess: `--print-backend` prints the token
 (`--verbose` adds the session, why it was chosen, the compositor and the protocol
@@ -590,12 +593,15 @@ Ubuntu desktop runs.
 | **Mirroring** two monitors | only at the same mode, rotation and scale | any shapes, KWin scales the copy | same shape only, the smaller one crops | allowed |
 | The layout **after a reboot** | gone unless you asked to keep it | always kept | gone | gone |
 
-On GNOME every layout must be exactly edge adjacent. Mutter checks adjacency before
-anything else, so an overlap and a gap come back with the same sentence, *Logical
+On GNOME every layout must be exactly edge adjacent. One validator on the way in
+decides that, checking each monitor for an edge it shares with a neighbour by exact
+integer equality, so an overlap and a gap come back with the same sentence, *Logical
 monitors not adjacent*, and nothing is half applied. It is not a permission problem
 and it is not something these tools could route around: GNOME's own Settings panel
-gets the same answer. The status bar tells you at the moment of the drop, before you
-press Apply.
+submits the same call and gets the same answer. Nothing else in the compositor needs
+the rule, and a GNOME session on Xorg never runs the check at all, which is why the
+identical layout is taken as drawn on X11, on KDE and on wlroots. The status bar
+tells you at the moment of the drop, before you press Apply.
 
 Mirroring does work on GNOME, but only between monitors that can take an identical
 mode, rotation and scale, because Mutter mirrors by making one logical monitor out of
@@ -604,13 +610,30 @@ different resolutions are refused by name, saying which two differ and how. KWin
 the one desktop that will scale a mirrored copy onto a differently shaped panel. On
 wlroots the copy crops instead, which is the gap [`wmirror`](#wmirror) fills.
 
+There is an honest substitute, and it is not an overlap. GNOME will not place two
+monitors so that they share area, and the closest thing to be had is a mirrored
+region: the same pixels in two places, matching exactly, and that is the whole of it.
+The copy is a copy, so it takes the clicks that land on it rather than passing them
+to the window they came from, and where it is made by screen capture instead of by
+the layout it lasts only as long as that capture session, which a screen lock ends.
+Whole monitor mirroring is the layout doing it, above. A region of one monitor on
+another is [`wmirror`](#wmirror) on wlroots, and on GNOME it needs the desktop
+portal, which asks permission once a session.
+
+**Never hand edit `~/.config/monitors.xml` to force an overlap.** Mutter reads that
+file back through the same validator and throws away the **whole file** when any part
+of it fails, so one bad entry silently takes every other monitor arrangement you had
+saved down with it, at every boot, and the only trace is a line in the system journal.
+
 One more GNOME habit worth knowing: an Apply that switches a monitor on or off makes
 the desktop move keyboard focus off the window, so click it again before the next
 Ctrl+S. And a monitor plugged in while the window is open shows up after New
 (Ctrl+N), as in arandr.
 
 The measurements behind all of this, per compositor and per version, are in
-[docs/WARANDR.md](docs/WARANDR.md).
+[docs/WARANDR.md](docs/WARANDR.md), and why Mutter refuses at all, with every route
+that has been tried, is in
+[docs/Technical.md](docs/Technical.md#why-mutter-refuses-monitors-that-share-area).
 
 Which backend it is talking to is in the window at all times. The status bar's right
 hand corner says `backend: mutter (Wayland)` or `backend: xrandr (X11)`, with the
