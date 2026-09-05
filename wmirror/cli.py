@@ -45,10 +45,8 @@ def parser() -> argparse.ArgumentParser:
                "wmirror sends you there. A running mirror is a resident "
                "process that keeps the compositor compositing every frame; "
                "`--list` shows it, `--stop` ends it. wlroots only.")
-    p.add_argument("source", nargs="?", metavar="SOURCE",
-                   help="the output to capture")
-    p.add_argument("--to", metavar="TARGET", dest="to",
-                   help="the output to paint it on")
+    p.add_argument("source", nargs="?", metavar="SOURCE", help="the output to capture")
+    p.add_argument("--to", metavar="TARGET", dest="to", help="the output to paint it on")
     p.add_argument("--region", metavar="WxH+X+Y",
                    help="capture only this rectangle of SOURCE, in layout "
                         "coordinates (the ones `wxrandr --query` and slurp "
@@ -61,17 +59,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--keep-layout", action="store_true",
                    help="mirror even where a shared position would do it, "
                         "so TARGET keeps its own place in the layout")
-    p.add_argument("--replace", action="store_true",
-                   help="stop the mirror already running on TARGET first")
-    p.add_argument("--dry-run", action="store_true",
-                   help="print the wl-mirror command line and stop")
+    p.add_argument("--replace", action="store_true", help="stop the mirror already running on TARGET first")
+    p.add_argument("--dry-run", action="store_true", help="print the wl-mirror command line and stop")
     p.add_argument("--list", action="store_true",
                    help="what is mirroring now (verified, stale records "
                         "reaped)")
-    p.add_argument("--stop", metavar="TARGET",
-                   help="stop the mirror on TARGET")
-    p.add_argument("--stop-all", action="store_true",
-                   help="stop every mirror we started")
+    p.add_argument("--stop", metavar="TARGET", help="stop the mirror on TARGET")
+    p.add_argument("--stop-all", action="store_true", help="stop every mirror we started")
     p.add_argument("--check", action="store_true",
                    help="say whether this session can mirror at all, and "
                         "what is missing if it cannot")
@@ -112,8 +106,7 @@ def _cmd_stop(target: str) -> int:
         if changed or rec is not None:
             state.save()
         if rec is None:
-            _err(["no mirror is running on %s" % target,
-                  "`wmirror --list` shows the ones that are"])
+            _err(["no mirror is running on %s" % target, "`wmirror --list` shows the ones that are"])
             return 1
         supervise.stop_record(rec)
     _out("stopped  %s" % core.fmt_record(target, rec))
@@ -158,8 +151,7 @@ def _cmd_check() -> int:
     try:
         have = core.capture_support(conn)
         if have:
-            _out("capture:  %s" % ", ".join("%s v%d" % (i, v)
-                                            for i, v in have))
+            _out("capture:  %s" % ", ".join("%s v%d" % (i, v) for i, v in have))
         else:
             ok = False
             for i, line in enumerate(core.no_capture_lines()):
@@ -168,8 +160,7 @@ def _cmd_check() -> int:
             outputs = core.read_outputs(conn)
             on = [o for o in outputs if o.active]
             off = [o.name for o in outputs if not o.active]
-            _out("outputs:  %s" % (", ".join("%s %s" % (o.name, o.geom())
-                                             for o in on) or "none"))
+            _out("outputs:  %s" % (", ".join("%s %s" % (o.name, o.geom()) for o in on) or "none"))
             if off:
                 _out("          off: %s" % ", ".join(off))
         except core.Refusal as e:
@@ -181,8 +172,7 @@ def _cmd_check() -> int:
     _, recs, _changed = _state()
     if recs:
         for i, target in enumerate(sorted(recs)):
-            _out(("mirrors:  " if i == 0 else "          ")
-                 + core.fmt_record(target, recs[target]))
+            _out(("mirrors:  " if i == 0 else "          ") + core.fmt_record(target, recs[target]))
     else:
         _out("mirrors:  none")
     return 0 if ok else 1
@@ -226,8 +216,7 @@ def _start_locked(args, source, target, region, outputs, helper) -> int:
     # record it would replace out of the way, and only then stop it.
     running = {k: v for k, v in recs.items()
                if not (args.replace and k == target)}
-    decision = core.decide(outputs, source, target, region,
-                           args.keep_layout, running)
+    decision = core.decide(outputs, source, target, region, args.keep_layout, running)
     if decision.verdict != core.RUN:
         if changed:
             state.save()                  # the reap, if it found anything
@@ -274,8 +263,7 @@ def _start_locked(args, source, target, region, outputs, helper) -> int:
 # -- entry --------------------------------------------------------------------
 
 def _run(args, p) -> int:
-    queries = [bool(args.list), bool(args.stop), bool(args.stop_all),
-               bool(args.check)]
+    queries = [bool(args.list), bool(args.stop), bool(args.stop_all), bool(args.check)]
     if sum(queries) > 1:
         p.error("--list, --stop, --stop-all and --check are one at a time")
     if any(queries):
@@ -289,8 +277,7 @@ def _run(args, p) -> int:
             return _cmd_stop_all()
         return _cmd_check()
     if not args.source or not args.to:
-        p.error("name the output to capture and the one to paint it on: "
-                "wmirror SOURCE --to TARGET")
+        p.error("name the output to capture and the one to paint it on: " "wmirror SOURCE --to TARGET")
     return _cmd_start(args)
 
 

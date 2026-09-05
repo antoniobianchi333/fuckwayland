@@ -72,14 +72,12 @@ def by_name(outputs, name):
 
 
 def rects_overlap(a, b) -> bool:
-    return not (a.x + a.w <= b.x or b.x + b.w <= a.x
-                or a.y + a.h <= b.y or b.y + b.h <= a.y)
+    return not (a.x + a.w <= b.x or b.x + b.w <= a.x or a.y + a.h <= b.y or b.y + b.h <= a.y)
 
 
 def rect_inside(region, o) -> bool:
     x, y, w, h = region
-    return (x >= o.x and y >= o.y
-            and x + w <= o.x + o.w and y + h <= o.y + o.h)
+    return (x >= o.x and y >= o.y and x + w <= o.x + o.w and y + h <= o.y + o.h)
 
 
 # -- region -------------------------------------------------------------------
@@ -97,13 +95,10 @@ def parse_region(text: str):
     from one and pasted here."""
     m = _REGION_RE.match((text or "").strip())
     if not m:
-        raise Refusal(["--region takes " + REGION_FORM,
-                       "got: %s" % text])
-    w, h, x, y = (int(m.group(1)), int(m.group(2)),
-                  int(m.group(3)), int(m.group(4)))
+        raise Refusal(["--region takes " + REGION_FORM, "got: %s" % text])
+    w, h, x, y = (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
     if w <= 0 or h <= 0:
-        raise Refusal(["--region width and height must both be > 0",
-                       "got: %s" % text])
+        raise Refusal(["--region width and height must both be > 0", "got: %s" % text])
     return (x, y, w, h)
 
 
@@ -162,8 +157,7 @@ def helper_version(binary: str):
 
 
 def missing_helper_lines() -> list:
-    return ["wl-mirror is not installed (no `%s` on PATH)" % HELPER,
-            INSTALL_HINT]
+    return ["wl-mirror is not installed (no `%s` on PATH)" % HELPER, INSTALL_HINT]
 
 
 # -- compositor detection -----------------------------------------------------
@@ -178,8 +172,7 @@ def no_session_lines() -> list:
         return ["this is an X11 session: there is no wl-mirror here",
                 "X11 mirrors whole outputs with `xrandr --output B "
                 "--same-as A`; a region has no route in this toolbox"]
-    return ["cannot find a Wayland session to mirror on "
-            "(no wayland socket)"]
+    return ["cannot find a Wayland session to mirror on " "(no wayland socket)"]
 
 
 def open_conn(wayland_socket=None):
@@ -193,8 +186,7 @@ def open_conn(wayland_socket=None):
     try:
         conn = WlConn(wayland_socket)
     except OSError as e:
-        raise Refusal(["cannot connect to the compositor at %s: %s"
-                       % (wayland_socket, e)])
+        raise Refusal(["cannot connect to the compositor at %s: %s" % (wayland_socket, e)])
     return conn
 
 
@@ -333,8 +325,7 @@ def decide(outputs, source: str, target: str, region=None,
     return Decision(RUN)
 
 
-def watch_reason(outputs, source: str, target: str, region=None,
-                 src_rect=None):
+def watch_reason(outputs, source: str, target: str, region=None, src_rect=None):
     """Why a running mirror must stop, or None. Evaluated by the supervisor
     on every output change the compositor announces.
 
@@ -356,8 +347,7 @@ def watch_reason(outputs, source: str, target: str, region=None,
     if not dst.active:
         return "target output %s was turned off" % target
     if rects_overlap(src, dst):
-        return ("%s and %s now share pixels; the mirror would capture "
-                "itself" % (source, target))
+        return ("%s and %s now share pixels; the mirror would capture " "itself" % (source, target))
     if region is not None:
         if src_rect is not None and tuple(src_rect) != src.rect():
             return ("%s moved or changed size (%dx%d+%d+%d -> %s); the "
@@ -366,8 +356,7 @@ def watch_reason(outputs, source: str, target: str, region=None,
                     % ((source,) + _rect_wh(src_rect) + (src.geom(),
                                                          fmt_region(region))))
         if not rect_inside(region, src):
-            return ("the region %s is no longer inside %s (%s)"
-                    % (fmt_region(region), source, src.geom()))
+            return ("the region %s is no longer inside %s (%s)" % (fmt_region(region), source, src.geom()))
     return None
 
 
@@ -421,8 +410,7 @@ def state_lock(timeout: float = LOCK_SECONDS):
     ahead unlocked, exactly as State does when locking is unavailable."""
     fd = None
     try:
-        fd = os.open(lock_path(),
-                     os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         deadline = time.monotonic() + timeout
         while True:
             try:

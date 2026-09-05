@@ -99,8 +99,7 @@ def stop_record(rec: dict) -> bool:
     if alive(rec.get("pid"), rec.get("start"), SUPERVISOR_COMM):
         killed = procs.kill_bounded(rec["pid"], rec.get("start")) or killed
     if alive(rec.get("helper_pid"), rec.get("helper_start"), core.HELPER):
-        killed = procs.kill_bounded(rec["helper_pid"],
-                                    rec.get("helper_start")) or killed
+        killed = procs.kill_bounded(rec["helper_pid"], rec.get("helper_start")) or killed
     return killed
 
 
@@ -154,8 +153,7 @@ def start(recs: dict, source: str, target: str, argv: list, region=None,
         return ["%s did not report that it started" % core.HELPER,
                 "if it is running, `wmirror --list` shows it and "
                 "`wmirror --stop %s` stops it" % target]
-    return ["%s could not be started (no answer from the supervisor)"
-            % core.HELPER]
+    return ["%s could not be started (no answer from the supervisor)" % core.HELPER]
 
 
 # -- the detached supervisor --------------------------------------------------
@@ -201,8 +199,7 @@ def _diagnosis(tail: list, rc) -> str:
     lines = [line.strip() for line in tail if line.strip()]
     for want_prefix in (True, False):
         for line in reversed(lines):
-            hit = (line.startswith("error:") if want_prefix
-                   else "error" in line.lower())
+            hit = (line.startswith("error:") if want_prefix else "error" in line.lower())
             if hit and not _benign(line):
                 return line
     return _exit_words(rc)
@@ -283,13 +280,11 @@ def supervisor_main(argv: list, source: str, target: str, status_fd=None,
         deadline = time.monotonic() + STARTUP_SECONDS
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                emit("failed %s" % _diagnosis(stderr.tail(),
-                                              proc.returncode), close=True)
+                emit("failed %s" % _diagnosis(stderr.tail(), proc.returncode), close=True)
                 return 1
             time.sleep(0.02)
         emit("ok", close=True)
-        _supervise(proc, stderr, source, target, wayland_socket,
-                   region=region, src_rect=src_rect)
+        _supervise(proc, stderr, source, target, wayland_socket, region=region, src_rect=src_rect)
     finally:
         _stop_child(proc)
         stderr.close()
@@ -340,8 +335,7 @@ def _open_watch(wayland_socket):
         return None
 
 
-def _supervise(proc, stderr, source, target, wayland_socket, region=None,
-               src_rect=None):
+def _supervise(proc, stderr, source, target, wayland_socket, region=None, src_rect=None):
     """Until the helper dies, an output change makes the mirror impossible,
     or the compositor goes away."""
     wlr = _open_watch(wayland_socket)
@@ -349,8 +343,7 @@ def _supervise(proc, stderr, source, target, wayland_socket, region=None,
     while True:
         if wlr is not None:
             try:
-                ready, _, _ = select.select([wlr.conn.sock.fileno()], [], [],
-                                            POLL_SECONDS)
+                ready, _, _ = select.select([wlr.conn.sock.fileno()], [], [], POLL_SECONDS)
             except InterruptedError:
                 ready = []
             if ready:
