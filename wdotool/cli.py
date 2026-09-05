@@ -13,8 +13,7 @@ from wdotool import backend, commands, passthrough, stdio
 from wdotool.ctx import CmdError, Context
 
 # What `version`/-v prints. Must match the real xdotool byte-for-byte so
-# version-sniffing scripts keep working (see wdotool.__init__.VERSION for
-# wdotool's own identity).
+# version-sniffing scripts keep working: it is xdotool's version, not ours.
 XDO_VERSION = "4.20260303.1"
 
 _USAGE = "Usage: %s <cmd> <args>\n"

@@ -10,10 +10,14 @@ import fcntl
 import os
 import struct
 
+# evdev event types (input-event-codes.h). keys_cmds decodes a recorded
+# stream with the same numbers and keystate derives an ioctl from EV_KEY,
+# so they import them from here rather than write 0x01 a third time.
 EV_SYN = 0x00
 EV_KEY = 0x01
 EV_REL = 0x02
 EV_ABS = 0x03
+EV_MSC = 0x04
 SYN_REPORT = 0
 
 REL_X = 0x00

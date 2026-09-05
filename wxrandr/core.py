@@ -24,7 +24,8 @@ combinations collapse onto the 8 Wayland transforms below.
 
 xrandr concepts with no Wayland analog (primary, user mode lines) persist in a
 small state file keyed by compositor socket:
-    $XDG_RUNTIME_DIR/wxrandr-state.json  (else /tmp/wxrandr-state-<uid>.json)
+    $XDG_RUNTIME_DIR/wxrandr-state.json  (else, under sudo or cron, the same
+    name in the private /tmp/wdotool-<uid> that session.runtime_dir() makes)
 """
 
 import copy
@@ -41,6 +42,7 @@ import sys
 import time
 
 from wdotool import session
+from wdotool.ctx import CmdError
 
 PROGRAM_VERSION = "1.5.4"
 
@@ -343,10 +345,14 @@ class SwayIPC:
 # -- state file ---------------------------------------------------------------
 
 def _state_path() -> str:
-    rd = os.environ.get("XDG_RUNTIME_DIR")
-    if rd and os.path.isdir(rd):
-        return os.path.join(rd, "wxrandr-state.json")
-    return "/tmp/wxrandr-state-%d.json" % os.getuid()
+    """The state file in session.runtime_dir(). A layout cache is never worth
+    failing a command for, so a runtime dir we cannot have degrades to the
+    0.2 name in shared /tmp -- where _read_state's checks below are what
+    stand between us and a planted file."""
+    try:
+        return os.path.join(session.runtime_dir(), "wxrandr-state.json")
+    except CmdError:
+        return "/tmp/wxrandr-state-%d.json" % os.getuid()
 
 
 def _read_state(path: str) -> dict:
@@ -356,13 +362,14 @@ def _read_state(path: str) -> dict:
     SIGTERM to when it drops a gamma hold, the mode lines `--newmode` added,
     which output is primary, what mode a re-enabled output goes back to. With
     no XDG_RUNTIME_DIR -- which is every `sudo` run, and cron -- it lives in
-    world-writable /tmp under a guessable name, so another local user can
-    create it before we do and choose those answers, including the pid a root
-    wxrandr signals. The state is a cache and never load-bearing, so anything
-    we cannot prove is ours (a symlink, another user's file, a file others may
-    write) is ignored rather than obeyed. Group-writable is left alone: that
-    is the default umask on some distributions, and a group is not the open
-    door /tmp is."""
+    the private directory session.runtime_dir() makes, or, when even that
+    cannot be made ours, in world-writable /tmp under a guessable name, where
+    another local user can create it before we do and choose those answers,
+    including the pid a root wxrandr signals. The state is a cache and never
+    load-bearing, so anything we cannot prove is ours (a symlink, another
+    user's file, a file others may write) is ignored rather than obeyed.
+    Group-writable is left alone: that is the default umask on some
+    distributions, and a group is not the open door /tmp is."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError:

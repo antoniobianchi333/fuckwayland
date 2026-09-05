@@ -27,7 +27,6 @@ import hashlib
 import json
 import os
 import socket
-import stat
 import struct
 import sys
 import threading
@@ -131,45 +130,18 @@ def _mods(val, what: str) -> list:
     return out
 
 
-def _fallback_dir() -> str:
-    """A private `/tmp/wdotool-<uid>` for the socket when there is no
-    XDG_RUNTIME_DIR, created 0700 and then verified.
-
-    That fallback is not exotic: `sudo` drops XDG_RUNTIME_DIR, and so do
-    `su -`, cron and a bare container -- all documented ways to run these
-    tools. /tmp is world-writable, so a plain `/tmp/wdotool-<uid>.sock` can be
-    bound by another local user before we get there; the client never learns
-    who answered, so every request -- the text of `type` included -- would be
-    delivered to them, and they can reply {"ok":true} so the caller sees a
-    success. A directory nobody else may enter closes that, and takes the
-    `.lock` beside the socket out of reach with it. It is verified after
-    creation because an attacker may have created it first."""
-    d = "/tmp/wdotool-%d" % os.getuid()
-    try:
-        os.mkdir(d, 0o700)
-    except FileExistsError:
-        pass
-    except OSError as e:
-        raise CmdError(f"cannot create {d}: {e}") from None
-    try:
-        st = os.lstat(d)
-    except OSError as e:
-        raise CmdError(f"cannot stat {d}: {e}") from None
-    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid()
-            or st.st_mode & 0o077):
-        raise CmdError(
-            f"{d} is not a private directory owned by uid {os.getuid()}; "
-            "refusing to put the wdotool socket there")
-    return d
-
-
 def socket_path() -> str:
+    """Where the daemon listens and the client dials. session.runtime_dir()
+    supplies the private directory (and the `.lock` beside the socket is out
+    of reach with it); $XDG_RUNTIME_DIR is taken exactly as the environment
+    gives it, unchecked, so a set-but-missing one stays the bind failure the
+    user can see rather than a socket quietly moved somewhere else."""
     if os.geteuid() == 0:
         return "/run/wdotool.sock"
+    from wdotool import session
+
     rd = os.environ.get("XDG_RUNTIME_DIR")
-    if rd:
-        return os.path.join(rd, "wdotool.sock")
-    return os.path.join(_fallback_dir(), "wdotool.sock")
+    return os.path.join(rd or session.runtime_dir(), "wdotool.sock")
 
 
 def _bbox_of(boxes) -> tuple[int, int, int, int]:
@@ -1733,7 +1705,7 @@ class _Daemon:
             warnings = []
         dev, vk = self._keyboard(warnings, vkbd_mode)
         layout = self._typing_layout(vk, warnings, layout_mode)  # see op_key
-        lname = "US" if layout is None else layout.name
+        lname = keymap.layout_name(layout)
         with self._mods_cleared(clearmods, warnings, session, dev, vk):
             # xdo_enter_text_window: delay split between down and up, down capped at 50ms
             down_d = min(delay_ms / 2, 50) / 1000

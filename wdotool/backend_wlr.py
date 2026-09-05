@@ -50,9 +50,7 @@ class WlrBackend(WindowBackend):
         try:
             self.c = WlConn(sockpath)
         except OSError as e:
-            raise CmdError(
-                "wlr backend: cannot connect to %s: %s" % (sockpath, e)
-            ) from None
+            raise CmdError("wlr backend: cannot connect to %s: %s" % (sockpath, e)) from None
         try:
             reg = self.c.get_registry()
             g = self.c.find_global("zwlr_foreign_toplevel_manager_v1")
@@ -65,10 +63,9 @@ class WlrBackend(WindowBackend):
                 "zwlr_foreign_toplevel_management_unstable_v1"
             )
         self.tops: dict[int, _Toplevel] = {}  # handle oid -> record
-        self.order: list[int] = []  # handle oids, arrival order
+        self.order: list[int] = []            # handle oids, arrival order
         self.mgr_ver = min(g[1], 3)
-        self.mgr = self.c.bind(g[0], "zwlr_foreign_toplevel_manager_v1",
-                               self.mgr_ver)
+        self.mgr = self.c.bind(g[0], "zwlr_foreign_toplevel_manager_v1", self.mgr_ver)
         self.c.on(self.mgr, self._on_mgr)
 
         self.seat = None
@@ -170,8 +167,7 @@ class WlrBackend(WindowBackend):
     def activate(self, wid: int):
         t = self._by_wid(wid)
         if self.seat is None:
-            raise CmdError("wlr backend: compositor offers no wl_seat; "
-                           "cannot activate windows")
+            raise CmdError("wlr backend: compositor offers no wl_seat; cannot activate windows")
         self._request(t, _REQ_ACTIVATE, [("u", self.seat)])
 
     def close(self, wid: int):

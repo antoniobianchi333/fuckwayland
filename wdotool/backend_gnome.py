@@ -29,9 +29,9 @@ Field mapping (bridge object -> Window):
            windowmap --sync does not hang on windows parked elsewhere
   desktop  workspace index, -1 when on all workspaces (sticky)
 
-list() order is Mutter's stacking order bottom->top, so the generic hit-test
-picks hits[-1] = topmost; window_at() additionally skips DESKTOP/DOCK layers
-(desktop icons, docks) like a click-through X11 root window would.
+list() order is Mutter's stacking order bottom->top, so backend.hit_test()
+picks hits[-1] = topmost; it also skips the DESKTOP/DOCK layers (desktop
+icons, docks) window_type names, like a click-through X11 root window would.
 
 When the bridge name is missing but org.gnome.Shell is on the bus, the
 constructor fails with a diagnosis: screen locked, extension disabled or
@@ -51,7 +51,7 @@ import time
 from wdotool import session
 from wdotool.backend import View, Window, WindowBackend, Workspace, warn
 from wdotool.ctx import CmdError, NoSessionError
-from wdotool.dbus_mini import ERR, Bus, DBusError
+from wdotool.dbus_mini import ERR, Bus, DBusError, no_bus_text
 
 BUS_NAME = "org.fuckwayland.Bridge"
 OBJECT_PATH = "/org/fuckwayland/Bridge"
@@ -86,8 +86,7 @@ _ACTIONS = {0: "remove", 1: "add", 2: "toggle"}
 # may rely on, and Mutter does not implement it at all -- a real capability
 # gap, like BELOW. Everything else the bridge cannot apply is a gap too.
 _COSMETIC_STATES = {"SKIP_TASKBAR", "SKIP_PAGER", "MODAL"}
-_GAP_REASONS = {"SHADED": "Mutter does not implement window shading",
-                "BELOW": "Mutter has no API for it"}
+_GAP_REASONS = {"SHADED": "Mutter does not implement window shading", "BELOW": "Mutter has no API for it"}
 # Opt-in for the Eval-based auto-load of an installed extension (__init__).
 AUTOLOAD_ENV = "WDOTOOL_GNOME_AUTOLOAD"
 # org.gnome.Shell Mode values in which no user session runs extensions. The
@@ -97,8 +96,6 @@ AUTOLOAD_ENV = "WDOTOOL_GNOME_AUTOLOAD"
 # extension as a locked screen, observed live on 24.04).
 _LOCKED_MODES = {"unlock-dialog", "initial-setup"}
 _GREETER_MODES = {"gdm"}
-# window types the pointer hit-test looks through (DING desktop icons, docks)
-_LAYER_TYPES = {"DESKTOP", "DOCK"}
 
 # Best-effort: load an installed-but-not-yet-loaded copy of the extension
 # from inside the shell. Runs in shellDBus.js's module scope (Main, Gio, GLib
@@ -160,15 +157,13 @@ def extension_installed() -> bool:
     every extension, so from the *bus* a bridge that was never installed
     and one that is merely asleep look exactly alike (live, 24.04). From
     disk they do not."""
-    return any(os.path.isfile(os.path.join(d, _EXT_FILE))
-               for d in _extension_dirs())
+    return any(os.path.isfile(os.path.join(d, _EXT_FILE)) for d in _extension_dirs())
 
 
 class GnomeBackend(WindowBackend):
     name = "gnome"
 
-    def __init__(self, bus: Bus | None = None, names: list[str] | None = None,
-                 settle: float = 0.5):
+    def __init__(self, bus: Bus | None = None, names: list[str] | None = None, settle: float = 0.5):
         """`bus`/`names`: reuse backend_detect's connection and its ListNames
         result (one round trip per process). `settle`: how long activate()
         waits for the focus change to land before returning (Mutter animates
@@ -178,7 +173,7 @@ class GnomeBackend(WindowBackend):
             try:
                 bus = Bus()
             except DBusError as e:
-                raise NoSessionError("gnome backend: %s" % _no_bus_text(e)) from None
+                raise NoSessionError("gnome backend: %s" % no_bus_text(e)) from None
         self.bus = bus
         if names is None:
             try:
@@ -199,19 +194,16 @@ class GnomeBackend(WindowBackend):
 
     # -- plumbing -----------------------------------------------------------
 
-    def _call(self, member: str, sig: str = "", args=(),
-              timeout: float | None = CALL_TIMEOUT) -> tuple:
+    def _call(self, member: str, sig: str = "", args=(), timeout: float | None = CALL_TIMEOUT) -> tuple:
         try:
-            return self.bus.call(BUS_NAME, OBJECT_PATH, IFACE, member, sig, args,
-                                 timeout=timeout)
+            return self.bus.call(BUS_NAME, OBJECT_PATH, IFACE, member, sig, args, timeout=timeout)
         except DBusError as e:
             raise self._map_error(member, e) from None
         except (ValueError, OverflowError, struct.error) as e:
             # An argument the wire format cannot carry (a negative or
             # >64-bit window id reached us from somewhere): one line, rc 1,
             # never a marshalling traceback (B8).
-            raise CmdError("gnome backend: %s: invalid argument: %s"
-                           % (member, e)) from None
+            raise CmdError("gnome backend: %s: invalid argument: %s" % (member, e)) from None
 
     @staticmethod
     def _map_error(member: str, e: DBusError) -> CmdError:
@@ -234,8 +226,7 @@ class GnomeBackend(WindowBackend):
             return CmdError("gnome backend: %s: no reply from the bridge within "
                             "the timeout (is gnome-shell hung?)" % member)
         if n == ERR + "Disconnected":
-            return CmdError("gnome backend: session bus connection lost (%s)"
-                            % e.message)
+            return CmdError("gnome backend: session bus connection lost (%s)" % e.message)
         return CmdError("gnome backend: %s failed: %s" % (member, e))
 
     def _missing_bridge_text(self) -> str:
@@ -363,6 +354,7 @@ class GnomeBackend(WindowBackend):
             focused=bool(d.get("focused", False)),
             visible=(not hidden) and on_active,
             desktop=int(d.get("workspace", -1)),
+            window_type=d.get("window_type") or "NORMAL",
         )
 
     @classmethod
@@ -388,7 +380,7 @@ class GnomeBackend(WindowBackend):
             skip_taskbar=bool(d.get("skip_taskbar")),
             floating=True,
             ws_name="",
-            window_type=d.get("window_type") or "NORMAL",
+            window_type=win.window_type,
             client_type=client,
             role=d.get("role") or "",
             desktop_id=d.get("desktop_id") or "",
@@ -465,8 +457,7 @@ class GnomeBackend(WindowBackend):
         if applied:
             return
         if state in _COSMETIC_STATES:
-            warn("windowstate %s: Mutter cannot set it on Wayland; "
-                 "ignoring" % state)
+            warn("windowstate %s: Mutter cannot set it on Wayland; ignoring" % state)
             return
         raise CmdError("windowstate %s is not supported by the gnome backend (%s)"
                        % (state, _GAP_REASONS.get(state, "Mutter has no API for it")))
@@ -492,12 +483,6 @@ class GnomeBackend(WindowBackend):
 
     def num_desktops(self) -> int:
         return int(self._call("GetNWorkspaces")[0])
-
-    def set_num_desktops(self, n: int):
-        # The bridge answers Unsupported when Mutter's dynamic-workspaces is
-        # on (then the shell owns the count); _map_error marks that so
-        # set_num_desktops can warn instead of failing (B9).
-        self._call("SetNWorkspaces", "i", (n,))
 
     # The bridge version that made SelectWindow a click-to-pick; v1 waited
     # for a focus change and would hang on the already-focused window.
@@ -541,29 +526,6 @@ class GnomeBackend(WindowBackend):
 
     # -- optional hooks -----------------------------------------------------
 
-    def window_at(self, x: int, y: int) -> int:
-        """Topmost window under (x, y) on the active workspace; DESKTOP and
-        DOCK layers are looked through, the focused window wins among the
-        hits (the generic rule getmouselocation applies). Client-side over
-        ListWindows on purpose: the bridge exports no hit-test, so this and
-        the rule in input_cmds cannot drift apart."""
-        hits = []
-        for d in self._raw_list():
-            if d.get("window_type") in _LAYER_TYPES:
-                continue
-            if d.get("hidden") or not d.get("on_active_workspace", True):
-                continue
-            wx, wy = int(d.get("x", 0)), int(d.get("y", 0))
-            ww, wh = int(d.get("width", 0)), int(d.get("height", 0))
-            if ww > 0 and wh > 0 and wx <= x < wx + ww and wy <= y < wy + wh:
-                hits.append(d)
-        if not hits:
-            return 0
-        for d in hits:
-            if d.get("focused"):
-                return int(d["id"])
-        return int(hits[-1]["id"])
-
     def views(self) -> "list[View]":
         names = {}
         try:
@@ -602,7 +564,7 @@ class GnomeBackend(WindowBackend):
         uid = None
         try:
             uid = self.bus._owner_uid()
-        except Exception:  # noqa: BLE001 -- diagnostics only
+        except Exception:  # diagnostics only
             uid = None
         display = display or session.find_x_display(uid) or ""
         xauth = xauth or session.find_xauthority(uid) or ""
@@ -618,8 +580,7 @@ class GnomeBackend(WindowBackend):
         root-level watcher (wxprop -root -spy) needs one stream only."""
         bus = Bus(self.bus.address)
         try:
-            bus.add_match("type='signal',interface='%s',path='%s'"
-                          % (IFACE, OBJECT_PATH))
+            bus.add_match("type='signal',interface='%s',path='%s'" % (IFACE, OBJECT_PATH))
             for m in bus.messages(timeout):
                 if m.interface != IFACE:
                     continue
@@ -648,7 +609,9 @@ class GnomeBackend(WindowBackend):
     def set_num_desktops(self, n: int):
         """wmctrl -n: only with static workspaces; with dynamic workspaces
         (GNOME's default) the bridge answers Unsupported (a CmdError the
-        caller turns into wmctrl's "the WM may ignore the request")."""
+        caller turns into wmctrl's "the WM may ignore the request").
+        _map_error marks that answer .unsupported, so wdotool's
+        set_num_desktops warns instead of failing a chain (B9)."""
         self._call("SetNWorkspaces", "i", (int(n),))
 
     def monitors(self) -> "list[dict]":
@@ -702,9 +665,3 @@ def _autoload_wanted() -> bool:
     v = os.environ.get(AUTOLOAD_ENV, "").strip().lower()
     return bool(v) and v not in ("0", "no", "false", "off")
 
-
-def _no_bus_text(e: DBusError) -> str:
-    if e.name == ERR + "NoServer":
-        return "no session D-Bus found (set DBUS_SESSION_BUS_ADDRESS or run " \
-               "inside the graphical session / under sudo)"
-    return "cannot connect to the session D-Bus: %s" % e

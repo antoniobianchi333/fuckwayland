@@ -48,8 +48,7 @@ def _gnome():
     return GnomeBackend(bus=session_bus(), names=session_names())
 
 
-_MAKERS = {"sway": _sway, "i3": _sway, "wlr": _wlr, "kwin": _kwin,
-           "gnome": _gnome}
+_MAKERS = {"sway": _sway, "i3": _sway, "wlr": _wlr, "kwin": _kwin, "gnome": _gnome}
 
 
 def reset():
@@ -58,7 +57,7 @@ def reset():
     if _bus is not None:
         try:
             _bus.close()
-        except Exception:  # noqa: BLE001 -- best effort on teardown
+        except Exception:  # best effort on teardown
             pass
     _bus, _names, _probed = None, None, False
 
@@ -88,35 +87,12 @@ def session_names() -> list[str] | None:
     return _names
 
 
-def dbus_env() -> dict | None:
-    """Process env pointing at the graphical session's D-Bus, or None. No
-    backend needs it any more (they all speak dbus_mini); kept for
-    diagnostics and for anything that still shells out."""
-    hit = session.find_user_bus()
-    if not hit:
-        return None
-    _uid, addr = hit
-    env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS=addr)
-    if addr.startswith("unix:path="):
-        path = addr[len("unix:path="):].split(",")[0]
-        env["XDG_RUNTIME_DIR"] = os.path.dirname(path)
-    return env
-
-
-def dbus_name_has_owner(name: str) -> bool:
-    names = session_names()
-    return bool(names) and name in names
-
-
 def detect():
     forced = os.environ.get("WDOTOOL_BACKEND")
     if forced:
         maker = _MAKERS.get(forced.strip().lower())
         if maker is None:
-            raise CmdError(
-                "WDOTOOL_BACKEND=%s is not one of: sway, wlr, kwin, gnome"
-                % forced
-            )
+            raise CmdError("WDOTOOL_BACKEND=%s is not one of: sway, wlr, kwin, gnome" % forced)
         return maker()
     if session.find_sway_socket():
         try:

@@ -51,10 +51,8 @@ import unicodedata
 
 from wdotool import keymap, keystate, xkbmap
 from wdotool.keysyms import NAME_TO_KEYSYM
+from wdotool.uinput import EV_KEY, EV_MSC, EV_SYN
 
-EV_SYN = 0x00
-EV_KEY = 0x01
-EV_MSC = 0x04
 KEY_ESC = 1
 KEY_A = 30
 # input-event-codes.h: EV_KEY below BTN_MISC is a key, from BTN_MISC up it is

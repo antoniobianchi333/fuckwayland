@@ -35,10 +35,56 @@ Additive fixes (gnome-bridge), each broken on a stock GNOME box:
 import glob
 import os
 import pwd
+import stat
+
+from wdotool.ctx import CmdError
 
 X11_SOCKET_DIR = "/tmp/.X11-unix"
 #: test seam (production value): the per-user runtime directories
 RUN_USER_DIR = "/run/user"
+#: Stand-in for $XDG_RUNTIME_DIR when the session did not give us one.
+FALLBACK_RUNTIME_DIR = "/tmp/wdotool-%d"
+
+
+def runtime_dir() -> str:
+    """The directory these tools keep session-lifetime files in -- the input
+    daemon's socket, the KWin script lock, the per-compositor state files:
+    $XDG_RUNTIME_DIR when the session gave us one, else a private
+    `/tmp/wdotool-<uid>`, created 0700 and then verified.
+
+    The fallback is not exotic: `sudo` drops XDG_RUNTIME_DIR, and so do
+    `su -`, cron and a bare container -- all documented ways to run these
+    tools. /tmp is world-writable, so any file we would put there under a
+    guessable name can be created by another local user first. For the
+    socket that means every request -- the text of `type` included -- is
+    delivered to them, and they can reply {"ok":true} so the caller sees a
+    success; for a state file it means they choose the answers it holds,
+    including the pid a root process signals. A directory nobody else may
+    enter closes that for everything inside it. It is verified after
+    creation because an attacker may have created it first.
+
+    Raises CmdError when that directory cannot be made, or is not ours.
+    Callers for which a runtime path is a convenience rather than a
+    contract catch it and fall back to their own name under /tmp."""
+    rd = os.environ.get("XDG_RUNTIME_DIR")
+    if rd and os.path.isdir(rd):
+        return rd
+    d = FALLBACK_RUNTIME_DIR % os.getuid()
+    try:
+        os.mkdir(d, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as e:
+        raise CmdError(f"cannot create {d}: {e}") from None
+    try:
+        st = os.lstat(d)
+    except OSError as e:
+        raise CmdError(f"cannot stat {d}: {e}") from None
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        raise CmdError(
+            f"{d} is not a private directory owned by uid {os.getuid()}; "
+            "refusing to put the wdotool socket there")
+    return d
 
 
 def _owner(path: str) -> int | None:
@@ -60,8 +106,7 @@ def _sudo_uid():
 
 def _has_wayland_socket(d: str) -> bool:
     try:
-        return any(n.startswith("wayland-") and not n.endswith(".lock")
-                   for n in os.listdir(d))
+        return any(n.startswith("wayland-") and not n.endswith(".lock") for n in os.listdir(d))
     except OSError:
         return False
 
@@ -142,9 +187,7 @@ def find_sway_socket() -> str | None:
         p = os.environ.get(var)
         if p and os.path.exists(p):
             return p
-    hit = _scan(
-        lambda n: (n.startswith("sway-ipc.") or n.startswith("i3-ipc.")) and n.endswith(".sock")
-    )
+    hit = _scan(lambda n: (n.startswith("sway-ipc.") or n.startswith("i3-ipc.")) and n.endswith(".sock"))
     return hit[1] if hit else None
 
 
@@ -351,8 +394,7 @@ def find_xauthority(uid: int | None = None) -> str | None:
         return env_p
     rd = _runtime_dir_of(uid)
     if rd:
-        cands = glob.glob(os.path.join(rd, ".mutter-Xwaylandauth.*")) + \
-            glob.glob(os.path.join(rd, "xauth_*"))
+        cands = glob.glob(os.path.join(rd, ".mutter-Xwaylandauth.*")) + glob.glob(os.path.join(rd, "xauth_*"))
         best, best_m = None, -1.0
         for c in cands:
             try:

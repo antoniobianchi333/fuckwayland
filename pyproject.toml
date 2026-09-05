@@ -19,22 +19,25 @@ wmirror = "wmirror.cli:main"
 [tool.setuptools]
 packages = ["wdotool", "wwmctl", "wxprop", "wxrandr", "warandr", "wmirror"]
 
-# Lint only, and never `ruff format`: at this line length the formatter
-# rewrites 45 of 59 files, makes the tree 520 lines longer and flattens 338
-# comments that are aligned on purpose.  120 is the hard limit; the code is
-# written to 110.
+# Lint only: no `ruff format` and no other formatter. Measured at 120 columns,
+# `ruff format` rewrites 45 of 59 files, makes the tree 520 lines LONGER and
+# flattens 338 hand-aligned comment columns. Wrapping here is done by hand,
+# and by a token joiner that asserts the AST is unchanged. 120 is the hard
+# limit; the code is written to 110.
 [tool.ruff]
 line-length = 120
-# a generated 3000-line keysym table: nothing here has an opinion about it
+# 4300 lines of generated keysym tables; nothing to say about them.
 extend-exclude = ["wdotool/keysyms.py"]
 
 [tool.ruff.lint]
+# Real defects and the two whitespace rules, not style opinions: E4 imports,
+# E7 statement shape, E9 syntax/IO, F pyflakes, W trailing whitespace.
 select = ["E4", "E7", "E9", "F", "W"]
 
 [tool.ruff.lint.per-file-ignores]
-# a transcribed keymap: one row per keycode, tabs and all
+# Generated keymap data: one long line per key, tabs inside the XKB text.
 "wdotool/us_keymap.py" = ["E501", "W191"]
-# xdotool's own help text has a trailing space, and we print it byte for byte
+# xdotool's own usage strings carry a trailing space; byte parity keeps it.
 "wdotool/input_cmds.py" = ["W291"]
-# the Gtk version must be pinned by gi.require_version before the import
+# gi.require_version() has to run before the GTK imports it guards.
 "warandr/gui.py" = ["E402"]

@@ -47,9 +47,9 @@ upload is the one that table was written for.
 """
 
 import os
-import time
 
 from wdotool.us_keymap import TEXT as US_KEYMAP
+from wdotool.wayland_mini import now_ms as _now_ms, roundtrip
 
 MANAGER = "zwp_virtual_keyboard_manager_v1"
 # The only version there is (sway 1.11 advertises v1). We bind
@@ -327,16 +327,5 @@ class VirtualKeyboard:
                 "wdotool was holding were released with it") from None
 
 
-def _now_ms() -> int:
-    """The `time` argument: milliseconds, monotonic, 32-bit, as every
-    compositor's own input clock is."""
-    return int(time.monotonic() * 1000) & 0xFFFFFFFF
-
-
 def _roundtrip(conn, what: str):
-    """conn.roundtrip(), with a protocol error or a dead socket turned into
-    VkbdError -- the daemon must never see a traceback out of this module."""
-    try:
-        conn.roundtrip()
-    except (OSError, RuntimeError, ValueError) as e:
-        raise VkbdError(f"{what} refused: {e}") from None
+    return roundtrip(conn, what, VkbdError)
