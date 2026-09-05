@@ -1279,16 +1279,29 @@ class _NoSpace:
     file has been created and chmodded."""
 
     def __init__(self, fd=None):
-        if fd is not None:
-            os.close(fd)
+        # Keep the descriptor rather than closing it: it is the temporary the
+        # code under test just created, and `fchmod` on it is exactly what the
+        # real path does. Handing out fd 0 instead made the chmod land on
+        # whatever stdin was -- the user's tty under one runner, a root-owned
+        # device under another, where it failed with EPERM before the disk
+        # ever "filled up" and the test asserted the wrong errno.
+        self._fd = fd
 
     def fileno(self):
-        return 0                       # os.fchmod on stdin's fd: harmless
+        if self._fd is None:
+            raise OSError(errno.EBADF, "no descriptor")
+        return self._fd
+
+    def close(self):
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
+        self.close()
         return False
 
     def write(self, data):
