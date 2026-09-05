@@ -292,8 +292,7 @@ def _read_mappings_file(formatter, path: str):
         with open(path, "rb") as f:
             data = f.read(_MAX_FORMAT_FILE)
     except OSError:
-        raise FatalError("unable to open file %s for reading." % path) \
-            from None
+        raise FatalError("unable to open file %s for reading." % path) from None
     _read_mappings_text(formatter, data)
 
 
@@ -426,8 +425,7 @@ def _set_property(formatter, target, prog: str, utf8_locale: bool, name_s: str, 
         # only reached on the X plane (step 5 fataled for any other), so
         # target always has a live .conn — no None fallback needed
         atom = target.conn.atom(value_s)
-        data = struct.pack("<Q", atom)[:size // 8] if size in (8, 16, 32) \
-            else b""
+        data = struct.pack("<Q", atom)[:size // 8] if size in (8, 16, 32) else b""
         target.set_prop(name_b, "ATOM", size, data)
     else:  # 'm' is NYI in xprop too
         raise FatalError("bad format character: %s" % chr(char))

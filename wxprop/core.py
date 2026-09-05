@@ -39,7 +39,7 @@ from wxprop.fmt import FatalError
 
 try:  # the X error classes for narrow catches in the -name DFS, the X
     # error text for -id on a dead window, and this machine's name
-    from wdotool.x11_mini import (X11Error, X_ERROR_TEXT, XUnavailable, hostname)
+    from wdotool.x11_mini import X11Error, X_ERROR_TEXT, XUnavailable, hostname
 except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
     X_ERROR_TEXT = {}
 
@@ -596,7 +596,7 @@ class NativeViewTarget(NativeTarget):
             # WM_CLASS is STRING by ICCCM whatever the app id looks like,
             # so this pair is not routed through _p_string's UTF8_STRING
             # escape hatch -- an X twin's WM_CLASS is STRING too.
-            data = (_latin1(instance or "") + b"\0" + _latin1(cls or "") + b"\0")
+            data = _latin1(instance or "") + b"\0" + _latin1(cls or "") + b"\0"
             props[b"WM_CLASS"] = ("STRING", 8, data)
         title = node.get("name")
         if title is None:
@@ -1184,7 +1184,7 @@ def spy_native_view(formatter, target: NativeViewTarget, specs):
 
 def spy_native_root(formatter, target: NativeRootTarget, specs):
     backend = target.sess.backend()
-    table = (_SWAY_ROOT_EVENT_PROPS if _is_sway(backend) else _ROOT_EVENT_PROPS)
+    table = _SWAY_ROOT_EVENT_PROPS if _is_sway(backend) else _ROOT_EVENT_PROPS
     for _wid, change in _native_events(backend, workspaces=True):
         names = table.get(change, ())
         out = _show_names(formatter, target, names, specs)

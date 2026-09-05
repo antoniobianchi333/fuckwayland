@@ -289,7 +289,7 @@ class Thunk:
 
     def __init__(self, value, extra_value=None, extra_encoding=None):
         self.value = value
-        self.extra_value = extra_value      # bytes (may include final NUL)
+        self.extra_value = extra_value        # bytes (may include final NUL)
         self.extra_encoding = extra_encoding  # type name for 't'
 
 
@@ -525,8 +525,7 @@ class Formatter:
         if c == 0x61:  # a
             name = self.atom_name(t.value & 0xFFFFFFFFFFFFFFFF)
             if name is None:
-                return b"undefined atom # 0x%x" % \
-                    (t.value & 0xFFFFFFFFFFFFFFFF)
+                return b"undefined atom # 0x%x" % (t.value & 0xFFFFFFFFFFFFFFFF)
             return name.encode("latin-1")
         if c == 0x6F:  # o
             return self.format_icons(t.extra_value)
