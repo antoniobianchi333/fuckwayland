@@ -114,10 +114,11 @@ Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
   a filesystem, a copy otherwise.
 
 So: 10 GB per golden image you intend to keep, plus 2 GB for the three base cloud
-images and 6 GB for each desktop ISO you build from, plus a few GB for instances. Swap is not needed for the rig itself — a host with
-enough memory for the guests it runs barely touches it, tens of MB over days of
-builds and instances — but a swap file the size of one guest turns a memory
-shortfall into a slowdown rather than a killed QEMU.
+images and 6 GB for each desktop ISO you build from, plus a few GB for instances.
+Swap is not needed for the rig itself — a host with enough memory for the guests it
+runs barely touches it, tens of MB over days of builds and instances — but a swap file
+the size of one guest turns a memory shortfall into a slowdown rather than a killed
+QEMU.
 
 ## Packages
 
@@ -198,7 +199,7 @@ under `$VMDATA` (default `~/vm-data`) and look for the Ubuntu images in `$VMIMAG
 earlier:
 
 ```
-~/images/                          base cloud images and the desktop ISO, as downloaded
+~/images/                          base cloud images and the desktop ISOs, as downloaded
 ~/vm-data/golden/<flavor>.qcow2    the golden images; a cloud-image flavor's is an overlay whose
                                    backing file is the base image in ~/images BY ABSOLUTE PATH
 ~/vm-data/golden/<flavor>-packages.txt, <flavor>.build.log
@@ -209,9 +210,9 @@ earlier:
 ```
 
 Two consequences: do not move or delete `~/images` while cloud-image goldens exist
-(only the two installer-built goldens stand on their own), and a copy of `~/images` plus
-`~/vm-data/golden` to another machine with the same home directory is a working set
-of goldens.
+(only the two installer-built goldens stand on their own), and a copy of `~/images`
+plus `~/vm-data/golden` to another machine with the same home directory is a working
+set of goldens.
 
 The images the flavors expect, by the names in their `# vmctl-base:` / `# vmctl-iso:`
 headers:
@@ -296,8 +297,8 @@ are built — the rig is the same; only the desktop differs.
 
 The suite (`tests/`, pytest) is a host-side thing: `python3 -m pytest tests -q` on the
 machine you develop on, or in the nix dev shell, with no desktop session of these
-kinds around. On such a machine it is `2024 passed, 61 skipped in 162.76s` — the 2085
-tests the repo README counts, in under three minutes (172 s with three instances
+kinds around. On such a machine it is `2028 passed, 61 skipped in 152.39s` — the whole
+suite the repo README counts, in under three minutes (172 s with three instances
 running beside it, when one timing-sensitive lifecycle test failed and then passed on
 its own).
 
