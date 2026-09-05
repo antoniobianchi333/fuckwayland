@@ -12,6 +12,8 @@ import os
 import stat
 import sys
 
+from wdotool import stdio
+
 from . import VERSION, randr
 from .model import LayoutError
 
@@ -95,7 +97,7 @@ def write_script(layout, path, word=None, notes=None):
     return path
 
 
-def main(argv=None):
+def _main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     args = _parser().parse_args(argv)
@@ -138,3 +140,34 @@ def main(argv=None):
         sys.stderr.write(GTK_HINT % e)
         return 1
     return gui.run(backend, args.savedfile, args.randr_display)
+
+
+def main(argv=None):
+    """`_main()` with the guard every one of these tools needs.
+
+    `--version`/`--help` leave argparse through SystemExit, which used to
+    walk straight past `main()` with the text still buffered: the
+    interpreter's own exit-time flush then failed on a full or closed
+    stdout and turned exit 0 into exit 120, with an "Exception ignored"
+    block nobody can act on.  Everything else -- Ctrl-C on the way to the
+    window, a reader that left, an unexpected error out of GTK -- becomes
+    one `warandr: ...` line (wdotool/stdio.py)."""
+    stdio.repair_std()
+    quiet = False
+    try:
+        code = _main(argv)
+    except SystemExit as e:
+        stdio.exit_after_flush("warandr", e)
+        raise                       # unreachable; the line above raises
+    except KeyboardInterrupt:
+        code = 130
+    except BrokenPipeError:
+        code = 1
+    except Exception as e:
+        sys.stderr.write("warandr: %s\n" % e)
+        # An OSError here is a write to stdout that failed (a full disk,
+        # a quota, `>/dev/full`): the flush below is about to fail with
+        # the same errno, and the originals print one line, not two.
+        quiet = isinstance(e, OSError)
+        code = 1
+    return code if stdio.flush_stdout("warandr", quiet) else (code or 1)

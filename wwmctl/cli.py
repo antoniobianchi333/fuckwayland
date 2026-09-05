@@ -29,7 +29,7 @@ import getopt
 import os
 import sys
 
-from wdotool import passthrough
+from wdotool import passthrough, stdio
 from wdotool.ctx import CmdError
 
 from wwmctl import core
@@ -395,28 +395,31 @@ def main(argv=None) -> int:
     """Entry point: _run() plus the plumbing wmctrl gets from libc for free
     (stdout may be a closed fd or a broken pipe; wmctrl dies of SIGPIPE or
     lets printf fail silently — we exit quietly instead of tracing back)."""
-    if sys.stdout is None:  # fd 1 was closed before Python started
-        sys.stdout = open(os.devnull, "w")
-    if sys.stderr is None:
-        sys.stderr = open(os.devnull, "w")
+    stdio.repair_std()      # fd 1 or 2 closed before Python started
     # X11 session: hand over to the real wmctrl (argv here is already
     # sys.argv[1:], wmctrl's own convention).
     rc = passthrough.maybe_exec_real(
         "wmctrl", sys.argv[1:] if argv is None else argv, entry=argv is None)
     if rc is not None:
         return rc
+    quiet = False
     try:
         rc = _run(argv)
-        sys.stdout.flush()
-        return rc
+    except SystemExit as e:
+        stdio.exit_after_flush(_prog(), e)
+        raise                       # unreachable; the line above raises
     except (BrokenPipeError, KeyboardInterrupt):
-        # keep the interpreter's exit-time flush from raising again
-        try:
-            fd = sys.stdout.fileno()
-            os.dup2(os.open(os.devnull, os.O_WRONLY), fd)
-        except Exception:
-            pass
-        return 1
+        rc = 1
+    except Exception as e:
+        # never a traceback: a listing whose write to a full stdout
+        # failed, a compositor that went away mid-query.
+        sys.stderr.write("%s: %s\n" % (_prog(), e))
+        # An OSError here is a write to stdout that failed (a full disk,
+        # a quota, `>/dev/full`): the flush below is about to fail with
+        # the same errno, and the originals print one line, not two.
+        quiet = isinstance(e, OSError)
+        rc = 1
+    return rc if stdio.flush_stdout(_prog(), quiet) else (rc or 1)
 
 
 def _run(argv=None) -> int:

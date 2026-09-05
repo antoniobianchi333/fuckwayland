@@ -32,7 +32,7 @@ import re
 import struct
 import sys
 
-from wdotool import passthrough
+from wdotool import passthrough, stdio
 from wxprop import core
 from wxprop import fmt as fmtmod
 from wxprop.fmt import FatalError
@@ -440,21 +440,8 @@ def _set_property(formatter, target, prog: str, utf8_locale: bool,
 # -- main --------------------------------------------------------------------
 
 
-def _safe_flush():
-    try:
-        sys.stdout.buffer.flush()
-    except BrokenPipeError:
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(devnull, sys.stdout.fileno())
-            os.close(devnull)
-        except (OSError, ValueError):
-            pass
-    except (AttributeError, ValueError, OSError):
-        pass
-
-
 def main(argv=None) -> int:
+    stdio.repair_std()      # fd 1 or 2 closed before Python started
     prog = _progname()
     # X11 session: hand over to the real xprop. Unlike the other three we do
     # have a native X11 path (core.Session talks to $DISPLAY directly), so a
@@ -464,36 +451,37 @@ def main(argv=None) -> int:
         fallback_native=True)
     if rc is not None:
         return rc
+    quiet = False
     try:
-        try:
-            return _main(prog, list(sys.argv[1:] if argv is None else argv))
-        finally:
-            _safe_flush()
+        code = _main(prog, list(sys.argv[1:] if argv is None else argv))
+    except SystemExit as e:
+        stdio.exit_after_flush(prog, e)
+        raise                       # unreachable; the line above raises
     except UsageError as e:
         if e.msg:
             sys.stderr.write("%s: %s\n\n" % (prog, e.msg))
         print_help(prog)
-        return 1
+        code = 1
     except FatalError as e:
         sys.stderr.write("%s: error: %s\n" % (prog, e))
-        return 1
+        code = 1
     except KeyboardInterrupt:
-        return 130
+        code = 130
     except BrokenPipeError:
-        try:
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(devnull, sys.stdout.fileno())
-        except OSError:
-            pass
-        return 1
+        code = 1
     except Exception as e:
         # X protocol errors print Xlib's classic block; anything else is a
         # one-line fatal (never a traceback).
         if hasattr(e, "code") and hasattr(e, "major"):
             sys.stderr.write(core.x_error_report(e))
-            return 1
-        sys.stderr.write("%s: error: %s\n" % (prog, e))
-        return 1
+        else:
+            sys.stderr.write("%s: error: %s\n" % (prog, e))
+        # An OSError here is a write to stdout that failed (a full disk,
+        # a quota, `>/dev/full`): the flush below is about to fail with
+        # the same errno, and the originals print one line, not two.
+        quiet = isinstance(e, OSError)
+        code = 1
+    return code if stdio.flush_stdout(prog, quiet) else (code or 1)
 
 
 def _out_write(data: bytes):
