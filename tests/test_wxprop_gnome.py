@@ -33,7 +33,7 @@ from test_wxprop_cli import _CapStdout  # noqa: E402
 from wdotool import backend_detect  # noqa: E402
 from wdotool.backend_gnome import IFACE, OBJECT_PATH, GnomeBackend  # noqa: E402
 from wdotool.dbus_mini import Bus  # noqa: E402
-from wwmctl.x11_mini import X11Error  # noqa: E402
+from wdotool.x11_mini import X11Error  # noqa: E402
 from wxprop import cli, core  # noqa: E402
 
 # The suite never hands a tool over to the real X11 one: see
@@ -82,7 +82,7 @@ def mutter_x_props():
 
 
 class FakeXConn:
-    """In-memory stand-in for wwmctl.x11_mini.X11Conn: properties per
+    """In-memory stand-in for wdotool.x11_mini.X11Conn: properties per
     window, an atom table, a QueryTree shape (root -> frame -> client), and
     an event queue for -spy (an exception object in the queue is raised, so
     a test can end a -spy loop with KeyboardInterrupt)."""

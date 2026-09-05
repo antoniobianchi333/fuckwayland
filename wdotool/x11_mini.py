@@ -1,4 +1,9 @@
-"""OWNER: Agent X. Minimal pure-stdlib X11 wire client for wwmctl.
+"""Minimal pure-stdlib X11 wire client.
+
+Three callers share it: wwmctl.core reads the X plane of XWayland windows
+(WM_CLASS, WM_CLIENT_MACHINE, geometry) and sends EWMH ClientMessages,
+wxprop.core does all of its X-window work through it, and
+wdotool.backend_kwin reads the XWayland ids KWin 6 does not export.
 
 Talks straight to the XWayland server over its unix socket — enough of the
 core protocol for wmctrl-style identity/property work and nothing more:
@@ -11,7 +16,7 @@ big-requests; byte order 'l' only.
 
 Error model: XUnavailable for anything connection-level (no server, bad
 DISPLAY, auth rejected, connection lost), X11Error for errors the server
-reports (BadWindow and friends). Callers (wwmctl.core) treat both as "degrade
+reports (BadWindow and friends). Every caller treats both as "degrade
 gracefully".
 
 Conventions: property values of format 32 are returned as unsigned 32-bit
@@ -664,8 +669,6 @@ class X11Conn:
         payload = struct.pack("<IIIB3xI", win, prop, type_a, fmt,
                               nitems) + _pad4(data)
         self._void(_OP_CHANGE_PROPERTY, 0, payload)  # PropModeReplace
-
-    # -- wxprop extensions (ADDITIVE ONLY; wwmctl behavior above unchanged) --
 
     def query_tree(self, win: int) -> list[int]:
         """Children of `win`, bottom-to-top stacking order (wire order)."""

@@ -2,7 +2,7 @@
 
 Two planes, per WXPROP.md:
 
-- X windows (XWayland): everything through wwmctl.x11_mini against the real
+- X windows (XWayland): everything through wdotool.x11_mini against the real
   X server — GetProperty/ListProperties for reads, ChangeProperty/
   DeleteProperty for -set/-remove, PropertyNotify events for -spy. Real
   xprop is the byte oracle.
@@ -38,7 +38,7 @@ import threading
 from wxprop.fmt import FatalError
 
 try:  # the X error classes, for narrow catches in the -name DFS
-    from wwmctl.x11_mini import X11Error, XUnavailable
+    from wdotool.x11_mini import X11Error, XUnavailable
 except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
     class X11Error(Exception):
         pass
@@ -117,7 +117,7 @@ def _x11_connect(display, xauthority=None):
     if os.environ.get("WXPROP_NO_X"):
         return None
     try:
-        from wwmctl import x11_mini
+        from wdotool import x11_mini
         if xauthority:
             return x11_mini.X11Conn(display, xauthority=xauthority)
         return x11_mini.X11Conn(display)

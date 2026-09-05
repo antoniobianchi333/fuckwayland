@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""wxprop builder: tests for the ADDITIVE wwmctl.x11_mini extensions
+"""wxprop builder: tests for the ADDITIVE wdotool.x11_mini extensions
 (list_properties, get_atom_name, read_property, delete_property,
 generalized change_property, select_input/next_event).
 
@@ -23,8 +23,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from wwmctl import x11_mini
-from wwmctl.x11_mini import X11Conn, X11Error, XUnavailable
+from wdotool import x11_mini
+from wdotool.x11_mini import X11Conn, X11Error, XUnavailable
 
 from test_wwmctl_x11 import FakeXServer
 

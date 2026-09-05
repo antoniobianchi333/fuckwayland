@@ -949,7 +949,7 @@ class KwinBackend(WindowBackend):
             return None
         info = self.x_info() or ("", "")
         try:
-            from wwmctl import x11_mini
+            from wdotool import x11_mini
             self._x = x11_mini.X11Conn(info[0] or None,
                                        xauthority=info[1] or None)
         except Exception:  # noqa: BLE001 -- no X plane: xid stays 0

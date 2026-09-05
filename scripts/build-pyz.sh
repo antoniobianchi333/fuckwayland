@@ -37,14 +37,14 @@ build() { # name entry_module packages...
   echo "built dist/$name ($(wc -c < "dist/$name") bytes)"
 }
 
-# wwmctl/wxprop ride with the packages they import (wdotool backends, x11_mini)
-# and wdotool rides with wwmctl.x11_mini, which backend_kwin uses to read the
-# X plane: the XWayland ids KWin 6 does not export, and the WM_CLASS pair
-# 5.27 lower-cases. Without it in the zipapp that import failed silently and
-# the shipped wdotool answered differently from a source checkout.
-build wdotool wdotool.cli wdotool wwmctl
+# wwmctl/wxprop ride with the package they import for backends and the X
+# wire client, wdotool. backend_kwin uses x11_mini to read the X plane: the
+# XWayland ids KWin 6 does not export, and the WM_CLASS pair 5.27
+# lower-cases; since it lives in wdotool the shipped wdotool answers like a
+# source checkout with nothing else in the bundle.
+build wdotool wdotool.cli wdotool
 build wwmctl  wwmctl.cli  wdotool wwmctl
-build wxprop  wxprop.cli  wdotool wwmctl wxprop
+build wxprop  wxprop.cli  wdotool wxprop
 build wxrandr wxrandr.cli wdotool wxrandr
 # warandr bundles wxrandr: on Wayland it runs the same interpreter with
 # -m wxrandr, PYTHONPATH pointing at the pyz itself (zipimport)

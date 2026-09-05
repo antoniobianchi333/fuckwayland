@@ -9,7 +9,7 @@ Dual-plane design per WWMCTL.md:
   views() carry it -- GNOME bridge `xid`; sway's raw tree exposes it as the
   node's "window" field) so xprop/real-wmctrl interoperate, and X-only
   data (WM_CLASS, WM_CLIENT_MACHINE, geometry) is read from the XWayland
-  server via wwmctl.x11_mini when it is reachable -- with the DISPLAY and
+  server via wdotool.x11_mini when it is reachable -- with the DISPLAY and
   cookie file the backend reports (x_info(): gnome-shell's own on GNOME,
   where Xwayland runs with -auth), else the session scan,
 - with no X server everything still works compositor-only (class from
@@ -35,7 +35,7 @@ import time
 from wdotool import backend_detect, session
 from wdotool.backend import warn as _warn
 from wdotool.ctx import CmdError
-from wwmctl.x11_mini import XUnavailable
+from wdotool.x11_mini import XUnavailable
 
 # _NET_WM_STATE actions (EWMH)
 STATE_REMOVE = 0
@@ -64,7 +64,7 @@ def _x11_connect(display=None, xauthority=None):
     if os.environ.get("WWMCTL_NO_X"):
         return None
     try:
-        from wwmctl import x11_mini
+        from wdotool import x11_mini
         if display is None and xauthority is None:
             return x11_mini.X11Conn()
         return x11_mini.X11Conn(display, xauthority=xauthority)

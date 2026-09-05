@@ -9,7 +9,7 @@ toolchain, byte-parity oracles, agents never commit.
 ## Planes
 
 - **X windows** (id ≥ the X resource base, or found via the compositor tree's
-  `"window"` field): everything goes through `wwmctl.x11_mini` against the real
+  `"window"` field): everything goes through `wdotool.x11_mini` against the real
   XWayland server — genuine GetProperty/ListProperties output, -set/-remove via
   ChangeProperty/DeleteProperty, -spy via PropertyNotify events. Real xprop in the
   devshell is the byte oracle for these.
@@ -47,7 +47,7 @@ toolchain, byte-parity oracles, agents never commit.
   budget — NO "..." ellipsis; it just yields fewer/shorter fields, verified against
   the oracle and xprop.c), _NET_WM_ICON's ASCII-art icon
   renderer — yes, really, xprop draws the icon; copy the algorithm from xprop.c).
-- `wwmctl/x11_mini.py` — ADDITIVE-ONLY extensions allowed (it is shared with
+- `wdotool/x11_mini.py` — ADDITIVE-ONLY extensions allowed (it is shared with
   wwmctl; the full suite must stay green): `list_properties(win)`,
   `get_atom_name(atom)`, `read_property(win, name) -> (type_name, format, bytes) | None`,
   `delete_property(win, name)`, `change_property(...)` generalization if needed,

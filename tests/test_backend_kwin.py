@@ -1892,7 +1892,7 @@ class DetectTests(_Base):
 
 
 class _FakeX:
-    """Stands in for wwmctl.x11_mini.X11Conn in the id-matching tests."""
+    """Stands in for wdotool.x11_mini.X11Conn in the id-matching tests."""
 
     def __init__(self, clients):
         self.clients = clients

@@ -2,7 +2,7 @@
 """Regression tests from the wwmctl adversarial-review pass: hostile or
 misbehaving X servers, degenerate properties, and core-level degradation.
 
-Findings fixed and pinned here (wwmctl/x11_mini.py unless noted):
+Findings fixed and pinned here (wdotool/x11_mini.py unless noted):
 - the GetProperty offset loop could be spun forever (or OOMed) by a server
   that always claims bytes_after > 0: now capped in size and iterations,
 - a "success" setup reply with a lying body shape leaked struct.error or
@@ -44,8 +44,9 @@ sys.path.insert(0, ROOT)
 from tests.test_wwmctl_cli import SPECS, FakeSwayBackend, FakeX11, run
 from tests.test_wwmctl_x11 import FakeXServer
 from wdotool.backend import Window
-from wwmctl import core, x11_mini
-from wwmctl.x11_mini import X11Conn, XUnavailable
+from wdotool import x11_mini
+from wwmctl import core
+from wdotool.x11_mini import X11Conn, XUnavailable
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
