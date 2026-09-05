@@ -90,9 +90,8 @@ def x_error_report(err) -> str:
 
 
 def _x11_connect(display, xauthority=None):
-    """An x11_mini.X11Conn, or None. Never raises. `xauthority`: the
-    compositor's cookie file when the backend knows it (GNOME bridge XInfo);
-    x11_mini otherwise falls back to $XAUTHORITY and the session scan."""
+    """An x11_mini.X11Conn, or None. Never raises. `xauthority`: the compositor's cookie file when the backend
+    knows it (GNOME bridge XInfo); x11_mini otherwise falls back to $XAUTHORITY and the session scan."""
     if os.environ.get("WXPROP_NO_X"):
         return None
     try:
@@ -105,31 +104,23 @@ def _x11_connect(display, xauthority=None):
 
 
 def _detect_backend():
-    """A wdotool window backend, or None when there is none to be had.
-    Raises the detector's CmdError (e.g. the GNOME bridge install hint) so
-    Session can keep the reason for the error paths that need it.
+    """A wdotool window backend, or None when there is none to be had. Raises the detector's CmdError (e.g. the
+    GNOME bridge install hint) so Session can keep the reason for the error paths that need it.
 
-    None outright on a plain X11 session -- hardening, not a fix for an
-    observed wrong answer. We only run at all there when no real xprop is
-    installed (`maybe_exec_real(..., fallback_native=True)`), and what is
-    promised then is an X11 client; but the detector goes by the session
-    bus, and a compositor that is a plain X window manager owns its bus
-    name there just the same (KWin on Xorg owns org.kde.KWin), so `-root`
-    used to be answered by `MergedRootTarget` with the compositor's
-    `_NET_CLIENT_LIST`/`_NET_ACTIVE_WINDOW`/... over the X root's. On both
-    Plasma X11 images this branch measured **byte-identical** to the real
-    xprop -- every window on an X11 session is an X window, so the two
-    views agree, and the timings are the same to within noise. What it
-    removes is the case where they cannot agree: with no X id among the
-    compositor's windows `Session.x_present()` is false and the answer is
-    the *synthesized* root (`_NET_SUPPORTING_WM_CHECK ... 0x0`, ids minted
-    from compositor handles), which on a session that has a real X root and
-    a real EWMH window manager is simply wrong. That state is reachable in
-    principle and is pinned hermetically (tests/test_wxprop_cli.py); it was
-    not reproducible on Plasma 5.27 or 6.6 on Xorg.
-    `FUCKWAYLAND_PASSTHROUGH=never` still says "our own code whatever the
-    session" and still detects, so the Wayland paths stay reachable from an
-    X11 development box (and the whole test suite)."""
+    None outright on a plain X11 session -- hardening, not a fix for an observed wrong answer. We only run at
+    all there when no real xprop is installed (`maybe_exec_real(..., fallback_native=True)`), and what is
+    promised then is an X11 client; but the detector goes by the session bus, and a compositor that is a plain X
+    window manager owns its bus name there just the same (KWin on Xorg owns org.kde.KWin), so `-root` used to be
+    answered by `MergedRootTarget` with the compositor's `_NET_CLIENT_LIST`/`_NET_ACTIVE_WINDOW`/... over the X
+    root's. On both Plasma X11 images this branch measured **byte-identical** to the real xprop -- every window
+    on an X11 session is an X window, so the two views agree, and the timings are the same to within noise. What
+    it removes is the case where they cannot agree: with no X id among the compositor's windows
+    `Session.x_present()` is false and the answer is the *synthesized* root (`_NET_SUPPORTING_WM_CHECK ... 0x0`,
+    ids minted from compositor handles), which on a session that has a real X root and a real EWMH window
+    manager is simply wrong. That state is reachable in principle and is pinned hermetically
+    (tests/test_wxprop_cli.py); it was not reproducible on Plasma 5.27 or 6.6 on Xorg.
+    `FUCKWAYLAND_PASSTHROUGH=never` still says "our own code whatever the session" and still detects, so the
+    Wayland paths stay reachable from an X11 development box (and the whole test suite)."""
     from fwcommon import passthrough
     from wdotool import backend_detect
     if passthrough.session_kind("xprop") == "x11":
@@ -140,11 +131,10 @@ def _detect_backend():
 def _progname() -> str:
     """argv[0] the way xprop prints it in its diagnostics.
 
-    Verbatim, not basename(): xprop sets `program_name = argv[0]` and never
-    trims it, so `/usr/bin/xprop -badflag` says "/usr/bin/xprop: ...". We
-    print the same string for the same invocation, which is the whole point
-    of a drop-in. `python -m wxprop` has no name worth printing, so the tool
-    name stands in (WXPROP_ARGV0 overrides both)."""
+    Verbatim, not basename(): xprop sets `program_name = argv[0]` and never trims it, so
+    `/usr/bin/xprop -badflag` says "/usr/bin/xprop: ...". We print the same string for the same invocation,
+    which is the whole point of a drop-in. `python -m wxprop` has no name worth printing, so the tool name
+    stands in (WXPROP_ARGV0 overrides both)."""
     override = os.environ.get("WXPROP_ARGV0")
     if override:
         return override
@@ -248,11 +238,10 @@ class Session:
         return bool(self._views)
 
     def x_present(self) -> bool:
-        """May the X plane be opened without side effects? Always on sway
-        and generic backends (the old behavior: try it); on a views()
-        backend only when it lists an X window or an Xwayland process
-        exists -- Mutter spawns Xwayland on demand, and a speculative
-        connect from `wxprop -root` would start one just to look."""
+        """May the X plane be opened without side effects? Always on sway and generic backends (the old
+        behavior: try it); on a views() backend only when it lists an X window or an Xwayland process exists --
+        Mutter spawns Xwayland on demand, and a speculative connect from `wxprop -root` would start one just to
+        look."""
         if self._x not in ("unset", None):
             return True
         if self.display is not None or os.environ.get("WXPROP_NO_X"):
@@ -264,10 +253,9 @@ class Session:
         return _xwayland_running()
 
     def nodes(self):
-        """[(node, win)] from the compositor, [] when unavailable. `node`
-        is the raw tree dict for sway (carries "window" for XWayland
-        views), a dict built from a typed View (backend.views(): GNOME),
-        or a minimal synthesized dict for generic backends."""
+        """[(node, win)] from the compositor, [] when unavailable. `node` is the raw tree dict for sway (carries
+        "window" for XWayland views), a dict built from a typed View (backend.views(): GNOME), or a minimal
+        synthesized dict for generic backends."""
         b = self.backend()
         if b is None:
             self._views = False
@@ -376,18 +364,16 @@ _WINDOW_TYPES = {
 }
 
 
-# Where the synthesized atom ids start. They must not look like ids the X
-# server could have handed out: numbered from 0x100 they sat squarely
-# inside the server's own allocated range, so a numeric id copied out of a
-# native window's dump and fed back to a real X tool named a plausible
-# WRONG atom instead of failing. No X server allocates this high.
+# Where the synthesized atom ids start. They must not look like ids the X server could have handed out: numbered
+# from 0x100 they sat squarely inside the server's own allocated range, so a numeric id copied out of a native
+# window's dump and fed back to a real X tool named a plausible WRONG atom instead of failing. No X server
+# allocates this high.
 _SYNTH_ATOM_BASE = 0x40000000
 
 
 class NativeAtoms:
-    """Fake atom table for the native plane: predefined X atoms keep their
-    real ids (1..68) and EWMH names get stable synthesized ids; -f/-set
-    intern new names process-locally, mirroring XInternAtom(create)."""
+    """Fake atom table for the native plane: predefined X atoms keep their real ids (1..68) and EWMH names get
+    stable synthesized ids; -f/-set intern new names process-locally, mirroring XInternAtom(create)."""
 
     def __init__(self):
         self.by_name = {}
@@ -420,14 +406,12 @@ class NativeAtoms:
 
 
 def _p_string(s: str):
-    """A latin-1 property (type STRING is ISO 8859-1, by definition), or
-    UTF8_STRING when the text does not fit in it.
+    """A latin-1 property (type STRING is ISO 8859-1, by definition), or UTF8_STRING when the text does not fit
+    in it.
 
-    Typing UTF-8 bytes as STRING is not a legibility trade-off, it is
-    wrong: xprop's STRING-to-locale rule decodes them as latin-1 and
-    re-encodes them for the locale, so every character above U+00FF prints
-    as mojibake. Titles that DO fit latin-1 stay STRING, which is what the
-    XWayland twin's real WM_NAME carries."""
+    Typing UTF-8 bytes as STRING is not a legibility trade-off, it is wrong: xprop's STRING-to-locale rule
+    decodes them as latin-1 and re-encodes them for the locale, so every character above U+00FF prints as
+    mojibake. Titles that DO fit latin-1 stay STRING, which is what the XWayland twin's real WM_NAME carries."""
     try:
         return ("STRING", 8, s.encode("latin-1"))
     except UnicodeEncodeError:
@@ -435,9 +419,8 @@ def _p_string(s: str):
 
 
 def _latin1(s: str) -> bytes:
-    """ISO 8859-1 bytes for a property whose type is STRING by definition
-    (WM_CLASS), with anything that does not fit replaced -- the property
-    has no way to say "this is UTF-8"."""
+    """ISO 8859-1 bytes for a property whose type is STRING by definition (WM_CLASS), with anything that does
+    not fit replaced -- the property has no way to say "this is UTF-8"."""
     return s.encode("latin-1", "replace")
 
 
@@ -548,9 +531,8 @@ class NativeViewTarget(NativeTarget):
         props = {}
         states = []
         rich = bool(node.get(_VIEW_KEY))  # a views() backend: more states
-        # Mutter's own _NET_WM_STATE order (window-x11.c set_net_wm_state),
-        # so native and XWayland windows on GNOME print alike; the sway
-        # subset (FULLSCREEN, HIDDEN, STICKY) keeps its relative order
+        # Mutter's own _NET_WM_STATE order (window-x11.c set_net_wm_state), so native and XWayland windows on
+        # GNOME print alike; the sway subset (FULLSCREEN, HIDDEN, STICKY) keeps its relative order
         if rich and node.get("skip_pager"):
             states.append("_NET_WM_STATE_SKIP_PAGER")
         if rich and node.get("skip_taskbar"):
@@ -594,9 +576,8 @@ class NativeViewTarget(NativeTarget):
         instance = node.get("app_id") or wp.get("instance")
         cls = node.get("app_id") or wp.get("class")
         if instance or cls:
-            # WM_CLASS is STRING by ICCCM whatever the app id looks like,
-            # so this pair is not routed through _p_string's UTF8_STRING
-            # escape hatch -- an X twin's WM_CLASS is STRING too.
+            # WM_CLASS is STRING by ICCCM whatever the app id looks like, so this pair is not routed through
+            # _p_string's UTF8_STRING escape hatch -- an X twin's WM_CLASS is STRING too.
             data = _latin1(instance or "") + b"\0" + _latin1(cls or "") + b"\0"
             props[b"WM_CLASS"] = ("STRING", 8, data)
         title = node.get("name")
@@ -606,19 +587,17 @@ class NativeViewTarget(NativeTarget):
             props[b"_NET_WM_NAME"] = _p_utf8(title)
             props[b"WM_NAME"] = _p_string(title)
         if rich:
-            # ICCCM WM_STATE: 1 NormalState, 3 IconicState, and no icon
-            # window. Mutter writes it on every X11 window it manages, so a
-            # native one that answers "is this window minimized?" the same
-            # way keeps a script working across the two planes.
+            # ICCCM WM_STATE: 1 NormalState, 3 IconicState, and no icon window. Mutter writes it on every X11
+            # window it manages, so a native one that answers "is this window minimized?" the same way keeps a
+            # script working across the two planes.
             state = 1 if node.get("visible", True) else 3
             props[b"WM_STATE"] = ("WM_STATE", 32, struct.pack("<II", state, 0))
         return props
 
 
 class NativeRootTarget(NativeTarget):
-    """-root without an X server: a minimal EWMH-ish root property set
-    synthesized from the compositor (documented in WXPROP.md's terms: the
-    _NET_SUPPORTING_WM_CHECK-ish set). _NET_SUPPORTING_WM_CHECK is 0x0 —
+    """-root without an X server: a minimal EWMH-ish root property set synthesized from the compositor
+    (documented in WXPROP.md's terms: the _NET_SUPPORTING_WM_CHECK-ish set). _NET_SUPPORTING_WM_CHECK is 0x0 —
     there is no WM check window to point at."""
 
     node_id = None
@@ -646,10 +625,9 @@ class NativeRootTarget(NativeTarget):
                           "_NET_WM_STATE_SKIP_TASKBAR",
                           "_NET_WM_STATE_DEMANDS_ATTENTION"]
         props[b"_NET_SUPPORTED"] = _p_atoms(self.atoms, supported)
-        # With a views() backend every window is listed by the id the
-        # tools print for it (the X id of an XWayland window, the bridge
-        # id of a native one) -- the list wwmctl -l prints. The sway tree
-        # path keeps listing node ids.
+        # With a views() backend every window is listed by the id the tools print for it (the X id of an
+        # XWayland window, the bridge id of a native one) -- the list wwmctl -l prints. The sway tree path keeps
+        # listing node ids.
         if rich:
             ids = [n.get("window") or w.id for n, w in nodes]
             props[b"_NET_CLIENT_LIST"] = _p_window(ids)
@@ -672,10 +650,9 @@ class NativeRootTarget(NativeTarget):
             cur = max(b.get_desktop(), 0)
         except Exception:
             pass
-        # A compositor can be on a desktop it does not count: sway creates a
-        # workspace on demand and GET_WORKSPACES lists only the ones that
-        # exist, so "current 3 of 2 desktops" reached the root and no EWMH
-        # reader can make sense of that.
+        # A compositor can be on a desktop it does not count: sway creates a workspace on demand and
+        # GET_WORKSPACES lists only the ones that exist, so "current 3 of 2 desktops" reached the root and no
+        # EWMH reader can make sense of that.
         num = max(num, cur + 1)
         props[b"_NET_NUMBER_OF_DESKTOPS"] = _p_cardinal([num])
         props[b"_NET_CURRENT_DESKTOP"] = _p_cardinal([cur])
@@ -697,15 +674,12 @@ _ROOT_OVERRIDES = (b"_NET_CLIENT_LIST", b"_NET_CLIENT_LIST_STACKING",
 
 
 class MergedRootTarget:
-    """-root on GNOME with Xwayland up: the real X root window (Mutter is a
-    full EWMH window manager for Xwayland: _NET_SUPPORTED,
-    _NET_SUPPORTING_WM_CHECK, _NET_WORKAREA, _NET_SHOWING_DESKTOP, ...)
-    with the window-list properties re-synthesized from the bridge, because
-    the X root lists X clients only: _NET_CLIENT_LIST(_STACKING) and
-    _NET_ACTIVE_WINDOW cover native windows too (X id or bridge id, the
-    ids the tools print), _NET_NUMBER_OF_DESKTOPS/_NET_CURRENT_DESKTOP/
-    _NET_DESKTOP_NAMES come from the workspace manager directly. Reads of
-    anything else, and -set/-remove, go to the X root untouched."""
+    """-root on GNOME with Xwayland up: the real X root window (Mutter is a full EWMH window manager for
+    Xwayland: _NET_SUPPORTED, _NET_SUPPORTING_WM_CHECK, _NET_WORKAREA, _NET_SHOWING_DESKTOP, ...) with the
+    window-list properties re-synthesized from the bridge, because the X root lists X clients only:
+    _NET_CLIENT_LIST(_STACKING) and _NET_ACTIVE_WINDOW cover native windows too (X id or bridge id, the ids the
+    tools print), _NET_NUMBER_OF_DESKTOPS/_NET_CURRENT_DESKTOP/_NET_DESKTOP_NAMES come from the workspace
+    manager directly. Reads of anything else, and -set/-remove, go to the X root untouched."""
 
     plane = "x"
     node_id = None
@@ -724,16 +698,13 @@ class MergedRootTarget:
         return self.xt.intern(name, create) or name in _ROOT_OVERRIDES
 
     def fetch(self, name: bytes):
-        """The X root's property, with the six window-list ones answered
-        from the compositor -- except for a name THIS RUN has written or
-        removed, which is read straight from the X root so the tool can
-        see what it just did.
+        """The X root's property, with the six window-list ones answered from the compositor -- except for a
+        name THIS RUN has written or removed, which is read straight from the X root so the tool can see what it
+        just did.
 
-        The absence of an override is not evidence of damage: Mutter
-        writes _NET_CURRENT_DESKTOP only when the workspace first changes,
-        so a fresh session legitimately lacks it while the compositor
-        knows the answer. Damage is reported at the moment it is done
-        instead -- see _note()."""
+        The absence of an override is not evidence of damage: Mutter writes _NET_CURRENT_DESKTOP only when the
+        workspace first changes, so a fresh session legitimately lacks it while the compositor knows the answer.
+        Damage is reported at the moment it is done instead -- see _note()."""
         if name in _ROOT_OVERRIDES and name not in self._written:
             p = self.native._props().get(name)
             if p is not None:
@@ -759,12 +730,10 @@ class MergedRootTarget:
         self.xt.set_prop(name, type_name, size, data)
 
     def _note(self, what: str, name: bytes):
-        """-set/-remove address the real X root, never the synthesis, so
-        the tool could not see what it had just done -- and an operator who
-        has broken every EWMH client on the X plane (`-root -remove
-        _NET_CLIENT_LIST`; `wmctrl -l` then says "Cannot get client list
-        properties") got silence. Say it once, and read that name straight
-        from the X root for the rest of the run."""
+        """-set/-remove address the real X root, never the synthesis, so the tool could not see what it had just
+        done -- and an operator who has broken every EWMH client on the X plane
+        (`-root -remove _NET_CLIENT_LIST`; `wmctrl -l` then says "Cannot get client list properties") got
+        silence. Say it once, and read that name straight from the X root for the rest of the run."""
         if name not in _ROOT_OVERRIDES or name in self._written:
             return
         self._written.add(name)
@@ -777,11 +746,10 @@ class MergedRootTarget:
 class FontTarget:
     """`xprop -font <name>`: a core X font's FONTPROPs.
 
-    xprop's Get_Font_Property_Data_And_Type hands every value back as a
-    typeless 32-bit CARD32, so the lines carry no `(TYPE)` and the format
-    comes from the font table alone (an unmapped property falls back to
-    xprop's default `0x` and prints as a bare hex number). XWayland does
-    serve the core fonts xfonts-base installs, `fixed` among them."""
+    xprop's Get_Font_Property_Data_And_Type hands every value back as a typeless 32-bit CARD32, so the lines
+    carry no `(TYPE)` and the format comes from the font table alone (an unmapped property falls back to xprop's
+    default `0x` and prints as a bare hex number). XWayland does serve the core fonts xfonts-base installs,
+    `fixed` among them."""
 
     plane = "font"
     node_id = None
@@ -836,10 +804,9 @@ def resolve_font(sess: Session, name: str):
 
 
 class MissingWindowTarget:
-    """-id N with no X server and no matching compositor node. The error
-    is deferred to the first window operation, so pure parse errors
-    ("format specified without atom") still fire first, like xprop, whose
-    window ids are only ever touched at property-access time."""
+    """-id N with no X server and no matching compositor node. The error is deferred to the first window
+    operation, so pure parse errors ("format specified without atom") still fire first, like xprop, whose window
+    ids are only ever touched at property-access time."""
 
     plane = "missing"
 
@@ -866,17 +833,14 @@ class MissingWindowTarget:
 
 
 def resolve_id(sess: Session, wid: int):
-    """xprop -id N: a compositor node id resolves through the node (an
-    XWayland node redirects to its real X window id); otherwise the id is
-    handed to the X server, exactly like xprop. The error wording for a
-    hopeless id is xprop's own (grammar and all).
+    """xprop -id N: a compositor node id resolves through the node (an XWayland node redirects to its real X
+    window id); otherwise the id is handed to the X server, exactly like xprop. The error wording for a hopeless
+    id is xprop's own (grammar and all).
 
-    X ids are matched first, across all nodes, before any compositor id.
-    `-id` is an X window id in every xprop manual there is, and the two
-    spaces are not disjoint: KWin mints its own toplevel ids and Mutter's
-    are Mutter's, so one window's compositor id can equal another window's
-    X id, and a single pass in node order then answered about whichever of
-    the two the compositor happened to list first."""
+    X ids are matched first, across all nodes, before any compositor id. `-id` is an X window id in every xprop
+    manual there is, and the two spaces are not disjoint: KWin mints its own toplevel ids and Mutter's are
+    Mutter's, so one window's compositor id can equal another window's X id, and a single pass in node order
+    then answered about whichever of the two the compositor happened to list first."""
     nodes = list(sess.nodes())
     for node, win in nodes:
         if node.get("window") == wid:
@@ -921,10 +885,9 @@ def resolve_root(sess: Session):
 
 
 def _x_fetch_name(x, win: int):
-    """XFetchName: WM_NAME only when its type is STRING (format 8). A
-    BadWindow (the window died between the tree read and this fetch) is a
-    normal DFS miss; a lost connection (XUnavailable) propagates so main
-    reports the real fault instead of a misleading 'no window' verdict."""
+    """XFetchName: WM_NAME only when its type is STRING (format 8). A BadWindow (the window died between the
+    tree read and this fetch) is a normal DFS miss; a lost connection (XUnavailable) propagates so main reports
+    the real fault instead of a misleading 'no window' verdict."""
     try:
         r = x.read_property(win, "WM_NAME")
     except X11Error:
@@ -935,10 +898,9 @@ def _x_fetch_name(x, win: int):
 
 
 def _window_with_name(x, top: int, name: bytes, depth: int = 0):
-    """dsimple.c's Window_With_Name: pre-order DFS, exact strcmp on
-    WM_NAME, first match wins. Depth-bounded against a lying server. A
-    window vanishing mid-search (BadWindow from query_tree) prunes that
-    subtree; only a lost connection escapes."""
+    """dsimple.c's Window_With_Name: pre-order DFS, exact strcmp on WM_NAME, first match wins. Depth-bounded
+    against a lying server. A window vanishing mid-search (BadWindow from query_tree) prunes that subtree; only
+    a lost connection escapes."""
     if depth > 64:
         return 0
     if _x_fetch_name(x, top) == name:
@@ -955,9 +917,8 @@ def _window_with_name(x, top: int, name: bytes, depth: int = 0):
 
 
 def resolve_name(sess: Session, name: str):
-    """-name: real xprop semantics first (exact WM_NAME match, DFS from the
-    X root) so X-plane behavior is untouched; the native plane then gets
-    the same courtesy (exact title, then exact app_id) for windows real
+    """-name: real xprop semantics first (exact WM_NAME match, DFS from the X root) so X-plane behavior is
+    untouched; the native plane then gets the same courtesy (exact title, then exact app_id) for windows real
     xprop could never see."""
     x = sess.x11() if sess.x_present() else None
     if x is not None:
@@ -1076,9 +1037,8 @@ _NATIVE_EVENT_PROPS = {
     "urgent": (),
 }
 
-# the same for the bridge's WindowEvent vocabulary (backend.events()):
-# `workspace` also fires when stickiness changes, `minimized`/`urgent`
-# are states the views() synthesis prints, `move` is geometry only
+# the same for the bridge's WindowEvent vocabulary (backend.events()): `workspace` also fires when stickiness
+# changes, `minimized`/`urgent` are states the views() synthesis prints, `move` is geometry only
 _VIEW_EVENT_PROPS = {
     "title": (b"WM_NAME", b"_NET_WM_NAME"),
     "fullscreen_mode": (b"_NET_WM_STATE",),
@@ -1090,9 +1050,8 @@ _VIEW_EVENT_PROPS = {
     "new": (),
 }
 
-# root-level, sway: no stacking list (the tree is not a stacking order)
-# and no desktop names (workspaces are numbered), so two atoms fewer than
-# the bridge's table below
+# root-level, sway: no stacking list (the tree is not a stacking order) and no desktop names (workspaces are
+# numbered), so two atoms fewer than the bridge's table below
 _SWAY_ROOT_EVENT_PROPS = {
     "new": (b"_NET_CLIENT_LIST",),
     "close": (b"_NET_CLIENT_LIST", b"_NET_ACTIVE_WINDOW"),
@@ -1144,9 +1103,8 @@ def _show_names(formatter, target, names, specs) -> bytes:
 
 
 def _native_events(backend, workspaces: bool):
-    """backend.events(): (id, change) forever, in the backend's own change
-    vocabulary. FatalError when the backend has no event stream (the
-    WindowBackend default only raises)."""
+    """backend.events(): (id, change) forever, in the backend's own change vocabulary. FatalError when the
+    backend has no event stream (the WindowBackend default only raises)."""
     hook = _events_hook(backend)
     if hook is None:
         raise FatalError("-spy on a native window needs the sway backend, "
@@ -1158,9 +1116,8 @@ def _native_events(backend, workspaces: bool):
 
 
 def _is_sway(backend) -> bool:
-    """Which change vocabulary the events carry. The two tables above are
-    deliberately not merged: the same word means different things to sway
-    and to the bridge."""
+    """Which change vocabulary the events carry. The two tables above are deliberately not merged: the same word
+    means different things to sway and to the bridge."""
     return getattr(backend, "name", "") == "sway"
 
 
@@ -1195,12 +1152,10 @@ def spy_native_root(formatter, target: NativeRootTarget, specs):
 
 
 def spy_merged_root(formatter, target: MergedRootTarget, specs):
-    """-root -spy on GNOME with Xwayland up: PropertyNotify on the X root
-    for Mutter's own root properties, the bridge's events for the
-    synthesized ones (which the X root's own updates of those names are
-    NOT allowed to reprint -- they would show the X-only view). The bridge
-    stream runs on a thread of its own (one Bus per thread) and is drained
-    between X polls."""
+    """-root -spy on GNOME with Xwayland up: PropertyNotify on the X root for Mutter's own root properties, the
+    bridge's events for the synthesized ones (which the X root's own updates of those names are NOT allowed to
+    reprint -- they would show the X-only view). The bridge stream runs on a thread of its own (one Bus per
+    thread) and is drained between X polls."""
     x = target.conn
     hook = _events_hook(target.native.sess.backend())
     q: "queue.Queue" = queue.Queue()

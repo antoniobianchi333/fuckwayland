@@ -178,9 +178,8 @@ def session_kind(tool: str | None = None, env=None,
 
 
 def passthrough_mode(tool: str | None = None, env=None) -> str:
-    """"never", "always" or "auto" — what `$FUCKWAYLAND_PASSTHROUGH` (or the
-    per-tool variable) asks for. A statement about the *handover* only; a
-    caller that does not hand over must not read it as a session type."""
+    """"never", "always" or "auto" — what `$FUCKWAYLAND_PASSTHROUGH` (or the per-tool variable) asks for. A
+    statement about the *handover* only; a caller that does not hand over must not read it as a session type."""
     e = os.environ if env is None else env
     return _mode(real_name(tool) if tool else None, e)
 
@@ -218,9 +217,8 @@ def _detect(tool, e, respect_override=True):
     uid = target_uid(e)
     sess = logind_session(uid)
     if sess is not None:
-        # recover the uid *before* the return: logind is the only source that
-        # knows whose session this is when nothing invoked us as that user
-        # (root over ssh, root cron), and the socket scan below wants it
+        # recover the uid *before* the return: logind is the only source that knows whose session this is when
+        # nothing invoked us as that user (root over ssh, root cron), and the socket scan below wants it
         if uid is None:
             uid = _int(sess.get("UID"))
         t = sess.get("TYPE", "").strip().lower()
@@ -250,16 +248,13 @@ def _sudo_uid(e):
 
 
 def target_uid(e=None):
-    """uid of the session we are aimed at: the sudo/pkexec invoking user, else
-    our own when we are not root, else None (= unknown, decide from logind or
-    the sockets themselves).
+    """uid of the session we are aimed at: the sudo/pkexec invoking user, else our own when we are not root,
+    else None (= unknown, decide from logind or the sockets themselves).
 
-    uid 0 is never an answer, from either source: root owns no graphical
-    session, and `sudo -i` run *by* root (an `ssh root@box` doing
-    `sudo -i xdotool ...`) leaves `SUDO_UID=0` behind, which would otherwise
-    send the search off looking for a cookie in /root and hand the original
-    an environment with no authority at all. `SUDO_UID=0` with a non-root
-    uid is `root` running `sudo -u someone`, and there our own uid is the
+    uid 0 is never an answer, from either source: root owns no graphical session, and `sudo -i` run *by* root
+    (an `ssh root@box` doing `sudo -i xdotool ...`) leaves `SUDO_UID=0` behind, which would otherwise send the
+    search off looking for a cookie in /root and hand the original an environment with no authority at all.
+    `SUDO_UID=0` with a non-root uid is `root` running `sudo -u someone`, and there our own uid is the
     answer."""
     e = os.environ if e is None else e
     uid = _sudo_uid(e)
@@ -270,16 +265,13 @@ def target_uid(e=None):
 
 
 def session_uid(e=None):
-    """uid of the graphical session we are aimed at: `target_uid()` when it
-    knows, else the uid logind records for the session we would use, else
-    None.
+    """uid of the graphical session we are aimed at: `target_uid()` when it knows, else the uid logind records
+    for the session we would use, else None.
 
-    `ssh root@box` and root cron have no `SUDO_UID`, so `target_uid()` is
-    None there — and an unqualified search then takes the *first* runtime
-    directory, which on any box with a display manager is the greeter's
-    (uid ~125): its cookie authorises nothing on the user's X server, and
-    the original we exec would die with an authorisation error where it
-    should have worked."""
+    `ssh root@box` and root cron have no `SUDO_UID`, so `target_uid()` is None there — and an unqualified search
+    then takes the *first* runtime directory, which on any box with a display manager is the greeter's (uid
+    ~125): its cookie authorises nothing on the user's X server, and the original we exec would die with an
+    authorisation error where it should have worked."""
     e = os.environ if e is None else e
     uid = target_uid(e)
     if uid is not None:
@@ -338,10 +330,9 @@ def _runtime_dirs(e):
 def find_wayland_socket(e=None, uid=None):
     """A `wayland-*` socket belonging to the target session, or None.
 
-    The uid qualification is the one real trap in this design: on an Xfce box
-    whose display manager runs a Wayland greeter, `/run/user/<gdm>/wayland-0`
-    exists while the *user's* session is X11. With no target uid known (root
-    over ssh, cron) only a real user's socket counts."""
+    The uid qualification is the one real trap in this design: on an Xfce box whose display manager runs a
+    Wayland greeter, `/run/user/<gdm>/wayland-0` exists while the *user's* session is X11. With no target uid
+    known (root over ssh, cron) only a real user's socket counts."""
     e = os.environ if e is None else e
     sock = _env_wayland_socket(e)
     if sock is not None and (uid is None or _owner(sock) in (uid, None)):
@@ -371,9 +362,9 @@ def find_wayland_socket(e=None, uid=None):
 
 
 def display_ok(d) -> bool:
-    """Does this DISPLAY value name a server we can see? A local `:N` needs its
-    socket; anything with a host part (`host:0`, `localhost:10.0` from
-    `ssh -X`, `unix:0`) is not ours to check -- the original will say so."""
+    """Does this DISPLAY value name a server we can see? A local `:N` needs its socket; anything with a host
+    part (`host:0`, `localhost:10.0` from `ssh -X`, `unix:0`) is not ours to check -- the original will say
+    so."""
     d = (d or "").strip()
     if not d:
         return False
@@ -387,12 +378,10 @@ def display_ok(d) -> bool:
 def find_x_display(e=None, uid=None):
     """DISPLAY of the X server of the target session, or None.
 
-    `$DISPLAY` when its socket is there (or when it names another host: a
-    forwarded or remote display is an X11 session as far as we are concerned —
-    the original works over it and we must not shadow that), else logind's
-    recorded `DISPLAY=`, else the lowest-numbered `/tmp/.X11-unix/X*` owned
-    by the target user (a root-owned one only when the user owns none: see
-    below)."""
+    `$DISPLAY` when its socket is there (or when it names another host: a forwarded or remote display is an X11
+    session as far as we are concerned — the original works over it and we must not shadow that), else logind's
+    recorded `DISPLAY=`, else the lowest-numbered `/tmp/.X11-unix/X*` owned by the target user (a root-owned one
+    only when the user owns none: see below)."""
     e = os.environ if e is None else e
     d = (e.get("DISPLAY") or "").strip()
     if display_ok(d):
@@ -417,15 +406,12 @@ def find_x_display(e=None, uid=None):
             mine.append(int(n[1:]))
         elif owner == 0:
             root.append(int(n[1:]))
-    # The target user's own socket first, and only then a root-owned one:
-    # the order `session.find_x_display()` already uses, for the same
-    # reason. A Wayland compositor creates the listening socket for its
-    # Xwayland itself, as the session user, while a display manager leaves
-    # its greeter's root-owned Xorg behind on the *lower* number (SDDM on
-    # KDE). "lowest wins, root accepted" therefore handed `sudo warandr`
-    # -- and every handover -- a DISPLAY the session's cookie cannot open,
-    # so the X plane silently vanished from the answers. A plain X11
-    # session's Xorg *is* root-owned, so that stays the fallback.
+    # The target user's own socket first, and only then a root-owned one: the order `session.find_x_display()`
+    # already uses, for the same reason. A Wayland compositor creates the listening socket for its Xwayland
+    # itself, as the session user, while a display manager leaves its greeter's root-owned Xorg behind on the
+    # *lower* number (SDDM on KDE). "lowest wins, root accepted" therefore handed `sudo warandr` -- and every
+    # handover -- a DISPLAY the session's cookie cannot open, so the X plane silently vanished from the answers.
+    # A plain X11 session's Xorg *is* root-owned, so that stays the fallback.
     found = mine or root
     if found:
         return ":%d" % min(found)
@@ -433,14 +419,12 @@ def find_x_display(e=None, uid=None):
 
 
 def logind_session(uid=None):
-    """logind's record of the graphical session of `uid` (any user when None),
-    as a dict, or None.
+    """logind's record of the graphical session of `uid` (any user when None), as a dict, or None.
 
-    `/run/systemd/sessions/<id>` is world-readable key=value. The file says
-    "do not parse"; this is a read-only best-effort fast path used only when
-    the environment has told us nothing, and shelling out to `loginctl` is not
-    an option (no subprocess spawns in these tools). Anything unexpected just
-    means we fall through to the socket scan."""
+    `/run/systemd/sessions/<id>` is world-readable key=value. The file says "do not parse"; this is a read-only
+    best-effort fast path used only when the environment has told us nothing, and shelling out to `loginctl` is
+    not an option (no subprocess spawns in these tools). Anything unexpected just means we fall through to the
+    socket scan."""
     best = None
     best_key = None
     try:
@@ -482,16 +466,14 @@ def logind_session(uid=None):
 
 
 def find_xauthority(e=None, uid=None):
-    """Cookie file for the target session's X server, or None: `$XAUTHORITY`
-    when it exists, then the display manager's / compositor's cookie in the
-    session runtime dir, then `~/.Xauthority`, then `session.find_xauthority()`
-    (which also reads gnome-shell's own environment).
+    """Cookie file for the target session's X server, or None: `$XAUTHORITY` when it exists, then the display
+    manager's / compositor's cookie in the session runtime dir, then `~/.Xauthority`, then
+    `session.find_xauthority()` (which also reads gnome-shell's own environment).
 
-    With no target uid known, a *system* account's runtime directory is
-    skipped — same rule as `find_wayland_socket()`, and for the same reason:
-    on a box with a display manager the lowest-numbered runtime dir is the
-    greeter's, and handing the original the greeter's cookie is worse than
-    handing it none."""
+    With no target uid known, a *system* account's runtime directory is skipped — same rule as
+    `find_wayland_socket()`, and for the same reason: on a box with a display manager the lowest-numbered
+    runtime dir is the greeter's, and handing the original the greeter's cookie is worse than handing it
+    none."""
     import glob
 
     e = os.environ if e is None else e
@@ -540,11 +522,10 @@ def find_xauthority(e=None, uid=None):
 # ---------------------------------------------------------------------------
 
 def self_paths():
-    """Every path this process might be running from: `sys.argv[0]` (the
-    kernel replaces our chosen argv[0] with the script path when a shebang is
-    involved, so this is the real thing for a pyz or a console script), the
-    same resolved against PATH when it carries no slash, and `__main__`'s file
-    (for a zipapp that is `<pyz>/__main__.py`, so its directory is the pyz)."""
+    """Every path this process might be running from: `sys.argv[0]` (the kernel replaces our chosen argv[0] with
+    the script path when a shebang is involved, so this is the real thing for a pyz or a console script), the
+    same resolved against PATH when it carries no slash, and `__main__`'s file (for a zipapp that is
+    `<pyz>/__main__.py`, so its directory is the pyz)."""
     out = []
 
     def add(p):
@@ -555,9 +536,8 @@ def self_paths():
     if a0:
         add(a0)
         if os.sep not in a0:
-            # ...but only when what PATH answers really is one of ours: if we
-            # are *not* first on PATH, this resolves to the original, and
-            # mistaking it for ourselves would leave nothing to hand over to
+            # ...but only when what PATH answers really is one of ours: if we are *not* first on PATH, this
+            # resolves to the original, and mistaking it for ourselves would leave nothing to hand over to
             w = _which_any(a0)
             if w and _is_our_file(w):
                 add(w)
@@ -571,12 +551,11 @@ def self_paths():
 
 
 def _skip_path_element(d: str) -> bool:
-    """An empty PATH element (a leading, trailing or doubled colon, and the
-    one in os.defpath) means "the current directory" -- and we resolve the
-    real tool *inside* the process, long after the user chose how to invoke
-    us. Honouring it would search a directory the user merely cd'd into (an
-    unpacked tarball, a shared /tmp, ~/Downloads) for a program we are about
-    to execve, as them or as root; nobody installs xdotool there."""
+    """An empty PATH element (a leading, trailing or doubled colon, and the one in os.defpath) means "the
+    current directory" -- and we resolve the real tool *inside* the process, long after the user chose how to
+    invoke us. Honouring it would search a directory the user merely cd'd into (an unpacked tarball, a shared
+    /tmp, ~/Downloads) for a program we are about to execve, as them or as root; nobody installs xdotool
+    there."""
     return not d
 
 
@@ -600,10 +579,9 @@ def _head(path):
 
 
 def _imports_us(head: bytes) -> bool:
-    """Does this file *import* one of our packages at the start of a line —
-    the shape of a generated console script (`pip install .`) copied under an
-    original's name? Precise where a substring search is not: a shell wrapper
-    that mentions us in a comment has no such line."""
+    """Does this file *import* one of our packages at the start of a line — the shape of a generated console
+    script (`pip install .`) copied under an original's name? Precise where a substring search is not: a shell
+    wrapper that mentions us in a comment has no such line."""
     for line in head.splitlines():
         for kw in (b"from ", b"import "):
             s = line.strip()
@@ -617,14 +595,13 @@ def _imports_us(head: bytes) -> bool:
 
 
 def _is_our_file(path: str) -> bool:
-    """Guards 2 and 3 on their own: is this *file* one of ours, by the name it
-    resolves to or by what its first 4 KiB contain?
+    """Guards 2 and 3 on their own: is this *file* one of ours, by the name it resolves to or by what its first
+    4 KiB contain?
 
-    The head sniff answers yes only to the build's own stamp or to a script
-    that imports one of our packages. It deliberately does *not* answer yes to
-    a bare `fuckwayland`/`wmctrl` anywhere in the head: a wrapper that merely
-    mentions us would then be skipped, `real_tool()` would report nothing
-    installed, and the user would be told to install what is already there."""
+    The head sniff answers yes only to the build's own stamp or to a script that imports one of our packages. It
+    deliberately does *not* answer yes to a bare `fuckwayland`/`wmctrl` anywhere in the head: a wrapper that
+    merely mentions us would then be skipped, `real_tool()` would report nothing installed, and the user would
+    be told to install what is already there."""
     base = os.path.basename(os.path.realpath(path))
     if base in OUR_NAMES or base.split(".")[0] in OUR_NAMES:
         return True
@@ -663,12 +640,11 @@ def is_us(cand: str) -> bool:
 
 
 def real_tool(name: str, env=None):
-    """Absolute path of the *original* `name` (an original's name or ours),
-    or None when nothing usable is installed.
+    """Absolute path of the *original* `name` (an original's name or ours), or None when nothing usable is
+    installed.
 
-    `$WDOTOOL_REAL_XDOTOOL` and friends win outright; when one is set and
-    unusable that is a `RealToolError`, never a silent fallback to PATH
-    (a typo'd override that quietly ran something else would be worse)."""
+    `$WDOTOOL_REAL_XDOTOOL` and friends win outright; when one is set and unusable that is a `RealToolError`,
+    never a silent fallback to PATH (a typo'd override that quietly ran something else would be worse)."""
     e = os.environ if env is None else env
     name = real_name(name)
     var = _OVERRIDE.get(name)
@@ -700,9 +676,8 @@ def _guard_list(e):
 
 
 def _handover_loop(e):
-    """Were *we* exec'd as somebody's "real tool"? Then the install is a loop
-    (two copies of us under two names on PATH) and one more handover would
-    just do it again."""
+    """Were *we* exec'd as somebody's "real tool"? Then the install is a loop (two copies of us under two names
+    on PATH) and one more handover would just do it again."""
     seen = _guard_list(e)
     if not seen:
         return False
@@ -733,9 +708,8 @@ _HELP_ARGS = {
 
 
 def _is_help_request(tool, args):
-    """A help/version request (or nothing at all). With no original installed
-    these keep our own output instead of exiting 127 -- a help request must
-    never answer "not found"."""
+    """A help/version request (or nothing at all). With no original installed these keep our own output instead
+    of exiting 127 -- a help request must never answer "not found"."""
     if not args:
         return True
     a = args[0]
@@ -743,9 +717,8 @@ def _is_help_request(tool, args):
         # wmctrl special-cases exactly `wmctrl --help` / `wmctrl --version`;
         # with anything after them it is back to plain getopt
         return not (tool == "wmctrl" and a.startswith("--") and len(args) != 1)
-    # xdotool's only top-level short options are -h and -v (`getopt_long(argc,
-    # argv, "+hv", ...)`), so a cluster of them is one of the two, whichever
-    # comes first: `xdotool -hv` prints the help, `xdotool -vh key a` the
+    # xdotool's only top-level short options are -h and -v (`getopt_long(argc, argv, "+hv", ...)`), so a cluster
+    # of them is one of the two, whichever comes first: `xdotool -hv` prints the help, `xdotool -vh key a` the
     # version (both verified against xdotool 3.x)
     if tool == "xdotool" and len(a) > 1 and a[0] == "-" and a[1] != "-":
         return all(c in "hv" for c in a[1:])
@@ -762,9 +735,8 @@ def _missing_message(tool):
 
 
 def _argv0(tool):
-    """The original prints argv[0] in its own messages, so invoked as
-    `xdotool` we stay `xdotool`; invoked under our own name (or `-m`), the
-    original still has to call itself by its own name for its usage text to be
+    """The original prints argv[0] in its own messages, so invoked as `xdotool` we stay `xdotool`; invoked under
+    our own name (or `-m`), the original still has to call itself by its own name for its usage text to be
     internally consistent."""
     base = os.path.basename(sys.argv[0] or "") if sys.argv else ""
     return base if base == tool else tool
@@ -783,34 +755,28 @@ def _display_owner_uid(display):
 
 
 def repair_x_env(e):
-    """Fill the session's `$DISPLAY`/`$XAUTHORITY` into the dict `e`, in place;
-    returns `e`.
+    """Fill the session's `$DISPLAY`/`$XAUTHORITY` into the dict `e`, in place; returns `e`.
 
-    Under `sudo`, `ssh root@box` and cron, both are absent or point at a dead
-    display, and an X11 program then fails where it has no business failing.
-    We already know how to find the session's X plane, so we inject it -- which
-    is what makes `sudo xdotool key a` work *through* us. Values that already
-    work are never touched.
+    Under `sudo`, `ssh root@box` and cron, both are absent or point at a dead display, and an X11 program then
+    fails where it has no business failing. We already know how to find the session's X plane, so we inject it
+    -- which is what makes `sudo xdotool key a` work *through* us. Values that already work are never touched.
 
-    Used for every X11 child we start, not only the handover: `warandr` runs
-    the real `xrandr` as a child rather than exec'ing it, and without this it
-    was the one tool that still said `Can't open display` from a root shell."""
-    # session_uid(), not target_uid(): as root with no SUDO_UID (an `ssh
-    # root@box`, a root cron job) the uid is not ours and not in the
-    # environment, and only logind knows it -- without it we would pick the
-    # first runtime dir there is, which is the display manager's.
+    Used for every X11 child we start, not only the handover: `warandr` runs the real `xrandr` as a child rather
+    than exec'ing it, and without this it was the one tool that still said `Can't open display` from a root
+    shell."""
+    # session_uid(), not target_uid(): as root with no SUDO_UID (an `ssh root@box`, a root cron job) the uid is
+    # not ours and not in the environment, and only logind knows it -- without it we would pick the first
+    # runtime dir there is, which is the display manager's.
     uid = session_uid(e)
     if not display_ok(e.get("DISPLAY")):
         found = find_x_display(e, uid)
         if found:
             e["DISPLAY"] = found
     if uid is None:
-        # With no session uid, find_x_display() fell back to scanning
-        # /tmp/.X11-unix -- which is world-writable, so the lowest-numbered
-        # socket there may be one a local user bound ahead of the real
-        # server. Take the cookie owner from the display we are about to use:
-        # a planted server then only ever gets its own owner's cookie, never
-        # the real user's (which is full X11 access to their session).
+        # With no session uid, find_x_display() fell back to scanning /tmp/.X11-unix -- which is world-writable,
+        # so the lowest-numbered socket there may be one a local user bound ahead of the real server. Take the
+        # cookie owner from the display we are about to use: a planted server then only ever gets its own
+        # owner's cookie, never the real user's (which is full X11 access to their session).
         uid = _display_owner_uid(e.get("DISPLAY"))
     xa = (e.get("XAUTHORITY") or "").strip()
     if not xa or not os.path.exists(xa):
@@ -842,9 +808,8 @@ def exec_real(tool, real, args, env=None) -> int:
     exec itself fails."""
     e = child_env(tool, real, env)
     argv = [_argv0(tool)] + list(args)
-    # Python ignores SIGPIPE and SIGXFSZ, and an *ignored* disposition survives
-    # execve -- so without this reset `xprop -root | head -1` would print an
-    # EPIPE error where the original dies quietly of SIGPIPE.
+    # Python ignores SIGPIPE and SIGXFSZ, and an *ignored* disposition survives execve -- so without this reset
+    # `xprop -root | head -1` would print an EPIPE error where the original dies quietly of SIGPIPE.
     for sig in ("SIGPIPE", "SIGXFSZ"):
         s = getattr(signal, sig, None)
         if s is None:
@@ -869,22 +834,17 @@ def exec_real(tool, real, args, env=None) -> int:
 
 def maybe_exec_real(tool, args=None, *, fallback_native=False, entry=True,
                     env=None, force=False):
-    """The hook every CLI calls first. Returns None to keep running our own
-    code, or an exit status to return from `main()` (it usually does not
-    return at all: `os.execve` replaces the process).
+    """The hook every CLI calls first. Returns None to keep running our own code, or an exit status to return
+    from `main()` (it usually does not return at all: `os.execve` replaces the process).
 
-    `args` is the tool's arguments **without** argv[0] -- the four `main()`s
-    disagree about that (wdotool's takes the whole of `sys.argv`, the other
-    three take `sys.argv[1:]`), so each hook normalises before calling here.
-    `entry=False` says an explicit argv was handed to `main()` by a caller
-    embedding us as a library (the whole test suite does this): replacing
-    *their* process would be violent, so we never do it.
+    `args` is the tool's arguments **without** argv[0] -- the four `main()`s disagree about that (wdotool's
+    takes the whole of `sys.argv`, the other three take `sys.argv[1:]`), so each hook normalises before calling
+    here. `entry=False` says an explicit argv was handed to `main()` by a caller embedding us as a library (the
+    whole test suite does this): replacing *their* process would be violent, so we never do it.
 
-    `force=True` hands over whatever the session says (API note, this file
-    being frozen: added for `wxrandr --backend x11`, which is a user asking
-    for the real tool in so many words -- a Wayland session included).  It
-    does not override `entry`: a library caller's process is still never
-    replaced.
+    `force=True` hands over whatever the session says (API note, this file being frozen: added for
+    `wxrandr --backend x11`, which is a user asking for the real tool in so many words -- a Wayland session
+    included).  It does not override `entry`: a library caller's process is still never replaced.
     """
     tool = real_name(tool)
     e = os.environ if env is None else env

@@ -193,9 +193,8 @@ WINDOW_PROP_TABLE = (
 )
 
 
-# xprop's fontPropTable: the formats -font uses instead of the window ones.
-# A font property not named here falls back to the default "0x", which is
-# why an unknown one prints as a bare hex number.
+# xprop's fontPropTable: the formats -font uses instead of the window ones. A font property not named here falls
+# back to the default "0x", which is why an unknown one prints as a bare hex number.
 FONT_PROP_TABLE = tuple(
     (name, fmt, None) for name, fmt in (
         (b"FOUNDRY", b"32a"), (b"FAMILY_NAME", b"32a"),
@@ -376,9 +375,8 @@ def _decode_one_utf8(data: bytes, i: int):
 
 
 class Formatter:
-    """The format/dformat engine plus the mapping table. `atom_name` maps an
-    atom id to its name (server lookup on the X plane, the synthesized table
-    on the native plane); None means 'undefined atom # 0x%x'."""
+    """The format/dformat engine plus the mapping table. `atom_name` maps an atom id to its name (server lookup
+    on the X plane, the synthesized table on the native plane); None means 'undefined atom # 0x%x'."""
 
     def __init__(self, atom_name=None, notype=False, max_len=MAXSTR,
                  utf8_locale=False, truecolor=False, term_width=152):
@@ -397,9 +395,8 @@ class Formatter:
             self.add_mapping(name, f, d)
 
     def setup_font_table(self):
-        """xprop's Setup_Mapping in font mode: the FONT table replaces the
-        window one entirely (`FONT` means "32a", the font's XLFD name, not
-        a font id)."""
+        """xprop's Setup_Mapping in font mode: the FONT table replaces the window one entirely (`FONT` means
+        "32a", the font's XLFD name, not a font id)."""
         for name, f, d in FONT_PROP_TABLE:
             self.add_mapping(name, f, d)
 
@@ -421,9 +418,8 @@ class Formatter:
     # -- property data -> thunks -------------------------------------------
 
     def xlib_shape(self, size: int, wire: bytes):
-        """Model XGetWindowProperty + Xlib's long-array buffer:
-        fetch capped at (max_len+3)/4 32-bit words; 32-bit items expand to
-        8 bytes each; byte budget = min(nitems*nbytes, max_len)."""
+        """Model XGetWindowProperty + Xlib's long-array buffer: fetch capped at (max_len+3)/4 32-bit words;
+        32-bit items expand to 8 bytes each; byte budget = min(nitems*nbytes, max_len)."""
         cap_words = _c_div(self.max_len + 3, 4)
         if cap_words >= 0:
             wire = wire[:cap_words * 4]
@@ -486,14 +482,11 @@ class Formatter:
                     v = int.from_bytes(buffer[pos:pos + 2], "little", signed=signed)
                     step = 2
                 else:  # 32: Xlib's _XRead32 SIGN-extends the wire CARD32
-                    # into a long (it reads through an `int *`), and
-                    # Extract_Value returns *(long*) for 'i' but masks
-                    # `& 0xffffffff` otherwise — i.e. the low 32 bits read
-                    # with the format char's signedness. So 32i of 0xffffffff
-                    # is -1 and of 0xfffffffb is -5 (a real INTEGER dumps its
-                    # negatives), while 32c/32x/32a stay unsigned. All
-                    # oracle-verified; the buffer's high 4 bytes are the
-                    # zero padding xlib_shape added, so slice the low 4.
+                    # into a long (it reads through an `int *`), and Extract_Value returns *(long*) for 'i' but
+                    # masks `& 0xffffffff` otherwise — i.e. the low 32 bits read with the format char's
+                    # signedness. So 32i of 0xffffffff is -1 and of 0xfffffffb is -5 (a real INTEGER dumps its
+                    # negatives), while 32c/32x/32a stay unsigned. All oracle-verified; the buffer's high 4
+                    # bytes are the zero padding xlib_shape added, so slice the low 4.
                     v = int.from_bytes(buffer[pos:pos + 4], "little", signed=signed)
                     step = 8
                 thunks.append(Thunk(v))
@@ -584,9 +577,8 @@ class Formatter:
 
     @staticmethod
     def _decode_compound_text(data: bytes) -> bytes:
-        """Latin-1 subset of ISO 2022: GL=ASCII, GR=Latin-1, the two
-        designation escapes that keep it that way. Anything else raises
-        ValueError -> conversion failure -> quoted-string fallback."""
+        """Latin-1 subset of ISO 2022: GL=ASCII, GR=Latin-1, the two designation escapes that keep it that way.
+        Anything else raises ValueError -> conversion failure -> quoted-string fallback."""
         out = bytearray()
         i = 0
         while i < len(data):
@@ -621,14 +613,11 @@ class Formatter:
     # -- _NET_WM_ICON ascii art ----------------------------------------------
 
     def format_icons(self, data: bytes) -> bytes:
-        """xprop's Format_Icons. `data` is the byte budget's worth of the
-        long array, so under `-len` it can be too short to hold even one
-        (width, height) pair: C's loop then never runs, the function
-        returns NULL, and glibc's printf renders that as "(null)". Past
-        that point parity is unattainable in principle -- C keeps reading
-        the Xlib buffer beyond the budget (an unsigned comparison turns its
-        own truncation check into a no-op) and prints uninitialised heap;
-        we stop at the budget instead."""
+        """xprop's Format_Icons. `data` is the byte budget's worth of the long array, so under `-len` it can be
+        too short to hold even one (width, height) pair: C's loop then never runs, the function returns NULL,
+        and glibc's printf renders that as "(null)". Past that point parity is unattainable in principle -- C
+        keeps reading the Xlib buffer beyond the budget (an unsigned comparison turns its own truncation check
+        into a no-op) and prints uninitialised heap; we stop at the budget instead."""
         n = len(data) // 8
         if n == 0:
             return b"(null)"
@@ -744,11 +733,10 @@ class Formatter:
 
     @staticmethod
     def _oob_thunk(thunks, i: int):
-        """xprop reads thunks[i] out of range: index 0 of an *empty* list
-        lands in Create_Thunk_List's single fresh (zeroed) malloc slot, so
-        C reliably sees 0 there; any index past a *non-empty* list is real
-        heap garbage. _GARBAGE stands in for the latter (nonzero, equal to
-        no constant a dformat tests) so the observable output matches."""
+        """xprop reads thunks[i] out of range: index 0 of an *empty* list lands in Create_Thunk_List's single
+        fresh (zeroed) malloc slot, so C reliably sees 0 there; any index past a *non-empty* list is real heap
+        garbage. _GARBAGE stands in for the latter (nonzero, equal to no constant a dformat tests) so the
+        observable output matches."""
         if not thunks:
             return 0
         return _GARBAGE
@@ -773,11 +761,10 @@ class Formatter:
         if pos < len(dfmt) and dfmt[pos] == 0x6D:  # 'm'
             i, pos = _scan_long(dfmt, pos + 1)
             word = self._mask_word(thunks, fmt)
-            # C's Mask_Bit_I: `value & (1L << (int)i)`. On x86-64 the shift
-            # count is masked to 6 bits, so ?m64 tests bit 0 and ?m66 bit 2
-            # (oracle-verified). A raw `1 << i` would build a multi-GB int
-            # for a hostile i (?m34359738368 -> MemoryError); bounding the
-            # count keeps it cheap AND byte-identical to the C UB.
+            # C's Mask_Bit_I: `value & (1L << (int)i)`. On x86-64 the shift count is masked to 6 bits, so ?m64
+            # tests bit 0 and ?m66 bit 2 (oracle-verified). A raw `1 << i` would build a multi-GB int for a
+            # hostile i (?m34359738368 -> MemoryError); bounding the count keeps it cheap AND byte-identical to
+            # the C UB.
             return (1 if word & (1 << (_to_int32(i) & 63)) else 0), pos
         raise FatalError("Bad term: %s." % _msg(dfmt[pos:]))
 

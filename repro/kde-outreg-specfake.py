@@ -88,9 +88,9 @@ class Cur:
         return raw.split(b"\0", 1)[0].decode("utf-8", "replace")
 
 
-# KWin src/wayland/outputdevice_v2.cpp, kde_output_device_v2_bind_resource():
-# the exact order the compositor sends the initial burst in.  "@modes" is where
-# sendNewMode() runs for every mode, "@current" is sendCurrentMode().
+# KWin src/wayland/outputdevice_v2.cpp, kde_output_device_v2_bind_resource(): the exact order the compositor
+# sends the initial burst in.  "@modes" is where sendNewMode() runs for every mode, "@current" is
+# sendCurrentMode().
 BURST = [
     "geometry", "scale", "eisa_id", "name", "serial_number",
     "@modes", "@current",

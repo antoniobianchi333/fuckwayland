@@ -129,11 +129,10 @@ class Opts:
 
 
 def _number(s: str) -> float:
-    """A number an option can be given.  Python's float() also takes `nan`,
-    `inf` and anything that overflows to one (`1e400`), and none of those is
-    a size, a rate or a pixel clock: left alone they surface much later as
-    raw interpreter text (`cannot convert float NaN to integer`) or, worse,
-    get written to the state file as a mode line nothing can render."""
+    """A number an option can be given.  Python's float() also takes `nan`, `inf` and anything that overflows to
+    one (`1e400`), and none of those is a size, a rate or a pixel clock: left alone they surface much later as
+    raw interpreter text (`cannot convert float NaN to integer`) or, worse, get written to the state file as a
+    mode line nothing can render."""
     try:
         v = float(s)
     except ValueError:
@@ -319,9 +318,8 @@ def parse(argv: list) -> Opts:
             except ValueError:
                 raise ArgErr("failed to parse '%s' as a scaling factor\n" % v)
             if not (math.isfinite(sx) and math.isfinite(sy)):
-                # before the positivity test: `nan <= 0` is False, so a nan
-                # went through and came back out as an "anisotropic scaling
-                # nanxnan" warning followed by a truncation failure
+                # before the positivity test: `nan <= 0` is False, so a nan went through and came back out as an
+                # "anisotropic scaling nanxnan" warning followed by a truncation failure
                 raise ArgErr("failed to parse '%s' as a scaling factor\n" % v)
             if sx <= 0 or sy <= 0:
                 raise ArgErr("scaling factors must be positive\n")
@@ -510,20 +508,16 @@ def canonical_backend(value):
 
 
 def scan_backend_argv(argv):
-    """`(value of --backend or None, an informational option is present,
-    argv without our flag)`, read out of a raw argv *before* anything is
-    parsed -- which is where main() has to decide whether this X11 session
-    hands over to the real xrandr.  The stripped argv is what the original
-    is then exec'd with: `--backend x11` asks for the real xrandr, which
-    has no such option to be handed.  A `--backend` with no value at all
-    comes back as `""` -- present, naming nothing -- so that the flag's own
-    error is ours to print on every session, not the original's.
+    """`(value of --backend or None, an informational option is present, argv without our flag)`, read out of a
+    raw argv *before* anything is parsed -- which is where main() has to decide whether this X11 session hands
+    over to the real xrandr.  The stripped argv is what the original is then exec'd with: `--backend x11` asks
+    for the real xrandr, which has no such option to be handed.  A `--backend` with no value at all comes back
+    as `""` -- present, naming nothing -- so that the flag's own error is ours to print on every session, not
+    the original's.
 
-    argv is walked exactly the way parse() walks it, every option consuming
-    its own arguments, so a *value* that happens to spell one of our options
-    (`--output --backend`, `--mode --backends`) is a value here too and can
-    never be mistaken for the flag.  Never raises: an argv the parser will
-    reject is not this hook's business.
+    argv is walked exactly the way parse() walks it, every option consuming its own arguments, so a *value* that
+    happens to spell one of our options (`--output --backend`, `--mode --backends`) is a value here too and can
+    never be mistaken for the flag.  Never raises: an argv the parser will reject is not this hook's business.
     """
     backend = None
     info = False
@@ -532,10 +526,9 @@ def scan_backend_argv(argv):
     while i < n:
         a = argv[i]
         if a == "--backend":
-            # last one wins, like parse().  A missing value still *is* the
-            # flag -- returned as "", which no backend is called -- or an
-            # X11 session would hand `--backend` to the original and answer
-            # with its `unrecognized option` instead of our own error.
+            # last one wins, like parse().  A missing value still *is* the flag -- returned as "", which no
+            # backend is called -- or an X11 session would hand `--backend` to the original and answer with its
+            # `unrecognized option` instead of our own error.
             backend = argv[i + 1] if i + 1 < n else ""
             i += 2
             continue
@@ -556,9 +549,8 @@ def scan_backend_argv(argv):
 
 
 class Probe:
-    """What one backend's availability check found.  `handle` is the live
-    connection the probe opened, which Session reuses so a session still
-    opens exactly one; `close()` drops it when nothing wants it."""
+    """What one backend's availability check found.  `handle` is the live connection the probe opened, which
+    Session reuses so a session still opens exactly one; `close()` drops it when nothing wants it."""
 
     def __init__(self, name, available, reason="", detail="", compositor=None, protocol=None, handle=None):
         self.name = name
@@ -697,9 +689,8 @@ def detect_wayland(probes=None, verbose=False):
 
 
 def resolve_backend(flag=None, env=None):
-    """`(name, source, note)` for the two explicit steps of the precedence
-    rule -- `--backend` beats `$WXRANDR_BACKEND` beats auto-detection.
-    `name` is None when neither spoke and the caller must detect."""
+    """`(name, source, note)` for the two explicit steps of the precedence rule -- `--backend` beats
+    `$WXRANDR_BACKEND` beats auto-detection. `name` is None when neither spoke and the caller must detect."""
     env = os.environ if env is None else env
     name = canonical_backend(flag)
     if name is not None and name != "auto":
@@ -712,9 +703,9 @@ def resolve_backend(flag=None, env=None):
 
 
 def chosen_backend(flag=None, env=None, verbose=False, probes=None):
-    """`(name, source, note, probes)` -- the backend this invocation uses,
-    without touching the layout.  Detection asks the session kind first: on
-    X11 the answer is `x11`, because that is where main() hands over."""
+    """`(name, source, note, probes)` -- the backend this invocation uses, without touching the layout.
+    Detection asks the session kind first: on X11 the answer is `x11`, because that is where main() hands
+    over."""
     env = os.environ if env is None else env
     probes = {} if probes is None else probes
     name, source, note = resolve_backend(flag, env)
@@ -803,9 +794,8 @@ class Session:
 
     BACKENDS = WAYLAND_BACKENDS
 
-    # the backend object close() drops, as a class default: __init__ always
-    # rebinds it, and a Session built any other way (the backend tests stub
-    # __init__ with their own fake) is still closeable
+    # the backend object close() drops, as a class default: __init__ always rebinds it, and a Session built any
+    # other way (the backend tests stub __init__ with their own fake) is still closeable
     impl = None
     probes: dict = {}
 
@@ -814,9 +804,8 @@ class Session:
         name, self.backend_source, self.backend_note = resolve_backend(forced)
         probes = {}
         if name == "x11":
-            # unreachable from a command line: main() hands an X11 choice
-            # over to the real xrandr -- asked for by the flag or by the
-            # variable -- before a single option is parsed.
+            # unreachable from a command line: main() hands an X11 choice over to the real xrandr -- asked for
+            # by the flag or by the variable -- before a single option is parsed.
             raise Fatal("%s hands over to the real xrandr, which an embedded "
                         "call cannot do\n" % self.backend_note)
         if name is None:
@@ -835,9 +824,8 @@ class Session:
         kprobe = reuse("kwin")
         probe = reuse("mutter")
         wprobe = reuse("wlr")
-        # detection may have opened a connection per backend it tried; only
-        # the chosen one is reused, so the rest are closed here rather than
-        # left to the garbage collector (which reports them as a
+        # detection may have opened a connection per backend it tried; only the chosen one is reused, so the
+        # rest are closed here rather than left to the garbage collector (which reports them as a
         # ResourceWarning at whatever moment it gets round to them)
         self.probes = probes
         keep = {id(h) for h in (sway_sock, kprobe, probe, wprobe) if h is not None}
@@ -846,10 +834,9 @@ class Session:
                 p.close()
         self.impl = None
         self.persistent = os.environ.get("WXRANDR_PERSIST", "") not in ("", "0")
-        # OSError as well as Fatal: WlConn's connect() can raise
-        # ConnectionRefusedError on a stale-but-present socket, and sway IPC
-        # can drop mid-handshake — both must read as "Can't open display",
-        # never a traceback.
+        # OSError as well as Fatal: WlConn's connect() can raise ConnectionRefusedError on a stale-but-present
+        # socket, and sway IPC can drop mid-handshake — both must read as "Can't open display", never a
+        # traceback.
         if self.backend == "sway":
             try:
                 ipc = core.SwayIPC(sway_sock)
@@ -863,9 +850,8 @@ class Session:
             if kprobe is None and wsession.find_wayland_socket() is None:
                 self._cant_open()
             try:
-                # a socket without kde_output_management_v2 raises Fatal with
-                # a one-line explanation; an unusable one is "Can't open
-                # display", like everywhere else
+                # a socket without kde_output_management_v2 raises Fatal with a one-line explanation; an
+                # unusable one is "Can't open display", like everywhere else
                 self.impl = kwin_mod.KwinOutputs(conn=kprobe)
             except (OSError, RuntimeError, ValueError):
                 self._cant_open()
@@ -882,9 +868,8 @@ class Session:
                 self.impl = core.WlrOutputs(conn=wprobe)
             except (Fatal, OSError):
                 self._cant_open()
-        # state is keyed by the compositor's wayland socket so all backends
-        # share one primary/custom-mode store per session; sway is the only
-        # one that can run without such a socket, and it keys by its own
+        # state is keyed by the compositor's wayland socket so all backends share one primary/custom-mode store
+        # per session; sway is the only one that can run without such a socket, and it keys by its own
         hit = wsession.find_wayland_socket()
         key = hit[2] if hit else getattr(self.impl, "sockpath", "?")
         self.state = core.State(key)
@@ -898,17 +883,14 @@ class Session:
         return self.impl.snapshot(self.state)
 
     def dims(self, t) -> tuple:
-        """Pending logical size of an enabled target in the backend's own
-        coordinate space (Mutter and KWin round, and Mutter may not scale at
-        all; wlroots truncates)."""
+        """Pending logical size of an enabled target in the backend's own coordinate space (Mutter and KWin
+        round, and Mutter may not scale at all; wlroots truncates)."""
         return self.impl.predicted_dims(t, self.state)
 
     def positions(self, targets, dims) -> dict:
-        """Pending positions the way the backend will lay them out: xrandr's
-        set_positions everywhere; on Mutter (no holes allowed) also the
-        follow-your-neighbour shift the apply performs, so the plan, --fb and
-        screen-size checks see the real layout (the warnings are printed
-        once, by the apply/verify)."""
+        """Pending positions the way the backend will lay them out: xrandr's set_positions everywhere; on Mutter
+        (no holes allowed) also the follow-your-neighbour shift the apply performs, so the plan, --fb and
+        screen-size checks see the real layout (the warnings are printed once, by the apply/verify)."""
         pos = core.resolve_positions(targets, dims)
         if self.backend == "mutter":
             from wxrandr import mutter as mutter_mod
@@ -917,22 +899,18 @@ class Session:
                 if t.name in moved:
                     t.changed = True   # its crtc line belongs in the plan
         for t in targets:
-            # so does a shift resolve_positions itself made: it normalises
-            # the whole layout to min x = min y = 0, so a --pos -400x-400 on
-            # one output really does move every other one, and a --dryrun
-            # that printed a crtc line only for the outputs the command
-            # names under-reported what the run would do
+            # so does a shift resolve_positions itself made: it normalises the whole layout to min x = min y =
+            # 0, so a --pos -400x-400 on one output really does move every other one, and a --dryrun that
+            # printed a crtc line only for the outputs the command names under-reported what the run would do
             if t.enabled and t.name in pos and pos[t.name] != (t.output.x, t.output.y):
                 t.changed = True
         return pos
 
     def close(self):
-        """Drop the compositor connections.  Every backend has a close() and
-        nothing called any of them, so every run handed its socket (and, on
-        sway, a second one for the wlr enrichment) to the garbage collector
-        -- which reports it as a ResourceWarning whenever it gets round to
-        it.  Idempotent: the probe objects hold the same handles and swallow
-        a second close."""
+        """Drop the compositor connections.  Every backend has a close() and nothing called any of them, so
+        every run handed its socket (and, on sway, a second one for the wlr enrichment) to the garbage collector
+        -- which reports it as a ResourceWarning whenever it gets round to it.  Idempotent: the probe objects
+        hold the same handles and swallow a second close."""
         if self.impl is not None:
             try:
                 self.impl.close()
@@ -1004,11 +982,10 @@ def _dpi_and_mm(opts: Opts, outputs, new_w, new_h):
         mm_h = core.screen_mm(cur_h)
         dpi = 25.4 * cur_h / mm_h if mm_h else 96.0
     if not math.isfinite(dpi) or dpi <= 0:
-        # xrandr reads --dpi with sscanf("%lf") and then divides by it, so
-        # 0, a negative one, `nan` and `inf` all get that far; none of them
-        # is a resolution a screen line can be printed at.  Fall back to the
-        # same 96 the no-physical-size paths use rather than abort -- an
-        # unusable --dpi is not worth refusing a whole layout over.
+        # xrandr reads --dpi with sscanf("%lf") and then divides by it, so 0, a negative one, `nan` and `inf`
+        # all get that far; none of them is a resolution a screen line can be printed at.  Fall back to the same
+        # 96 the no-physical-size paths use rather than abort -- an unusable --dpi is not worth refusing a whole
+        # layout over.
         dpi = 96.0
     return dpi, int(25.4 * new_w / dpi), int(25.4 * new_h / dpi)
 
@@ -1070,16 +1047,14 @@ def _check_fb(opts: Opts, targets, dims, pos):
 
 
 def _check_screen_size(opts: Opts, targets, dims, pos):
-    """xrandr's set_screen_size bound (xrandr.c:2109): the resolved layout (or
-    an explicit --fb) may not exceed maxWidth/maxHeight. Guards against a
-    far-flung --pos/--fb being handed to the compositor (and, on the wlr
+    """xrandr's set_screen_size bound (xrandr.c:2109): the resolved layout (or an explicit --fb) may not exceed
+    maxWidth/maxHeight. Guards against a far-flung --pos/--fb being handed to the compositor (and, on the wlr
     backend, against the out-of-range struct pack it would otherwise trip).
 
-    The other end of the same bound: the Screen line advertises a 16x16
-    minimum, so an enabled output may not be scaled below it either. A big
-    enough --scale/--scale-from truncates the logical size to 0x0 (logical
-    size is int(px / scale)), which sway and KWin both accept -- leaving an
-    output that occupies no space and cannot be clicked back."""
+    The other end of the same bound: the Screen line advertises a 16x16 minimum, so an enabled output may not be
+    scaled below it either. A big enough --scale/--scale-from truncates the logical size to 0x0 (logical size is
+    int(px / scale)), which sway and KWin both accept -- leaving an output that occupies no space and cannot be
+    clicked back."""
     for t in targets:
         if not t.enabled or t.name not in dims:
             continue
@@ -1112,9 +1087,8 @@ def _apply_gamma(sess: Session, opts: Opts, outputs):
         if s.brightness is None and s.gamma is None:
             continue
         if s.name not in known:
-            # build_targets already printed the bare not-found warning and
-            # xrandr keeps exit 0 for a typo'd --output; don't spawn a holder
-            # against a name the compositor has never heard of.
+            # build_targets already printed the bare not-found warning and xrandr keeps exit 0 for a typo'd
+            # --output; don't spawn a holder against a name the compositor has never heard of.
             continue
         if sess.backend == "mutter":
             # Mutter has neither zwlr_gamma_control nor a DisplayConfig LUT
@@ -1162,9 +1136,8 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
     _check_screen_size(opts, targets, dims, pos)
     if opts.verbose:
         _print_plan(opts, outputs, targets, dims, pos)
-    # --dryrun mutates nothing, the primary included: the two assignments
-    # below run first so Mutter's verify sees the primary the real call would
-    # send, and the dryrun branch puts this back before it saves.
+    # --dryrun mutates nothing, the primary included: the two assignments below run first so Mutter's verify
+    # sees the primary the real call would send, and the dryrun branch puts this back before it saves.
     primary_before = sess.state.primary
     if opts.noprimary:
         if (sess.backend == "mutter" and sess.impl.primary and not any(s.primary for s in opts.stanzas)):
@@ -1178,22 +1151,18 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
         if s.primary and any(t.name == s.name and t.stanza is s for t in targets):
             sess.state.primary = s.name
     if opts.dryrun:
-        # what a verify can promise is the backend's business: Mutter really
-        # validates, with method 0, the exact call a real run would make
-        # (adjacency, overlap, primary, scales), and a rejection is the same
-        # one-line `xrandr: <mutter message>` the apply would give; KWin has
-        # no such request and re-runs the plan client-side (mode resolution,
-        # the last-output refusal); sway and wlroots have nothing to ask.
+        # what a verify can promise is the backend's business: Mutter really validates, with method 0, the exact
+        # call a real run would make (adjacency, overlap, primary, scales), and a rejection is the same one-line
+        # `xrandr: <mutter message>` the apply would give; KWin has no such request and re-runs the plan
+        # client-side (mode resolution, the last-output refusal); sway and wlroots have nothing to ask.
         sess.impl.verify(sess.state, targets)
         if sess.backend == "mutter":
             # the verdict goes to stderr: stdout stays xrandr's dryrun bytes
             sys.stderr.write("mutter verify: ok\n")
-        # Nothing was sent, so nothing may be claimed about the compositor --
-        # including the primary: a --dryrun that recorded one would make the
-        # next --query name a primary the compositor was never asked for.
-        # (Mutter and KWin re-sync this from the compositor in snapshot(), so
-        # putting back what the run started with is not the same as clearing
-        # it -- their own primary survives, the request does not.)
+        # Nothing was sent, so nothing may be claimed about the compositor -- including the primary: a --dryrun
+        # that recorded one would make the next --query name a primary the compositor was never asked for.
+        # (Mutter and KWin re-sync this from the compositor in snapshot(), so putting back what the run started
+        # with is not the same as clearing it -- their own primary survives, the request does not.)
         sess.state.primary = primary_before
         sess.state.save()
         return outputs
@@ -1331,9 +1300,8 @@ def _run_session(sess: Session, opts: Opts) -> int:
             return 0
     if opts.setit_1_2:
         _do_setit_1_2(sess, opts, outputs)
-        # xrandr exits right after apply() — no query follows a 1.2 set,
-        # even under --verbose/--dryrun (xrandr.c:3654, oracle capture
-        # xrandr2-dryrun-mode).
+        # xrandr exits right after apply() — no query follows a 1.2 set, even under --verbose/--dryrun
+        # (xrandr.c:3654, oracle capture xrandr2-dryrun-mode).
         return 0
     if opts.setit and not opts.setit_1_2:
         return _do_1_0(sess, opts, outputs)
@@ -1353,22 +1321,19 @@ def _run_session(sess: Session, opts: Opts) -> int:
 
 def main(argv=None) -> int:
     stdio.repair_std()          # fd 1 or 2 closed before Python started
-    # X11 session: the X server's RandR is authoritative, hand over -- but
-    # the handover happens before any parsing, so it has to look ahead for
-    # `--backend`: one of our own backends must run our own code whatever the
-    # session, `--backend x11` must hand over whatever the session, and
-    # `--print-backend`/`--backends` answer for themselves everywhere.
+    # X11 session: the X server's RandR is authoritative, hand over -- but the handover happens before any
+    # parsing, so it has to look ahead for `--backend`: one of our own backends must run our own code whatever
+    # the session, `--backend x11` must hand over whatever the session, and `--print-backend`/`--backends`
+    # answer for themselves everywhere.
     entry = argv is None
     args = list(sys.argv[1:] if entry else argv)
     flag, info_only, stripped = scan_backend_argv(args)
     asked = canonical_backend(flag)
     forced = asked
     if forced in (None, "auto") and canonical_backend(os.environ.get("WXRANDR_BACKEND")) == "x11":
-        # the variable's one say over the handover, so that it cannot ask
-        # for a backend this process is then unable to be: `x11` there means
-        # the real xrandr on any session, exactly like the flag.  A Wayland
-        # name in it is still left alone -- not pre-checked, and not allowed
-        # to suppress an X11 session's handover.
+        # the variable's one say over the handover, so that it cannot ask for a backend this process is then
+        # unable to be: `x11` there means the real xrandr on any session, exactly like the flag.  A Wayland name
+        # in it is still left alone -- not pre-checked, and not allowed to suppress an X11 session's handover.
         forced = "x11"
     ours = info_only or (flag is not None and asked not in ("auto", "x11"))
     if not ours:
@@ -1398,13 +1363,11 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as e:
-        # never a traceback: an out-of-range --pos/--rate/--scale that trips a
-        # struct pack, a lost compositor connection mid-apply, malformed IPC —
-        # all become one-line xrandr: fatals, like the real thing.
+        # never a traceback: an out-of-range --pos/--rate/--scale that trips a struct pack, a lost compositor
+        # connection mid-apply, malformed IPC — all become one-line xrandr: fatals, like the real thing.
         sys.stderr.write("xrandr: %s\n" % e)
-        # An OSError here is a write to stdout that failed (a full disk,
-        # a quota, `>/dev/full`): the flush below is about to fail with
-        # the same errno, and the originals print one line, not two.
+        # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
+        # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)
         code = 1
     return code if stdio.flush_stdout("xrandr", quiet) else (code or 1)

@@ -1,11 +1,9 @@
 """Window-management backend interface. FROZEN — edit only if broken.
 
-Additive extension (gnome-bridge): the View/Workspace dataclasses and the
-optional hooks at the end of WindowBackend (views, workspaces, x_info,
-events). They let a backend that knows more than Window carries
-(X ids of XWayland windows, WM_CLASS instance/class, workspace names) hand it
-to wwmctl/wxprop/getmouselocation without those tools reaching into backend
-privates (sway's `_nodes()` tuple). Every hook defaults to "not available";
+Additive extension (gnome-bridge): the View/Workspace dataclasses and the optional hooks at the end of
+WindowBackend (views, workspaces, x_info, events). They let a backend that knows more than Window carries (X ids
+of XWayland windows, WM_CLASS instance/class, workspace names) hand it to wwmctl/wxprop/getmouselocation without
+those tools reaching into backend privates (sway's `_nodes()` tuple). Every hook defaults to "not available";
 callers fall back to list()/find()."""
 
 import dataclasses
@@ -39,20 +37,16 @@ _MAXIMIZE_AXES = frozenset(("MAXIMIZED_VERT", "MAXIMIZED_HORZ"))
 
 
 def state_steps(backend, names):
-    """The _NET_WM_STATE names of one request, grouped into the set_state()
-    calls that express it: [(state to send, the names it stands for)], in
-    the order given. Two maximize axes standing next to each other become
-    one call wherever the backend names the pair
-    (WindowBackend.maximize_pair_state -- GNOME does, KWin and sway do
-    not); everything else stays one call per name. `backend` may be None
-    (no session): nothing is grouped then, and the caller's own fallback
-    path decides what to do.
+    """The _NET_WM_STATE names of one request, grouped into the set_state() calls that express it: [(state to
+    send, the names it stands for)], in the order given. Two maximize axes standing next to each other become
+    one call wherever the backend names the pair (WindowBackend.maximize_pair_state -- GNOME does, KWin and sway
+    do not); everything else stays one call per name. `backend` may be None (no session): nothing is grouped
+    then, and the caller's own fallback path decides what to do.
 
-    Every command that can be handed both axes at once has to group them
-    here: `wwmctl -b remove,maximized_vert,maximized_horz`, and `wdotool
-    windowstate --remove MAXIMIZED_VERT --remove MAXIMIZED_HORZ` once it
-    honours more than the last option. Sending the axes one after the
-    other corrupts a Mutter window's saved rectangle -- see
+    Every command that can be handed both axes at once has to group them here:
+    `wwmctl -b remove,maximized_vert,maximized_horz`, and
+    `wdotool windowstate --remove MAXIMIZED_VERT --remove MAXIMIZED_HORZ` once it honours more than the last
+    option. Sending the axes one after the other corrupts a Mutter window's saved rectangle -- see
     maximize_pair_state()."""
     names = [n.upper() for n in names]
     pair = getattr(backend, "maximize_pair_state", None)
@@ -78,9 +72,9 @@ class Window:
     id: int = 0
     title: str = ""
     class_: str = ""  # app_id on Wayland; the WM_CLASS *class* for X clients
-    # WM_CLASS *instance* of an X/XWayland client ("" when the backend cannot
-    # tell it apart from class_); `search --classname` matches this, falling
-    # back to class_ so native Wayland toplevels still match their app_id.
+    # WM_CLASS *instance* of an X/XWayland client ("" when the backend cannot tell it apart from class_);
+    # `search --classname` matches this, falling back to class_ so native Wayland toplevels still match their
+    # app_id.
     instance: str = ""
     pid: int = 0
     x: int = 0
@@ -90,9 +84,8 @@ class Window:
     focused: bool = False
     visible: bool = True
     desktop: int = -1  # 0-based workspace index, -1 unknown/sticky
-    # Mutter window-type name (NORMAL DESKTOP DOCK DIALOG ...); the backends
-    # that know it fill it in, the rest leave it NORMAL. hit_test() is the
-    # only reader: it is what lets one rule look through the desktop and dock
+    # Mutter window-type name (NORMAL DESKTOP DOCK DIALOG ...); the backends that know it fill it in, the rest
+    # leave it NORMAL. hit_test() is the only reader: it is what lets one rule look through the desktop and dock
     # layers on every backend that can tell them apart.
     window_type: str = "NORMAL"
 
@@ -105,15 +98,13 @@ _LAYER_TYPES = {"DESKTOP", "DOCK"}
 def hit_test(wins: "list[Window]", x: int, y: int) -> int:
     """The window under (x, y) in a list() result, 0 for none.
 
-    One rule for every backend, so getmouselocation and the backends cannot
-    drift apart: DESKTOP and DOCK layers are looked through, invisible
-    windows (minimized, or on another workspace) are never hits, the focused
-    window wins among the rest, and otherwise the topmost -- list() is
-    stacking order bottom to top, so that is the last hit.
+    One rule for every backend, so getmouselocation and the backends cannot drift apart: DESKTOP and DOCK layers
+    are looked through, invisible windows (minimized, or on another workspace) are never hits, the focused
+    window wins among the rest, and otherwise the topmost -- list() is stacking order bottom to top, so that is
+    the last hit.
 
-    Client-side on purpose. Neither the GNOME bridge nor KWin exports a
-    hit-test, and KWin 6's workspace.windowAt() would answer for one Plasma
-    release only."""
+    Client-side on purpose. Neither the GNOME bridge nor KWin exports a hit-test, and KWin 6's
+    workspace.windowAt() would answer for one Plasma release only."""
     hits = [w for w in wins
             if w.visible and w.window_type not in _LAYER_TYPES
             and w.w > 0 and w.h > 0
@@ -128,11 +119,10 @@ def hit_test(wins: "list[Window]", x: int, y: int) -> int:
 
 @dataclasses.dataclass
 class View:
-    """One toplevel with everything a wmctrl/xprop clone wants to print.
-    `window` is the plain Window; the rest is extra. `xid` is 0 for native
-    Wayland toplevels; `instance`/`cls` are the WM_CLASS pair (app_id twice
-    when the compositor has no WM_CLASS); `app_id` is the Wayland app id /
-    GTK application id ("" for pure X11 clients)."""
+    """One toplevel with everything a wmctrl/xprop clone wants to print. `window` is the plain Window; the rest
+    is extra. `xid` is 0 for native Wayland toplevels; `instance`/`cls` are the WM_CLASS pair (app_id twice when
+    the compositor has no WM_CLASS); `app_id` is the Wayland app id / GTK application id ("" for pure X11
+    clients)."""
 
     window: Window
     xid: int = 0
@@ -173,10 +163,9 @@ class WindowBackend:
     name = "none"
 
     def _unsupported(self, op: str):
-        # `unsupported` marks a capability gap (as opposed to a failed
-        # operation) so callers can downgrade it to a warning -- see
-        # set_num_desktops, which must not fail a chain on a compositor with
-        # a fixed workspace count.
+        # `unsupported` marks a capability gap (as opposed to a failed operation) so callers can downgrade it to
+        # a warning -- see set_num_desktops, which must not fail a chain on a compositor with a fixed workspace
+        # count.
         err = CmdError(f"{op} is not supported by the {self.name} backend")
         err.unsupported = True
         raise err
@@ -238,87 +227,70 @@ class WindowBackend:
         self._unsupported("windowlower")
 
     def set_state(self, wid: int, state: str, action: int) -> "str | None":
-        """state: uppercase _NET_WM_STATE suffix (e.g. "FULLSCREEN");
-        action: 0=remove 1=add 2=toggle.
+        """state: uppercase _NET_WM_STATE suffix (e.g. "FULLSCREEN"); action: 0=remove 1=add 2=toggle.
 
-        Returns None when the state applied, or when the backend cannot
-        tell. Returns a one-line reason when the compositor ACCEPTED the
-        request and did not apply it -- which KWin does for a window rule,
-        for size hints a fullscreen cannot satisfy, and for SHADED on
-        anything but an X11 window. Raise a CmdError only for a request the
-        backend could not make at all.
+        Returns None when the state applied, or when the backend cannot tell. Returns a one-line reason when the
+        compositor ACCEPTED the request and did not apply it -- which KWin does for a window rule, for size
+        hints a fullscreen cannot satisfy, and for SHADED on anything but an X11 window. Raise a CmdError only
+        for a request the backend could not make at all.
 
-        The caller decides what to do with a reason: wdotool prints it and
-        succeeds (the X tools cannot tell either), wwmctl first tries the
-        EWMH ClientMessage, which reaches an XWayland window through the X
+        The caller decides what to do with a reason: wdotool prints it and succeeds (the X tools cannot tell
+        either), wwmctl first tries the EWMH ClientMessage, which reaches an XWayland window through the X
         server the compositor's own API just refused."""
         self._unsupported("windowstate")
 
     def maximize_pair_state(self) -> "str | None":
-        """The one state name that sets or clears BOTH maximize axes in a
-        single set_state() call, for a backend where doing the two axes one
-        after the other is not the same thing; None where sending one axis
-        at a time is correct (KWin and sway settle each axis before they
-        answer, so there is nothing to fold).
+        """The one state name that sets or clears BOTH maximize axes in a single set_state() call, for a backend
+        where doing the two axes one after the other is not the same thing; None where sending one axis at a
+        time is correct (KWin and sway settle each axis before they answer, so there is nothing to fold).
 
-        GNOME's is "MAXIMIZED". Mutter unmaximizes to the window's *current*
-        frame rect and takes only the axis it is unmaximizing from the saved
-        rectangle, so a second single-axis call that arrives before the
-        Wayland client has answered the first configure carries the still
-        maximized half into its target -- and once both flags are clear
-        Mutter saves that rectangle as the restore size. Mutter's own EWMH
-        handler never splits the pair: it folds both atoms of one
-        ClientMessage into a single call.
+        GNOME's is "MAXIMIZED". Mutter unmaximizes to the window's *current* frame rect and takes only the axis
+        it is unmaximizing from the saved rectangle, so a second single-axis call that arrives before the
+        Wayland client has answered the first configure carries the still maximized half into its target -- and
+        once both flags are clear Mutter saves that rectangle as the restore size. Mutter's own EWMH handler
+        never splits the pair: it folds both atoms of one ClientMessage into a single call.
 
-        Any command that can be asked for both axes at once has to fold them
-        the way wwmctl.core._state_steps does -- `wdotool windowstate --add
-        MAXIMIZED_VERT --add MAXIMIZED_HORZ` included, once it honours more
+        Any command that can be asked for both axes at once has to fold them the way wwmctl.core._state_steps
+        does -- `wdotool windowstate --add MAXIMIZED_VERT --add MAXIMIZED_HORZ` included, once it honours more
         than the last option."""
         return None
 
     def set_num_desktops(self, n: int):
-        """Ask the compositor for exactly n workspaces (set_num_desktops).
-        Raises a CmdError with .unsupported set where the count is not the
-        caller's to choose (dynamic workspaces)."""
+        """Ask the compositor for exactly n workspaces (set_num_desktops). Raises a CmdError with .unsupported
+        set where the count is not the caller's to choose (dynamic workspaces)."""
         self._unsupported("set_num_desktops")
 
     def window_desktop(self, wid: int) -> int:
         return self.find(wid).desktop
 
     def is_mapped(self, wid: int) -> bool:
-        """X11 map state, as close as the backend can tell: the looser "not
-        minimized", NOT "visible". A window on an unfocused workspace is
-        mapped, and `windowmap --sync` waiting on visibility would never
-        return for one. Backends that track it exactly (sway: not in the
-        scratchpad) override this; the default is the visibility flag, which
-        is all a compositor that reports nothing else can offer."""
+        """X11 map state, as close as the backend can tell: the looser "not minimized", NOT "visible". A window
+        on an unfocused workspace is mapped, and `windowmap --sync` waiting on visibility would never return for
+        one. Backends that track it exactly (sway: not in the scratchpad) override this; the default is the
+        visibility flag, which is all a compositor that reports nothing else can offer."""
         return self.find(wid).visible
 
     def display_size(self) -> tuple[int, int]:
-        """The bounding box of the whole output layout, in logical pixels.
-        CmdError when the compositor will not say -- callers fall back to a
-        warning and 1920x1080 (wdotool) or print N/A (wwmctl)."""
+        """The bounding box of the whole output layout, in logical pixels. CmdError when the compositor will not
+        say -- callers fall back to a warning and 1920x1080 (wdotool) or print N/A (wwmctl)."""
         self._unsupported("display_size")
 
     def set_window_desktop(self, wid: int, n: int):
         self._unsupported("set_desktop_for_window")
 
-    # What to tell the user while an interactive selection is pending. The
-    # backends that implement select_window() properly want a click (GNOME's
-    # bridge grab, KWin's own picker); the sway backend, which can only wait
-    # for a focus change, says so instead -- callers print this rather than
-    # guess, because the two are opposite instructions.
+    # What to tell the user while an interactive selection is pending. The backends that implement
+    # select_window() properly want a click (GNOME's bridge grab, KWin's own picker); the sway backend, which
+    # can only wait for a focus change, says so instead -- callers print this rather than guess, because the two
+    # are opposite instructions.
     select_window_hint = "click the target window to select it"
 
     def select_window(self) -> int:
         """Interactively pick a window (selectwindow); return its id.
 
-        xdotool grabs the pointer and answers with the window under it at the
-        next button press. GNOME (bridge grab) and KDE (KWin's own picker) do
-        exactly that; sway/i3 have no picker and no pointer query in their
-        IPC, so that backend still waits for the next focus change and says
-        so. Cancelling (Escape, or the picker's own timeout) raises
-        CmdError -- rc 1, never a made-up window."""
+        xdotool grabs the pointer and answers with the window under it at the next button press. GNOME (bridge
+        grab) and KDE (KWin's own picker) do exactly that; sway/i3 have no picker and no pointer query in their
+        IPC, so that backend still waits for the next focus change and says so. Cancelling (Escape, or the
+        picker's own timeout) raises CmdError -- rc 1, never a made-up window."""
         self._unsupported("selectwindow")
 
     # optional richer views (additive, see the module docstring)
@@ -333,28 +305,24 @@ class WindowBackend:
         return None
 
     def move_to_current_desktop(self, wid: int) -> bool:
-        """Move `wid` to whatever desktop is current, in one operation, and
-        say whether that happened. False -- the answer everywhere but sway
-        -- means "ask me which desktop is current and move it by number";
-        sway answers True because a focused workspace can be named and have
-        no number at all, which get_desktop() can only report as -1."""
+        """Move `wid` to whatever desktop is current, in one operation, and say whether that happened. False --
+        the answer everywhere but sway -- means "ask me which desktop is current and move it by number"; sway
+        answers True because a focused workspace can be named and have no number at all, which get_desktop() can
+        only report as -1."""
         return False
 
     def x_info(self) -> tuple[str, str] | None:
-        """(DISPLAY, XAUTHORITY) of the session's Xwayland, or None when the
-        backend cannot tell (callers fall back to session.find_x_display /
-        find_xauthority)."""
+        """(DISPLAY, XAUTHORITY) of the session's Xwayland, or None when the backend cannot tell (callers fall
+        back to session.find_x_display / find_xauthority)."""
         return None
 
     def pointer(self) -> tuple[int, int] | None:
-        """The compositor's real pointer position in global layout
-        coordinates, or None when the compositor offers no pointer query
-        (sway's IPC does not). Callers fall back to the input daemon's
-        model of the last position it injected."""
+        """The compositor's real pointer position in global layout coordinates, or None when the compositor
+        offers no pointer query (sway's IPC does not). Callers fall back to the input daemon's model of the last
+        position it injected."""
         return None
 
     def events(self, timeout: float | None = None):
-        """Iterator of (window_id, change) with sway's vocabulary (new, close,
-        focus, title, fullscreen_mode, move, urgent, workspace); stops after
-        `timeout` seconds of silence (None = never)."""
+        """Iterator of (window_id, change) with sway's vocabulary (new, close, focus, title, fullscreen_mode,
+        move, urgent, workspace); stops after `timeout` seconds of silence (None = never)."""
         self._unsupported("window events")

@@ -55,11 +55,10 @@ from wdotool.uinput import EV_KEY, EV_MSC, EV_SYN
 
 KEY_ESC = 1
 KEY_A = 30
-# input-event-codes.h: EV_KEY below BTN_MISC is a key, from BTN_MISC up it is
-# a button (mouse, touchpad tool, joystick) -- a combined keyboard+mouse
-# device sends both down one node. Buttons are not this command's business and
-# have no X keycode to replay (X stops at 255), so the table skips them;
-# `--raw` still shows every event.
+# input-event-codes.h: EV_KEY below BTN_MISC is a key, from BTN_MISC up it is a button (mouse, touchpad tool,
+# joystick) -- a combined keyboard+mouse device sends both down one node. Buttons are not this command's
+# business and have no X keycode to replay (X stops at 255), so the table skips them; `--raw` still shows every
+# event.
 BTN_MISC = 0x100
 
 _EV_FMT = "llHHi"                      # struct input_event
@@ -67,9 +66,8 @@ _EV_SIZE = struct.calcsize(_EV_FMT)
 _EV_TYPES = {EV_SYN: "EV_SYN", EV_KEY: "EV_KEY", 0x02: "EV_REL", 0x03: "EV_ABS",
              EV_MSC: "EV_MSC", 0x11: "EV_LED", 0x12: "EV_SND", 0x14: "EV_REP"}
 
-# keysym -> the tag we print for a key held down. Read out of the *keymap*,
-# so the third-level key is whichever key this layout puts it on: <RALT> on
-# German, <CAPS> and <BKSL> on Neo, a dedicated <LVL3> elsewhere.
+# keysym -> the tag we print for a key held down. Read out of the *keymap*, so the third-level key is whichever
+# key this layout puts it on: <RALT> on German, <CAPS> and <BKSL> on Neo, a dedicated <LVL3> elsewhere.
 _MOD_TAGS = {
     0xFFE1: "shift", 0xFFE2: "shift",
     0xFFE3: "ctrl", 0xFFE4: "ctrl",
@@ -109,20 +107,17 @@ def xk(code: int) -> int:
 def kc(code: int) -> str:
     """evdev keycode -> the `wdotool key` TOKEN for it.
 
-    Not just `str(xk(code))`: a keysequence token is looked up as a keysym
-    *name* first (both here and in the real xdotool, which calls
-    XStringToKeysym before it considers a number), and "9" is the name of the
-    digit nine. Escape is X keycode 9, so `wdotool key 9` types a nine --
-    a replay line that does not replay. A leading zero is not the name of
-    anything and parses as the same number, so pad the tokens that collide."""
+    Not just `str(xk(code))`: a keysequence token is looked up as a keysym *name* first (both here and in the
+    real xdotool, which calls XStringToKeysym before it considers a number), and "9" is the name of the digit
+    nine. Escape is X keycode 9, so `wdotool key 9` types a nine -- a replay line that does not replay. A
+    leading zero is not the name of anything and parses as the same number, so pad the tokens that collide."""
     tok = str(xk(code))
     return "0" + tok if tok in NAME_TO_KEYSYM else tok
 
 
 def _q(ch: str) -> str:
-    """Shell-quote a character, always visibly: `wdotool type '@'` is the
-    line to paste, and `wdotool type @` -- which is what shlex.quote alone
-    gives back -- reads like a stray token."""
+    """Shell-quote a character, always visibly: `wdotool type '@'` is the line to paste, and `wdotool type @` --
+    which is what shlex.quote alone gives back -- reads like a stray token."""
     return shlex.quote(ch) if "'" in ch or "\\" in ch else "'%s'" % ch
 
 
@@ -133,10 +128,9 @@ def _q(ch: str) -> str:
 class Layout:
     """What both modes need to know about the layout that is active now.
 
-    Forward (`keysym`): keycode + modifier mask -> what it produces, which is
-    watch mode's question. Backward (`lookup_char`): character -> keystrokes,
-    which is explain mode's, and which is the *same* call the typing path
-    makes, US bypass and all -- so what explain prints is what `type` sends.
+    Forward (`keysym`): keycode + modifier mask -> what it produces, which is watch mode's question. Backward
+    (`lookup_char`): character -> keystrokes, which is explain mode's, and which is the *same* call the typing
+    path makes, US bypass and all -- so what explain prints is what `type` sends.
     """
 
     def __init__(self, name, source, group, ngroups, group_known, rmap, km=None, note=None):
@@ -190,9 +184,8 @@ class Layout:
 
     @classmethod
     def load(cls, keymap=None, group=None):
-        """The layout, chosen by exactly the rules the typing path uses:
-        `WDOTOOL_LAYOUT`, then the compositor's keymap, then the US bypass,
-        and the built-in US table as the floor (see daemon._layout).
+        """The layout, chosen by exactly the rules the typing path uses: `WDOTOOL_LAYOUT`, then the compositor's
+        keymap, then the US bypass, and the built-in US table as the floor (see daemon._layout).
 
         `keymap`/`group` are --keymap/--group, passed rather than exported."""
         mode = xkbmap.layout_mode()
@@ -372,11 +365,10 @@ class Watcher:
     def device_gone(self, t, path):
         """A keyboard that was holding keys was unplugged.
 
-        The kernel releases a removed device's keys for everybody else
-        (`input_dev_release_keys`), so watching has to do the same. Otherwise
-        the run never closes -- no summary is printed again for the rest of
-        the session -- and every later line reports a modifier that nobody is
-        holding any more, which is a reproduction that does not reproduce."""
+        The kernel releases a removed device's keys for everybody else (`input_dev_release_keys`), so watching
+        has to do the same. Otherwise the run never closes -- no summary is printed again for the rest of the
+        session -- and every later line reports a modifier that nobody is holding any more, which is a
+        reproduction that does not reproduce."""
         return [line for code in self.holding(path) for line in self.key_event(t, code, 0, path)]
 
     def finish(self):
@@ -428,10 +420,9 @@ class Watcher:
     def _portable_press(self, code, mask, ks, tags):
         """The character-language reproduction of one press.
 
-        Level modifiers are never spelled out: they are folded into the
-        keysym they select, because the *name* of the level-three key is a
-        property of this layout and would not travel. ctrl/alt/super do
-        travel, and stay as tokens."""
+        Level modifiers are never spelled out: they are folded into the keysym they select, because the *name*
+        of the level-three key is a property of this layout and would not travel. ctrl/alt/super do travel, and
+        stay as tokens."""
         extra = [t for t in tags if t in _SEQ_TAGS]
         name = keysym_name(ks)
         ch = xkbmap.keysym_char(ks)
@@ -453,9 +444,8 @@ class Watcher:
         if open_run:
             why = "still held when watching stopped"
         elif not downs:
-            # The key was already down when watching started (the Enter that
-            # ran the command is the usual one), so its press is not ours to
-            # show. There is a release to reproduce and no chord to infer.
+            # The key was already down when watching started (the Enter that ran the command is the usual one),
+            # so its press is not ours to show. There is a release to reproduce and no chord to infer.
             why = "released without a press: held down before watching started"
         elif ups and downs and max(downs) > min(ups):
             why = "released out of order"
@@ -487,9 +477,8 @@ class Watcher:
         return out
 
     def _dead_pair(self, ks, replay, portable):
-        """A dead key and then a base letter are two runs, not a chord. When
-        the pair really composes, say what it typed -- that is the line the
-        user wanted."""
+        """A dead key and then a base letter are two runs, not a chord. When the pair really composes, say what
+        it typed -- that is the line the user wanted."""
         prev, self.dead = self.dead, None
         mark = xkbmap.DEAD_KEYSYMS.get(ks)
         if mark is not None:
@@ -523,10 +512,9 @@ class StreamEvdev(keystate.Evdev):
 class Devices:
     """Every readable keyboard that is not ours, kept open while watching.
 
-    Devices come and go (a USB keyboard, a Bluetooth one waking up), so the
-    directory is re-scanned on a timer and a node that stops reading is
-    dropped. Nothing is ever grabbed (`EVIOCGRAB`): the compositor keeps
-    seeing every key, and stopping leaves the system exactly as it was."""
+    Devices come and go (a USB keyboard, a Bluetooth one waking up), so the directory is re-scanned on a timer
+    and a node that stops reading is dropped. Nothing is ever grabbed (`EVIOCGRAB`): the compositor keeps seeing
+    every key, and stopping leaves the system exactly as it was."""
 
     RESCAN = 1.0
 
@@ -620,10 +608,9 @@ class Devices:
         return out
 
     def now(self) -> float:
-        """The clock the event timestamps are on, for the releases we have to
-        invent when a device is unplugged. evdev stamps every event
-        CLOCK_REALTIME, which is what time.time() reads, so a synthesised
-        release lands on the same timeline as the real ones."""
+        """The clock the event timestamps are on, for the releases we have to invent when a device is unplugged.
+        evdev stamps every event CLOCK_REALTIME, which is what time.time() reads, so a synthesised release lands
+        on the same timeline as the real ones."""
         return time.time()
 
     def _wait(self, timeout):
@@ -661,13 +648,11 @@ class Devices:
             for off in range(0, len(data) - _EV_SIZE + 1, _EV_SIZE):
                 sec, usec, etype, code, value = struct.unpack(_EV_FMT, data[off:off + _EV_SIZE])
                 out.append((info[0], sec + usec / 1e6, etype, code, value))
-        # One round drains each device in fd order, so two keyboards come out
-        # of it in blocks: the time column would run backwards and a key held
-        # on one board across a press on the other would be rendered as two
-        # separate runs. The kernel timestamps every event (CLOCK_REALTIME, so
-        # they are comparable between devices); sort by them and the batch is
-        # the order things actually happened in. Stable: same-timestamp events
-        # keep the order the device reported them.
+        # One round drains each device in fd order, so two keyboards come out of it in blocks: the time column
+        # would run backwards and a key held on one board across a press on the other would be rendered as two
+        # separate runs. The kernel timestamps every event (CLOCK_REALTIME, so they are comparable between
+        # devices); sort by them and the batch is the order things actually happened in. Stable: same-timestamp
+        # events keep the order the device reported them.
         out.sort(key=lambda e: e[1])
         return out
 
@@ -679,12 +664,10 @@ _EXPLAIN_INSTEAD = ("  `wdotool keys explain` needs no privilege and answers "
 def _no_devices(dev) -> str:
     """Why there is nothing to watch, in the terms of this machine.
 
-    "Needs root" is the usual answer and it is worth being exact about: the
-    keyboards are root:input with no ACL and nothing tags them -- this
-    project's udev rule tags /dev/uinput only, which is the injecting half.
-    But it is the wrong answer when there are no input devices at all (a
-    container) or when the only ones here are our own, and saying `sudo` to
-    someone who is already root helps nobody."""
+    "Needs root" is the usual answer and it is worth being exact about: the keyboards are root:input with no ACL
+    and nothing tags them -- this project's udev rule tags /dev/uinput only, which is the injecting half. But it
+    is the wrong answer when there are no input devices at all (a container) or when the only ones here are our
+    own, and saying `sudo` to someone who is already root helps nobody."""
     lines = ["wdotool keys watch: no keyboard to read."]
     if dev.denied:
         lines += [
@@ -859,11 +842,10 @@ def watch_main(argv, devices=None, out=None, err=None) -> int:
     try:
         while True:
             batch = dev.poll(0.5)
-            # A keyboard that went away before this round was read is holding
-            # nothing any more, and its keys have to be let go of *before* the
-            # events that arrived after it left -- otherwise every one of them
-            # is reported under a modifier nobody is holding. --raw is the
-            # unfiltered device stream and gets no invented events.
+            # A keyboard that went away before this round was read is holding nothing any more, and its keys
+            # have to be let go of *before* the events that arrived after it left -- otherwise every one of them
+            # is reported under a modifier nobody is holding. --raw is the unfiltered device stream and gets no
+            # invented events.
             gone = dev.take_gone()
             if gone and not raw:
                 when = batch[0][1] if batch else dev.now()

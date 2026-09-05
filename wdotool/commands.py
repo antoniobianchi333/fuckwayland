@@ -1,9 +1,8 @@
-"""Command registry: name -> (module, "cmd_<name>") in the real xdotool
-dispatch[] order (which is also the `help` output order).
+"""Command registry: name -> (module, "cmd_<name>") in the real xdotool dispatch[] order (which is also the
+`help` output order).
 
-Modules are imported lazily at dispatch time so partially-implemented command
-modules still load, import cycles are impossible, and a missing cmd_* function
-resolves to a stub that raises CmdError."""
+Modules are imported lazily at dispatch time so partially-implemented command modules still load, import cycles
+are impossible, and a missing cmd_* function resolves to a stub that raises CmdError."""
 
 import importlib
 
@@ -53,9 +52,8 @@ def is_command(name: str) -> bool:
 
 
 def lookup(name: str):
-    """Resolve a command name (case-insensitively) to its function, or None if
-    it is not a command. Not-yet-implemented commands resolve to a CmdError
-    stub so the chain errors cleanly."""
+    """Resolve a command name (case-insensitively) to its function, or None if it is not a command.
+    Not-yet-implemented commands resolve to a CmdError stub so the chain errors cleanly."""
     entry = REGISTRY.get(name.lower())
     if entry is None:
         return None

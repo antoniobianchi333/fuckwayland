@@ -82,9 +82,8 @@ PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the ' "dial
 
 def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
                  layout_mode: int = LAYOUT_LOGICAL) -> tuple[int, int]:
-    """Mutter's logical monitor size: transform swap, then roundf(px/scale)
-    in layout-mode 1; raw pixels in layout-mode 2 (scale is a pure UI
-    factor there). Differs from core.logical_size (wlroots truncates)."""
+    """Mutter's logical monitor size: transform swap, then roundf(px/scale) in layout-mode 1; raw pixels in
+    layout-mode 2 (scale is a pure UI factor there). Differs from core.logical_size (wlroots truncates)."""
     if core.transform_swaps(sway_tf):
         px_w, px_h = px_h, px_w
     if layout_mode == LAYOUT_PHYSICAL or not scale:
@@ -92,9 +91,8 @@ def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
     return (round_half_away(px_w / scale), round_half_away(px_h / scale))
 
 
-# Mutter numbers transforms exactly as the wl_output spec does, so the
-# measured table lives in core (WL_SPEC_RANDR_VIEW) next to the sway one it
-# is a permutation of. These are this module's names for it.
+# Mutter numbers transforms exactly as the wl_output spec does, so the measured table lives in core
+# (WL_SPEC_RANDR_VIEW) next to the sway one it is a permutation of. These are this module's names for it.
 MUTTER_RANDR_VIEW = core.WL_SPEC_RANDR_VIEW
 MUTTER_FROM_SWAY = core.WL_SPEC_FROM_SWAY
 to_transform = core.to_wl_spec_transform
@@ -136,16 +134,13 @@ def _text(e: DBusError) -> str:
 
 
 def _refused(e: DBusError) -> str:
-    """A rejected ApplyMonitorsConfig, in Mutter's name.  We pass every
-    layout on unchanged -- overlaps included, which X11, KWin and wlroots
-    all take -- so when one comes back refused the limit is GNOME's, and
-    the line has to say so before quoting Mutter's own words (a two-monitor
-    overlap gets "Logical monitors not adjacent", the same sentence a gap
-    gets).
+    """A rejected ApplyMonitorsConfig, in Mutter's name.  We pass every layout on unchanged -- overlaps
+    included, which X11, KWin and wlroots all take -- so when one comes back refused the limit is GNOME's, and
+    the line has to say so before quoting Mutter's own words (a two-monitor overlap gets "Logical monitors not
+    adjacent", the same sentence a gap gets).
 
-    Mutter's own sentence does not say what to do about it, and the usual
-    cause -- `--output MIDDLE --off`, which leaves the row with a hole -- has
-    one obvious answer, so adjacency refusals carry it."""
+    Mutter's own sentence does not say what to do about it, and the usual cause -- `--output MIDDLE --off`,
+    which leaves the row with a hole -- has one obvious answer, so adjacency refusals carry it."""
     line = "GNOME's Mutter refused this layout: " + _text(e)
     if "adjacent" in (e.message or "") or "overlap" in (e.message or ""):
         line = line.rstrip("\n") + (
@@ -173,17 +168,14 @@ def _positioned(t: core.Target) -> bool:
 
 
 def keep_adjacent(targets: list, dims: dict, pos: dict) -> list:
-    """Mutter allows no gaps (X does): an output that shared its left (top)
-    edge with a neighbour's right (bottom) edge before this invocation keeps
-    touching it when that edge moves because the neighbour changed mode,
-    rotation or scale (or followed another one itself). Explicit positions
-    are the user's: an output placed here (--pos / --left-of ...) never
-    moves, and nothing follows one — its old neighbours may no longer be
-    neighbours at all — so Mutter's verdict on such a layout stands.
-    Neighbours that went --off pull nothing either (nothing to stay adjacent
-    to; Mutter reports the hole). Mutates `pos` (every enabled output,
-    min x = min y = 0 as core.resolve_positions leaves it) and returns
-    [(name, (x, y), neighbour)] for each output it moved, in move order."""
+    """Mutter allows no gaps (X does): an output that shared its left (top) edge with a neighbour's right
+    (bottom) edge before this invocation keeps touching it when that edge moves because the neighbour changed
+    mode, rotation or scale (or followed another one itself). Explicit positions are the user's: an output
+    placed here (--pos / --left-of ...) never moves, and nothing follows one — its old neighbours may no longer
+    be neighbours at all — so Mutter's verdict on such a layout stands. Neighbours that went --off pull nothing
+    either (nothing to stay adjacent to; Mutter reports the hole). Mutates `pos` (every enabled output, min x =
+    min y = 0 as core.resolve_positions leaves it) and returns [(name, (x, y), neighbour)] for each output it
+    moved, in move order."""
     old = {t.name: (t.output.x, t.output.y, t.output.w, t.output.h) for t in targets if t.output.active}
     fixed = {t.name for t in targets if _positioned(t)}
     movable = [t.name for t in targets
@@ -195,9 +187,8 @@ def keep_adjacent(targets: list, dims: dict, pos: dict) -> list:
         for n in movable:
             ox, oy, ow, oh = old[n]
             x, y = pos[n]
-            # neighbours still enabled whose old right (bottom) edge was n's
-            # old left (top) edge with strict overlap; n goes to the
-            # farthest of their new edges (touch one, overlap none)
+            # neighbours still enabled whose old right (bottom) edge was n's old left (top) edge with strict
+            # overlap; n goes to the farthest of their new edges (touch one, overlap none)
             lefts = [(pos[m][0] + dims[m][0], m)
                      for m, (mx, my, mw, mh) in old.items()
                      if m != n and m in pos and m not in fixed
@@ -255,13 +246,11 @@ _SUBPIXEL = {0: "unknown", 1: "none", 2: "horizontal rgb", 3: "horizontal bgr",
 
 
 def wl_output_info(sock_path: str | None = None) -> dict:
-    """{connector: {"mm_w", "mm_h", "subpixel", "make", "model"}} from the
-    compositor's wl_output globals (v4: the `name` event is the connector).
-    Mutter 46 and 50 never put width-mm/height-mm into GetCurrentState (the
-    XML documents them, the code does not emit them — verified with gdbus)
-    but hands the EDID size to wl_output, which is what XWayland's RandR
-    shows; reading it keeps the header/--listmonitors mm byte-identical.
-    Never raises: {} when there is no reachable Wayland socket."""
+    """{connector: {"mm_w", "mm_h", "subpixel", "make", "model"}} from the compositor's wl_output globals (v4:
+    the `name` event is the connector). Mutter 46 and 50 never put width-mm/height-mm into GetCurrentState (the
+    XML documents them, the code does not emit them — verified with gdbus) but hands the EDID size to wl_output,
+    which is what XWayland's RandR shows; reading it keeps the header/--listmonitors mm byte-identical. Never
+    raises: {} when there is no reachable Wayland socket."""
     try:
         from fwcommon.wayland_mini import WlConn
         if sock_path is None:
@@ -350,9 +339,8 @@ class MutterOutputs:
             raise Fatal(_text(e))
 
     def snapshot(self, state: core.State) -> list:
-        """OutputState list in Mutter's monitor order; records serial,
-        layout mode, supported scales, the real primary (synced into
-        state.primary — the state file never overrides Mutter here)."""
+        """OutputState list in Mutter's monitor order; records serial, layout mode, supported scales, the real
+        primary (synced into state.primary — the state file never overrides Mutter here)."""
         serial, monitors, logical, props = self.get_current_state()
         wl = {} if self.wl_socket is False else wl_output_info(self.wl_socket or None)
         self.serial = serial
@@ -365,14 +353,11 @@ class MutterOutputs:
             for spec in lm[5]:
                 lm_of[spec[0]] = lm
         primary_lm = self._primary_lm(logical, lm_of)
-        # Which CONNECTOR is primary, out of the primary logical monitor's
-        # members.  A mirror group has several and Mutter names none of them
-        # -- the flag is on the group -- so its member order decides, and
-        # that order is the order the group was built in, not a choice
-        # anybody made.  Mirroring A onto B therefore used to move the
-        # primary to whichever came first, silently overwriting a --primary
-        # the user had set on the other member.  Keep the user's choice
-        # whenever it is still in the group.
+        # Which CONNECTOR is primary, out of the primary logical monitor's members.  A mirror group has several
+        # and Mutter names none of them -- the flag is on the group -- so its member order decides, and that
+        # order is the order the group was built in, not a choice anybody made.  Mirroring A onto B therefore
+        # used to move the primary to whichever came first, silently overwriting a --primary the user had set on
+        # the other member.  Keep the user's choice whenever it is still in the group.
         if primary_lm is None:
             self.primary = None
         else:
@@ -428,10 +413,9 @@ class MutterOutputs:
 
     @staticmethod
     def _fingerprint(monitors, logical) -> tuple:
-        """What a plan was built from: the connectors with their mode ids
-        and current mode, and the logical layout (order-free). Equal
-        fingerprints under different serials mean nothing that matters to
-        the plan changed (GNOME bumps the serial on its own as well)."""
+        """What a plan was built from: the connectors with their mode ids and current mode, and the logical
+        layout (order-free). Equal fingerprints under different serials mean nothing that matters to the plan
+        changed (GNOME bumps the serial on its own as well)."""
         mons = tuple((spec[0], tuple(m[0] for m in modes),
                       next((m[0] for m in modes if m[6].get("is-current")),
                            None))
@@ -442,9 +426,8 @@ class MutterOutputs:
         return mons, lms
 
     def _primary_lm(self, logical, lm_of):
-        """The logical monitor that is really primary. One flagged: that one.
-        Several (GNOME 50 keeps stale flags on in-place updates): the one
-        holding the connector GetResources marks primary. None: None."""
+        """The logical monitor that is really primary. One flagged: that one. Several (GNOME 50 keeps stale
+        flags on in-place updates): the one holding the connector GetResources marks primary. None: None."""
         flagged = [lm for lm in logical if lm[4]]
         if len(flagged) <= 1:
             return flagged[0] if flagged else None
@@ -460,17 +443,15 @@ class MutterOutputs:
     # -- planning ------------------------------------------------------------
 
     def resolve_mode(self, t: core.Target, state: core.State) -> Mode:
-        """The real mode an enabled target will run: the stanza's, else the
-        current one, else the mode wxrandr disabled it at (state file), else
-        the preferred one. A custom (--newmode) mode is only applicable when
-        a real mode of the same size and rate exists -- and Mutter's modes
-        say whether they are interlaced, so that has to match too."""
+        """The real mode an enabled target will run: the stanza's, else the current one, else the mode wxrandr
+        disabled it at (state file), else the preferred one. A custom (--newmode) mode is only applicable when a
+        real mode of the same size and rate exists -- and Mutter's modes say whether they are interlaced, so
+        that has to match too."""
         return core.resolve_real_mode(t, state, interlace_known=True)
 
     def _scale_for(self, t: core.Target, mode: Mode) -> float:
-        """The scale Mutter will accept: an output keeping its mode and scale
-        keeps them verbatim (Mutter runs that combination right now, even if
-        the scale came from monitors.xml and is not in supported_scales);
+        """The scale Mutter will accept: an output keeping its mode and scale keeps them verbatim (Mutter runs
+        that combination right now, even if the scale came from monitors.xml and is not in supported_scales);
         anything else is snapped to the mode's supported list."""
         o = t.output
         if (o.active and o.current is not None
@@ -480,9 +461,8 @@ class MutterOutputs:
         return snap_scale(t.scale, self.scales.get((t.name, mode.mode_id)) or [1.0])
 
     def predicted_dims(self, t: core.Target, state: core.State) -> tuple:
-        """Pending logical size of an enabled target in Mutter's space (the
-        dryrun/verbose plan and --fb checks use this instead of the wlroots
-        prediction)."""
+        """Pending logical size of an enabled target in Mutter's space (the dryrun/verbose plan and --fb checks
+        use this instead of the wlroots prediction)."""
         m = self.resolve_mode(t, state)
         return logical_size(m.w, m.h, t.sway_tf, self._scale_for(t, m), self.layout_mode)
 
@@ -514,9 +494,8 @@ class MutterOutputs:
                     pos[n] = (x - min_x, y - min_y)
 
     def plan(self, state: core.State, targets: list) -> list:
-        """Targets -> logical monitors: modes resolved, scales snapped (warn
-        when changed), positions from core.resolve_positions in Mutter's
-        logical space, same-position outputs grouped into one (mirror)
+        """Targets -> logical monitors: modes resolved, scales snapped (warn when changed), positions from
+        core.resolve_positions in Mutter's logical space, same-position outputs grouped into one (mirror)
         logical monitor, exactly one primary, floating outputs auto-placed."""
         real, scales = {}, {}
         for t in targets:
@@ -591,12 +570,10 @@ class MutterOutputs:
                       (self.serial, method, self.to_wire(plan), {}))
 
     def _send(self, method: int, plan: list):
-        """ApplyMonitorsConfig with one stale-serial retry, and only when
-        the re-read state still has the monitors and layout the plan was
-        built from (a plan re-sent after a hotplug would silently leave the
-        new monitor out, one re-sent after someone else's re-layout would
-        undo it); every other rejection is Mutter's own message as a
-        Fatal."""
+        """ApplyMonitorsConfig with one stale-serial retry, and only when the re-read state still has the
+        monitors and layout the plan was built from (a plan re-sent after a hotplug would silently leave the new
+        monitor out, one re-sent after someone else's re-layout would undo it); every other rejection is
+        Mutter's own message as a Fatal."""
         try:
             self._call_apply(method, plan)
         except DBusError as e:
@@ -618,9 +595,8 @@ class MutterOutputs:
         self._send(VERIFY, self.plan(state, targets))
 
     def apply(self, state: core.State, targets: list, persistent: bool = False) -> list:
-        """One ApplyMonitorsConfig for the whole layout, then wait for
-        MonitorsChanged (<= 5 s) and return the fresh snapshot. An unchanged
-        temporary layout is not re-applied (no modeset for `--primary` on the
+        """One ApplyMonitorsConfig for the whole layout, then wait for MonitorsChanged (<= 5 s) and return the
+        fresh snapshot. An unchanged temporary layout is not re-applied (no modeset for `--primary` on the
         primary); --persistent always writes, so monitors.xml gets it."""
         plan = self.plan(state, targets)
         method = PERSISTENT if persistent else TEMPORARY

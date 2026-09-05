@@ -80,26 +80,23 @@ AUTOLOAD_WAIT = 3.0     # after a successful Eval(loadExtension)
 
 # xdotool action -> bridge SetState action word
 _ACTIONS = {0: "remove", 1: "add", 2: "toggle"}
-# _NET_WM_STATE atoms Mutter has no setter for and that change nothing a
-# script can observe through these tools: warn + succeed (DESIGN.md cosmetic
-# rule). SHADED is not one of them: shading is a visible operation a script
-# may rely on, and Mutter does not implement it at all -- a real capability
-# gap, like BELOW. Everything else the bridge cannot apply is a gap too.
+# _NET_WM_STATE atoms Mutter has no setter for and that change nothing a script can observe through these tools:
+# warn + succeed (DESIGN.md cosmetic rule). SHADED is not one of them: shading is a visible operation a script
+# may rely on, and Mutter does not implement it at all -- a real capability gap, like BELOW. Everything else the
+# bridge cannot apply is a gap too.
 _COSMETIC_STATES = {"SKIP_TASKBAR", "SKIP_PAGER", "MODAL"}
 _GAP_REASONS = {"SHADED": "Mutter does not implement window shading", "BELOW": "Mutter has no API for it"}
 # Opt-in for the Eval-based auto-load of an installed extension (__init__).
 AUTOLOAD_ENV = "WDOTOOL_GNOME_AUTOLOAD"
-# org.gnome.Shell Mode values in which no user session runs extensions. The
-# unlocked session's mode is NOT always "user": Ubuntu's is "ubuntu" (parent
-# mode user), GNOME Classic's "classic" -- so the test is for the known
-# no-extension modes, never `!= "user"` (that misreported a disabled
-# extension as a locked screen, observed live on 24.04).
+# org.gnome.Shell Mode values in which no user session runs extensions. The unlocked session's mode is NOT
+# always "user": Ubuntu's is "ubuntu" (parent mode user), GNOME Classic's "classic" -- so the test is for the
+# known no-extension modes, never `!= "user"` (that misreported a disabled extension as a locked screen,
+# observed live on 24.04).
 _LOCKED_MODES = {"unlock-dialog", "initial-setup"}
 _GREETER_MODES = {"gdm"}
 
-# Best-effort: load an installed-but-not-yet-loaded copy of the extension
-# from inside the shell. Runs in shellDBus.js's module scope (Main, Gio, GLib
-# imported there on 46 and 50); only reachable in unsafe mode.
+# Best-effort: load an installed-but-not-yet-loaded copy of the extension from inside the shell. Runs in
+# shellDBus.js's module scope (Main, Gio, GLib imported there on 46 and 50); only reachable in unsafe mode.
 _AUTOLOAD_JS = """\
 (() => {
   const uuid = '%s';
@@ -128,9 +125,9 @@ _AUTOLOAD_JS = """\
 
 
 def _extension_dirs() -> list:
-    """XDG data directories a copy of the bridge could live in, per-user
-    first. The per-user one is the *session* user's, which under `sudo` is
-    not ours -- the same rule `install-bridge.sh` applies with $SUDO_USER."""
+    """XDG data directories a copy of the bridge could live in, per-user first. The per-user one is the
+    *session* user's, which under `sudo` is not ours -- the same rule `install-bridge.sh` applies with
+    $SUDO_USER."""
     dirs = []
     uid = session.session_uid()
     try:
@@ -148,15 +145,12 @@ def _extension_dirs() -> list:
 
 
 def extension_installed() -> bool:
-    """Is a copy of the bridge extension on disk? The question
-    `gnome/install-bridge.sh --check` answers with its `files:` line, asked
-    of the same places and without a subprocess.
+    """Is a copy of the bridge extension on disk? The question `gnome/install-bridge.sh --check` answers with
+    its `files:` line, asked of the same places and without a subprocess.
 
-    Worth asking only on the error path, and there it decides which of two
-    true sentences to print: behind the lock screen GNOME Shell disables
-    every extension, so from the *bus* a bridge that was never installed
-    and one that is merely asleep look exactly alike (live, 24.04). From
-    disk they do not."""
+    Worth asking only on the error path, and there it decides which of two true sentences to print: behind the
+    lock screen GNOME Shell disables every extension, so from the *bus* a bridge that was never installed and
+    one that is merely asleep look exactly alike (live, 24.04). From disk they do not."""
     return any(os.path.isfile(os.path.join(d, _EXT_FILE)) for d in _extension_dirs())
 
 
@@ -164,10 +158,9 @@ class GnomeBackend(WindowBackend):
     name = "gnome"
 
     def __init__(self, bus: Bus | None = None, names: list[str] | None = None, settle: float = 0.5):
-        """`bus`/`names`: reuse backend_detect's connection and its ListNames
-        result (one round trip per process). `settle`: how long activate()
-        waits for the focus change to land before returning (Mutter animates
-        and may defer focus; `key --window` injects 50 ms after activate)."""
+        """`bus`/`names`: reuse backend_detect's connection and its ListNames result (one round trip per
+        process). `settle`: how long activate() waits for the focus change to land before returning (Mutter
+        animates and may defer focus; `key --window` injects 50 ms after activate)."""
         self.settle = settle
         if bus is None:
             try:
@@ -185,11 +178,10 @@ class GnomeBackend(WindowBackend):
                 raise NoSessionError("gnome backend: %s is not on the session "
                                      "bus (no GNOME session?)" % SHELL_NAME)
             if not (_autoload_wanted() and self._try_autoload()):
-                # Every reason the bridge can be missing (not installed, not
-                # enabled, screen locked, greeter, shell restarting) means the
-                # same thing to a script: there is no window backend to talk
-                # to yet. That is rc 2, distinct from "no matching window"
-                # (rc 1) -- see B5 / SESSION READINESS in README.md.
+                # Every reason the bridge can be missing (not installed, not enabled, screen locked, greeter,
+                # shell restarting) means the same thing to a script: there is no window backend to talk to yet.
+                # That is rc 2, distinct from "no matching window" (rc 1) -- see B5 / SESSION READINESS in
+                # README.md.
                 raise NoSessionError(self._missing_bridge_text())
 
     # -- plumbing -----------------------------------------------------------
@@ -200,9 +192,8 @@ class GnomeBackend(WindowBackend):
         except DBusError as e:
             raise self._map_error(member, e) from None
         except (ValueError, OverflowError, struct.error) as e:
-            # An argument the wire format cannot carry (a negative or
-            # >64-bit window id reached us from somewhere): one line, rc 1,
-            # never a marshalling traceback (B8).
+            # An argument the wire format cannot carry (a negative or >64-bit window id reached us from
+            # somewhere): one line, rc 1, never a marshalling traceback (B8).
             raise CmdError("gnome backend: %s: invalid argument: %s" % (member, e)) from None
 
     @staticmethod
@@ -230,18 +221,15 @@ class GnomeBackend(WindowBackend):
         return CmdError("gnome backend: %s failed: %s" % (member, e))
 
     def _missing_bridge_text(self) -> str:
-        """Why is the bridge name missing? Extensions only run in the shell's
-        `user` session mode (the name goes away behind the lock screen), and
-        an installed extension may simply be disabled; both are readable by
+        """Why is the bridge name missing? Extensions only run in the shell's `user` session mode (the name goes
+        away behind the lock screen), and an installed extension may simply be disabled; both are readable by
         anyone on the bus. Falls back to the generic install hint.
 
-        A locked screen is not the answer when the extension was never
-        installed. Both are true then, and blaming the lock is the one a
-        reader can act on least -- unlocking will not make the command work,
-        and a first-time reader on a default desktop hits exactly that pair
-        (the install guide's own `apt install` outlasts `idle-delay 300`;
-        live on 24.04). The bus cannot tell the two apart, so the disk is
-        asked, and the lock stays in the message as a clause."""
+        A locked screen is not the answer when the extension was never installed. Both are true then, and
+        blaming the lock is the one a reader can act on least -- unlocking will not make the command work, and a
+        first-time reader on a default desktop hits exactly that pair (the install guide's own `apt install`
+        outlasts `idle-delay 300`; live on 24.04). The bus cannot tell the two apart, so the disk is asked, and
+        the lock stays in the message as a clause."""
         try:
             mode = str(self.bus.get_property(SHELL_NAME, "/org/gnome/Shell",
                                              SHELL_NAME, "Mode",
@@ -289,9 +277,8 @@ class GnomeBackend(WindowBackend):
         return _HINT
 
     def _screen_locked(self) -> bool:
-        """org.gnome.ScreenSaver.GetActive(): public, unprivileged, true
-        while the shell's lock screen is up. Needed besides `Mode`: GNOME 46
-        keeps the Mode property at the session mode ('ubuntu') while locked
+        """org.gnome.ScreenSaver.GetActive(): public, unprivileged, true while the shell's lock screen is up.
+        Needed besides `Mode`: GNOME 46 keeps the Mode property at the session mode ('ubuntu') while locked
         (observed live), only 50 reports 'unlock-dialog' there."""
         try:
             (active,) = self.bus.call(SCREENSAVER_NAME, "/org/gnome/ScreenSaver",
@@ -302,11 +289,10 @@ class GnomeBackend(WindowBackend):
         return bool(active)
 
     def _try_autoload(self) -> bool:
-        """Eval-based load of an installed extension; False unless the shell
-        is in unsafe mode and the load produced the bridge name. Opt-in only
-        (WDOTOOL_GNOME_AUTOLOAD): Eval is a privileged interface and the
-        common bridge-less case is "installed, needs a re-login", which
-        must not send a round trip to it just to be refused."""
+        """Eval-based load of an installed extension; False unless the shell is in unsafe mode and the load
+        produced the bridge name. Opt-in only (WDOTOOL_GNOME_AUTOLOAD): Eval is a privileged interface and the
+        common bridge-less case is "installed, needs a re-login", which must not send a round trip to it just to
+        be refused."""
         try:
             ok, result = self.bus.call(SHELL_NAME, "/org/gnome/Shell", SHELL_NAME,
                                        "Eval", "s", (_AUTOLOAD_JS,), timeout=CALL_TIMEOUT)
@@ -463,18 +449,15 @@ class GnomeBackend(WindowBackend):
                        % (state, _GAP_REASONS.get(state, "Mutter has no API for it")))
 
     def maximize_pair_state(self) -> str:
-        """"MAXIMIZED": the bridge's name for both axes at once, which
-        reaches Mutter as one set_maximize_flags()/set_unmaximize_flags()
-        call carrying both direction bits. Two single-axis calls do not add
-        up to it (they corrupt the saved rectangle); every bridge version
-        has accepted the name."""
+        """"MAXIMIZED": the bridge's name for both axes at once, which reaches Mutter as one
+        set_maximize_flags()/set_unmaximize_flags() call carrying both direction bits. Two single-axis calls do
+        not add up to it (they corrupt the saved rectangle); every bridge version has accepted the name."""
         return "MAXIMIZED"
 
     def unsupported_states(self) -> "set[str]":
-        """_NET_WM_STATE names the bridge answers "not applied" to: Mutter
-        exports no Wayland setter for them, so they are cosmetic no-ops
-        here. wwmctl asks so it knows when to reach an XWayland window
-        through the X server instead, where Mutter honours them."""
+        """_NET_WM_STATE names the bridge answers "not applied" to: Mutter exports no Wayland setter for them,
+        so they are cosmetic no-ops here. wwmctl asks so it knows when to reach an XWayland window through the X
+        server instead, where Mutter honours them."""
         return set(_COSMETIC_STATES) | set(_GAP_REASONS)
 
     def window_desktop(self, wid: int) -> int:
@@ -497,14 +480,12 @@ class GnomeBackend(WindowBackend):
     _SELECT_MIN_VERSION = 2
 
     def select_window(self) -> int:
-        """xdotool selectwindow: the window under the pointer at the next
-        button press. The bridge takes a stage grab and answers when the user
-        clicks; Escape (and the bridge's own timeout) come back as
-        `.Cancelled`, which is rc 1 with a reason, like KWin's picker.
+        """xdotool selectwindow: the window under the pointer at the next button press. The bridge takes a stage
+        grab and answers when the user clicks; Escape (and the bridge's own timeout) come back as `.Cancelled`,
+        which is rc 1 with a reason, like KWin's picker.
 
-        The D-Bus call has no timeout of its own on purpose -- the wait is as
-        long as the user takes -- but the bridge always answers, so it cannot
-        hang here either."""
+        The D-Bus call has no timeout of its own on purpose -- the wait is as long as the user takes -- but the
+        bridge always answers, so it cannot hang here either."""
         version = 0
         try:
             version = self.bridge_version()
@@ -561,9 +542,8 @@ class GnomeBackend(WindowBackend):
         return out
 
     def x_info(self) -> tuple[str, str] | None:
-        """(DISPLAY, XAUTHORITY) of Xwayland: what gnome-shell itself has in
-        its environment (the bridge reads it), each blank filled from the
-        session scan (session.find_x_display / find_xauthority)."""
+        """(DISPLAY, XAUTHORITY) of Xwayland: what gnome-shell itself has in its environment (the bridge reads
+        it), each blank filled from the session scan (session.find_x_display / find_xauthority)."""
         display, xauth = "", ""
         try:
             display, xauth = self._call("XInfo")
@@ -581,11 +561,10 @@ class GnomeBackend(WindowBackend):
         return display, xauth
 
     def events(self, timeout: float | None = None, workspaces: bool = False):
-        """(id, change) for every bridge WindowEvent, on a connection of its
-        own so queued signals never pile up behind the command connection.
-        With `workspaces` the bridge's WorkspaceEvent (switch/add/remove)
-        is folded in as (0, "workspace") -- no window has id 0 -- so a
-        root-level watcher (wxprop -root -spy) needs one stream only."""
+        """(id, change) for every bridge WindowEvent, on a connection of its own so queued signals never pile up
+        behind the command connection. With `workspaces` the bridge's WorkspaceEvent (switch/add/remove) is
+        folded in as (0, "workspace") -- no window has id 0 -- so a root-level watcher (wxprop -root -spy) needs
+        one stream only."""
         bus = Bus(self.bus.address)
         try:
             bus.add_match("type='signal',interface='%s',path='%s'" % (IFACE, OBJECT_PATH))
@@ -602,24 +581,20 @@ class GnomeBackend(WindowBackend):
 
     # -- extras for the other tools ---------------------------------------
 
-    # wmctrl -m: what Mutter writes into _NET_SUPPORTING_WM_CHECK's
-    # _NET_WM_NAME on the X root, so the answer is the same with or without
-    # Xwayland running (it is spawned on demand and must not be started
-    # just to be asked its name).
+    # wmctrl -m: what Mutter writes into _NET_SUPPORTING_WM_CHECK's _NET_WM_NAME on the X root, so the answer is
+    # the same with or without Xwayland running (it is spawned on demand and must not be started just to be
+    # asked its name).
     wm_name = "GNOME Shell"
 
     def show_desktop(self, show: bool):
-        """wmctrl -k on|off. Mutter's own show-desktop mode has no public
-        API; the bridge minimizes every normal window on the active
-        workspace and remembers them for `off` (gnome/README.md)."""
+        """wmctrl -k on|off. Mutter's own show-desktop mode has no public API; the bridge minimizes every normal
+        window on the active workspace and remembers them for `off` (gnome/README.md)."""
         self._call("ShowDesktop", "b", (bool(show),))
 
     def set_num_desktops(self, n: int):
-        """wmctrl -n: only with static workspaces; with dynamic workspaces
-        (GNOME's default) the bridge answers Unsupported (a CmdError the
-        caller turns into wmctrl's "the WM may ignore the request").
-        _map_error marks that answer .unsupported, so wdotool's
-        set_num_desktops warns instead of failing a chain (B9)."""
+        """wmctrl -n: only with static workspaces; with dynamic workspaces (GNOME's default) the bridge answers
+        Unsupported (a CmdError the caller turns into wmctrl's "the WM may ignore the request"). _map_error
+        marks that answer .unsupported, so wdotool's set_num_desktops warns instead of failing a chain (B9)."""
         self._call("SetNWorkspaces", "i", (int(n),))
 
     def monitors(self) -> "list[dict]":
@@ -629,9 +604,8 @@ class GnomeBackend(WindowBackend):
         return data if isinstance(data, list) else []
 
     def pointer(self) -> tuple[int, int] | None:
-        """The compositor's real pointer (B6). Mutter knows where the pointer
-        is whoever moved it -- our tablet, a REL event, a physical mouse or
-        another wdotool daemon -- so getmouselocation reports this and the
+        """The compositor's real pointer (B6). Mutter knows where the pointer is whoever moved it -- our tablet,
+        a REL event, a physical mouse or another wdotool daemon -- so getmouselocation reports this and the
         input daemon's model is corrected from it before a relative move."""
         x, y, _mods = self._call("GetPointer")
         return int(x), int(y)
@@ -643,11 +617,10 @@ class GnomeBackend(WindowBackend):
         return int(self._call("GetVersion")[0])
 
     def compositor_version(self) -> tuple:
-        """GNOME Shell's version as a tuple of ints -- (46, 0), (50, 1) --
-        or () when the shell will not say. Mutter's behaviour differs
-        between releases in ways a wmctrl clone has to follow (see wwmctl's
-        -e gravity), and this is the only version anyone can ask for: the
-        read-only `ShellVersion` property of org.gnome.Shell."""
+        """GNOME Shell's version as a tuple of ints -- (46, 0), (50, 1) -- or () when the shell will not say.
+        Mutter's behaviour differs between releases in ways a wmctrl clone has to follow (see wwmctl's -e
+        gravity), and this is the only version anyone can ask for: the read-only `ShellVersion` property of
+        org.gnome.Shell."""
         cached = getattr(self, "_comp_version", None)
         if cached is not None:
             return cached

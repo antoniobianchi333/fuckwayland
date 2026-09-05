@@ -1,36 +1,29 @@
 """What the real keyboards are holding down, read from evdev (EVIOCGKEY).
 
-Why this exists: `--clearmodifiers` has to say something useful when the
-modifier it was asked to clear is held on a keyboard that is not ours. It
-cannot clear that modifier -- the kernel drops an `EV_KEY` release for a code
-the emitting device does not hold, so a key-up sent from our uinput keyboard
-for someone else's key produces no event at all -- and it must not press it
-back either, because that press would be ours and the user's release would
-never clear it (see wdotool/daemon.py, "modifiers around an injection"). What
-is left is to tell the user, and for that the kernel is the only source:
-`EVIOCGKEY` on an `/dev/input/event*` node returns that device's current key
-bitmap, with no event stream to read and no device to grab.
+Why this exists: `--clearmodifiers` has to say something useful when the modifier it was asked to clear is held
+on a keyboard that is not ours. It cannot clear that modifier -- the kernel drops an `EV_KEY` release for a code
+the emitting device does not hold, so a key-up sent from our uinput keyboard for someone else's key produces no
+event at all -- and it must not press it back either, because that press would be ours and the user's release
+would never clear it (see wdotool/daemon.py, "modifiers around an injection"). What is left is to tell the user,
+and for that the kernel is the only source: `EVIOCGKEY` on an `/dev/input/event*` node returns that device's
+current key bitmap, with no event stream to read and no device to grab.
 
 Nothing here decides what to inject. Reading is a diagnostic only.
 
-**Access.** Reading an event node needs read permission on it, and on a
-normal desktop the seat user does not have it: measured on Ubuntu 24.04
-(GNOME 46) and 26.04 (GNOME 50, KDE, sway), `/dev/input/event*` is
-`crw-rw---- root:input` with *no* ACL -- logind's `uaccess` tag reaches
-`/dev/uinput` (which is how this repo's udev rule lets the seat user inject)
-but not the keyboards. So this reads only as root, `held()` answers None --
-"unknown" -- everywhere else, and `--clearmodifiers` behaves identically
-either way: the diagnostic is all that is lost. This repo deliberately ships
-no udev rule granting read on `event*`: that would hand every process of the
-seat user a system-wide keylogger.
+**Access.** Reading an event node needs read permission on it, and on a normal desktop the seat user does not
+have it: measured on Ubuntu 24.04 (GNOME 46) and 26.04 (GNOME 50, KDE, sway), `/dev/input/event*` is
+`crw-rw---- root:input` with *no* ACL -- logind's `uaccess` tag reaches `/dev/uinput` (which is how this repo's
+udev rule lets the seat user inject) but not the keyboards. So this reads only as root, `held()` answers None --
+"unknown" -- everywhere else, and `--clearmodifiers` behaves identically either way: the diagnostic is all that
+is lost. This repo deliberately ships no udev rule granting read on `event*`: that would hand every process of
+the seat user a system-wide keylogger.
 
-**Never our own device.** A wdotool virtual keyboard is excluded by its
-`/dev/input/eventN` path (`UI_GET_SYSNAME` on the uinput fd) and, belt and
-braces, by its device name: the modifiers we injected ourselves are not the
-user holding a key.
+**Never our own device.** A wdotool virtual keyboard is excluded by its `/dev/input/eventN` path
+(`UI_GET_SYSNAME` on the uinput fd) and, belt and braces, by its device name: the modifiers we injected
+ourselves are not the user holding a key.
 
-Nothing here writes, and every device is opened read-only, non-blocking, and
-closed again inside the call -- no fd is held between samples.
+Nothing here writes, and every device is opened read-only, non-blocking, and closed again inside the call -- no
+fd is held between samples.
 """
 
 import fcntl
@@ -65,9 +58,8 @@ def bit(bits, code: int) -> bool:
 
 
 class Evdev:
-    """The five syscalls this module needs, in one object so a test can swap
-    the whole evdev layer for a fake (there is no evdev to speak of in a
-    container, and a real one would answer with the *runner's* keyboard)."""
+    """The five syscalls this module needs, in one object so a test can swap the whole evdev layer for a fake
+    (there is no evdev to speak of in a container, and a real one would answer with the *runner's* keyboard)."""
 
     def __init__(self, input_dir: str = INPUT_DIR):
         self.input_dir = input_dir
@@ -107,9 +99,8 @@ class Evdev:
 class Reader:
     """Reads key state from the real keyboards.
 
-    `exclude_paths` are our own uinput device nodes; `exclude_names` is the
-    fallback for a kernel too old for UI_GET_SYSNAME (and for a stale device
-    left by a killed daemon, whose "held" modifier would be a ghost)."""
+    `exclude_paths` are our own uinput device nodes; `exclude_names` is the fallback for a kernel too old for
+    UI_GET_SYSNAME (and for a stale device left by a killed daemon, whose "held" modifier would be a ghost)."""
 
     def __init__(self, evdev: "Evdev | None" = None, exclude_paths=(),
                  exclude_names=(OWN_NAME_PREFIX,)):
@@ -122,13 +113,11 @@ class Reader:
                 or any(name.startswith(p) for p in self.exclude_names if p))
 
     def held(self, codes) -> "set[int] | None":
-        """The keys from `codes` currently held on any *readable* keyboard
-        that is not ours -- the union, because a modifier held on either of
-        two keyboards is held.
+        """The keys from `codes` currently held on any *readable* keyboard that is not ours -- the union,
+        because a modifier held on either of two keyboards is held.
 
-        None means "could not be read at all" (no permission, no such device,
-        no keyboard among them), which is not the same answer as the empty
-        set: one is "nothing is held", the other "nothing is known"."""
+        None means "could not be read at all" (no permission, no such device, no keyboard among them), which is
+        not the same answer as the empty set: one is "nothing is held", the other "nothing is known"."""
         codes = list(codes)
         if not codes:
             return set()

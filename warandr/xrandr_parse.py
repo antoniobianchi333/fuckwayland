@@ -1,11 +1,9 @@
-"""Parser for the text xrandr prints (``--query`` and ``--verbose``, xrandr
-1.5.x format — the same bytes wxrandr renders).
+"""Parser for the text xrandr prints (``--query`` and ``--verbose``, xrandr 1.5.x format — the same bytes
+wxrandr renders).
 
-One parser handles both forms: the output header line is common (``--verbose``
-adds the mode xid and always prints the rotation word), the mode section is
-either the grouped rate table (query) or per-mode modelines (verbose), and the
-tab-indented verbose block carries the transform matrix that reveals an X11
-``--scale``.
+One parser handles both forms: the output header line is common (``--verbose`` adds the mode xid and always
+prints the rotation word), the mode section is either the grouped rate table (query) or per-mode modelines
+(verbose), and the tab-indented verbose block carries the transform matrix that reveals an X11 ``--scale``.
 """
 
 import re

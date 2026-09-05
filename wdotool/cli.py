@@ -1,7 +1,7 @@
 """Command-line driver: option handling, command chaining, script mode.
 
-Mirrors xdotool.c (xdotool_main / args_main / script_main / context_execute):
-same messages, same exit codes, same argument-consumption accounting.
+Mirrors xdotool.c (xdotool_main / args_main / script_main / context_execute): same messages, same exit codes,
+same argument-consumption accounting.
 """
 
 import io
@@ -21,9 +21,8 @@ _USAGE = "Usage: %s <cmd> <args>\n"
 
 
 class ChainAbort(Exception):
-    """Abort the command chain with a specific exit code and no CmdError-style
-    message (e.g. `exec --sync` propagating the child's exit status). If msg is
-    given, it is printed to stderr first."""
+    """Abort the command chain with a specific exit code and no CmdError-style message (e.g. `exec --sync`
+    propagating the child's exit status). If msg is given, it is printed to stderr first."""
 
     def __init__(self, code: int, msg: str | None = None):
         super().__init__(msg or f"exit {code}")
@@ -32,10 +31,9 @@ class ChainAbort(Exception):
 
 
 class GetoptError(Exception):
-    """str() is the glibc-formatted error line (no trailing newline). .opts
-    holds the options parsed before the failure: getopt processes options one
-    at a time, so callers must honor an already-seen --help before reporting
-    the error, exactly like the C loops do."""
+    """str() is the glibc-formatted error line (no trailing newline). .opts holds the options parsed before the
+    failure: getopt processes options one at a time, so callers must honor an already-seen --help before
+    reporting the error, exactly like the C loops do."""
 
     def __init__(self, msg: str, opts: list):
         super().__init__(msg)
@@ -51,9 +49,8 @@ def _short_spec(shortopts: str, c: str):
 
 
 def _long_opt(cmd, args, i, tok, body, longopts, opts):
-    """Try args[i] (tok, body = tok without dashes) as a long option. Returns
-    the next argv index, or None if nothing matches. Raises GetoptError for
-    ambiguity and argument errors."""
+    """Try args[i] (tok, body = tok without dashes) as a long option. Returns the next argv index, or None if
+    nothing matches. Raises GetoptError for ambiguity and argument errors."""
     name, eq, val = body.partition("=")
     matches = [lo for lo in longopts if lo[0] == name] or [lo for lo in longopts if lo[0].startswith(name)]
     if not matches:
@@ -97,12 +94,11 @@ def _short_opts(cmd, args, i, body, shortopts, opts):
 
 
 def getopt_long_only(cmd, args, shortopts, longopts):
-    """glibc getopt_long_only clone in POSIX mode ("+..."): stops at the first
-    non-option token. args excludes the command name; longopts is a list of
-    (name, takes_arg). Returns (opts, ntokens) where opts is
-    [(canonical_long_name_or_short_char, value_or_None), ...] in argv order and
-    ntokens is how many leading tokens were consumed (including a "--").
-    Single-dash long options and unambiguous abbreviations work, as in C."""
+    """glibc getopt_long_only clone in POSIX mode ("+..."): stops at the first non-option token. args excludes
+    the command name; longopts is a list of (name, takes_arg). Returns (opts, ntokens) where opts is
+    [(canonical_long_name_or_short_char, value_or_None), ...] in argv order and ntokens is how many leading
+    tokens were consumed (including a "--"). Single-dash long options and unambiguous abbreviations work, as in
+    C."""
     opts: list = []
     i, n = 0, len(args)
     while i < n:
@@ -194,14 +190,13 @@ def run_chain(ctx: Context, prog: str, tokens: list[str]) -> int:
 
 
 def _opts(cmd, args, shortopts, longopts, usage, shortmap=None, invalid_usage=False):
-    """Leading-option parse via getopt_long_only, the way every command wants
-    it. Returns (opts, nopts) with short chars canonicalized through shortmap,
-    or None after printing usage for --help (caller returns len(args)). Bad
-    options raise CmdError carrying getopt's message + usage, like the C
-    default: branches. `usage` is written verbatim, so it ends in a newline.
+    """Leading-option parse via getopt_long_only, the way every command wants it. Returns (opts, nopts) with
+    short chars canonicalized through shortmap, or None after printing usage for --help (caller returns
+    len(args)). Bad options raise CmdError carrying getopt's message + usage, like the C default: branches.
+    `usage` is written verbatim, so it ends in a newline.
 
-    `invalid_usage` adds the extra "Invalid usage" line that cmd_search.c --
-    alone among the commands -- prints between the two (B14)."""
+    `invalid_usage` adds the extra "Invalid usage" line that cmd_search.c -- alone among the commands -- prints
+    between the two (B14)."""
     shortmap = dict(shortmap or ())
     shortmap.setdefault("h", "help")
     try:
@@ -259,9 +254,8 @@ def _script_line_tokens(line: str, argv: list[str], prog: str) -> list[str]:
         first = False
         if raw.startswith("$"):
             name = raw[1:]
-            # `in "0123456789"` is True for the empty string, so a bare "$"
-            # became "$0" -- the script path -- instead of the environment
-            # lookup that fails.
+            # `in "0123456789"` is True for the empty string, so a bare "$" became "$0" -- the script path --
+            # instead of the environment lookup that fails.
             if name[:1].isdigit():
                 pos = _atoi(name) + 1  # $1 is argv[2]
                 if pos >= len(argv):
@@ -291,9 +285,9 @@ def _script_line_tokens(line: str, argv: list[str], prog: str) -> list[str]:
 def script_main(argv: list[str], prog: str,
                 layout_mode: str | None = None,
                 vkbd_mode: str | None = None) -> int:
-    """xdotool.c script_main: read commands from a file or stdin ("-"), expand
-    $N/$ENV, and execute each line as a chain sharing one context. A failing
-    line does not stop later lines; the last executed line's status wins."""
+    """xdotool.c script_main: read commands from a file or stdin ("-"), expand $N/$ENV, and execute each line as
+    a chain sharing one context. A failing line does not stop later lines; the last executed line's status
+    wins."""
     path = argv[1]
     if path == "-":
         buf = getattr(sys.stdin, "buffer", None)
@@ -327,9 +321,8 @@ def _main(argv: list[str] | None = None) -> int:
     entry = argv is None
     argv = list(sys.argv) if argv is None else list(argv)
 
-    # The console script entry point is cli:main, so route the daemon
-    # re-invocation here too (python -m wdotool routes it in __main__.py).
-    # This is our own re-invocation of ourselves: never a passthrough.
+    # The console script entry point is cli:main, so route the daemon re-invocation here too (python -m wdotool
+    # routes it in __main__.py). This is our own re-invocation of ourselves: never a passthrough.
     if len(argv) > 1 and argv[1] == "__daemon":
         from wdotool.daemon import daemon_main
 
@@ -339,27 +332,20 @@ def _main(argv: list[str] | None = None) -> int:
             sys.stderr.write("%s\n" % e)
             return 1
 
-    # --layout: which character table the typing commands use, ahead of the
-    # WDOTOOL_LAYOUT environment variable. `us` is the one that promises
-    # something: the compositor's keymap is not read and the bypass check
-    # does not run, so no layout code executes at all. Ours, not xdotool's,
-    # so it is stripped here and never reaches a command's own parser or the
-    # parity-checked usage text.
+    # --layout: which character table the typing commands use, ahead of the WDOTOOL_LAYOUT environment variable.
+    # `us` is the one that promises something: the compositor's keymap is not read and the bypass check does not
+    # run, so no layout code executes at all. Ours, not xdotool's, so it is stripped here and never reaches a
+    # command's own parser or the parity-checked usage text.
     #
-    # It is a *leading* option, and the scan stops where xdotool's own
-    # getopt_long_only(argc, argv, "++hv", ...) stops: at the first token that
-    # is not an option. Walking to the end of the command line ate the flag
-    # wherever it appeared -- inside `exec` arguments, inside a script's
-    # positional parameters, and before the X11 handover, so the real xdotool
-    # was handed a mangled argv.
+    # It is a *leading* option, and the scan stops where xdotool's own getopt_long_only(argc, argv, "++hv", ...)
+    # stops: at the first token that is not an option. Walking to the end of the command line ate the flag
+    # wherever it appeared -- inside `exec` arguments, inside a script's positional parameters, and before the
+    # X11 handover, so the real xdotool was handed a mangled argv.
     #
-    # --vkbd: which devices the injecting commands go through -- the pointer
-    # ones as well as the typing ones, because it is one decision and the
-    # daemon makes it the same way for both. Same shape and same place as
-    # --layout, and documented next to it: `off` is the kernel device
-    # (/dev/uinput) whatever the compositor offers, `on` is
-    # zwp_virtual_keyboard_v1 / zwlr_virtual_pointer_v1 or a clean error,
-    # `auto` is the default.
+    # --vkbd: which devices the injecting commands go through -- the pointer ones as well as the typing ones,
+    # because it is one decision and the daemon makes it the same way for both. Same shape and same place as
+    # --layout, and documented next to it: `off` is the kernel device (/dev/uinput) whatever the compositor
+    # offers, `on` is zwp_virtual_keyboard_v1 / zwlr_virtual_pointer_v1 or a clean error, `auto` is the default.
     _FLAGS = (("layout", "us, auto or xkb"), ("vkbd", "auto, on or off"))
     modes = {"layout": None, "vkbd": None}
     rest = []
@@ -412,21 +398,18 @@ def _main(argv: list[str] | None = None) -> int:
 
         return xkbmap.diagnostic_main(argv[2:])
 
-    # `wdotool keys watch|explain` (README: Keyboard layouts). Ours, and
-    # routed here for the same three reasons as __keymap: xdotool has no
-    # `keys`, so there is nothing to hand a passthrough over to; the command
-    # registry is what `help` prints and that output is byte-compatible with
-    # the real xdotool's; and, like every one of the 48 built-ins, a command
-    # name beats a file of the same name in script mode.
+    # `wdotool keys watch|explain` (README: Keyboard layouts). Ours, and routed here for the same three reasons
+    # as __keymap: xdotool has no `keys`, so there is nothing to hand a passthrough over to; the command
+    # registry is what `help` prints and that output is byte-compatible with the real xdotool's; and, like every
+    # one of the 48 built-ins, a command name beats a file of the same name in script mode.
     if len(argv) > 1 and argv[1] == "keys":
         from wdotool import keys_cmds
 
         return keys_cmds.keys_main(argv[2:])
 
-    # X11 session: this is the real xdotool's job. Before option parsing and
-    # before --help/--version -- installed as `xdotool`, even the version
-    # string has to be theirs (ours pins one upstream version and will drift).
-    # argv here includes argv[0]; the hook wants the arguments alone.
+    # X11 session: this is the real xdotool's job. Before option parsing and before --help/--version --
+    # installed as `xdotool`, even the version string has to be theirs (ours pins one upstream version and will
+    # drift). argv here includes argv[0]; the hook wants the arguments alone.
     rc = passthrough.maybe_exec_real("xdotool", argv[1:], entry=entry)
     if rc is not None:
         return rc
@@ -454,9 +437,8 @@ def _main(argv: list[str] | None = None) -> int:
         _print_version()
         return 0
 
-    # getopt_long_only(argc, argv, "++hv", {help, version}) over the front of
-    # the command line. Any option either exits or errors; like the C code,
-    # the chain then starts at argv[1] regardless.
+    # getopt_long_only(argc, argv, "++hv", {help, version}) over the front of the command line. Any option
+    # either exits or errors; like the C code, the chain then starts at argv[1] regardless.
     try:
         opts, _ = getopt_long_only(prog, argv[1:], "hv", [("help", False), ("version", False)])
     except GetoptError as e:
@@ -487,9 +469,8 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def _prog_name(argv) -> str:
-    """What this process is called, for a diagnostic of our own:
-    argv[0]'s basename, and "wdotool" where that is the module
-    runner's `__main__.py`."""
+    """What this process is called, for a diagnostic of our own: argv[0]'s basename, and "wdotool" where that is
+    the module runner's `__main__.py`."""
     argv = sys.argv if argv is None else argv
     prog = os.path.basename(argv[0]) if argv and argv[0] else "wdotool"
     return "wdotool" if prog == "__main__.py" else prog
@@ -498,12 +479,10 @@ def _prog_name(argv) -> str:
 def main(argv: list[str] | None = None) -> int:
     """`_main()` plus the plumbing a C program gets from libc for free.
 
-    xdotool never prints a traceback and never exits 120.  Ctrl-C during
-    `wdotool sleep 5`, a reader leaving `wdotool search . | head -1`, a
-    stdout that cannot take what we print (`>/dev/full`) and one that was
-    closed before we started (`>&-`) are ordinary exits here, and the
-    last thing that happens is the flush that says whether the output
-    arrived (wdotool/stdio.py)."""
+    xdotool never prints a traceback and never exits 120.  Ctrl-C during `wdotool sleep 5`, a reader leaving
+    `wdotool search . | head -1`, a stdout that cannot take what we print (`>/dev/full`) and one that was closed
+    before we started (`>&-`) are ordinary exits here, and the last thing that happens is the flush that says
+    whether the output arrived (wdotool/stdio.py)."""
     backend.set_program("wdotool")
     stdio.repair_std()
     prog = _prog_name(argv)
@@ -521,13 +500,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("%s\n" % e)
         code = getattr(e, "exit_code", 1) or 1
     except Exception as e:
-        # one line, never a traceback: an out-of-range `sleep`, a
-        # compositor that drops the connection mid-command, a keymap
-        # that will not parse.
+        # one line, never a traceback: an out-of-range `sleep`, a compositor that drops the connection
+        # mid-command, a keymap that will not parse.
         sys.stderr.write("%s: %s\n" % (prog, e))
-        # An OSError here is a write to stdout that failed (a full disk,
-        # a quota, `>/dev/full`): the flush below is about to fail with
-        # the same errno, and the originals print one line, not two.
+        # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
+        # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)
         code = 1
     return code if stdio.flush_stdout(prog, quiet) else (code or 1)

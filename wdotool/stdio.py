@@ -28,13 +28,12 @@ import sys
 
 
 def repair_std() -> None:
-    """Give `main()` a stdout and a stderr to write to when fd 1 or fd 2 was
-    closed before the interpreter started.
+    """Give `main()` a stdout and a stderr to write to when fd 1 or fd 2 was closed before the interpreter
+    started.
 
-    /dev/null, not an error: the tools we clone are C programs whose
-    `printf` to a closed fd fails quietly, and a tool that cannot say
-    anything still has work to do (`wdotool key ctrl+c >&-` must press the
-    keys).  Idempotent, and never raises.
+    /dev/null, not an error: the tools we clone are C programs whose `printf` to a closed fd fails quietly, and
+    a tool that cannot say anything still has work to do (`wdotool key ctrl+c >&-` must press the keys).
+    Idempotent, and never raises.
     """
     for name in ("stdout", "stderr"):
         if getattr(sys, name, None) is None:
@@ -47,16 +46,13 @@ def repair_std() -> None:
 def flush_stdout(prog: str, quiet: bool = False) -> bool:
     """Push out what was printed, and say whether it got there.
 
-    Call it last in `main()`: on failure the stream is closed, which is what
-    stops the interpreter flushing it again on the way out (see the module
-    docstring), and a closed stdout raises on the next `print()`.
+    Call it last in `main()`: on failure the stream is closed, which is what stops the interpreter flushing it
+    again on the way out (see the module docstring), and a closed stdout raises on the next `print()`.
 
-    Silent on a broken pipe -- xrandr, xprop, wmctrl and xdotool all say
-    nothing when their reader leaves -- and otherwise one ``prog: message``
-    line on stderr, never a traceback.  `quiet` is for the caller that has
-    already printed that line: a write big enough to overflow the buffer
-    fails inside the command instead of here, and the same errno reported
-    twice helps nobody.
+    Silent on a broken pipe -- xrandr, xprop, wmctrl and xdotool all say nothing when their reader leaves -- and
+    otherwise one ``prog: message`` line on stderr, never a traceback.  `quiet` is for the caller that has
+    already printed that line: a write big enough to overflow the buffer fails inside the command instead of
+    here, and the same errno reported twice helps nobody.
     """
     out = getattr(sys, "stdout", None)
     if out is None:                       # `>&-` without repair_std()
@@ -83,13 +79,11 @@ def flush_stdout(prog: str, quiet: bool = False) -> bool:
 def exit_after_flush(prog: str, exc: SystemExit) -> None:
     """Flush on the way out through a SystemExit and re-raise it.
 
-    argparse's ``--help``/``--version`` and its parse errors leave `main()`
-    this way, which is how `--help >/dev/full` used to reach the exit-time
-    flush with everything still buffered and exit 120.  The exception is
-    re-raised rather than turned into a return value: callers that embed a
-    tool as a library catch it, and `main()`'s own contract of *returning*
-    the status is for the paths that get that far.  A lost stdout still
-    turns a success into a failure.
+    argparse's ``--help``/``--version`` and its parse errors leave `main()` this way, which is how
+    `--help >/dev/full` used to reach the exit-time flush with everything still buffered and exit 120.  The
+    exception is re-raised rather than turned into a return value: callers that embed a tool as a library catch
+    it, and `main()`'s own contract of *returning* the status is for the paths that get that far.  A lost stdout
+    still turns a success into a failure.
     """
     code = exc.code
     if not isinstance(code, int):

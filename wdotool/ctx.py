@@ -18,20 +18,17 @@ class CmdError(Exception):
 
 
 class SoftCmdError(CmdError):
-    """"The compositor cannot do this to *this* window" -- not a failure of
-    the request, a shape of the desktop. sway refusing to move or resize a
-    tiled container is the case that exists.
+    """"The compositor cannot do this to *this* window" -- not a failure of the request, a shape of the desktop.
+    sway refusing to move or resize a tiled container is the case that exists.
 
-    A command that swallows one warns on stderr and carries on with rc 0;
-    every other CmdError is a real failure and must reach the driver, which
-    is the difference between "sway tiles this window" and "there is no such
+    A command that swallows one warns on stderr and carries on with rc 0; every other CmdError is a real failure
+    and must reach the driver, which is the difference between "sway tiles this window" and "there is no such
     window" (both used to exit 0 out of windowmove)."""
 
 
 class NoSessionError(CmdError):
-    """No Wayland session / window-management backend could be found at all
-    (B5). Distinct from "the session is fine but nothing matched", which
-    stays rc 1, so a script can tell "not logged in yet / no bridge" from "no
+    """No Wayland session / window-management backend could be found at all (B5). Distinct from "the session is
+    fine but nothing matched", which stays rc 1, so a script can tell "not logged in yet / no bridge" from "no
     such window" -- see SESSION READINESS in README.md."""
 
     exit_code = 2
@@ -50,9 +47,8 @@ class Context:
         # Non-fatal failure marker (e.g. `search` with no results): the chain
         # continues/completes but the process exits with this code.
         self.exit_code = 0
-        # --layout (ours, not xdotool's): "us"/"fixed" forces the built-in US
-        # character table without reading the compositor's keymap at all,
-        # "xkb" forces the reverse map, None leaves the choice to detection.
+        # --layout (ours, not xdotool's): "us"/"fixed" forces the built-in US character table without reading
+        # the compositor's keymap at all, "xkb" forces the reverse map, None leaves the choice to detection.
         self.layout_mode: str | None = None
 
     def backend(self):
@@ -70,9 +66,9 @@ class Context:
         return self._daemon
 
     def _no_stack(self, ref: str) -> CmdError:
-        """xdotool's empty-stack refusal, all three lines of it: the message,
-        the reference that could not be resolved, and the command's own usage
-        (window_get_arg() records it in `cmd_usage`). Scripts grep for this."""
+        """xdotool's empty-stack refusal, all three lines of it: the message, the reference that could not be
+        resolved, and the command's own usage (window_get_arg() records it in `cmd_usage`). Scripts grep for
+        this."""
         msg = "There are no windows in the stack\nInvalid window '%s'" % ref
         usage = getattr(self, "cmd_usage", None)
         if usage:
@@ -102,19 +98,17 @@ class Context:
             wid = int(arg, 0)
         except ValueError:
             raise CmdError(f"Invalid window id '{arg}'") from None
-        # B8: a negative or out-of-range id used to reach the bridge and blow
-        # up in the D-Bus marshaller ("cannot marshal -5 as 't'"); one line
-        # and rc 1 instead.
+        # B8: a negative or out-of-range id used to reach the bridge and blow up in the D-Bus marshaller
+        # ("cannot marshal -5 as 't'"); one line and rc 1 instead.
         if not 0 <= wid <= _MAX_WINDOW_ID:
             raise CmdError(f"Invalid window id '{arg}'")
         return wid
 
     def resolve_window(self, arg: str | None = None) -> int:
-        """Resolve an optional window argument like xdotool: explicit arg (decimal,
-        0x-hex, or %N/%@ stack ref), else %1. Like xdotool, an omitted window
-        argument with an empty window stack is an error (the real tool validates
-        the implicit "%1" against the stack and refuses; being lenient here made
-        `wdotool windowclose` close the focused window where xdotool errors)."""
+        """Resolve an optional window argument like xdotool: explicit arg (decimal, 0x-hex, or %N/%@ stack ref),
+        else %1. Like xdotool, an omitted window argument with an empty window stack is an error (the real tool
+        validates the implicit "%1" against the stack and refuses; being lenient here made `wdotool windowclose`
+        close the focused window where xdotool errors)."""
         if arg is not None:
             return self._resolve_one(arg)
         if self.stack:

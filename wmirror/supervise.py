@@ -1,21 +1,16 @@
 """OWNER: wmirror. The detached supervisor that owns one wl-mirror process.
 
-The detaching, the status pipe and the /proc identity checks are
-wdotool.procs -- the same protocol the gamma holder runs on, written once
-and documented there.
+The detaching, the status pipe and the /proc identity checks are wdotool.procs -- the same protocol the gamma
+holder runs on, written once and documented there.
 
-One thing the holder does not have: the thing we spawn is not us, it is
-wl-mirror. So the record carries TWO (pid, starttime) pairs. If our
-supervisor is killed the helper is still found and stopped by `wmirror
---stop`; if the helper dies on its own the supervisor exits and the record
-is reaped on the next `--list`.
+One thing the holder does not have: the thing we spawn is not us, it is wl-mirror. So the record carries TWO
+(pid, starttime) pairs. If our supervisor is killed the helper is still found and stopped by `wmirror --stop`;
+if the helper dies on its own the supervisor exits and the record is reaped on the next `--list`.
 
-The supervisor is what makes the mirror end honestly. It watches the output
-layout over zwlr_output_management (the protocol wxrandr already speaks)
-and kills the helper when its source or target goes away, is switched off,
-or the two come to share pixels -- the geometry in which wl-mirror would
-capture its own picture. wl-mirror itself only handles the first of those:
-it exits when the SOURCE disappears, and it happily survives the target
+The supervisor is what makes the mirror end honestly. It watches the output layout over zwlr_output_management
+(the protocol wxrandr already speaks) and kills the helper when its source or target goes away, is switched off,
+or the two come to share pixels -- the geometry in which wl-mirror would capture its own picture. wl-mirror
+itself only handles the first of those: it exits when the SOURCE disappears, and it happily survives the target
 disappearing, which on sway relocates the mirror window onto the source.
 """
 
@@ -27,9 +22,8 @@ import tempfile
 import time
 
 from wdotool import procs
-# the detach protocol and the pid-reuse guards, imported rather than
-# copied: one implementation of "is that still the process we started?",
-# and one of "start something that outlives us", in the tree.
+# the detach protocol and the pid-reuse guards, imported rather than copied: one implementation of "is that
+# still the process we started?", and one of "start something that outlives us", in the tree.
 from wdotool.procs import alive, proc_starttime
 from wxrandr import core as wxcore
 
@@ -67,11 +61,11 @@ def liveness(rec: dict) -> tuple:
 
 
 def reap(recs: dict) -> bool:
-    """Drop the records whose processes are gone, flag the ones whose
-    supervisor died but whose helper is still painting.
+    """Drop the records whose processes are gone, flag the ones whose supervisor died but whose helper is still
+    painting.
 
-    Mutates `recs`; returns whether anything changed, so a query that found
-    nothing to correct does not rewrite the state file."""
+    Mutates `recs`; returns whether anything changed, so a query that found nothing to correct does not rewrite
+    the state file."""
     changed = False
     for target in list(recs):
         rec = recs[target]
@@ -92,9 +86,8 @@ def reap(recs: dict) -> bool:
 
 
 def stop_record(rec: dict) -> bool:
-    """Stop one mirror: the supervisor first (it forwards the signal and
-    waits), then the helper directly, in case the supervisor was killed
-    before it could. True if anything was actually running."""
+    """Stop one mirror: the supervisor first (it forwards the signal and waits), then the helper directly, in
+    case the supervisor was killed before it could. True if anything was actually running."""
     killed = False
     if alive(rec.get("pid"), rec.get("start"), SUPERVISOR_COMM):
         killed = procs.kill_bounded(rec["pid"], rec.get("start")) or killed
@@ -110,10 +103,9 @@ def start(recs: dict, source: str, target: str, argv: list, region=None,
           src_rect=None):
     """Spawn the detached supervisor for one mirror.
 
-    Writes the record into `recs` as soon as the supervisor names itself --
-    before anything can go wrong -- so a start that then hangs is still
-    stoppable. Returns None on success, else the lines to print (the record
-    is removed again when the helper reported a clean failure)."""
+    Writes the record into `recs` as soon as the supervisor names itself -- before anything can go wrong -- so a
+    start that then hangs is still stoppable. Returns None on success, else the lines to print (the record is
+    removed again when the helper reported a clean failure)."""
     rec = {"source": source, "target": target,
            "region": list(region) if region else None,
            "scaling": scaling, "argv": list(argv), "since": int(time.time())}
@@ -188,13 +180,11 @@ def _exit_words(rc) -> str:
 def _diagnosis(tail: list, rc) -> str:
     """What to blame when wl-mirror exits during the startup window.
 
-    Its own `error:` line if it printed a fatal one. Nothing here reads
-    stderr as failure on its own: libEGL prints both `warning:` and `error:`
-    lines there while wl-mirror works perfectly, so these lines are only
-    ever consulted for a process that has actually exited -- and even then
-    the chatter is skipped, because a helper that dies for some other reason
-    (a signal, an exit with nothing said) must not be reported in the words
-    of an error it survived."""
+    Its own `error:` line if it printed a fatal one. Nothing here reads stderr as failure on its own: libEGL
+    prints both `warning:` and `error:` lines there while wl-mirror works perfectly, so these lines are only
+    ever consulted for a process that has actually exited -- and even then the chatter is skipped, because a
+    helper that dies for some other reason (a signal, an exit with nothing said) must not be reported in the
+    words of an error it survived."""
     lines = [line.strip() for line in tail if line.strip()]
     for want_prefix in (True, False):
         for line in reversed(lines):
@@ -207,14 +197,11 @@ def _diagnosis(tail: list, rc) -> str:
 class _Stderr:
     """The helper's stderr, on an unlinked temp file rather than a pipe.
 
-    A pipe would tie wl-mirror's life to ours twice over: it fills if
-    nobody drains it (stalling the helper), and after our own death its
-    first write would be SIGPIPE -- so a mirror that is supposed to survive
-    a killed supervisor, and stay stoppable, would die at an unpredictable
-    moment instead. A file does neither. The child gets its own O_APPEND
-    descriptor so our reads never move its write offset, and the file is
-    truncated when it grows: `-v` writes ~20 kB/s, and nothing here needs
-    more than the last few lines."""
+    A pipe would tie wl-mirror's life to ours twice over: it fills if nobody drains it (stalling the helper),
+    and after our own death its first write would be SIGPIPE -- so a mirror that is supposed to survive a killed
+    supervisor, and stay stoppable, would die at an unpredictable moment instead. A file does neither. The child
+    gets its own O_APPEND descriptor so our reads never move its write offset, and the file is truncated when it
+    grows: `-v` writes ~20 kB/s, and nothing here needs more than the last few lines."""
 
     CAP = 64 * 1024
 
@@ -291,11 +278,10 @@ def supervisor_main(argv: list, source: str, target: str, status_fd=None,
 
 
 def helper_env(wayland_socket):
-    """The environment wl-mirror is run with. wmirror works from a hotkey,
-    from `sudo` and from `ssh root@box` with an empty environment, because
-    the session's socket is found by scanning /run/user/* -- so the helper
-    is told which one rather than left to read a WAYLAND_DISPLAY that may
-    not be there. libwayland takes an absolute path in that variable."""
+    """The environment wl-mirror is run with. wmirror works from a hotkey, from `sudo` and from `ssh root@box`
+    with an empty environment, because the session's socket is found by scanning /run/user/* -- so the helper is
+    told which one rather than left to read a WAYLAND_DISPLAY that may not be there. libwayland takes an
+    absolute path in that variable."""
     if not wayland_socket:
         return None
     env = dict(os.environ)
@@ -321,9 +307,8 @@ def _stop_child(proc):
 
 
 def _open_watch(wayland_socket):
-    """A zwlr_output_manager view of the layout, or None. A supervisor
-    without one still owns its helper; it just cannot notice an output
-    disappearing before wl-mirror does."""
+    """A zwlr_output_manager view of the layout, or None. A supervisor without one still owns its helper; it
+    just cannot notice an output disappearing before wl-mirror does."""
     if not wayland_socket:
         return None
     try:

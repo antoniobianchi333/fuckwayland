@@ -1,27 +1,22 @@
 """Minimal pure-stdlib X11 wire client.
 
-Three callers share it: wwmctl.core reads the X plane of XWayland windows
-(WM_CLASS, WM_CLIENT_MACHINE, geometry) and sends EWMH ClientMessages,
-wxprop.core does all of its X-window work through it, and
+Three callers share it: wwmctl.core reads the X plane of XWayland windows (WM_CLASS, WM_CLIENT_MACHINE,
+geometry) and sends EWMH ClientMessages, wxprop.core does all of its X-window work through it, and
 wdotool.backend_kwin reads the XWayland ids KWin 6 does not export.
 
-Talks straight to the XWayland server over its unix socket — enough of the
-core protocol for wmctrl-style identity/property work and nothing more:
-InternAtom, GetProperty (long properties via the offset loop), ChangeProperty,
-SendEvent (ClientMessage to root), GetGeometry + TranslateCoordinates,
-QueryTree, GetInputFocus (as the post-void-request sync), plus OpenFont /
-QueryFont / CloseFont for `wxprop -font`, the one place a resource id is
-allocated (from the setup reply's base and mask). No extensions, no
-big-requests; byte order 'l' only.
+Talks straight to the XWayland server over its unix socket — enough of the core protocol for wmctrl-style
+identity/property work and nothing more: InternAtom, GetProperty (long properties via the offset loop),
+ChangeProperty, SendEvent (ClientMessage to root), GetGeometry + TranslateCoordinates, QueryTree, GetInputFocus
+(as the post-void-request sync), plus OpenFont / QueryFont / CloseFont for `wxprop -font`, the one place a
+resource id is allocated (from the setup reply's base and mask). No extensions, no big-requests; byte order 'l'
+only.
 
-Error model: XUnavailable for anything connection-level (no server, bad
-DISPLAY, auth rejected, connection lost), X11Error for errors the server
-reports (BadWindow and friends). Every caller treats both as "degrade
+Error model: XUnavailable for anything connection-level (no server, bad DISPLAY, auth rejected, connection
+lost), X11Error for errors the server reports (BadWindow and friends). Every caller treats both as "degrade
 gracefully".
 
-Conventions: property values of format 32 are returned as unsigned 32-bit
-ints (EWMH's -1 reads as 0xFFFFFFFF); get_prop_string() truncates at the
-first NUL exactly like wmctrl's printf("%s") does.
+Conventions: property values of format 32 are returned as unsigned 32-bit ints (EWMH's -1 reads as 0xFFFFFFFF);
+get_prop_string() truncates at the first NUL exactly like wmctrl's printf("%s") does.
 """
 
 import os
@@ -118,9 +113,8 @@ class X11Error(Exception):
 
 
 def hostname() -> str:
-    """This machine's name, or "" when the kernel will not say. The window
-    tools print it as WM_CLIENT_MACHINE; the auth lookup below wants the
-    same string as the "local" family address."""
+    """This machine's name, or "" when the kernel will not say. The window tools print it as WM_CLIENT_MACHINE;
+    the auth lookup below wants the same string as the "local" family address."""
     try:
         return socket.gethostname() or ""
     except OSError:
@@ -143,11 +137,10 @@ def _parse_display(d: str) -> tuple[int, int]:
 
 
 def _read_xauth(path: str):
-    """Parse the binary .Xauthority format: a list of
-    (family, address, number, name, data) tuples, all lengths big-endian.
-    Only regular files are read (an XAUTHORITY pointing at a FIFO must not
-    block us, /dev/zero must not OOM us) and the read is bounded at 1MB;
-    anything else raises OSError, which the caller treats as "no file"."""
+    """Parse the binary .Xauthority format: a list of (family, address, number, name, data) tuples, all lengths
+    big-endian. Only regular files are read (an XAUTHORITY pointing at a FIFO must not block us, /dev/zero must
+    not OOM us) and the read is bounded at 1MB; anything else raises OSError, which the caller treats as "no
+    file"."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -182,11 +175,10 @@ def _read_xauth(path: str):
 
 
 def _session_xauthority() -> str | None:
-    """The graphical session's cookie file when the environment names none:
-    Mutter's $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.* (KWin's xauth_*), found
-    by fwcommon.session even from `ssh root@` with an empty environment.
-    Mutter starts Xwayland with -auth, so the cookie is mandatory there --
-    the cookie-less same-uid pass only works on wlroots."""
+    """The graphical session's cookie file when the environment names none: Mutter's
+    $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.* (KWin's xauth_*), found by fwcommon.session even from `ssh root@`
+    with an empty environment. Mutter starts Xwayland with -auth, so the cookie is mandatory there -- the
+    cookie-less same-uid pass only works on wlroots."""
     try:
         from fwcommon import session
         return session.find_xauthority()
@@ -195,11 +187,10 @@ def _session_xauthority() -> str | None:
 
 
 def _auth_candidates(display_num: int, xauthority: str | None = None):
-    """(name, data) pairs to try during setup, best match first, always
-    ending with the cookie-less attempt (XWayland usually allows same-uid).
-    `xauthority` (the compositor's own cookie file, e.g. from the GNOME
-    bridge's XInfo) beats $XAUTHORITY; when the named file yields no usable
-    cookie the session scan (_session_xauthority) is tried as well."""
+    """(name, data) pairs to try during setup, best match first, always ending with the cookie-less attempt
+    (XWayland usually allows same-uid). `xauthority` (the compositor's own cookie file, e.g. from the GNOME
+    bridge's XInfo) beats $XAUTHORITY; when the named file yields no usable cookie the session scan
+    (_session_xauthority) is tried as well."""
     paths = []
     for p in (xauthority, os.environ.get("XAUTHORITY")
               or os.path.expanduser("~/.Xauthority")):
@@ -247,9 +238,8 @@ class X11Conn:
 
     def __init__(self, display: str | None = None,
                  xauthority: str | None = None):
-        """`xauthority` (additive): a cookie file to try before $XAUTHORITY
-        -- the compositor's own, as the GNOME bridge reports it, so a root
-        or empty-environment caller reaches Mutter's -auth'ed Xwayland."""
+        """`xauthority` (additive): a cookie file to try before $XAUTHORITY -- the compositor's own, as the
+        GNOME bridge reports it, so a root or empty-environment caller reaches Mutter's -auth'ed Xwayland."""
         self._sock = None
         self._seq = 0
         self._max_req_words = 0xFFFF  # refined from the setup reply
@@ -329,9 +319,8 @@ class X11Conn:
             return False, body[:head[1]].decode("latin-1", "replace")
         if status != 1:  # Authenticate: reason is the whole (padded) body
             return False, body.rstrip(b"\0").decode("latin-1", "replace")
-        # A "success" body from a hostile/broken server can still lie about
-        # its own shape (screen counts pointing past the end): any parse
-        # failure is treated as a refusal, never a leaked struct.error.
+        # A "success" body from a hostile/broken server can still lie about its own shape (screen counts
+        # pointing past the end): any parse failure is treated as a refusal, never a leaked struct.error.
         try:
             max_words, = struct.unpack_from("<H", body, 18)
             rid_base, rid_mask = struct.unpack_from("<II", body, 4)
@@ -366,11 +355,10 @@ class X11Conn:
     # -- wire plumbing -------------------------------------------------------
 
     def _poison(self, sock) -> None:
-        """A failed receive can leave the stream mid-packet: if a stalled
-        server later resumes, the next read would misframe its bytes and
-        match replies to the wrong requests. Any receive failure on the
-        established connection therefore kills the connection for good
-        (handshake sockets are closed by _connect instead)."""
+        """A failed receive can leave the stream mid-packet: if a stalled server later resumes, the next read
+        would misframe its bytes and match replies to the wrong requests. Any receive failure on the established
+        connection therefore kills the connection for good (handshake sockets are closed by _connect
+        instead)."""
         if sock is not None and sock is self._sock:
             self.close()
 
@@ -401,9 +389,8 @@ class X11Conn:
         if self._sock is None:
             raise XUnavailable("X connection is closed")
         words = 1 + len(payload) // 4
-        # core protocol carries the request length in a u16 of 4-byte units,
-        # capped further by the server's advertised maximum-request-length;
-        # oversized payloads (huge -N titles) must fail cleanly, not as a
+        # core protocol carries the request length in a u16 of 4-byte units, capped further by the server's
+        # advertised maximum-request-length; oversized payloads (huge -N titles) must fail cleanly, not as a
         # struct.error from the 'H' pack below
         if words > min(self._max_req_words, 0xFFFF):
             raise XUnavailable("request exceeds the X11 maximum request "
@@ -420,9 +407,8 @@ class X11Conn:
         return self._seq
 
     def _wait_reply(self, seq: int):
-        """Read packets until the reply for `seq`. Any error packet raises
-        X11Error (with the void-request sync below, an error always belongs
-        to the request just issued). Events are skipped."""
+        """Read packets until the reply for `seq`. Any error packet raises X11Error (with the void-request sync
+        below, an error always belongs to the request just issued). Events are skipped."""
         while True:
             pkt = self._recv_exact(32)
             kind = pkt[0] & 0x7F
@@ -452,9 +438,8 @@ class X11Conn:
                 q.append(pkt)
 
     def _extra_words(self, pkt: bytes) -> int:
-        """The u32 extra-length word of a reply/GenericEvent, sanity-capped:
-        a length claiming a body over 16MB is a lying server, not a core
-        protocol reply — never try to receive (or time out on) it."""
+        """The u32 extra-length word of a reply/GenericEvent, sanity-capped: a length claiming a body over 16MB
+        is a lying server, not a core protocol reply — never try to receive (or time out on) it."""
         (extra,) = struct.unpack_from("<I", pkt, 4)
         if extra > _MAX_REPLY_WORDS:
             self.close()
@@ -530,9 +515,8 @@ class X11Conn:
         rest = data[nul + 1:]
         if not rest:  # b"solo\0": no second string either
             return instance, ""
-        # the class part is only what a second NUL-terminated string
-        # actually carries (callers print "" without a trailing dot, the
-        # way wmctrl prints just "inst" for a single-string WM_CLASS)
+        # the class part is only what a second NUL-terminated string actually carries (callers print "" without
+        # a trailing dot, the way wmctrl prints just "inst" for a single-string WM_CLASS)
         end = rest.find(b"\0")
         return instance, (rest[:end] if end >= 0 else rest).decode("latin-1")
 
@@ -544,10 +528,9 @@ class X11Conn:
         return ints[0] if ints else 0
 
     def get_geometry(self, win: int) -> tuple[int, int, int, int]:
-        """Root-relative (x, y, w, h): size from GetGeometry, position by
-        translating the window origin to root coordinates (matches xwininfo
-        and the compositor's idea of the rect — NOT wmctrl's doubled values
-        under non-reparenting WMs)."""
+        """Root-relative (x, y, w, h): size from GetGeometry, position by translating the window origin to root
+        coordinates (matches xwininfo and the compositor's idea of the rect — NOT wmctrl's doubled values under
+        non-reparenting WMs)."""
         seq = self._send(_OP_GET_GEOMETRY, 0, struct.pack("<I", win))
         pkt, _ = self._wait_reply(seq)
         _x, _y, w, h = struct.unpack_from("<hhHH", pkt, 12)
@@ -567,9 +550,8 @@ class X11Conn:
         return (getattr(self, "_rid_base", 0) or 0) | (n & mask)
 
     def lookup_color(self, name: str) -> "tuple[int, int, int]":
-        """XParseColor's server side: the exact 16-bit RGB of a colour name
-        (or a #rrggbb literal) in the screen's default colormap. X11Error
-        (BadName) for a name the server's rgb.txt does not have."""
+        """XParseColor's server side: the exact 16-bit RGB of a colour name (or a #rrggbb literal) in the
+        screen's default colormap. X11Error (BadName) for a name the server's rgb.txt does not have."""
         cmap = (getattr(self, "_cmaps", None) or [0])[0]
         raw = name.encode("latin-1", "replace")
         seq = self._send(_OP_LOOKUP_COLOR, 0,
@@ -578,9 +560,8 @@ class X11Conn:
         return struct.unpack_from("<HHH", pkt, 8)
 
     def font_properties(self, name: str) -> "list[tuple[int, int]]":
-        """[(atom id, CARD32 value)] — a core X font's FONTPROPs, the list
-        `xprop -font` prints. OpenFont's BadName (no such font) surfaces as
-        X11Error from the synchronising round trip."""
+        """[(atom id, CARD32 value)] — a core X font's FONTPROPs, the list `xprop -font` prints. OpenFont's
+        BadName (no such font) surfaces as X11Error from the synchronising round trip."""
         fid = self._new_rid()
         raw = name.encode("latin-1", "replace")
         self._void(_OP_OPEN_FONT, 0,
@@ -602,15 +583,12 @@ class X11Conn:
 
     def set_name(self, win: int, name: str, icon: bool, long_: bool,
                  utf8: bool = False) -> None:
-        """wmctrl -N/-I/-T semantics: long_ sets WM_NAME/_NET_WM_NAME, icon
-        sets WM_ICON_NAME/_NET_WM_ICON_NAME.
+        """wmctrl -N/-I/-T semantics: long_ sets WM_NAME/_NET_WM_NAME, icon sets WM_ICON_NAME/_NET_WM_ICON_NAME.
 
-        `utf8` is wmctrl's envir_utf8 (a UTF-8 locale, or -u). Set, it
-        follows main.c's window_set_title exactly: there is no locale copy
-        of the title to write, so the legacy STRING property is DELETED
-        rather than left holding a stale or lossy value, and only the EWMH
-        UTF8_STRING one is written. Clear, both are written, the legacy one
-        as STRING (latin-1)."""
+        `utf8` is wmctrl's envir_utf8 (a UTF-8 locale, or -u). Set, it follows main.c's window_set_title
+        exactly: there is no locale copy of the title to write, so the legacy STRING property is DELETED rather
+        than left holding a stale or lossy value, and only the EWMH UTF8_STRING one is written. Clear, both are
+        written, the legacy one as STRING (latin-1)."""
         raw = name.encode("utf-8")
         latin = name.encode("latin-1", "replace")
         pairs = []
@@ -632,9 +610,8 @@ class X11Conn:
 
     def send_root_message(self, win: int, type_name: str,
                           data: list[int]) -> None:
-        """ClientMessage (format 32) about `win`, sent to the root window
-        with SubstructureNotify|SubstructureRedirect — how every EWMH client
-        request travels."""
+        """ClientMessage (format 32) about `win`, sent to the root window with
+        SubstructureNotify|SubstructureRedirect — how every EWMH client request travels."""
         vals = (list(data) + [0] * 5)[:5]
         event = struct.pack("<BBHII", _CLIENT_MESSAGE, 32, 0,
                             win & 0xFFFFFFFF, self.atom(type_name))
@@ -663,9 +640,8 @@ class X11Conn:
         return type_a, fmt, body[:nitems * (fmt // 8)], bytes_after
 
     def _read_property(self, win: int, name: str):
-        """Full value of a property: (type_atom, format, bytes), or None if
-        the property does not exist. Long values are fetched via the
-        long-offset loop (offsets counted in 32-bit units)."""
+        """Full value of a property: (type_atom, format, bytes), or None if the property does not exist. Long
+        values are fetched via the long-offset loop (offsets counted in 32-bit units)."""
         prop = self.atom(name, only_if_exists=True)
         if not prop:
             return None
@@ -732,10 +708,9 @@ class X11Conn:
         return name
 
     def read_property(self, win: int, name: str):
-        """Full value of a property as (type_name, format, bytes), or None
-        when the atom or the property does not exist on `win`. BadWindow
-        raises X11Error; a lying server raises XUnavailable (see
-        _read_property's hardening)."""
+        """Full value of a property as (type_name, format, bytes), or None when the atom or the property does
+        not exist on `win`. BadWindow raises X11Error; a lying server raises XUnavailable (see _read_property's
+        hardening)."""
         r = self._read_property(win, name)
         if r is None:
             return None
@@ -756,11 +731,9 @@ class X11Conn:
 
     def change_property(self, win: int, name: str, type_name: str,
                         fmt: int, data: bytes) -> None:
-        """Generalized ChangeProperty (PropModeReplace): any property name,
-        type atom, and format 8/16/32. `data` is the little-endian wire
-        image (nitems derived from its length). A format outside 8/16/32 is
-        sent with nitems=0 so the server's BadValue answer surfaces exactly
-        like Xlib's would."""
+        """Generalized ChangeProperty (PropModeReplace): any property name, type atom, and format 8/16/32.
+        `data` is the little-endian wire image (nitems derived from its length). A format outside 8/16/32 is
+        sent with nitems=0 so the server's BadValue answer surfaces exactly like Xlib's would."""
         self._change_property(win, self.atom(name), self.atom(type_name),
                               data, fmt)
 
@@ -774,14 +747,11 @@ class X11Conn:
                                event_mask & 0xFFFFFFFF))
 
     def next_event(self, timeout: float | None = None):
-        """Next X event as a parsed dict ({"type": "PropertyNotify",
-        "window", "atom", "state"} / {"type": "DestroyNotify", "window"} /
-        {"type": <code>}), or None when `timeout` seconds pass without one.
-        timeout=None blocks indefinitely (xprop -spy semantics), but a
-        mid-packet stall still hits the connection timeout and poisons the
-        connection — a trickling server cannot wedge us forever. timeout=0
-        is a true non-blocking poll: kernel-buffered events are drained
-        before None is returned."""
+        """Next X event as a parsed dict ({"type": "PropertyNotify", "window", "atom", "state"} / {"type":
+        "DestroyNotify", "window"} / {"type": <code>}), or None when `timeout` seconds pass without one.
+        timeout=None blocks indefinitely (xprop -spy semantics), but a mid-packet stall still hits the
+        connection timeout and poisons the connection — a trickling server cannot wedge us forever. timeout=0 is
+        a true non-blocking poll: kernel-buffered events are drained before None is returned."""
         if getattr(self, "_events", None) is None:
             self._events = []
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -790,9 +760,8 @@ class X11Conn:
                 return self._parse_event(self._events.pop(0))
             if self._sock is None:
                 raise XUnavailable("X connection is closed")
-            # clamp (never a negative select timeout); a zero timeout still
-            # polls the socket once before giving up, so a buffered event is
-            # never missed on the deadline boundary
+            # clamp (never a negative select timeout); a zero timeout still polls the socket once before giving
+            # up, so a buffered event is never missed on the deadline boundary
             wait = None if deadline is None \
                 else max(0.0, deadline - time.monotonic())
             try:

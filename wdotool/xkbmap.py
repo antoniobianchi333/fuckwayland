@@ -72,9 +72,8 @@ class Snapshot:
         self.group = group          # 1-based, as in the keymap's name[N]
         self.source = source        # for diagnostics
         self.group_known = group_known  # False: assumed, not read back
-        # Did a wl_keyboard.modifiers event actually arrive? A compositor
-        # that does not send one to an unfocused client never will, so the
-        # caller can stop paying `mods_wait` for it (B5).
+        # Did a wl_keyboard.modifiers event actually arrive? A compositor that does not send one to an unfocused
+        # client never will, so the caller can stop paying `mods_wait` for it (B5).
         self.mods_seen = mods_seen
 
 
@@ -85,10 +84,9 @@ class Snapshot:
 def layout_mode(forced: str | None = None) -> str:
     """"us", "xkb" or "auto" -- the layout the caller asked for, normalized.
 
-    `forced` is a client's --layout, which outranks WDOTOOL_LAYOUT: a command
-    line is the more specific statement of intent, and it is the only one that
-    can reach a daemon spawned with a different environment. "fixed" is a
-    spelling of "us", and anything unrecognized is "auto"."""
+    `forced` is a client's --layout, which outranks WDOTOOL_LAYOUT: a command line is the more specific
+    statement of intent, and it is the only one that can reach a daemon spawned with a different environment.
+    "fixed" is a spelling of "us", and anything unrecognized is "auto"."""
     mode = (forced or os.environ.get("WDOTOOL_LAYOUT") or "auto").strip().lower()
     if mode in ("us", "fixed"):
         return "us"
@@ -98,9 +96,9 @@ def layout_mode(forced: str | None = None) -> str:
 def decide(text: str, group: int, mode: str) -> bool:
     """THE BYPASS: is the fixed built-in US table the right answer here?
 
-    "us" says so outright and nothing is read or parsed; "auto" says so when
-    the active group is plain US, which is the common case and the fast one;
-    "xkb" never does, even on a US keymap -- that is what asking for it means.
+    "us" says so outright and nothing is read or parsed; "auto" says so when the active group is plain US, which
+    is the common case and the fast one; "xkb" never does, even on a US keymap -- that is what asking for it
+    means.
     """
     if mode == "us":
         return True
@@ -114,14 +112,13 @@ def decide(text: str, group: int, mode: str) -> bool:
 def fetch(timeout: float = 2.0, mods_wait: float = 0.08, keymap: str | None = None, group=None) -> Snapshot:
     """Read the active keymap + group. Raises XkbError, never hangs.
 
-    `mods_wait` is how long to keep dispatching after the keymap arrives in
-    the hope of a `wl_keyboard.modifiers` event carrying the active group.
-    Mutter (and wlroots, and KWin) only send that event to the client that
-    holds keyboard focus, which a headless injector never does -- so the wait
-    usually expires and the group has to be inferred; see `choose_group`.
+    `mods_wait` is how long to keep dispatching after the keymap arrives in the hope of a
+    `wl_keyboard.modifiers` event carrying the active group. Mutter (and wlroots, and KWin) only send that event
+    to the client that holds keyboard focus, which a headless injector never does -- so the wait usually expires
+    and the group has to be inferred; see `choose_group`.
 
-    `keymap` and `group` are what --keymap/--group pass; each falls back to
-    WDOTOOL_XKB_KEYMAP / WDOTOOL_XKB_GROUP when the caller says nothing.
+    `keymap` and `group` are what --keymap/--group pass; each falls back to WDOTOOL_XKB_KEYMAP /
+    WDOTOOL_XKB_GROUP when the caller says nothing.
     """
     path = keymap if keymap is not None else os.environ.get("WDOTOOL_XKB_KEYMAP")
     forced = _pinned_group(group)
@@ -252,9 +249,8 @@ _GROUPNAME_RE = re.compile(r'\bname\s*\[\s*(?:Group)?(\d+)\s*\]\s*=\s*"([^"]*)"'
 _KEY_RE = re.compile(r"\bkey\s+<([^<>\s]+)>\s*\{")
 _FIELD_RE = re.compile(r"^(\w+)\s*(?:\[\s*(?:Group)?(\d+)\s*\])?\s*=\s*(.*)$", re.S)
 
-# level -> mask, when the key's type says nothing else. This is the
-# xkeyboard-config convention every layout follows: 3 is AltGr, 5 is level five.
-# Public: keys_cmds.py builds the *forward* map (keycode + mask -> keysym)
+# level -> mask, when the key's type says nothing else. This is the xkeyboard-config convention every layout
+# follows: 3 is AltGr, 5 is level five. Public: keys_cmds.py builds the *forward* map (keycode + mask -> keysym)
 # from the same convention, and a second copy of it would drift.
 LEVEL_MASK = {
     1: 0,
@@ -267,9 +263,9 @@ LEVEL_MASK = {
     8: MOD_SHIFT | MOD_LEVEL3 | MOD_LEVEL5,
 }
 
-# XKB modifier names we can actually press, real and virtual. Everything else
-# (Lock, Control, Alt, NumLock, Mod1/2/4, Super, Meta, Hyper) makes a level
-# unreachable for us: we will not hold Control down to type a character.
+# XKB modifier names we can actually press, real and virtual. Everything else (Lock, Control, Alt, NumLock,
+# Mod1/2/4, Super, Meta, Hyper) makes a level unreachable for us: we will not hold Control down to type a
+# character.
 _MOD_NAME_BITS = {
     "shift": MOD_SHIFT,
     "levelthree": MOD_LEVEL3,
@@ -286,9 +282,8 @@ _LEVEL_KEYSYMS = {
     0xFF7E: MOD_LEVEL3,  # Mode_switch
     0xFE11: MOD_LEVEL5,  # ISO_Level5_Shift
 }
-# Preferred physical keys for each bit, best first: a real keyboard has AltGr
-# on <RALT>, and <LVL3>/<LVL5> are the synthetic keycodes xkeyboard-config
-# keeps for keyboards that have a dedicated key.
+# Preferred physical keys for each bit, best first: a real keyboard has AltGr on <RALT>, and <LVL3>/<LVL5> are
+# the synthetic keycodes xkeyboard-config keeps for keyboards that have a dedicated key.
 _MOD_KEY_ORDER = {
     MOD_SHIFT: ("LFSH", "RTSH"),
     MOD_LEVEL3: ("RALT", "ALGR", "LVL3", "MDSW"),
@@ -318,11 +313,10 @@ class Keymap:
         return self.groups[n - 1]
 
     def resolved(self, n: int) -> dict:
-        """{key name: [keysym, ...]} for group `n`, with XKB's group wrapping
-        applied: a key that binds fewer groups than the keymap has repeats
-        its own groups (the default groupsWrap). Most keys -- every key that
-        is the same on every layout, <RTRN> and <SPCE> included -- bind only
-        group 1, and would otherwise vanish from group 2."""
+        """{key name: [keysym, ...]} for group `n`, with XKB's group wrapping applied: a key that binds fewer
+        groups than the keymap has repeats its own groups (the default groupsWrap). Most keys -- every key that
+        is the same on every layout, <RTRN> and <SPCE> included -- bind only group 1, and would otherwise vanish
+        from group 2."""
         self.group(n)
         out = {}
         for key, per_group in self._by_key().items():
@@ -352,11 +346,9 @@ _COMMENT_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"|//[^\n]*|/\*.*?\*/', re.S)
 def strip_comments(text: str) -> str:
     """XKB comments (`// ...`, `/* ... */`) removed, string literals kept.
 
-    Pure text handling with no keymap knowledge, which is why the parser and
-    the US bypass may share it: a `}` inside a comment would otherwise close
-    a block early and silently halve the keymap (B4). No compositor emits
-    comments, but `WDOTOOL_XKB_KEYMAP=<file>` is a documented input and
-    hand-written keymaps are full of them.
+    Pure text handling with no keymap knowledge, which is why the parser and the US bypass may share it: a `}`
+    inside a comment would otherwise close a block early and silently halve the keymap (B4). No compositor emits
+    comments, but `WDOTOOL_XKB_KEYMAP=<file>` is a documented input and hand-written keymaps are full of them.
     """
     if "//" not in text and "/*" not in text:
         return text  # the common case: not one byte copied
@@ -372,11 +364,10 @@ def group_name(text: str, n: int) -> str:
     return f"group {n}"
 
 
-# libxkbcommon's XKB_MAX_GROUPS: no keymap can legitimately declare more.
-# The group index is a number the compositor chose, not a length we measured,
-# so `symbols[Group2000000000]` is eight bytes of keymap text that parse()
-# would otherwise turn into two billion Group objects (a root daemon can be
-# pointed at a planted Wayland socket, so the compositor is not always ours).
+# libxkbcommon's XKB_MAX_GROUPS: no keymap can legitimately declare more. The group index is a number the
+# compositor chose, not a length we measured, so `symbols[Group2000000000]` is eight bytes of keymap text that
+# parse() would otherwise turn into two billion Group objects (a root daemon can be pointed at a planted Wayland
+# socket, so the compositor is not always ours).
 MAX_GROUPS = 4
 
 
@@ -597,15 +588,13 @@ def _add_symbols(km: Keymap, key: str, group: int, listtext: str):
 # ---------------------------------------------------------------------------
 # dead keys
 
-# dead keysym -> (combining codepoint, the character the dead key + space
-# produces). NFD-decomposing a character gives the combining mark, which is
-# how "é" becomes dead_acute + e without shipping a Compose table.
+# dead keysym -> (combining codepoint, the character the dead key + space produces). NFD-decomposing a character
+# gives the combining mark, which is how "é" becomes dead_acute + e without shipping a Compose table.
 #
-# The second element is not the spacing accent that shares the dead key's
-# name: it is whatever <dead_x> <space> yields in the Compose table every
-# toolkit implements (/usr/share/X11/locale/*/Compose), which for acute,
-# diaeresis and abovering is ASCII ' " and °. Claiming U+00B4 there made
-# `type ´` send dead_acute + space and land an apostrophe instead (B3).
+# The second element is not the spacing accent that shares the dead key's name: it is whatever <dead_x> <space>
+# yields in the Compose table every toolkit implements (/usr/share/X11/locale/*/Compose), which for acute,
+# diaeresis and abovering is ASCII ' " and °. Claiming U+00B4 there made `type ´` send dead_acute + space and
+# land an apostrophe instead (B3).
 DEAD_KEYSYMS = {
     0xFE50: (0x0300, 0x0060),  # dead_grave
     0xFE51: (0x0301, 0x0027),  # dead_acute      -> apostrophe, not U+00B4
@@ -640,9 +629,9 @@ DEAD_KEYSYMS = {
     0xFE6E: (0x0326, None),    # dead_belowcomma
 }
 
-# <dead_x> <dead_x> types the spacing accent itself -- the only way to type
-# one on a layout that has it *only* as a dead key, now that <dead_x> <space>
-# is known to type something else. The six the Compose table lists, no more.
+# <dead_x> <dead_x> types the spacing accent itself -- the only way to type one on a layout that has it *only*
+# as a dead key, now that <dead_x> <space> is known to type something else. The six the Compose table lists, no
+# more.
 DEAD_DOUBLE = {
     0xFE50: 0x0060,  # dead_grave      -> `
     0xFE51: 0x00B4,  # dead_acute      -> ´
@@ -676,9 +665,8 @@ class ReverseMap:
     def lookup_char(self, ch: str):
         """The keystrokes that type `ch`: [(keycode, mask), ...], or None.
 
-        More than one keystroke means a dead-key sequence: press the dead key,
-        then the base character, and the *application* composes them (that is
-        how a physical keyboard types é on a French layout too)."""
+        More than one keystroke means a dead-key sequence: press the dead key, then the base character, and the
+        *application* composes them (that is how a physical keyboard types é on a French layout too)."""
         ks = _CONTROL_KEYSYMS.get(ch)
         if ks is not None:
             hit = self.keysyms.get(ks)
@@ -742,11 +730,10 @@ def _cost(entry) -> tuple:
 def _keypad_rank(code: int, ks) -> int:
     """0 for a key in the main block, 1 for one on the keypad (B6).
 
-    Excluding the keypad by key *name* (`<KP...>`) leaks: Mutter's keymaps
-    put KP_Decimal on <I129> and the keypad parentheses on <I187>/<I188>, so
-    `.` on a French layout and `(` on every non-US one used to resolve to a
-    keypad keycode. A keypad entry is still recorded -- it really does
-    produce the character -- but it can never beat a main-block key."""
+    Excluding the keypad by key *name* (`<KP...>`) leaks: Mutter's keymaps put KP_Decimal on <I129> and the
+    keypad parentheses on <I187>/<I188>, so `.` on a French layout and `(` on every non-US one used to resolve
+    to a keypad keycode. A keypad entry is still recorded -- it really does produce the character -- but it can
+    never beat a main-block key."""
     if ks is not None and 0xFF80 <= ks <= 0xFFBD:  # KP_Space .. KP_Equal
         return 1
     return 1 if code >= 128 else 0
@@ -777,10 +764,9 @@ def reverse(km: Keymap, group: int = 1) -> ReverseMap:
         if rank < ranks.get(bit, 99):
             ranks[bit] = rank
             rmap.mod_keys[bit] = code
-    # What the *keymap* said, before the fallbacks are filled in: the guard
-    # below has to test that, not the backfilled table, or it can never fire
-    # for the case it names. Every fixture we have names all three keys, so
-    # the fallbacks are belt and braces and this changes nothing for them.
+    # What the *keymap* said, before the fallbacks are filled in: the guard below has to test that, not the
+    # backfilled table, or it can never fire for the case it names. Every fixture we have names all three keys,
+    # so the fallbacks are belt and braces and this changes nothing for them.
     from_keymap = set(rmap.mod_keys)
     for bit, code in _DEFAULT_MOD_KEYS.items():
         if code and bit not in rmap.mod_keys:
@@ -798,14 +784,11 @@ def reverse(km: Keymap, group: int = 1) -> ReverseMap:
             mask = masks.get(level) if masks else LEVEL_MASK.get(level)
             if mask is None:
                 continue
-            # A level we cannot press (no AltGr key in this layout) is a level
-            # that does not exist for us. Testing rmap.mod_keys here tested
-            # the fallback keycodes too, so on a layout with four-level types
-            # and no level-3 key -- lv3:none, a custom keymap -- 77 German
-            # characters still resolved to "hold keycode 100", which without
-            # ISO_Level3_Shift on it is a plain Alt_R: a menu accelerator on
-            # both GNOME and KWin, i.e. a wrong action where the promise is a
-            # warning and a skip.
+            # A level we cannot press (no AltGr key in this layout) is a level that does not exist for us.
+            # Testing rmap.mod_keys here tested the fallback keycodes too, so on a layout with four-level types
+            # and no level-3 key -- lv3:none, a custom keymap -- 77 German characters still resolved to "hold
+            # keycode 100", which without ISO_Level3_Shift on it is a plain Alt_R: a menu accelerator on both
+            # GNOME and KWin, i.e. a wrong action where the promise is a warning and a skip.
             if any(mask & b and b not in from_keymap for b in MOD_BITS):
                 continue
             entry = (code, mask)
@@ -883,15 +866,13 @@ _US_CODE_RE = re.compile(r"<([^<>\s]+)>\s*=\s*(\d+)\s*;")
 _US_BARE_RE = re.compile(r"^\s*\[([^\]]*)\]\s*$")
 _US_TYPE_RE = re.compile(r'\btype\s*(?:\[\s*(?:Group)?(\d+)\s*\])?\s*=\s*"([^"]*)"')
 
-# The names xkeyboard-config gives the plain `us` layout, and nothing else.
-# `USA` is what the same layout is called when the session picks a Macintosh
-# keyboard model; the key-by-key check below is what actually decides.
+# The names xkeyboard-config gives the plain `us` layout, and nothing else. `USA` is what the same layout is
+# called when the session picks a Macintosh keyboard model; the key-by-key check below is what actually decides.
 US_GROUP_NAME = "English (US)"
 US_GROUP_NAMES = (US_GROUP_NAME, "USA")
 
-# Types whose level 2 is reached with Shift and level 1 with no modifier --
-# the only shapes under which the fixed table's (keycode, shifted) pair is
-# right. An unknown type on a key we care about fails the check.
+# Types whose level 2 is reached with Shift and level 1 with no modifier -- the only shapes under which the
+# fixed table's (keycode, shifted) pair is right. An unknown type on a key we care about fails the check.
 _US_OK_TYPES = frozenset({
     "ONE_LEVEL", "TWO_LEVEL", "ALPHABETIC", "KEYPAD", "FOUR_LEVEL",
     "FOUR_LEVEL_ALPHABETIC", "FOUR_LEVEL_SEMIALPHABETIC",
@@ -907,11 +888,10 @@ _US_OK_TYPES = frozenset({
 def _expected_us() -> dict:
     """{evdev keycode: {level: keysym}} that the fixed US table assumes.
 
-    Only the *printable* characters: Return, Tab, BackSpace, Escape and
-    Delete are position keys, in the same place on every layout, and they go
-    through `KEYSYM_KEYS` rather than through any layout table. Demanding
-    them here made `us` + `caps:swapescape` -- a plain US session by any
-    honest reading -- fail the check and drag the whole reverse map in (B2).
+    Only the *printable* characters: Return, Tab, BackSpace, Escape and Delete are position keys, in the same
+    place on every layout, and they go through `KEYSYM_KEYS` rather than through any layout table. Demanding
+    them here made `us` + `caps:swapescape` -- a plain US session by any honest reading -- fail the check and
+    drag the whole reverse map in (B2).
     """
     from wdotool import keymap as _keymap
 
@@ -926,14 +906,12 @@ def _expected_us() -> dict:
 def active_group_is_plain_us(text: str, group: int = 1) -> bool:
     """Is the fixed US table exactly right for this keymap's active group?
 
-    Not "is it called us": the name is only the fast reject. Every keycode
-    the fixed table would ever emit is checked against the keysyms the keymap
-    binds to it at level 1 and 2 in the active group, and every one of them
-    has to be present and identical. A layout that passes types the same
-    characters as the fixed table by construction, so the bypass cannot type
-    the wrong thing; anything unexpected -- a missing key, an extra dead key
-    on level 1, a type whose level 2 is not Shift, a keymap this scanner
-    cannot read -- answers False and the reverse map takes over.
+    Not "is it called us": the name is only the fast reject. Every keycode the fixed table would ever emit is
+    checked against the keysyms the keymap binds to it at level 1 and 2 in the active group, and every one of
+    them has to be present and identical. A layout that passes types the same characters as the fixed table by
+    construction, so the bypass cannot type the wrong thing; anything unexpected -- a missing key, an extra dead
+    key on level 1, a type whose level 2 is not Shift, a keymap this scanner cannot read -- answers False and
+    the reverse map takes over.
     """
     try:
         return _plain_us(text, group)
@@ -959,19 +937,16 @@ def _plain_us(text: str, group: int) -> bool:
         if code is None or code not in want:
             continue
         body = m.group(2)
-        # A stated type only matters where the fixed table uses level 2: it
-        # is the "level 2 is Shift" assumption that is being checked. On a
-        # key the table only ever presses unshifted (<SPCE>, which
-        # `grp:win_space_toggle` gives the type PC_SUPER_LEVEL2) the type is
-        # none of our business (B2).
+        # A stated type only matters where the fixed table uses level 2: it is the "level 2 is Shift" assumption
+        # that is being checked. On a key the table only ever presses unshifted (<SPCE>, which
+        # `grp:win_space_toggle` gives the type PC_SUPER_LEVEL2) the type is none of our business (B2).
         if 2 in want[code]:
             for tm in _US_TYPE_RE.finditer(body):
                 if tm.group(1) in (None, str(group)):
                     if tm.group(2) not in _US_OK_TYPES:
                         return False
-        # XKB group wrapping: a key that binds fewer groups than the keymap
-        # has repeats its own. <SPCE> binds group 1 only and is still the
-        # space bar in group 2.
+        # XKB group wrapping: a key that binds fewer groups than the keymap has repeats its own. <SPCE> binds
+        # group 1 only and is still the space bar in group 2.
         per_group = {int(sm.group(1)): sm.group(2) for sm in _US_SYMS_RE.finditer(body)}
         if per_group:
             levels = per_group.get((group - 1) % max(per_group) + 1)
@@ -1091,9 +1066,8 @@ def diagnostic_main(argv) -> int:
             try:
                 rmap = reversed_map()
             except XkbError as e:
-                # --group 3 on a two-group keymap, a keymap with nothing
-                # typable in it: the diagnostic reports what it found, like
-                # every other failure here, and never tracebacks.
+                # --group 3 on a two-group keymap, a keymap with nothing typable in it: the diagnostic reports
+                # what it found, like every other failure here, and never tracebacks.
                 sys.stderr.write("wdotool: %s\n" % e)
                 return 1
             names = {MOD_SHIFT: "shift", MOD_LEVEL3: "level3", MOD_LEVEL5: "level5"}

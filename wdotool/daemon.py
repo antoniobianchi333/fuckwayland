@@ -1,24 +1,19 @@
 """Input-injection daemon + client.
 
-The daemon owns the uinput devices (device creation costs ~500ms of compositor
-hotplug latency — paid once), tracks the injected pointer position, and serves
-one JSON object per line on a unix socket. `{"ok":true,...}` or
-`{"ok":false,"error":"..."}`; a response may carry `"warnings":[...]` which the
-client prints to its stderr.
+The daemon owns the uinput devices (device creation costs ~500ms of compositor hotplug latency — paid once),
+tracks the injected pointer position, and serves one JSON object per line on a unix socket. `{"ok":true,...}` or
+`{"ok":false,"error":"..."}`; a response may carry `"warnings":[...]` which the client prints to its stderr.
 
-The daemon owns the pointer *model* (px, py): the position it last injected.
-It is only a model -- REL events, a physical mouse, or another daemon move
-the compositor's pointer behind its back -- so clients that can ask the
-compositor for the real position (the GNOME bridge's GetPointer) push it
-back with the `seed_pointer` op before a relative move (see B1/B6 in
-DESIGN.md). Neither injection path can ask: `zwlr_virtual_pointer_v1` has no
-events and sway's IPC carries no cursor position, so a daemon that has moved
-nothing refuses the `pointer` op instead of inventing an answer.
+The daemon owns the pointer *model* (px, py): the position it last injected. It is only a model -- REL events, a
+physical mouse, or another daemon move the compositor's pointer behind its back -- so clients that can ask the
+compositor for the real position (the GNOME bridge's GetPointer) push it back with the `seed_pointer` op before
+a relative move (see B1/B6 in DESIGN.md). Neither injection path can ask: `zwlr_virtual_pointer_v1` has no
+events and sway's IPC carries no cursor position, so a daemon that has moved nothing refuses the `pointer` op
+instead of inventing an answer.
 
-There are two of everything below. Keys go to /dev/uinput or to
-zwp_virtual_keyboard_v1 (`vkbd.py`), the pointer to /dev/uinput or to
-zwlr_virtual_pointer_v1 (`vptr.py`), by one policy stated once under
-"which devices inject".
+There are two of everything below. Keys go to /dev/uinput or to zwp_virtual_keyboard_v1 (`vkbd.py`), the pointer
+to /dev/uinput or to zwlr_virtual_pointer_v1 (`vptr.py`), by one policy stated once under "which devices
+inject".
 """
 
 import contextlib
@@ -48,18 +43,15 @@ MAX_DELAY_MS = 300_000
 _I32_MIN, _I32_MAX = -(2**31), 2**31 - 1
 _MAX_REQUEST = 16 << 20  # bytes per request line
 
-# Env the daemon keeps when it is spawned from a client (B10). Everything
-# else -- the launcher's D-Bus address, DESKTOP_*, anything derived from the
-# client's argv -- is dropped: an input daemon that outlives the command that
-# started it must not pin that command's session state. WDOTOOL_* is kept as
-# a prefix (uinput path, fake-uinput mode, WDOTOOL_REL_MODE).
+# Env the daemon keeps when it is spawned from a client (B10). Everything else -- the launcher's D-Bus address,
+# DESKTOP_*, anything derived from the client's argv -- is dropped: an input daemon that outlives the command
+# that started it must not pin that command's session state. WDOTOOL_* is kept as a prefix (uinput path,
+# fake-uinput mode, WDOTOOL_REL_MODE).
 #
-# SWAYSOCK/I3SOCK are session state the daemon needs for itself: _rel_absolute()
-# asks session.find_sway_socket() whether this is sway/i3, and answers "warp"
-# for everything else (B1). Without them that question falls back to scanning
-# the runtime dir, which finds sway's socket only because sway usually puts it
-# there and never finds i3's, which lives under /tmp -- so a daemon spawned
-# from a client warped where it had to send EV_REL.
+# SWAYSOCK/I3SOCK are session state the daemon needs for itself: _rel_absolute() asks session.find_sway_socket()
+# whether this is sway/i3, and answers "warp" for everything else (B1). Without them that question falls back to
+# scanning the runtime dir, which finds sway's socket only because sway usually puts it there and never finds
+# i3's, which lives under /tmp -- so a daemon spawned from a client warped where it had to send EV_REL.
 _KEEP_ENV = ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HOME", "PATH", "USER",
              "LOGNAME", "LANG", "LC_ALL", "SUDO_UID", "PKEXEC_UID",
              "SWAYSOCK", "I3SOCK")
@@ -87,9 +79,9 @@ _LAYOUT_MODES = ("us", "fixed", "auto", "xkb")
 
 
 def _mode_field(val, what: str, valid):
-    """Validate one optional mode field. The CLI already screens these, but
-    the socket is a trust boundary and the daemon lower-cases whatever it is
-    given: an unknown name must be a rejected request, not a silent default."""
+    """Validate one optional mode field. The CLI already screens these, but the socket is a trust boundary and
+    the daemon lower-cases whatever it is given: an unknown name must be a rejected request, not a silent
+    default."""
     if val is None:
         return None
     if not isinstance(val, str):
@@ -105,9 +97,8 @@ def _layout_mode(val, what: str = "layout_mode"):
 
 
 def _vkbd_mode(val, what: str = "vkbd_mode"):
-    """`vkbd_mode` on the wire (VKBD_MODES, defined with the policy below).
-    WDOTOOL_VKBD is read separately and stays lenient: a typo in a shell
-    profile must not stop the tool typing, but a request is a request."""
+    """`vkbd_mode` on the wire (VKBD_MODES, defined with the policy below). WDOTOOL_VKBD is read separately and
+    stays lenient: a typo in a shell profile must not stop the tool typing, but a request is a request."""
     return _mode_field(val, what, VKBD_MODES)
 
 
@@ -129,11 +120,10 @@ def _mods(val, what: str) -> list:
 
 
 def socket_path() -> str:
-    """Where the daemon listens and the client dials. session.runtime_dir()
-    supplies the private directory (and the `.lock` beside the socket is out
-    of reach with it); $XDG_RUNTIME_DIR is taken exactly as the environment
-    gives it, unchecked, so a set-but-missing one stays the bind failure the
-    user can see rather than a socket quietly moved somewhere else."""
+    """Where the daemon listens and the client dials. session.runtime_dir() supplies the private directory (and
+    the `.lock` beside the socket is out of reach with it); $XDG_RUNTIME_DIR is taken exactly as the environment
+    gives it, unchecked, so a set-but-missing one stays the bind failure the user can see rather than a socket
+    quietly moved somewhere else."""
     if os.geteuid() == 0:
         return "/run/wdotool.sock"
     from fwcommon import session
@@ -226,11 +216,10 @@ def _wayland_bbox() -> tuple[int, int, int, int]:
 
 _SHIFTS = (keymap.KEY_LEFTSHIFT, keymap.KEY_RIGHTSHIFT)
 
-# A modifier held on a keyboard that is not ours cannot be cleared through
-# uinput at all (see "modifiers around an injection" below), so the flag says
-# so rather than look like it worked. Emitted once per client connection and
-# only when the key state could be read -- without that access there is
-# nothing to report and the behaviour is the same either way.
+# A modifier held on a keyboard that is not ours cannot be cleared through uinput at all (see "modifiers around
+# an injection" below), so the flag says so rather than look like it worked. Emitted once per client connection
+# and only when the key state could be read -- without that access there is nothing to report and the behaviour
+# is the same either way.
 FOREIGN_MODS_WARNING = (
     "wdotool: --clearmodifiers cannot clear %s: held on a keyboard that is "
     "not ours, and a uinput device cannot release a key it does not hold -- "
@@ -267,9 +256,8 @@ VPTR_CHOSE_WARNING = (
     "zwlr_virtual_pointer_v1 instead, which needs no root and no device "
     "rule either.")
 
-# The compositor we were typing through went away between two commands. Said
-# only when we were holding something, because that is the only part the next
-# command cannot simply redo.
+# The compositor we were typing through went away between two commands. Said only when we were holding
+# something, because that is the only part the next command cannot simply redo.
 VKBD_RESTART_WARNING = (
     "the compositor restarted; the keys wdotool was holding on its virtual "
     "keyboard were released with it")
@@ -293,13 +281,11 @@ BTN_SWITCH_WARNING = (
     "released: this command injects through the %s one, and only the device "
     "that pressed a button can release it")
 
-# The same two, for a command that NAMED a sink it then could not have. The
-# command fails -- `--vkbd off` on a session with no /dev/uinput is asking for
-# a device that is not there -- but the hold must not survive it. Measured on
-# sway with /dev/uinput root-only: `--vkbd on mousedown 1` then `--vkbd off
-# mouseup 1` reported the uinput error and left the LEFT BUTTON DOWN on the
-# virtual pointer, which is a drag that outlives the command that failed. The
-# release has to happen on the way out of the failure, not after it.
+# The same two, for a command that NAMED a sink it then could not have. The command fails -- `--vkbd off` on a
+# session with no /dev/uinput is asking for a device that is not there -- but the hold must not survive it.
+# Measured on sway with /dev/uinput root-only: `--vkbd on mousedown 1` then `--vkbd off mouseup 1` reported the
+# uinput error and left the LEFT BUTTON DOWN on the virtual pointer, which is a drag that outlives the command
+# that failed. The release has to happen on the way out of the failure, not after it.
 SINK_GONE_WARNING = (
     "the keys wdotool was holding on the %s keyboard (%s) were released: "
     "this command asked for the %s one, which cannot be used, and a key "
@@ -316,11 +302,10 @@ _BTN_LABELS = {uinput.BTN_LEFT: "left", uinput.BTN_MIDDLE: "middle",
                uinput.BTN_EXTRA: "extra", uinput.BTN_FORWARD: "forward",
                uinput.BTN_BACK: "back", uinput.BTN_TASK: "task"}
 
-# `getmouselocation` with nothing to report, on the virtual-pointer path.
-# The protocol sends input and receives nothing at all -- zero events on the
-# object, across motion, buttons and axes -- and sway's IPC has no cursor
-# position either, so there is nothing to fall back to and no /dev/uinput
-# error worth quoting: uinput is not what the user would have to fix.
+# `getmouselocation` with nothing to report, on the virtual-pointer path. The protocol sends input and receives
+# nothing at all -- zero events on the object, across motion, buttons and axes -- and sway's IPC has no cursor
+# position either, so there is nothing to fall back to and no /dev/uinput error worth quoting: uinput is not
+# what the user would have to fix.
 POINTER_UNKNOWN = (
     "wdotool does not know where the pointer is: it has not moved it, and "
     "zwlr_virtual_pointer_v1 cannot be asked -- the protocol delivers no "
@@ -337,24 +322,20 @@ _ESCAPE_CGROUP = "wdotool-daemon"
 
 
 def transient_scope_target(cgroup_line: str, euid: int) -> str | None:
-    """Cgroup directory a freshly spawned daemon should move itself into, or
-    None when it should stay where it is (B11).
+    """Cgroup directory a freshly spawned daemon should move itself into, or None when it should stay where it
+    is (B11).
 
-    GNOME runs a custom keyboard shortcut inside a transient systemd scope
-    (`app-gnome-<name>-<pid>.scope`). A scope stays *active* while any process
-    remains in its cgroup, and neither fork nor setsid changes a cgroup -- so
-    the double-forked daemon kept the launcher's scope (and the shell script
-    that started it, as far as systemd was concerned) alive for as long as the
-    daemon ran; observed at 10+ minutes on 24.04 / systemd 255. `systemd-run
-    --user --scope` is the textbook migration but re-runs the command in an
-    environment of systemd's choosing, which is exactly what B10 is trying to
-    control. Writing our own pid into a sibling cgroup under the user
-    manager's *delegated* subtree does the same job with one write, no new
-    process and no environment surprises.
+    GNOME runs a custom keyboard shortcut inside a transient systemd scope (`app-gnome-<name>-<pid>.scope`). A
+    scope stays *active* while any process remains in its cgroup, and neither fork nor setsid changes a cgroup
+    -- so the double-forked daemon kept the launcher's scope (and the shell script that started it, as far as
+    systemd was concerned) alive for as long as the daemon ran; observed at 10+ minutes on 24.04 / systemd 255.
+    `systemd-run --user --scope` is the textbook migration but re-runs the command in an environment of
+    systemd's choosing, which is exactly what B10 is trying to control. Writing our own pid into a sibling
+    cgroup under the user manager's *delegated* subtree does the same job with one write, no new process and no
+    environment surprises.
 
-    Only transient app scopes are escaped. A `session-N.scope` (a normal
-    login) or a system service is left alone: a daemon started there should
-    still die with its session. Root is never in a user scope, so the root
+    Only transient app scopes are escaped. A `session-N.scope` (a normal login) or a system service is left
+    alone: a daemon started there should still die with its session. Root is never in a user scope, so the root
     daemon keeps its cgroup too."""
     if euid == 0:
         return None
@@ -398,10 +379,9 @@ def clean_env(env=None) -> dict:
 
 
 def _close_inherited_fds():
-    """Close everything above stdio (B10): a daemon forked out of a running
-    command inherits that command's open files -- most importantly the session
-    D-Bus socket, which keeps a bus connection ESTABLISHED for the daemon's
-    whole life and made the daemon look like a D-Bus client in `ss`."""
+    """Close everything above stdio (B10): a daemon forked out of a running command inherits that command's open
+    files -- most importantly the session D-Bus socket, which keeps a bus connection ESTABLISHED for the
+    daemon's whole life and made the daemon look like a D-Bus client in `ss`."""
     try:
         limit = os.sysconf("SC_OPEN_MAX")
     except (ValueError, OSError):
@@ -412,34 +392,29 @@ def _close_inherited_fds():
 
 
 class _KernelPointer:
-    """The uinput tablet and relative mouse behind the same four calls the
-    virtual pointer answers to, so the pointer ops read the same on both
-    paths and cannot drift apart.
+    """The uinput tablet and relative mouse behind the same four calls the virtual pointer answers to, so the
+    pointer ops read the same on both paths and cannot drift apart.
 
-    Nothing here is new. The ceiling axis map (B7), the unchanged-EV_ABS
-    nudge (B2), the evdev button codes and the REL_WHEEL detents are the
-    kernel contract the daemon tests pin, moved behind an interface and
-    otherwise untouched. It holds the *daemon* rather than the two devices
-    because those are replaced under it (create_devices, _drop_devices) and
-    the last absolute report has to outlive any one pointer op.
+    Nothing here is new. The ceiling axis map (B7), the unchanged-EV_ABS nudge (B2), the evdev button codes and
+    the REL_WHEEL detents are the kernel contract the daemon tests pin, moved behind an interface and otherwise
+    untouched. It holds the *daemon* rather than the two devices because those are replaced under it
+    (create_devices, _drop_devices) and the last absolute report has to outlive any one pointer op.
     """
 
     def __init__(self, d):
         self.d = d
 
     def warp(self, x, y, gx, gy, w, h):
-        """The absolute tablet. The compositor maps its axes across the FULL
-        output layout, so scale the offset from the layout origin, not the
-        raw (possibly negative) global coordinate."""
+        """The absolute tablet. The compositor maps its axes across the FULL output layout, so scale the offset
+        from the layout origin, not the raw (possibly negative) global coordinate."""
         d = self.d
         ax = d._axis(x - gx, w)
         ay = d._axis(y - gy, h)
-        # B2: the kernel drops an EV_ABS whose value equals the axis' current
-        # value, so re-sending the coordinates the tablet reported last time
-        # is a silent no-op -- and the pointer may well have moved since, via
-        # REL events, a physical mouse, or another daemon. Nudge one axis by a
-        # single unit (1/32768 of the layout: sub-pixel on any real screen)
-        # first, so the second report is always a change and always lands.
+        # B2: the kernel drops an EV_ABS whose value equals the axis' current value, so re-sending the
+        # coordinates the tablet reported last time is a silent no-op -- and the pointer may well have moved
+        # since, via REL events, a physical mouse, or another daemon. Nudge one axis by a single unit (1/32768
+        # of the layout: sub-pixel on any real screen) first, so the second report is always a change and always
+        # lands.
         if (ax, ay) == d._last_abs:
             nudge = ax + 1 if ax < 32767 else ax - 1
             d.tablet.emit(uinput.EV_ABS, uinput.ABS_X, nudge)
@@ -461,23 +436,19 @@ class _KernelPointer:
         self.d.mouse.key(code, down)
 
     def wheel(self, btn):
-        """One detent of wdotool's wheel button 4/5/6/7, in evdev's sign --
-        REL_WHEEL positive is up, which is the opposite of Wayland's axis 0.
-        vptr.WHEEL is the same four gestures in the other convention."""
+        """One detent of wdotool's wheel button 4/5/6/7, in evdev's sign -- REL_WHEEL positive is up, which is
+        the opposite of Wayland's axis 0. vptr.WHEEL is the same four gestures in the other convention."""
         rel, value = _Daemon._WHEEL[btn]
         self.d.mouse.emit(uinput.EV_REL, rel, value)
         self.d.mouse.syn()
 
 
 class _Daemon:
-    # Injection rate cap. Keystrokes injected faster than the compositor
-    # drains its per-open evdev buffer are lost wholesale to the kernel's
-    # SYN_DROPPED — a zero-delay `type` of a few thousand characters silently
-    # loses keys. Empirically ~600 keystrokes/s is drop-free on a headless
-    # wlroots compositor, so floor every inter-keystroke gap at _MIN_GAP.
-    # Steady (deadline-scheduled) pacing survives where bursts do not: a burst
-    # fills the buffer instantly. Explicit --delay values above the floor are
-    # honored unchanged.
+    # Injection rate cap. Keystrokes injected faster than the compositor drains its per-open evdev buffer are
+    # lost wholesale to the kernel's SYN_DROPPED — a zero-delay `type` of a few thousand characters silently
+    # loses keys. Empirically ~600 keystrokes/s is drop-free on a headless wlroots compositor, so floor every
+    # inter-keystroke gap at _MIN_GAP. Steady (deadline-scheduled) pacing survives where bursts do not: a burst
+    # fills the buffer instantly. Explicit --delay values above the floor are honored unchanged.
     _MIN_GAP = 0.0018  # ~555 keystrokes/s
 
     def __init__(self):
@@ -488,9 +459,8 @@ class _Daemon:
         self.kb = self.mouse = self.tablet = None
         self.dev_error = "uinput devices not initialized"
         self.down: set[int] = set()  # keycodes we injected as down
-        # ...and which of the two sinks they are down ON. The kernel device
-        # and the virtual keyboard are separate devices with separate key
-        # state; `self.down` describes exactly one of them at a time. See
+        # ...and which of the two sinks they are down ON. The kernel device and the virtual keyboard are
+        # separate devices with separate key state; `self.down` describes exactly one of them at a time. See
         # _own_sink() for what happens when the sink changes under a held key.
         self._down_virtual = False
         # keycodes released by the op running inside _mods_cleared(); see
@@ -505,44 +475,37 @@ class _Daemon:
         self._keystate_logged = False
         self.pos_known = False    # has px/py ever been established? (B6)
         self.geom_fallback = False  # last geometry() used FALLBACK_GEOMETRY
-        # Active-layout state (B13). `_layout_cache` is ((keymap digest,
-        # group), ReverseMap or None); None means "the fixed US table is the
-        # answer", which is both the bypass and every failure mode.
+        # Active-layout state (B13). `_layout_cache` is ((keymap digest, group), ReverseMap or None); None means
+        # "the fixed US table is the answer", which is both the bypass and every failure mode.
         self._layout_cache = None
         self._xkb_backoff = 0.0    # monotonic: don't re-try a failing read
         self._xkb_mods_wait = 0.08  # seconds to wait for a modifiers event
         self._xkb_said: set = set()  # one-shot diagnostics already emitted
         self._xkb_degraded = None  # set while the keymap cannot be used
         self._xkb_group_said = None  # layout state the group notice was for
-        # zwp_virtual_keyboard_v1 (see vkbd.py). ONE connection and ONE
-        # keyboard object for the daemon's life: the compositor releases
-        # whatever a client was holding when it disconnects, so a keydown
-        # that has to survive until the next command cannot be a per-command
-        # connection. `_vk_error` + `_vk_backoff` keep a compositor that
-        # cannot be reached from being retried on every keystroke.
+        # zwp_virtual_keyboard_v1 (see vkbd.py). ONE connection and ONE keyboard object for the daemon's life:
+        # the compositor releases whatever a client was holding when it disconnects, so a keydown that has to
+        # survive until the next command cannot be a per-command connection. `_vk_error` + `_vk_backoff` keep a
+        # compositor that cannot be reached from being retried on every keystroke.
         self._vk = None
         self._vk_error = None
         self._vk_backoff = 0.0
-        # zwlr_virtual_pointer_v1 (see vptr.py), the pointer's exact
-        # counterpart: ONE connection and ONE pointer object for the daemon's
-        # life, for the same reason -- the compositor releases whatever a
-        # client was holding when it disconnects, so a `mousedown` that has
-        # to survive until the matching `mouseup` cannot be a per-command
-        # connection.
+        # zwlr_virtual_pointer_v1 (see vptr.py), the pointer's exact counterpart: ONE connection and ONE pointer
+        # object for the daemon's life, for the same reason -- the compositor releases whatever a client was
+        # holding when it disconnects, so a `mousedown` that has to survive until the matching `mouseup` cannot
+        # be a per-command connection.
         self._vp = None
         self._vp_error = None
         self._vp_backoff = 0.0
-        # Evdev button codes we injected as down, and which of the two
-        # pointers they are down ON -- the same trap `down`/`_down_virtual`
-        # carry for keys: one set, two devices, and only the device that
-        # pressed a button can release it (see _own_pointer).
+        # Evdev button codes we injected as down, and which of the two pointers they are down ON -- the same
+        # trap `down`/`_down_virtual` carry for keys: one set, two devices, and only the device that pressed a
+        # button can release it (see _own_pointer).
         self.btns: set[int] = set()
         self._btns_virtual = False
 
     def _key_gap(self, delay: float):
-        """Inter-keystroke pause. Sleeps `delay` seconds but never lets the
-        keystroke rate exceed 1/_MIN_GAP, using an absolute deadline so the
-        floor neither drifts nor accumulates syscall overhead."""
+        """Inter-keystroke pause. Sleeps `delay` seconds but never lets the keystroke rate exceed 1/_MIN_GAP,
+        using an absolute deadline so the floor neither drifts nor accumulates syscall overhead."""
         now = time.monotonic()
         target = max(now + delay, self._next_ok)
         if target > now:
@@ -579,9 +542,8 @@ class _Daemon:
             self.dev_error = err
 
     def _drop_devices(self, why: str):
-        """Destroy the virtual devices and remember why, so the next request
-        gets the reason instead of a silent no-op. create_devices() rebuilds
-        them if the cause has gone away."""
+        """Destroy the virtual devices and remember why, so the next request gets the reason instead of a silent
+        no-op. create_devices() rebuilds them if the cause has gone away."""
         for dev in (self.kb, self.mouse, self.tablet):
             if dev is not None:
                 dev.close()
@@ -598,81 +560,67 @@ class _Daemon:
     def _grant_gone(self) -> bool:
         """Did the /dev/uinput grant we opened the devices under go away?
 
-        Only asked of devices that really came from the node (`fake` devices
-        and the ones the tests install by hand answer no), and only ever
-        answered yes by a permission error -- see uinput.access_ok()."""
+        Only asked of devices that really came from the node (`fake` devices and the ones the tests install by
+        hand answer no), and only ever answered yes by a permission error -- see uinput.access_ok()."""
         if self.kb is None or getattr(self.kb, "fake", True):
             return False
         return not uinput.access_ok()
 
     def _need_devices(self):
         if self._grant_gone():
-            # The grant we opened /dev/uinput under is gone: logind moved the
-            # seat to another session (a VT switch, a fast user switch). The
-            # devices we already hold would keep injecting into *their*
-            # session, which is exactly what the uaccess tag exists to
-            # prevent, so let go of them until the seat comes back.
+            # The grant we opened /dev/uinput under is gone: logind moved the seat to another session (a VT
+            # switch, a fast user switch). The devices we already hold would keep injecting into *their*
+            # session, which is exactly what the uaccess tag exists to prevent, so let go of them until the seat
+            # comes back.
             self._drop_devices(
                 "/dev/uinput is no longer accessible to this user (this "
                 "session is not the active one); wdotool stops injecting "
                 "until it is")
             raise RuntimeError(self.dev_error)
         if self.dev_error:
-            # Retry: the failure may be transient (uinput module loaded after
-            # boot, devices raced). Cheap when it fails again — the 600ms
-            # hotplug settle is only paid on success.
+            # Retry: the failure may be transient (uinput module loaded after boot, devices raced). Cheap when
+            # it fails again — the 600ms hotplug settle is only paid on success.
             self.create_devices()
         if self.dev_error:
             raise RuntimeError(self.dev_error)
 
     # -- which devices inject (the kernel ones, or the protocols) ---------
     #
-    # THE POLICY, in one sentence, and it is ONE policy for both halves:
-    # `key`/`keydown`/`keyup`/`type` go through zwp_virtual_keyboard_v1, and
-    # `click`/`mousedown`/`mouseup`/`mousemove`/`mousemove_relative` through
-    # zwlr_virtual_pointer_v1, when the matching kernel device cannot be
-    # opened and the compositor implements that protocol -- and through
-    # /dev/uinput in every other case. `--vkbd on|off` (WDOTOOL_VKBD) forces
-    # either, for both halves: it is one switch because it is one decision.
+    # THE POLICY, in one sentence, and it is ONE policy for both halves: `key`/`keydown`/`keyup`/`type` go
+    # through zwp_virtual_keyboard_v1, and `click`/`mousedown`/`mouseup`/`mousemove`/`mousemove_relative`
+    # through zwlr_virtual_pointer_v1, when the matching kernel device cannot be opened and the compositor
+    # implements that protocol -- and through /dev/uinput in every other case. `--vkbd on|off` (WDOTOOL_VKBD)
+    # forces either, for both halves: it is one switch because it is one decision.
     #
-    # It is deliberately that narrow. Where uinput works today it keeps
-    # working, byte for byte: the daemon tests pin that event stream, and
-    # neither protocol is on GNOME or KDE at all, so most sessions could not
-    # use them anyway. Typing through the protocol is not free either -- the
-    # compositor hands the focused application OUR keymap ahead of our first
-    # key and the session's keymap back when the real keyboard is next
-    # touched, so every injection makes that application recompile its keymap
-    # twice. What the protocols buy is the case uinput cannot serve at all: a
-    # session where /dev/uinput is root-only (it is `crw------- root root` on
-    # stock wlroots, with no uaccess ACL) and the user is not root. There,
-    # today, `wdotool type` and `wdotool click` fail outright; through the
-    # protocols they work, with no privilege whatsoever. Turning a hard
-    # failure into the right characters -- and the right clicks -- is the one
-    # change that is strictly better, so it is the only one the default
-    # makes.
+    # It is deliberately that narrow. Where uinput works today it keeps working, byte for byte: the daemon tests
+    # pin that event stream, and neither protocol is on GNOME or KDE at all, so most sessions could not use them
+    # anyway. Typing through the protocol is not free either -- the compositor hands the focused application OUR
+    # keymap ahead of our first key and the session's keymap back when the real keyboard is next touched, so
+    # every injection makes that application recompile its keymap twice. What the protocols buy is the case
+    # uinput cannot serve at all: a session where /dev/uinput is root-only (it is `crw------- root root` on
+    # stock wlroots, with no uaccess ACL) and the user is not root. There, today, `wdotool type` and
+    # `wdotool click` fail outright; through the protocols they work, with no privilege whatsoever. Turning a
+    # hard failure into the right characters -- and the right clicks -- is the one change that is strictly
+    # better, so it is the only one the default makes.
     #
-    # The two halves are two connections and two objects, deliberately: a
-    # disconnect releases only what THAT connection holds, so the keyboard's
-    # troubles cannot drop the pointer's held button or the other way round.
+    # The two halves are two connections and two objects, deliberately: a disconnect releases only what THAT
+    # connection holds, so the keyboard's troubles cannot drop the pointer's held button or the other way round.
 
     def _vkbd_setting(self, forced=None) -> str:
-        """`--vkbd` (per command) over WDOTOOL_VKBD (per daemon) over auto.
-        An unknown value is `auto`: the flag is screened by cli.py and the
-        request field by _vkbd_mode(), so what can still be wrong here is a
-        typo in the environment, which must not stop the tool typing."""
+        """`--vkbd` (per command) over WDOTOOL_VKBD (per daemon) over auto. An unknown value is `auto`: the flag
+        is screened by cli.py and the request field by _vkbd_mode(), so what can still be wrong here is a typo
+        in the environment, which must not stop the tool typing."""
         mode = (forced or os.environ.get(VKBD_ENV) or "auto").strip().lower()
         return mode if mode in VKBD_MODES else "auto"
 
     def _vk_alive(self) -> bool:
         """Is the connection we cached still there?
 
-        One wl_display.sync round trip, paid once per command and only on
-        this path. It buys the case a long-lived daemon cannot otherwise
-        survive: the compositor restarted while nothing was being typed, and
-        the first command afterwards would otherwise be spent discovering
-        that. A slow compositor that misses the connection's 2s timeout is
-        treated as gone and reconnected to, which costs one reconnect and
-        never a wrong keystroke."""
+        One wl_display.sync round trip, paid once per command and only on this path. It buys the case a
+        long-lived daemon cannot otherwise survive: the compositor restarted while nothing was being typed, and
+        the first command afterwards would otherwise be spent discovering that. A slow compositor that misses
+        the connection's 2s timeout is treated as gone and reconnected to, which costs one reconnect and never a
+        wrong keystroke."""
         try:
             self._vk.flush()
         except vkbd.VkbdError:
@@ -685,9 +633,8 @@ class _Daemon:
         if self._vk is not None:
             if self._vk_alive():
                 return self._vk
-            # Gone since the last command. The keys it was holding went with
-            # it -- that is the one thing reconnecting cannot redo, so it is
-            # the one thing worth a line -- and then we reconnect rather than
+            # Gone since the last command. The keys it was holding went with it -- that is the one thing
+            # reconnecting cannot redo, so it is the one thing worth a line -- and then we reconnect rather than
             # spending a command on the discovery.
             lost = bool(self.down and self._down_virtual)
             self._drop_vkbd()
@@ -710,18 +657,15 @@ class _Daemon:
         return self._vk
 
     def _drop_vkbd(self):
-        """Forget a virtual keyboard that failed. Nothing survives a
-        compositor restart -- not the object, not the uploaded keymap, and
-        not the keys it was holding -- so the keycodes we thought were down
-        go with it; the next command reconnects and re-uploads."""
+        """Forget a virtual keyboard that failed. Nothing survives a compositor restart -- not the object, not
+        the uploaded keymap, and not the keys it was holding -- so the keycodes we thought were down go with it;
+        the next command reconnects and re-uploads."""
         vk, self._vk = self._vk, None
         if self._down_virtual:
-            # Everything `self.down` named was down on THAT keyboard, so it
-            # is all released now -- including a key whose key-up is what
-            # broke the connection in the first place, which `vk.held` no
-            # longer lists. Trusting `vk.held` here left `shift` down in the
-            # daemon's model for the rest of its life, and every later
-            # `type A` came out as `a`.
+            # Everything `self.down` named was down on THAT keyboard, so it is all released now -- including a
+            # key whose key-up is what broke the connection in the first place, which `vk.held` no longer lists.
+            # Trusting `vk.held` here left `shift` down in the daemon's model for the rest of its life, and
+            # every later `type A` came out as `a`.
             self.down.clear()
             self._down_virtual = False
         if vk is not None:
@@ -732,27 +676,23 @@ class _Daemon:
         try:
             dev, virtual = self._pick_keyboard(warnings, mode)
         except Exception:
-            # The sink this command named is unusable. Whatever we are
-            # holding is held on the OTHER one, and _own_sink() -- the thing
-            # that releases it -- is below the raise. So it never ran, and
-            # `--vkbd off keyup shift` on a session with no /dev/uinput left
-            # shift down on the virtual keyboard for the daemon's life. Let
-            # go of it here, then report why the sink is unusable.
+            # The sink this command named is unusable. Whatever we are holding is held on the OTHER one, and
+            # _own_sink() -- the thing that releases it -- is below the raise. So it never ran, and
+            # `--vkbd off keyup shift` on a session with no /dev/uinput left shift down on the virtual keyboard
+            # for the daemon's life. Let go of it here, then report why the sink is unusable.
             self._release_named_sink(mode, warnings)
             raise
         self._own_sink(virtual, warnings)
         return dev, virtual
 
     def _named_sink(self, mode):
-        """Which sink `--vkbd` names outright: True virtual, False kernel,
-        None for `auto` (which names neither, and whose failure means neither
-        sink exists -- so there is nothing left that could release a hold)."""
+        """Which sink `--vkbd` names outright: True virtual, False kernel, None for `auto` (which names neither,
+        and whose failure means neither sink exists -- so there is nothing left that could release a hold)."""
         return {"on": True, "off": False}.get(self._vkbd_setting(mode))
 
     def _release_named_sink(self, mode, warnings):
-        """Let go of keys and buttons held on the sink a failed command was
-        switching AWAY from. Both halves: `--vkbd` is one switch, so one
-        failed command can strand one of each."""
+        """Let go of keys and buttons held on the sink a failed command was switching AWAY from. Both halves:
+        `--vkbd` is one switch, so one failed command can strand one of each."""
         want = self._named_sink(mode)
         if want is None:
             return
@@ -773,14 +713,12 @@ class _Daemon:
                 raise RuntimeError(f"--vkbd on: cannot use zwp_virtual_keyboard_v1: {e}") from None
         # auto: the kernel device unless it cannot be used at all.
         if self._vk is not None and self.down and self._down_virtual:
-            # Never change sinks under a held key: a key held on the virtual
-            # keyboard can only be released there (`--vkbd on wdotool keydown
-            # ctrl` then a plain `wdotool type c`), and a key-up sent to the
-            # other device releases nothing at all. Asking _vkbd() rather
-            # than using the object directly is what makes this safe when the
-            # compositor restarted in between: it notices, drops the hold it
-            # can no longer honour, and says so -- and then there is no hold
-            # left to stay for, so the choice is made again from scratch.
+            # Never change sinks under a held key: a key held on the virtual keyboard can only be released there
+            # (`--vkbd on wdotool keydown ctrl` then a plain `wdotool type c`), and a key-up sent to the other
+            # device releases nothing at all. Asking _vkbd() rather than using the object directly is what makes
+            # this safe when the compositor restarted in between: it notices, drops the hold it can no longer
+            # honour, and says so -- and then there is no hold left to stay for, so the choice is made again
+            # from scratch.
             try:
                 vk = self._vkbd(warnings)
             except vkbd.VkbdError:
@@ -795,11 +733,10 @@ class _Daemon:
         try:
             dev = self._vkbd(warnings)
         except vkbd.VkbdError as e:
-            # No kernel device and no protocol: the error the user gets is
-            # the kernel device's, unchanged -- that is still the thing they
-            # have to fix. The protocol's reason goes to the daemon log.
-            # Its own tag: sharing one with the notice below meant a daemon
-            # that started before the compositor never said it had switched.
+            # No kernel device and no protocol: the error the user gets is the kernel device's, unchanged --
+            # that is still the thing they have to fix. The protocol's reason goes to the daemon log. Its own
+            # tag: sharing one with the notice below meant a daemon that started before the compositor never
+            # said it had switched.
             self._xkb_say("vkbd-none", f"no virtual-keyboard protocol either: {e}")
             raise RuntimeError(why) from None
         self._xkb_say("vkbd", VKBD_CHOSE_WARNING % why, warnings)
@@ -808,15 +745,13 @@ class _Daemon:
     def _own_sink(self, virtual: bool, warnings=None, gone: bool = False):
         """Make `self.down` describe the sink that is about to type.
 
-        The kernel device and the virtual keyboard are separate devices with
-        separate key state, and `self.down` is one set. Letting it describe
-        one device while the other types is how `wdotool --vkbd on keydown
-        shift` followed by `wdotool --vkbd off type A` produced `a`: the
-        kernel path found shift in `self.down`, believed it was already held,
-        and pressed nothing. So when the sink changes with keys still down,
-        they are released on the device that is actually holding them -- the
-        only device that can -- and the user is told, every time, because it
-        is a state change and not a fact about the environment."""
+        The kernel device and the virtual keyboard are separate devices with separate key state, and `self.down`
+        is one set. Letting it describe one device while the other types is how
+        `wdotool --vkbd on keydown shift` followed by `wdotool --vkbd off type A` produced `a`: the kernel path
+        found shift in `self.down`, believed it was already held, and pressed nothing. So when the sink changes
+        with keys still down, they are released on the device that is actually holding them -- the only device
+        that can -- and the user is told, every time, because it is a state change and not a fact about the
+        environment."""
         if self.down and self._down_virtual != virtual:
             old = self._vk if self._down_virtual else self.kb
             codes = sorted(self.down)
@@ -838,12 +773,10 @@ class _Daemon:
 
     @contextlib.contextmanager
     def _vk_guard(self):
-        """A virtual keyboard that fails mid-injection is gone -- the
-        compositor restarted, or the socket died. Drop it, and with it the
-        keys it was holding (the compositor released those when we
-        disconnected, so believing we still hold them would leave the daemon
-        lying about its own state), and report the reason as an ordinary
-        error. The next command reconnects and re-uploads the keymap."""
+        """A virtual keyboard that fails mid-injection is gone -- the compositor restarted, or the socket died.
+        Drop it, and with it the keys it was holding (the compositor released those when we disconnected, so
+        believing we still hold them would leave the daemon lying about its own state), and report the reason as
+        an ordinary error. The next command reconnects and re-uploads the keymap."""
         try:
             yield
         except vkbd.VkbdError as e:
@@ -858,12 +791,10 @@ class _Daemon:
             f()
 
     def _flush_quietly(self, dev):
-        """Round-trip a sink we are letting go of, so the releases we just
-        sent it have reached the compositor before the other sink starts
-        injecting -- the two are different connections, and nothing else
-        orders them. A sink that is already gone took its keys and buttons
-        with it, which is the outcome either way, so a failure here is not
-        news."""
+        """Round-trip a sink we are letting go of, so the releases we just sent it have reached the compositor
+        before the other sink starts injecting -- the two are different connections, and nothing else orders
+        them. A sink that is already gone took its keys and buttons with it, which is the outcome either way, so
+        a failure here is not news."""
         try:
             self._flush(dev)
         except (OSError, vkbd.VkbdError, vptr.VptrError):
@@ -871,17 +802,15 @@ class _Daemon:
 
     # -- which pointer moves (the kernel devices, or the protocol) ---------
     #
-    # Everything below mirrors the keyboard's half above, request for
-    # request, because it is the same policy and the same lifetime; see
-    # vptr.py for what the wire does differently.
+    # Everything below mirrors the keyboard's half above, request for request, because it is the same policy and
+    # the same lifetime; see vptr.py for what the wire does differently.
 
     def _kernel_pointer(self) -> "_KernelPointer":
         return _KernelPointer(self)
 
     def _vp_alive(self) -> bool:
-        """Is the connection we cached still there? One wl_display.sync,
-        paid once per pointer command and only on this path -- see
-        _vk_alive() for why it is worth it."""
+        """Is the connection we cached still there? One wl_display.sync, paid once per pointer command and only
+        on this path -- see _vk_alive() for why it is worth it."""
         try:
             self._vp.flush()
         except vptr.VptrError:
@@ -894,9 +823,8 @@ class _Daemon:
         if self._vp is not None:
             if self._vp_alive():
                 return self._vp
-            # Gone since the last command. The buttons it was holding went
-            # with it -- the one thing reconnecting cannot redo, so the one
-            # thing worth a line.
+            # Gone since the last command. The buttons it was holding went with it -- the one thing reconnecting
+            # cannot redo, so the one thing worth a line.
             lost = bool(self.btns and self._btns_virtual)
             self._drop_vptr()
             if lost:
@@ -918,14 +846,12 @@ class _Daemon:
         return self._vp
 
     def _drop_vptr(self):
-        """Forget a virtual pointer that failed. Nothing survives a
-        compositor restart -- not the object and not the buttons it was
-        holding -- so the codes we thought were down go with it.
+        """Forget a virtual pointer that failed. Nothing survives a compositor restart -- not the object and not
+        the buttons it was holding -- so the codes we thought were down go with it.
 
-        `vp.held` is deliberately NOT consulted, for the reason _drop_vkbd()
-        spells out: the write that failed is the one that took the button
-        out of `held`, so trusting it would leave the daemon believing it
-        still holds a button nothing can ever release."""
+        `vp.held` is deliberately NOT consulted, for the reason _drop_vkbd() spells out: the write that failed
+        is the one that took the button out of `held`, so trusting it would leave the daemon believing it still
+        holds a button nothing can ever release."""
         vp, self._vp = self._vp, None
         if self._btns_virtual:
             self.btns.clear()
@@ -957,13 +883,11 @@ class _Daemon:
                 raise RuntimeError(f"--vkbd on: cannot use zwlr_virtual_pointer_v1: {e}") from None
         # auto: the kernel devices unless they cannot be used at all.
         if self._vp is not None and self.btns and self._btns_virtual:
-            # Never change sinks under a held button, for the same reason as
-            # under a held key: a button held on the virtual pointer can only
-            # be released there. Asking _vptr() rather than using the object
-            # directly is what makes this safe when the compositor restarted
-            # in between -- it notices, drops the hold it can no longer
-            # honour, and says so, after which there is no hold left to stay
-            # for and the choice is made again from scratch.
+            # Never change sinks under a held button, for the same reason as under a held key: a button held on
+            # the virtual pointer can only be released there. Asking _vptr() rather than using the object
+            # directly is what makes this safe when the compositor restarted in between -- it notices, drops the
+            # hold it can no longer honour, and says so, after which there is no hold left to stay for and the
+            # choice is made again from scratch.
             try:
                 vp = self._vptr(warnings)
             except vptr.VptrError:
@@ -978,9 +902,8 @@ class _Daemon:
         try:
             vp = self._vptr(warnings)
         except vptr.VptrError as e:
-            # No kernel device and no protocol: the error the user gets is
-            # the kernel device's, unchanged -- that is still the thing they
-            # have to fix. The protocol's reason goes to the daemon log.
+            # No kernel device and no protocol: the error the user gets is the kernel device's, unchanged --
+            # that is still the thing they have to fix. The protocol's reason goes to the daemon log.
             self._xkb_say("vptr-none", f"no virtual-pointer protocol either: {e}")
             raise RuntimeError(why) from None
         self._xkb_say("vptr", VPTR_CHOSE_WARNING % why, warnings)
@@ -989,14 +912,12 @@ class _Daemon:
     def _own_pointer(self, virtual: bool, warnings=None, gone: bool = False):
         """Make `self.btns` describe the pointer that is about to inject.
 
-        The exact shape of _own_sink(), and it exists for the exact defect
-        that one was written for: `self.btns` is one set and there are two
-        devices behind it, so letting it describe one while the other clicks
-        would leave `--vkbd on mousedown 1` followed by `--vkbd off mouseup 1`
-        with a button held down for the daemon's life -- released by nobody,
-        because only the device that pressed it can. So when the sink changes
-        with buttons still down, they are released on the device that is
-        actually holding them, and the user is told every time."""
+        The exact shape of _own_sink(), and it exists for the exact defect that one was written for: `self.btns`
+        is one set and there are two devices behind it, so letting it describe one while the other clicks would
+        leave `--vkbd on mousedown 1` followed by `--vkbd off mouseup 1` with a button held down for the
+        daemon's life -- released by nobody, because only the device that pressed it can. So when the sink
+        changes with buttons still down, they are released on the device that is actually holding them, and the
+        user is told every time."""
         if self.btns and self._btns_virtual != virtual:
             old = self._vp if self._btns_virtual else (
                 self._kernel_pointer() if self.mouse is not None else None)
@@ -1019,11 +940,10 @@ class _Daemon:
 
     @contextlib.contextmanager
     def _vp_guard(self):
-        """_vk_guard for the pointer ops, and for the virtual keyboard they
-        can still reach through --clearmodifiers: a protocol object that
-        fails mid-injection is gone, so drop it -- and with it whatever it
-        was holding, which the compositor released when we disconnected --
-        and report the reason as an ordinary error."""
+        """_vk_guard for the pointer ops, and for the virtual keyboard they can still reach through
+        --clearmodifiers: a protocol object that fails mid-injection is gone, so drop it -- and with it whatever
+        it was holding, which the compositor released when we disconnected -- and report the reason as an
+        ordinary error."""
         try:
             yield
         except vptr.VptrError as e:
@@ -1036,12 +956,10 @@ class _Daemon:
     # -- geometry / pointer ------------------------------------------------
 
     def geometry(self, warnings=None) -> tuple[int, int, int, int]:
-        """Layout bounding box (min_x, min_y, w, h), re-read from the
-        compositor on every call so output-layout changes (wxrandr, hotplug)
-        are visible immediately; the last good reading serves as the fallback
-        when the compositor can't be queried. The origin can be
-        non-zero/negative on multi-output layouts; pointer coordinates are
-        tracked in these global layout coordinates."""
+        """Layout bounding box (min_x, min_y, w, h), re-read from the compositor on every call so output-layout
+        changes (wxrandr, hotplug) are visible immediately; the last good reading serves as the fallback when
+        the compositor can't be queried. The origin can be non-zero/negative on multi-output layouts; pointer
+        coordinates are tracked in these global layout coordinates."""
         try:
             self.geom = _wayland_bbox()
             self.geom_fallback = False
@@ -1064,25 +982,20 @@ class _Daemon:
     def _axis(delta: int, span: int) -> int:
         """Layout offset -> tablet axis value (B7).
 
-        libinput maps an absolute axis with scale_axis(): the pointer lands at
-        `value * span / (max - min + 1)` = `v * span / 32768`, which the
-        compositor then floors (or rounds) to a pixel. The forward map that
-        round-trips through that inverse exactly is the CEILING of
-        `delta * 32768 / span`, not a floor: floor(ceil(d*32768/S) * S/32768)
-        == d for every d in [0, S) while S <= 32768. The old
-        `d * 32767 // (S - 1)` floor map landed one pixel short wherever the
-        division was inexact -- 257 of 301 x values near the layout origin on
-        a 5760px-wide three-head rig."""
+        libinput maps an absolute axis with scale_axis(): the pointer lands at `value * span / (max - min + 1)`
+        = `v * span / 32768`, which the compositor then floors (or rounds) to a pixel. The forward map that
+        round-trips through that inverse exactly is the CEILING of `delta * 32768 / span`, not a floor:
+        floor(ceil(d*32768/S) * S/32768) == d for every d in [0, S) while S <= 32768. The old
+        `d * 32767 // (S - 1)` floor map landed one pixel short wherever the division was inexact -- 257 of 301
+        x values near the layout origin on a 5760px-wide three-head rig."""
         span = max(span, 1)
         return min(max(-((-delta * 32768) // span), 0), 32767)
 
     def _warp(self, x, y, gx, gy, w, h, sink=None):
-        """Put the pointer at the global layout coordinate (x, y), and adopt
-        that as the model. How the coordinate reaches the compositor is the
-        sink's business: an absolute tablet report (B7's ceiling map, B2's
-        nudge) on the kernel path, `motion_absolute` over the layout bounding
-        box on the protocol path. Both land the coordinate asked for -- which
-        is the whole point of having one call here."""
+        """Put the pointer at the global layout coordinate (x, y), and adopt that as the model. How the
+        coordinate reaches the compositor is the sink's business: an absolute tablet report (B7's ceiling map,
+        B2's nudge) on the kernel path, `motion_absolute` over the layout bounding box on the protocol path.
+        Both land the coordinate asked for -- which is the whole point of having one call here."""
         (sink or self._kernel_pointer()).warp(x, y, gx, gy, w, h)
         self.px, self.py = x, y
         self.pos_known = True
@@ -1092,26 +1005,22 @@ class _Daemon:
     def _rel_absolute(self, virtual: bool = False) -> bool:
         """Should a relative move be emitted as an absolute warp? (B1)
 
-        REL_X/REL_Y go through the compositor's pointer-acceleration curve, so
-        `mousemove_relative 500 0` lands wherever libinput's profile puts it:
-        on a stock GNOME (adaptive profile) 500 requested pixels moved the
-        pointer 462 on 24.04 and 267 on 26.04, and only `accel-profile flat`
-        was exact. xdotool's XWarpPointer is pixel-exact, so everywhere but
-        sway/i3 the relative move is emitted as an absolute warp to
-        (px+dx, py+dy) instead.
+        REL_X/REL_Y go through the compositor's pointer-acceleration curve, so `mousemove_relative 500 0` lands
+        wherever libinput's profile puts it: on a stock GNOME (adaptive profile) 500 requested pixels moved the
+        pointer 462 on 24.04 and 267 on 26.04, and only `accel-profile flat` was exact. xdotool's XWarpPointer
+        is pixel-exact, so everywhere but sway/i3 the relative move is emitted as an absolute warp to (px+dx,
+        py+dy) instead.
 
-        sway/i3 keep the REL path: this repo's sway rig runs `pointer_accel 0`
-        (REL is already exact there) and the sway/daemon tests pin the EV_REL
-        contract. WDOTOOL_REL_MODE=rel|abs forces either, on any compositor.
+        sway/i3 keep the REL path: this repo's sway rig runs `pointer_accel 0` (REL is already exact there) and
+        the sway/daemon tests pin the EV_REL contract. WDOTOOL_REL_MODE=rel|abs forces either, on any
+        compositor.
 
-        The virtual pointer never warps unless told to. It is not a libinput
-        device -- sway lists it with an empty libinput configuration -- so no
-        acceleration profile can apply to it on any wlroots compositor, and
-        `motion` was measured exact for 1, 10, 100, 500 and 1000 pixels and
-        for 500 separate one-pixel steps. B1's reason to warp does not exist
-        here, and relative motion has the property a warp cannot have: it
-        needs no position model, so it is right even on the first command of
-        a daemon that has never been told where the cursor is."""
+        The virtual pointer never warps unless told to. It is not a libinput device -- sway lists it with an
+        empty libinput configuration -- so no acceleration profile can apply to it on any wlroots compositor,
+        and `motion` was measured exact for 1, 10, 100, 500 and 1000 pixels and for 500 separate one-pixel
+        steps. B1's reason to warp does not exist here, and relative motion has the property a warp cannot have:
+        it needs no position model, so it is right even on the first command of a daemon that has never been
+        told where the cursor is."""
         forced = self._REL_ENV.get(os.environ.get("WDOTOOL_REL_MODE", "").strip().lower())
         if forced is not None:
             return forced
@@ -1140,26 +1049,22 @@ class _Daemon:
             self._flush(sink)
             return
         self.px, self.py = tx, ty
-        # NOT pos_known: a delta applied to a position we never knew is a
-        # guess, and B6's rule is that a guess is never reported as known.
-        # (A warp above is a different matter -- it puts the pointer where it
-        # says it does, so it may claim to know.) Where the position WAS
-        # known, relative motion keeps it: exact on the protocol path, and
-        # the model the kernel path has always kept.
+        # NOT pos_known: a delta applied to a position we never knew is a guess, and B6's rule is that a guess
+        # is never reported as known. (A warp above is a different matter -- it puts the pointer where it says
+        # it does, so it may claim to know.) Where the position WAS known, relative motion keeps it: exact on
+        # the protocol path, and the model the kernel path has always kept.
         sink.move(dx, dy)
         self._flush(sink)
 
     def _no_pointer_yet(self):
         """The `pointer` op with nothing to report (B6): what to say.
 
-        A daemon that could not open /dev/uinput has injected nothing and
-        knows nothing, and must fail with that reason rather than report the
-        origin with rc 0. But on the virtual-pointer path /dev/uinput is not
-        the thing the user would have to fix, and never will be: the protocol
-        delivers no events at all, so wdotool cannot ask where the cursor is
-        and must say so instead of guessing. (Where the kernel devices exist,
-        nothing changes: a fresh tablet's own axis state really is 0,0, which
-        is the model this reports, flagged `known: false`.)"""
+        A daemon that could not open /dev/uinput has injected nothing and knows nothing, and must fail with that
+        reason rather than report the origin with rc 0. But on the virtual-pointer path /dev/uinput is not the
+        thing the user would have to fix, and never will be: the protocol delivers no events at all, so wdotool
+        cannot ask where the cursor is and must say so instead of guessing. (Where the kernel devices exist,
+        nothing changes: a fresh tablet's own axis state really is 0,0, which is the model this reports, flagged
+        `known: false`.)"""
         try:
             self._need_devices()
             return
@@ -1172,9 +1077,9 @@ class _Daemon:
         raise RuntimeError(POINTER_UNKNOWN) from None
 
     def op_seed_pointer(self, x, y, warnings):
-        """Adopt the compositor's real pointer position (B6). No injection:
-        the client has just asked the compositor where the pointer is and is
-        correcting the model before a relative move or a getmouselocation."""
+        """Adopt the compositor's real pointer position (B6). No injection: the client has just asked the
+        compositor where the pointer is and is correcting the model before a relative move or a
+        getmouselocation."""
         gx, gy, w, h = self.geometry(warnings)
         self.px = min(max(x, gx), gx + w - 1)
         self.py = min(max(y, gy), gy + h - 1)
@@ -1197,14 +1102,12 @@ class _Daemon:
     def _button(self, sink, btn, down):
         """One button or wheel detent on an already-chosen sink.
 
-        A press for a button we are already holding, and a release for one we
-        are not, are dropped rather than sent -- on BOTH paths, so that both
-        behave the same. The kernel drops such an event itself
-        (input_handle_event compares against the device's own key state), but
-        the compositor REFCOUNTS them per seat: press, press then release
-        would leave the button down, and a `click` after a `mousedown` would
-        deliver no press at all. Dropping them here is also what keeps
-        `self.btns` an honest record of what we hold."""
+        A press for a button we are already holding, and a release for one we are not, are dropped rather than
+        sent -- on BOTH paths, so that both behave the same. The kernel drops such an event itself
+        (input_handle_event compares against the device's own key state), but the compositor REFCOUNTS them per
+        seat: press, press then release would leave the button down, and a `click` after a `mousedown` would
+        deliver no press at all. Dropping them here is also what keeps `self.btns` an honest record of what we
+        hold."""
         if btn in self._BTN:
             code = self._BTN[btn]
             if down == (code in self.btns):
@@ -1221,9 +1124,8 @@ class _Daemon:
             raise RuntimeError(f"invalid mouse button {btn}")
 
     def op_click(self, btn, repeat, delay_ms, warnings=None, vkbd_mode=None):
-        # xdo_click_window_multiple: 12ms between down/up, then `delay` after
-        # every click (including the last one). The sink is chosen once for
-        # the whole run: a --repeat 1000 must not pay a policy decision (and,
+        # xdo_click_window_multiple: 12ms between down/up, then `delay` after every click (including the last
+        # one). The sink is chosen once for the whole run: a --repeat 1000 must not pay a policy decision (and,
         # on the protocol path, a round trip) per click.
         sink, _virtual = self._pointer_sink(warnings, vkbd_mode)
         for _ in range(repeat):
@@ -1251,19 +1153,17 @@ class _Daemon:
             warnings.append("wdotool: " + msg)
 
     def _xkb_say_group(self, state, msg: str, warnings):
-        """The "which layout is active?" notice: once per layout state, and
-        again whenever the state changes -- a layout switch is exactly when
-        the guess is worth repeating."""
+        """The "which layout is active?" notice: once per layout state, and again whenever the state changes --
+        a layout switch is exactly when the guess is worth repeating."""
         if self._xkb_group_said == state:
             return
         self._xkb_group_said = state
         self._xkb_print(msg, warnings)
 
     def _xkb_warn_degraded(self, warnings):
-        """Tell *this* client that the keymap could not be used, whether or
-        not an earlier client was told. A session typing US characters
-        because the read failed is typing the wrong thing on every command,
-        and a single line to whoever happened to ask first tells nobody."""
+        """Tell *this* client that the keymap could not be used, whether or not an earlier client was told. A
+        session typing US characters because the read failed is typing the wrong thing on every command, and a
+        single line to whoever happened to ask first tells nobody."""
         if self._xkb_degraded and warnings is not None:
             warnings.append(self._xkb_degraded)
 
@@ -1274,12 +1174,11 @@ class _Daemon:
         self._xkb_warn_degraded(warnings)  # ... the client, every time
 
     def _layout(self, warnings=None, forced=None):
-        """The reverse map for the compositor's ACTIVE layout, or None when
-        the fixed US table is the right answer (B13).
+        """The reverse map for the compositor's ACTIVE layout, or None when the fixed US table is the right
+        answer (B13).
 
-        None is returned for the US bypass *and* for every failure: no
-        compositor, an unreadable or unparsable keymap, a keymap with no
-        typable character. The old path is the floor, never a traceback.
+        None is returned for the US bypass *and* for every failure: no compositor, an unreadable or unparsable
+        keymap, a keymap with no typable character. The old path is the floor, never a traceback.
         """
         mode = xkbmap.layout_mode(forced)
         if mode == "us":
@@ -1301,11 +1200,10 @@ class _Daemon:
             self._xkb_fell_back(f"keymap read failed ({e!r})", "read", warnings)
             return None
         if not snap.mods_seen:
-            # This compositor does not send wl_keyboard.modifiers to an
-            # unfocused client, and never will: stop paying for the wait.
-            # (Keying this off `group_known` instead left the wait switched
-            # on for ever on the commonest GNOME session there is, whose two
-            # groups are the same `us` twice -- +87 ms on every command, B5.)
+            # This compositor does not send wl_keyboard.modifiers to an unfocused client, and never will: stop
+            # paying for the wait. (Keying this off `group_known` instead left the wait switched on for ever on
+            # the commonest GNOME session there is, whose two groups are the same `us` twice -- +87 ms on every
+            # command, B5.)
             self._xkb_mods_wait = 0.0
         key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(), snap.group)
         if self._layout_cache is not None and self._layout_cache[0] == key:
@@ -1327,11 +1225,9 @@ class _Daemon:
             self._xkb_fell_back(f"keymap conversion failed ({e!r})", "build", warnings)
         try:
             if not snap.group_known and (bypassed or rmap is not None):
-                # Which layout is active was a guess. Say so on the bypass
-                # path too: a `us,de` session sitting on its German group is
-                # precisely the one that types the wrong characters, and it
-                # is the bypass that takes it (B1). Once per layout state,
-                # so a switch is announced again.
+                # Which layout is active was a guess. Say so on the bypass path too: a `us,de` session sitting
+                # on its German group is precisely the one that types the wrong characters, and it is the bypass
+                # that takes it (B1). Once per layout state, so a switch is announced again.
                 name = rmap.name if rmap is not None else xkbmap.group_name(snap.text, snap.group)
                 self._xkb_say_group(
                     key,
@@ -1416,10 +1312,9 @@ class _Daemon:
     # device grabbed away from the compositor (EVIOCGRAB) -- a different tool.
 
     def _key_reader(self):
-        """The evdev key-state reader used for the diagnostic, or None when
-        we must not read: the WDOTOOL_NO_KEYSTATE override. Built once per set
-        of uinput devices, so that our own event nodes -- which would answer
-        with our own injection -- are known before the first read."""
+        """The evdev key-state reader used for the diagnostic, or None when we must not read: the
+        WDOTOOL_NO_KEYSTATE override. Built once per set of uinput devices, so that our own event nodes -- which
+        would answer with our own injection -- are known before the first read."""
         if self._reader is not _UNSET:
             return self._reader
         override = os.environ.get(NO_KEYSTATE_ENV, "")
@@ -1446,22 +1341,17 @@ class _Daemon:
     def _clear_mods(self, warnings=None, session=None, dev=None, vkbd_path=False) -> set:
         """Release the modifier keys; return the ones to press back afterwards.
 
-        That set is what *this daemon* holds. A modifier on another keyboard
-        is neither released by the loop below (the kernel drops the key-up)
-        nor safe to press back (it would stick), so it is reported and left
-        alone. The loop still sends all eight: a key-up for a code we do not
-        hold costs one write and is dropped, and spelling out "let go of
-        every modifier" is what the flag means.
+        That set is what *this daemon* holds. A modifier on another keyboard is neither released by the loop
+        below (the kernel drops the key-up) nor safe to press back (it would stick), so it is reported and left
+        alone. The loop still sends all eight: a key-up for a code we do not hold costs one write and is
+        dropped, and spelling out "let go of every modifier" is what the flag means.
 
-        On the virtual-keyboard path both halves of that are different, and
-        better. The modifier state the compositor applies to our keys is the
-        mask WE send and nothing else -- measured: with a real keyboard
-        physically holding shift, uinput typed `Y` while the virtual keyboard
-        typed `y` -- so there is nothing foreign to warn about, and one
-        `modifiers(0,0,0,0)` says "no modifier is down" for certain. Only the
-        keycodes we actually hold are released: with no kernel filter in
-        front of it, a key-up for a key nobody pressed is a real event the
-        compositor has to make sense of.
+        On the virtual-keyboard path both halves of that are different, and better. The modifier state the
+        compositor applies to our keys is the mask WE send and nothing else -- measured: with a real keyboard
+        physically holding shift, uinput typed `Y` while the virtual keyboard typed `y` -- so there is nothing
+        foreign to warn about, and one `modifiers(0,0,0,0)` says "no modifier is down" for certain. Only the
+        keycodes we actually hold are released: with no kernel filter in front of it, a key-up for a key nobody
+        pressed is a real event the compositor has to make sense of.
         """
         dev = self.kb if dev is None else dev
         ours = {c for c in keymap.MODIFIER_KEYCODES if c in self.down}
@@ -1479,17 +1369,14 @@ class _Daemon:
         return ours
 
     def _restore_mods(self, held, dev=None):
-        """Press back what _clear_mods() released -- the modifiers this daemon
-        was already holding.
+        """Press back what _clear_mods() released -- the modifiers this daemon was already holding.
 
         They stay down afterwards, exactly as they were before the injection:
-        `keydown ctrl; type --clearmodifiers x` ends with ctrl down, and the
-        user's own `keyup ctrl` (or the daemon exiting, which destroys the
-        device and releases its keys) still ends it. Nothing else is ever
-        pressed here, which is half of what makes a stuck modifier
-        impossible; the other half is in _mods_cleared(), which subtracts
-        whatever the injection itself released (`keyup --clearmodifiers
-        ctrl` asked for ctrl to be up, so it is not in the set we get)."""
+        `keydown ctrl; type --clearmodifiers x` ends with ctrl down, and the user's own `keyup ctrl` (or the
+        daemon exiting, which destroys the device and releases its keys) still ends it. Nothing else is ever
+        pressed here, which is half of what makes a stuck modifier impossible; the other half is in
+        _mods_cleared(), which subtracts whatever the injection itself released (`keyup --clearmodifiers ctrl`
+        asked for ctrl to be up, so it is not in the set we get)."""
         dev = self.kb if dev is None else dev
         for code in keymap.MODIFIER_KEYCODES:
             if code in held:
@@ -1497,9 +1384,8 @@ class _Daemon:
                 self.down.add(code)
 
     def _foreign_mods(self):
-        """Modifiers held on a keyboard that is not ours, or None when the key
-        state cannot be read at all (no permission -- the normal non-root
-        case, in which nothing about the behaviour changes)."""
+        """Modifiers held on a keyboard that is not ours, or None when the key state cannot be read at all (no
+        permission -- the normal non-root case, in which nothing about the behaviour changes)."""
         reader = self._key_reader()
         if reader is None:
             return None
@@ -1527,23 +1413,17 @@ class _Daemon:
 
     @contextlib.contextmanager
     def _mods_cleared(self, on, warnings, session, dev=None, vkbd_path=False, mode=None):
-        """clear -> inject -> restore without letting go of the injection
-        lock. The ops that carry `clearmods` themselves (`type`, `key`) do it
-        inline; this is for the ones handle() wraps. Doing it as three
-        requests instead would leave two gaps in which another wdotool
-        process could inject with the modifiers down, or land its own
-        injection between ours and the restore.
+        """clear -> inject -> restore without letting go of the injection lock. The ops that carry `clearmods`
+        themselves (`type`, `key`) do it inline; this is for the ones handle() wraps. Doing it as three requests
+        instead would leave two gaps in which another wdotool process could inject with the modifiers down, or
+        land its own injection between ours and the restore.
 
-        `dev` is the sink the typing ops already chose. The pointer ops pass
-        none and let the keyboard policy choose one, because the modifiers a
-        click has to clear are wherever *we* are holding them and a key-up on
-        one device releases nothing the other is holding. (Demanding
-        /dev/uinput here, as this used to, would have made `click
-        --clearmodifiers` the one pointer command that still needed root on a
-        session where both protocols work.) A foreign modifier is still
-        reported on that path: modifier state reaches the seat from the
-        seat's keyboards, so a shift held on a real one rides our click
-        whichever device sends it."""
+        `dev` is the sink the typing ops already chose. The pointer ops pass none and let the keyboard policy
+        choose one, because the modifiers a click has to clear are wherever *we* are holding them and a key-up
+        on one device releases nothing the other is holding. (Demanding /dev/uinput here, as this used to, would
+        have made `click --clearmodifiers` the one pointer command that still needed root on a session where
+        both protocols work.) A foreign modifier is still reported on that path: modifier state reaches the seat
+        from the seat's keyboards, so a shift held on a real one rides our click whichever device sends it."""
         if not on:
             yield
             return
@@ -1552,12 +1432,10 @@ class _Daemon:
             try:
                 dev, vkbd_path = self._keyboard(warnings, mode)
             except RuntimeError as e:
-                # A pointer op on a session with a virtual pointer and no
-                # keyboard of either kind. There is nothing to clear (a
-                # modifier we held on a kernel device went with the device,
-                # and one held on a real keyboard was never ours to release),
-                # and a flag that can do nothing must not fail the command it
-                # rides on.
+                # A pointer op on a session with a virtual pointer and no keyboard of either kind. There is
+                # nothing to clear (a modifier we held on a kernel device went with the device, and one held on
+                # a real keyboard was never ours to release), and a flag that can do nothing must not fail the
+                # command it rides on.
                 dev = None
                 self._xkb_say(
                     "clearmods-nokbd",
@@ -1574,40 +1452,33 @@ class _Daemon:
         try:
             yield
         finally:
-            # Whatever the op itself released stays released: `keyup
-            # --clearmodifiers ctrl` must not have ctrl pressed back down
-            # afterwards. It would be stuck for the daemon's lifetime -- only
-            # the device holding a key can release it, so the user's own
-            # keyboard could not clear it -- and the command asked for the
-            # opposite of that.
+            # Whatever the op itself released stays released: `keyup --clearmodifiers ctrl` must not have ctrl
+            # pressed back down afterwards. It would be stuck for the daemon's lifetime -- only the device
+            # holding a key can release it, so the user's own keyboard could not clear it -- and the command
+            # asked for the opposite of that.
             self._restore_mods(held - self._released_mods, dev)
             self._released_mods = set()
             if ours:
-                # The typing ops flush after this block; the pointer ops do
-                # not inject on this sink at all, so the clear/restore pair
-                # is the only thing that could fail on it and this is the
-                # only place that would ever notice.
+                # The typing ops flush after this block; the pointer ops do not inject on this sink at all, so
+                # the clear/restore pair is the only thing that could fail on it and this is the only place that
+                # would ever notice.
                 self._flush(dev)
 
     def op_clear_modifiers(self, warnings=None, session=None) -> list:
-        """The clear half on its own (DaemonClient.clear_modifiers, kept for
-        the frozen API). Every wdotool command uses the `clearmods` flag on
-        the injection op instead, which keeps the pair atomic.
+        """The clear half on its own (DaemonClient.clear_modifiers, kept for the frozen API). Every wdotool
+        command uses the `clearmods` flag on the injection op instead, which keeps the pair atomic.
 
-        It goes through _keyboard() like the injection ops do, so it clears
-        the modifiers on the device that is holding them and works wherever
-        typing works at all -- demanding /dev/uinput for it would have left
-        the frozen API as the one keyboard call that still needed root where
-        the rest no longer does."""
+        It goes through _keyboard() like the injection ops do, so it clears the modifiers on the device that is
+        holding them and works wherever typing works at all -- demanding /dev/uinput for it would have left the
+        frozen API as the one keyboard call that still needed root where the rest no longer does."""
         dev, vk = self._keyboard(warnings)
         held = sorted(self._clear_mods(warnings, session, dev, vk))
         self._flush(dev)   # a sink that acknowledges gets to say it failed
         return held
 
     def op_restore_modifiers(self, held):
-        """The restore half; see op_clear_modifiers. `held` is validated to
-        modifier keycodes by handle(), and _restore_mods presses nothing
-        else, so a client cannot use this to hold down an arbitrary key."""
+        """The restore half; see op_clear_modifiers. `held` is validated to modifier keycodes by handle(), and
+        _restore_mods presses nothing else, so a client cannot use this to hold down an arbitrary key."""
         dev, _vk = self._keyboard()
         self._restore_mods(held, dev)
         self._flush(dev)
@@ -1615,15 +1486,12 @@ class _Daemon:
     def _typing_layout(self, vkbd_path, warnings, layout_mode):
         """The character table for one typing op.
 
-        On the virtual-keyboard path there is nothing to decide: the keymap
-        that interprets our keycodes is the one we uploaded, so the built-in
-        US table is right by construction and the compositor's keymap is
-        neither read nor relevant -- the reverse map, the plain-US bypass and
-        the group guess all belong to the kernel path and none of them runs
-        here. `--layout us` asks for exactly what this path already does;
-        `--layout xkb` asks for a table built from the *session's* keymap,
-        which would type through the wrong one, so it is refused in one line
-        rather than obeyed into garbage."""
+        On the virtual-keyboard path there is nothing to decide: the keymap that interprets our keycodes is the
+        one we uploaded, so the built-in US table is right by construction and the compositor's keymap is
+        neither read nor relevant -- the reverse map, the plain-US bypass and the group guess all belong to the
+        kernel path and none of them runs here. `--layout us` asks for exactly what this path already does;
+        `--layout xkb` asks for a table built from the *session's* keymap, which would type through the wrong
+        one, so it is refused in one line rather than obeyed into garbage."""
         if not vkbd_path:
             return self._layout(warnings, layout_mode)
         if xkbmap.layout_mode(layout_mode) == "xkb":
@@ -1638,15 +1506,13 @@ class _Daemon:
 
     def op_key(self, spec, direction, delay_ms, clearmods, session=None,
                layout_mode=None, vkbd_mode=None, warnings=None):
-        # The caller's list when it passed one: these ops can raise after
-        # _keyboard() has already let go of a hold (see handle()), and a
-        # warnings list local to this frame takes that line down with it.
+        # The caller's list when it passed one: these ops can raise after _keyboard() has already let go of a
+        # hold (see handle()), and a warnings list local to this frame takes that line down with it.
         if warnings is None:
             warnings = []
         dev, vk = self._keyboard(warnings, vkbd_mode)
-        # Outside the clear/restore window: reading the compositor's keymap
-        # is a query, and holding the modifiers released across it buys
-        # nothing.
+        # Outside the clear/restore window: reading the compositor's keymap is a query, and holding the
+        # modifiers released across it buys nothing.
         layout = self._typing_layout(vk, warnings, layout_mode)
         # Restore even when the sequence is rejected or the injection fails:
         # the modifiers are already released by then.
@@ -1655,10 +1521,9 @@ class _Daemon:
             keys, warns = keymap.parse_keyseq(spec, layout)
             d = delay_ms / 1000
             if direction == "press":
-                # xdo_send_keysequence_window converts the sequence once per pass
-                # (press, then release), so every "(symbol) No such key name"
-                # diagnostic is printed twice by the real xdotool (B12). Our own
-                # one-shot layout notice is not one of xdo's and is not doubled.
+                # xdo_send_keysequence_window converts the sequence once per pass (press, then release), so
+                # every "(symbol) No such key name" diagnostic is printed twice by the real xdotool (B12). Our
+                # own one-shot layout notice is not one of xdo's and is not doubled.
                 warns = warns * 2
                 self._press(keys, d / 2, layout, dev)
                 self._release(keys, d / 2, layout, dev)
@@ -1673,9 +1538,8 @@ class _Daemon:
 
     def op_type(self, text, delay_ms, clearmods, session=None,
                 layout_mode=None, vkbd_mode=None, warnings=None):
-        # The caller's list when it passed one: these ops can raise after
-        # _keyboard() has already let go of a hold (see handle()), and a
-        # warnings list local to this frame takes that line down with it.
+        # The caller's list when it passed one: these ops can raise after _keyboard() has already let go of a
+        # hold (see handle()), and a warnings list local to this frame takes that line down with it.
         if warnings is None:
             warnings = []
         dev, vk = self._keyboard(warnings, vkbd_mode)
@@ -1716,16 +1580,13 @@ class _Daemon:
     # -- protocol ----------------------------------------------------------
 
     def handle(self, req, session=None, warnings=None) -> dict:
-        """One request. `session` is the per-connection scratch dict (a
-        warning that must be said once per command belongs there, not in the
-        daemon: the daemon outlives every client).
+        """One request. `session` is the per-connection scratch dict (a warning that must be said once per
+        command belongs there, not in the daemon: the daemon outlives every client).
 
-        `warnings` is the caller's own list, for the case where this RAISES:
-        a command that fails can still have changed something the user has to
-        know about -- letting go of a button or a key it was holding on a
-        sink the command asked to switch away from (_release_named_sink) --
-        and an error reply that dropped those lines said nothing at all about
-        it. serve_client() passes one in and puts what is in it on the error
+        `warnings` is the caller's own list, for the case where this RAISES: a command that fails can still have
+        changed something the user has to know about -- letting go of a button or a key it was holding on a sink
+        the command asked to switch away from (_release_named_sink) -- and an error reply that dropped those
+        lines said nothing at all about it. serve_client() passes one in and puts what is in it on the error
         response."""
         if not isinstance(req, dict):
             return {"ok": False, "error": f"invalid request: {req!r} (expected an object)"}
@@ -1813,11 +1674,10 @@ class _Daemon:
         return {"ok": True, "warnings": warnings}
 
     def serve_client(self, conn: socket.socket):
-        # errors="replace": a request line that is not UTF-8 is a malformed
-        # request like any other, and gets the malformed-request answer. A
-        # strict decode raised UnicodeDecodeError out of readline() below,
-        # where only OSError is caught -- a traceback in the daemon log, the
-        # connection dropped, and EPIPE for the client's next request.
+        # errors="replace": a request line that is not UTF-8 is a malformed request like any other, and gets the
+        # malformed-request answer. A strict decode raised UnicodeDecodeError out of readline() below, where
+        # only OSError is caught -- a traceback in the daemon log, the connection dropped, and EPIPE for the
+        # client's next request.
         rfile = conn.makefile("r", encoding="utf-8", errors="replace")
         session: dict = {}   # per-connection state (see handle())
         try:
@@ -1836,17 +1696,15 @@ class _Daemon:
                 elif not line.strip():
                     continue
                 else:
-                    # Catch-all per-request boundary: a malformed request (bad
-                    # JSON, wrong types, bare non-object) must produce an
-                    # {"ok":false} reply, never kill the connection thread.
+                    # Catch-all per-request boundary: a malformed request (bad JSON, wrong types, bare
+                    # non-object) must produce an {"ok":false} reply, never kill the connection thread.
                     warnings: list[str] = []
                     try:
                         resp = self.handle(json.loads(line), session, warnings)
                     except Exception as e:
                         resp = {"ok": False, "error": str(e) or repr(e)}
-                        # ...and whatever the failed command already changed
-                        # (see handle()). Added only when there is something
-                        # to say, so an ordinary error stays byte-identical.
+                        # ...and whatever the failed command already changed (see handle()). Added only when
+                        # there is something to say, so an ordinary error stays byte-identical.
                         if warnings:
                             resp["warnings"] = warnings
                 conn.sendall((json.dumps(resp) + "\n").encode())
@@ -1866,9 +1724,8 @@ def daemon_main() -> int:
     except CmdError as e:
         print(f"wdotool daemon: {e}", file=sys.stderr, flush=True)
         return 1
-    # Startup lock, held for the daemon's lifetime: losers of a concurrent
-    # spawn race must never unlink the winner's freshly-bound socket.
-    # O_NOFOLLOW and a message rather than a traceback: the lock file lives
+    # Startup lock, held for the daemon's lifetime: losers of a concurrent spawn race must never unlink the
+    # winner's freshly-bound socket. O_NOFOLLOW and a message rather than a traceback: the lock file lives
     # beside the socket, and a socket directory can be somebody else's.
     try:
         lock_fd = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -1897,11 +1754,10 @@ def daemon_main() -> int:
             pass
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    # Owner-only socket regardless of the spawning client's umask: the root
-    # daemon serves root clients only (a world-connectable root socket would be
-    # an input-injection privilege escalation). Non-root users get their own
-    # per-user daemon, which fails with the clean "/dev/uinput ... run it as
-    # root" error. chmod after bind closes the umask race belt-and-braces.
+    # Owner-only socket regardless of the spawning client's umask: the root daemon serves root clients only (a
+    # world-connectable root socket would be an input-injection privilege escalation). Non-root users get their
+    # own per-user daemon, which fails with the clean "/dev/uinput ... run it as root" error. chmod after bind
+    # closes the umask race belt-and-braces.
     old_umask = os.umask(0o177)
     try:
         srv.bind(path)
@@ -1941,9 +1797,8 @@ class DaemonClient:
         path = socket_path()
         sock = cls._try_connect(path)
         if sock is None:
-            # A stale socket file is handled by the daemon itself (it unlinks
-            # under the startup lock); unlinking here would race a daemon that
-            # just bound the path.
+            # A stale socket file is handled by the daemon itself (it unlinks under the startup lock); unlinking
+            # here would race a daemon that just bound the path.
             cls._spawn()
             deadline = time.monotonic() + 2.0
             while sock is None and time.monotonic() < deadline:
@@ -1971,11 +1826,9 @@ class DaemonClient:
         except OSError:
             sock.close()
             return None
-        # Who answered? Only a process running as us may: a socket path in a
-        # shared directory can be pre-bound by another local user, and what we
-        # send down it is the text of `type` and the geometry a later click is
-        # computed from. Say so and stop, rather than typing a password into
-        # somebody else's process.
+        # Who answered? Only a process running as us may: a socket path in a shared directory can be pre-bound
+        # by another local user, and what we send down it is the text of `type` and the geometry a later click
+        # is computed from. Say so and stop, rather than typing a password into somebody else's process.
         uid = DaemonClient._peer_uid(sock)
         if uid is not None and uid != os.geteuid():
             sock.close()
@@ -1986,12 +1839,10 @@ class DaemonClient:
 
     @staticmethod
     def _exec_plan() -> "list[tuple[str, list[str], dict]]":
-        """(path, argv, env) candidates for re-execing as the daemon, best
-        first (B10). Re-execing is what gives the daemon a clean argv (`ps`
-        showed the *client's* command line before), a fresh address space and
-        no inherited state; `wdotool __daemon` / `python -m wdotool __daemon`
-        are both predictable and both match `pkill -f __daemon`. Paths are
-        resolved before the caller chdir()s to /."""
+        """(path, argv, env) candidates for re-execing as the daemon, best first (B10). Re-execing is what gives
+        the daemon a clean argv (`ps` showed the *client's* command line before), a fresh address space and no
+        inherited state; `wdotool __daemon` / `python -m wdotool __daemon` are both predictable and both match
+        `pkill -f __daemon`. Paths are resolved before the caller chdir()s to /."""
         env = clean_env()
         plan = []
         exe = sys.argv[0] if sys.argv else ""
@@ -2016,12 +1867,10 @@ class DaemonClient:
 
     @staticmethod
     def _spawn():
-        """Daemonize: fork, setsid, fork; the grandchild redirects stdio to
-        the daemon log, closes every inherited fd, leaves the launcher's
-        transient scope, drops the client's environment and cwd, and re-execs
-        as `wdotool __daemon` (or `python -m wdotool __daemon`); if no re-exec
-        is possible it runs daemon_main() in-process with the same clean
-        state."""
+        """Daemonize: fork, setsid, fork; the grandchild redirects stdio to the daemon log, closes every
+        inherited fd, leaves the launcher's transient scope, drops the client's environment and cwd, and
+        re-execs as `wdotool __daemon` (or `python -m wdotool __daemon`); if no re-exec is possible it runs
+        daemon_main() in-process with the same clean state."""
         pid = os.fork()
         if pid:
             os.waitpid(pid, 0)
@@ -2036,9 +1885,8 @@ class DaemonClient:
             plan = DaemonClient._exec_plan()  # resolves paths before chdir
             null = os.open(os.devnull, os.O_RDONLY)
             try:
-                # O_NOFOLLOW: never append through a planted symlink in
-                # /tmp -- and never into a regular file somebody else made
-                # there either (the log carries session diagnostics).
+                # O_NOFOLLOW: never append through a planted symlink in /tmp -- and never into a regular file
+                # somebody else made there either (the log carries session diagnostics).
                 log = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o644)
                 if os.fstat(log).st_uid != os.geteuid():
                     os.close(log)
@@ -2098,9 +1946,8 @@ class DaemonClient:
 
     @staticmethod
     def _modes(layout_mode, vkbd_mode) -> dict:
-        """The optional mode fields, sent only when they were given: an
-        absent flag must leave the request byte-identical to what an older
-        client sent, and every test double keeps its signature."""
+        """The optional mode fields, sent only when they were given: an absent flag must leave the request
+        byte-identical to what an older client sent, and every test double keeps its signature."""
         extra = {}
         if layout_mode:
             extra["layout_mode"] = layout_mode
@@ -2119,12 +1966,10 @@ class DaemonClient:
                   clearmods=clearmods, **self._modes(layout_mode, vkbd_mode))
 
     def clear_modifiers(self) -> list:
-        """Release the modifier keys and report which ones wdotool itself was
-        holding, to be handed back to restore_modifiers() when the injection
-        is done. Kept for the frozen API: every command passes `clearmods` to
-        the injection op instead, so that the daemon can do clear, inject and
-        restore under one lock -- as two extra round trips this pair leaves
-        gaps another process can inject into."""
+        """Release the modifier keys and report which ones wdotool itself was holding, to be handed back to
+        restore_modifiers() when the injection is done. Kept for the frozen API: every command passes
+        `clearmods` to the injection op instead, so that the daemon can do clear, inject and restore under one
+        lock -- as two extra round trips this pair leaves gaps another process can inject into."""
         return list(self._rpc(op="clear_modifiers").get("held") or [])
 
     def restore_modifiers(self, held):
@@ -2134,13 +1979,11 @@ class DaemonClient:
             return
         self._rpc(op="restore_modifiers", held=list(held))
 
-    # `clearmods` on these is the whole --clearmodifiers dance in one
-    # request: the daemon releases the modifiers, injects and puts back what
-    # it was holding without letting go of the injection lock.
+    # `clearmods` on these is the whole --clearmodifiers dance in one request: the daemon releases the
+    # modifiers, injects and puts back what it was holding without letting go of the injection lock.
     #
-    # `vkbd_mode` is --vkbd, which selects the pointer path as well as the
-    # keyboard one; sent only when the flag was given, so an absent flag
-    # leaves the request byte-identical to what an older client sent.
+    # `vkbd_mode` is --vkbd, which selects the pointer path as well as the keyboard one; sent only when the flag
+    # was given, so an absent flag leaves the request byte-identical to what an older client sent.
     def mousemove_abs(self, x: int, y: int, clearmods: bool = False, vkbd_mode: str | None = None):
         self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods, **self._modes(None, vkbd_mode))
 

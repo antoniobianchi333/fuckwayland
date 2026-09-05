@@ -34,9 +34,8 @@ import time
 # -- identity -----------------------------------------------------------------
 
 def proc_starttime(pid: int) -> str | None:
-    """Field 22 of /proc/<pid>/stat, the half of an identity that a pid
-    alone does not give: pids are recycled, (pid, starttime) pairs are not.
-    None when the process is gone (or /proc is not there to ask)."""
+    """Field 22 of /proc/<pid>/stat, the half of an identity that a pid alone does not give: pids are recycled,
+    (pid, starttime) pairs are not. None when the process is gone (or /proc is not there to ask)."""
     try:
         with open("/proc/%d/stat" % pid, "rb") as f:
             data = f.read()
@@ -60,9 +59,8 @@ def comm(pid: int) -> str | None:
 def zombie(pid: int) -> bool:
     """Has that process already exited, with only its exit status left?
 
-    /proc still has the directory, the uid and the start time of a zombie,
-    so every other test here says it is alive -- and a query would report a
-    running child that had exited, a stop would report stopping it. The
+    /proc still has the directory, the uid and the start time of a zombie, so every other test here says it is
+    alive -- and a query would report a running child that had exited, a stop would report stopping it. The
     state letter is the only thing that tells them apart."""
     try:
         with open("/proc/%d/stat" % pid) as f:
@@ -76,9 +74,8 @@ def zombie(pid: int) -> bool:
 
 
 def owned_by_us(pid: int) -> bool:
-    """A process we started runs as us. Anything else is never signalled,
-    whatever a state file claims. (Under sudo "us" is root, and what root
-    forked is root too.)"""
+    """A process we started runs as us. Anything else is never signalled, whatever a state file claims. (Under
+    sudo "us" is root, and what root forked is root too.)"""
     try:
         return os.stat("/proc/%d" % pid).st_uid == os.geteuid()
     except OSError:
@@ -88,9 +85,8 @@ def owned_by_us(pid: int) -> bool:
 def alive(pid, start, comm_hint=None) -> bool:
     """Is that exact process still running?
 
-    With a starttime the answer is exact. Without one (a '?' record, written
-    when /proc could not be read) we fall back to the process name against
-    `comm_hint` -- one string or several: never matching would strand a
+    With a starttime the answer is exact. Without one (a '?' record, written when /proc could not be read) we
+    fall back to the process name against `comm_hint` -- one string or several: never matching would strand a
     child that is holding something, with no way left to stop it."""
     if not pid:
         return False
@@ -112,9 +108,8 @@ def alive(pid, start, comm_hint=None) -> bool:
 # -- ending -------------------------------------------------------------------
 
 def wait_gone(pid: int, start, tries: int = 50) -> bool:
-    """Poll (bounded) until `pid` is gone / recycled. With a real starttime
-    we detect recycle too; for a '?' record we can only watch for
-    disappearance."""
+    """Poll (bounded) until `pid` is gone / recycled. With a real starttime we detect recycle too; for a '?'
+    record we can only watch for disappearance."""
     for _ in range(tries):
         cur = proc_starttime(pid)
         if cur is None or (start != "?" and cur != start):
@@ -142,10 +137,9 @@ def kill_bounded(pid: int, start=None) -> bool:
 # -- the status pipe ----------------------------------------------------------
 
 def emit(status_fd, msg: str, close: bool = False):
-    """One line from a detached child to whoever started it. Never raises:
-    the reader is a command that may have gone away already, and a child
-    that died of its own status pipe is exactly the orphan this module is
-    here to prevent."""
+    """One line from a detached child to whoever started it. Never raises: the reader is a command that may have
+    gone away already, and a child that died of its own status pipe is exactly the orphan this module is here to
+    prevent."""
     if status_fd is None:
         return
     try:
@@ -157,15 +151,13 @@ def emit(status_fd, msg: str, close: bool = False):
 
 
 def spawn_detached(child_main, seconds: float, on_line) -> str | None:
-    """Fork a detached grandchild running `child_main(status_fd)`, then read
-    its status pipe for up to `seconds` and return the line that ended the
-    start (None if none came in time, or the pipe closed first).
+    """Fork a detached grandchild running `child_main(status_fd)`, then read its status pipe for up to `seconds`
+    and return the line that ended the start (None if none came in time, or the pipe closed first).
 
-    Every line is handed to `on_line` as it arrives, and the first line
-    `on_line` does not claim (does not return true for) is that terminal
-    line. The caller's `on_line` is therefore where a child's identity is
-    written down, while the start is still running -- see the module
-    docstring: that timing is the whole point."""
+    Every line is handed to `on_line` as it arrives, and the first line `on_line` does not claim (does not
+    return true for) is that terminal line. The caller's `on_line` is therefore where a child's identity is
+    written down, while the start is still running -- see the module docstring: that timing is the whole
+    point."""
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:                  # child: detach, the grandchild is the work

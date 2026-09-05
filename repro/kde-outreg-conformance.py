@@ -88,9 +88,8 @@ def run(dev, mgmt, label):
     c("registry `finished` opcode", 0, reg["events"]["finished"][0])
     c("REG_MIN (registry `output` since)", kwin.REG_MIN,
       reg["events"]["output"][1])
-    # REG_WANT is a ceiling, not a wire fact: we bind min(advertised,
-    # REG_WANT), so it only has to cover everything this XML can send. It
-    # failing means the protocol grew events we have never looked at.
+    # REG_WANT is a ceiling, not a wire fact: we bind min(advertised, REG_WANT), so it only has to cover
+    # everything this XML can send. It failing means the protocol grew events we have never looked at.
     c("REG_WANT covers the device interface", kwin.REG_WANT,
       dev["kde_output_device_v2"]["version"], ">=")
 

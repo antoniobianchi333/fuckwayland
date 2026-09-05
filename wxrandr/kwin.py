@@ -200,10 +200,9 @@ GAMMA = "zwlr_gamma_control_manager_v1"
 # Bind low: every field xrandr needs exists at device 2, and a server only
 # sends events whose `since` is <= the bound version.
 DEV_WANT = 13        # `name` (the connector) is since 2 and is the reason to
-                     # bind above 1; `replication_source` is since 13 and is
-                     # the reason to stop at 13. Reading `priority` would need
-                     # 18; kde_output_order_v1 gives the primary on 5.27 too,
-                     # so the device goes no higher.
+                     # bind above 1; `replication_source` is since 13 and is the reason to stop at 13. Reading
+                     # `priority` would need 18; kde_output_order_v1 gives the primary on 5.27 too, so the
+                     # device goes no higher.
 MGMT_WANT = 13       # set_primary_output since 2, failure_reason since 12,
                      # set_replication_source since 13
 REG_WANT = 25        # the highest kde_output_device_v2 in the XML today
@@ -245,19 +244,16 @@ SUBPIXEL = {0: "unknown", 1: "none", 2: "horizontal rgb", 3: "horizontal bgr",
 # -- pure helpers (unit-tested) ----------------------------------------------
 
 def quantize_scale(scale: float) -> float:
-    """KWin's own quantisation: std::round(scale * 120) / 120, matching
-    fractional-scale-v1's 120ths. Applied to what we send AND to what we read
-    back, so `--scale 1.3` compares equal to the 1.3 KWin stores (the wl_fixed
-    round trip alone would give 1.30078125 and every run would look like a
-    change). std::round, not Python's banker's round: 1.4375 * 120 is 172.5,
-    which C rounds to 173 (1.4417) and Python to 172 (1.4333)."""
+    """KWin's own quantisation: std::round(scale * 120) / 120, matching fractional-scale-v1's 120ths. Applied to
+    what we send AND to what we read back, so `--scale 1.3` compares equal to the 1.3 KWin stores (the wl_fixed
+    round trip alone would give 1.30078125 and every run would look like a change). std::round, not Python's
+    banker's round: 1.4375 * 120 is 172.5, which C rounds to 173 (1.4417) and Python to 172 (1.4333)."""
     return round_half_away(scale * SCALE_STEPS) / SCALE_STEPS
 
 
 def to_fixed(value: float) -> int:
-    """wl_fixed_from_double, rounding. Sent as a plain int arg: wayland_mini's
-    "f" marshaller truncates and is shared with the wlroots path, where
-    rounding would change live sway scales -- so it stays untouched."""
+    """wl_fixed_from_double, rounding. Sent as a plain int arg: wayland_mini's "f" marshaller truncates and is
+    shared with the wlroots path, where rounding would change live sway scales -- so it stays untouched."""
     return int(round(value * 256.0))
 
 
@@ -267,16 +263,14 @@ def from_fixed(raw: float) -> float:
 
 
 def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float, plasma6: bool = True) -> tuple[int, int]:
-    """KWin's logical size: the transform-swapped mode size divided by the
-    scale, made whole the way the running KWin does it.
+    """KWin's logical size: the transform-swapped mode size divided by the scale, made whole the way the running
+    KWin does it.
 
-    Plasma 6 takes the enclosing integer -- 1920/1.4 -> 1372, 1080/1.4 -> 772,
-    1280/1.5 -> 854, 1280/1.30833 -> 979, all measured against the
-    compositor's own geometry (XWayland's RandR and kscreen-doctor agree) --
-    while 5.27 rounds: 1920/1.4 is 1371 there, and 1920/1.3 is 1477 on both,
-    which is what rules truncation out. Being one pixel short is not
-    cosmetic: the next output goes one pixel too far left and KWin silently
-    keeps the overlap."""
+    Plasma 6 takes the enclosing integer -- 1920/1.4 -> 1372, 1080/1.4 -> 772, 1280/1.5 -> 854, 1280/1.30833 ->
+    979, all measured against the compositor's own geometry (XWayland's RandR and kscreen-doctor agree) -- while
+    5.27 rounds: 1920/1.4 is 1371 there, and 1920/1.3 is 1477 on both, which is what rules truncation out. Being
+    one pixel short is not cosmetic: the next output goes one pixel too far left and KWin silently keeps the
+    overlap."""
     if not plasma6:
         return round_logical_size(px_w, px_h, sway_tf, scale)
     if core.transform_swaps(sway_tf):
@@ -286,9 +280,8 @@ def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float, plasma6: bool
     return (math.ceil(px_w / scale), math.ceil(px_h / scale))
 
 
-# libkscreen's toKScreenRotation (waylandoutputdevice.cpp) reads the
-# wl_output transform enum as the spec's counter-clockwise 90 implies, the
-# same numbering Mutter uses: core.WL_SPEC_RANDR_VIEW is that table, and the
+# libkscreen's toKScreenRotation (waylandoutputdevice.cpp) reads the wl_output transform enum as the spec's
+# counter-clockwise 90 implies, the same numbering Mutter uses: core.WL_SPEC_RANDR_VIEW is that table, and the
 # 90<->270 swap against the sway names the renderer speaks follows from it.
 KWIN_RANDR_VIEW = core.WL_SPEC_RANDR_VIEW
 KWIN_FROM_SWAY = core.WL_SPEC_FROM_SWAY
@@ -297,9 +290,8 @@ from_transform = core.from_wl_spec_transform
 
 
 def normalise(pos: dict) -> dict:
-    """Shift a layout so no enabled output sits at a negative coordinate --
-    KWin answers `failed` with "Position of enabled output %1 is negative"
-    otherwise. core.resolve_positions already anchors at 0,0; this is the
+    """Shift a layout so no enabled output sits at a negative coordinate -- KWin answers `failed` with "Position
+    of enabled output %1 is negative" otherwise. core.resolve_positions already anchors at 0,0; this is the
     guard that makes the property hold for every path into apply()."""
     if not pos:
         return pos
@@ -312,49 +304,40 @@ def normalise(pos: dict) -> dict:
     return {n: (x + dx, y + dy) for n, (x, y) in pos.items()}
 
 
-# KWin's modes are objects with a size and a refresh and nothing else --
-# no interlace flag -- so every candidate here is flagless and the shared
-# matcher's progressive default excludes none of them.
+# KWin's modes are objects with a size and a refresh and nothing else -- no interlace flag -- so every candidate
+# here is flagless and the shared matcher's progressive default excludes none of them.
 match_mode = core.match_mode
 
 
 def mirror_needs_replication(replica: tuple, source: tuple) -> bool:
-    """Whether `--same-as` needs set_replication_source rather than plainly
-    the same position, from the two PENDING logical rectangles.
+    """Whether `--same-as` needs set_replication_source rather than plainly the same position, from the two
+    PENDING logical rectangles.
 
-    On KWin every output is a view onto one shared scene, so two outputs at
-    one position already show identical pixels over the region they share --
-    measured byte-identical (AE 0) whenever the logical rectangles coincide,
-    at a different refresh rate as much as at the same one. What a shared
-    position cannot do is make the *whole* of one output be the other: where
-    the rectangles differ, the smaller output shows a crop of the bigger
-    one's scene (measured: the exact top-left crop at a smaller mode, the
-    top-left quarter magnified at scale 2, the leftmost columns turned on
-    their side at a swapped transform). That -- and only that -- is what
+    On KWin every output is a view onto one shared scene, so two outputs at one position already show identical
+    pixels over the region they share -- measured byte-identical (AE 0) whenever the logical rectangles
+    coincide, at a different refresh rate as much as at the same one. What a shared position cannot do is make
+    the *whole* of one output be the other: where the rectangles differ, the smaller output shows a crop of the
+    bigger one's scene (measured: the exact top-left crop at a smaller mode, the top-left quarter magnified at
+    scale 2, the leftmost columns turned on their side at a swapped transform). That -- and only that -- is what
     replication is for.
 
-    A mode of a different size, a different scale and an axis-swapping
-    transform all reach here as one fact, the pending logical size, because
-    that is the fact the pixels follow: 2560x1440 at scale 2 next to 1280x720
-    at scale 1 is a clone with no replication at all.
+    A mode of a different size, a different scale and an axis-swapping transform all reach here as one fact, the
+    pending logical size, because that is the fact the pixels follow: 2560x1440 at scale 2 next to 1280x720 at
+    scale 1 is a clone with no replication at all.
 
-    `source` is the rectangle of the output whose scene is being shown, which
-    is not always the one `--same-as` named: an output that is itself
-    mirroring shows somebody else's scene, and KWin will not copy a copy (see
+    `source` is the rectangle of the output whose scene is being shown, which is not always the one `--same-as`
+    named: an output that is itself mirroring shows somebody else's scene, and KWin will not copy a copy (see
     KwinOutputs._root_of)."""
     return tuple(replica) != tuple(source)
 
 
 def restore_command(outputs, primary: str | None = None, mirrors: dict | None = None) -> str:
-    """The xrandr invocation that puts `outputs` back the way they were --
-    KWin has already saved the new layout by the time we could offer an undo,
-    so the pre-apply snapshot is printed as a command the user can paste.
+    """The xrandr invocation that puts `outputs` back the way they were -- KWin has already saved the new layout
+    by the time we could offer an undo, so the pre-apply snapshot is printed as a command the user can paste.
 
-    Every property is spelled out, including the defaults: this line is the
-    only undo there is, and a `--rotate`/`--scale` left out because the old
-    value happened to be the default one would leave the *new* rotation or
-    scale in place -- which, when nothing else differs, makes the whole
-    command a no-op."""
+    Every property is spelled out, including the defaults: this line is the only undo there is, and a
+    `--rotate`/`--scale` left out because the old value happened to be the default one would leave the *new*
+    rotation or scale in place -- which, when nothing else differs, makes the whole command a no-op."""
     parts = []
     for o in outputs:
         parts += ["--output", o.name]
@@ -365,9 +348,8 @@ def restore_command(outputs, primary: str | None = None, mirrors: dict | None = 
             parts += ["--mode", "%dx%d" % (o.current.w, o.current.h)]
             if o.current.refresh_mhz:
                 parts += ["--rate", "%.2f" % o.current.refresh_hz]
-        # A replicated output is put back with `--same-as`, not `--pos`:
-        # its position is inert while it mirrors, and the position alone
-        # would restore the layout without the mirror.
+        # A replicated output is put back with `--same-as`, not `--pos`: its position is inert while it mirrors,
+        # and the position alone would restore the layout without the mirror.
         src = (mirrors or {}).get(o.name)
         if src:
             parts += ["--same-as", src]
@@ -377,9 +359,8 @@ def restore_command(outputs, primary: str | None = None, mirrors: dict | None = 
         parts += ["--rotate", rot, "--reflect", refl, "--scale", "%g" % o.scale]
         if primary is not None and o.name == primary:
             parts.append("--primary")
-    # The word matters: on a KDE image /usr/bin/xrandr exists, so a line
-    # beginning "xrandr" is pasted straight into the real one, which answers
-    # BadMatch and changes nothing. Name the program that can carry it out --
+    # The word matters: on a KDE image /usr/bin/xrandr exists, so a line beginning "xrandr" is pasted straight
+    # into the real one, which answers BadMatch and changes nothing. Name the program that can carry it out --
     # argv[0] when we were invoked under a name that works, else "wxrandr".
     return (_undo_word() + " " + " ".join(parts)) if parts else ""
 
@@ -387,19 +368,18 @@ def restore_command(outputs, primary: str | None = None, mirrors: dict | None = 
 def _undo_word() -> str:
     """What to call ourselves in a line the user will paste back.
 
-    Always our own name. On a KDE image /usr/bin/xrandr exists, so a line beginning `xrandr` is pasted
-    into the real one, which answers BadMatch and changes nothing (measured on Plasma 6.6). argv[0] is
-    no guide either, since the tool may be installed over the original or run as a module. The saved
-    layout scripts call bare `wxrandr` for exactly the same reason.
+    Always our own name. On a KDE image /usr/bin/xrandr exists, so a line beginning `xrandr` is pasted into the
+    real one, which answers BadMatch and changes nothing (measured on Plasma 6.6). argv[0] is no guide either,
+    since the tool may be installed over the original or run as a module. The saved layout scripts call bare
+    `wxrandr` for exactly the same reason.
     """
     return "wxrandr"
 
 
 @contextlib.contextmanager
 def wire(doing: str):
-    """Socket errors as one xrandr line. The receive side was already guarded;
-    the send side is where a compositor that hung up between two of our
-    messages surfaces as a bare `[Errno 32] Broken pipe`."""
+    """Socket errors as one xrandr line. The receive side was already guarded; the send side is where a
+    compositor that hung up between two of our messages surfaces as a bare `[Errno 32] Broken pipe`."""
     try:
         yield
     except (OSError, struct.error) as e:
@@ -415,9 +395,8 @@ class _Invalidated(Exception):
 # -- detection ----------------------------------------------------------------
 
 def probe(sock_path: str | None = None):
-    """A live WlConn on the compositor socket when it advertises
-    kde_output_management_v2, else None (the connection is closed again on the
-    way out, so a non-KDE session is left with none). Never raises: this runs
+    """A live WlConn on the compositor socket when it advertises kde_output_management_v2, else None (the
+    connection is closed again on the way out, so a non-KDE session is left with none). Never raises: this runs
     during backend auto-detection."""
     try:
         from fwcommon.wayland_mini import WlConn
@@ -509,12 +488,10 @@ class KwinOutputs:
 
     @property
     def can_replicate(self) -> bool:
-        """Both halves of mirroring, on the versions they need:
-        `set_replication_source` (management v13) to send one, and
-        `replication_source` (device v13) to read one back. Without the
-        read-back a mirror could never be cleared again -- the delta against
-        a source we cannot see is always empty, so `--right-of` on a replica
-        would be silently inert, which is the one thing this policy is for."""
+        """Both halves of mirroring, on the versions they need: `set_replication_source` (management v13) to
+        send one, and `replication_source` (device v13) to read one back. Without the read-back a mirror could
+        never be cleared again -- the delta against a source we cannot see is always empty, so `--right-of` on a
+        replica would be silently inert, which is the one thing this policy is for."""
         return (self.mgmt_version >= REPL_MGMT and self.dev_version >= REPL_DEV)
 
     # -- discovery -----------------------------------------------------------
@@ -533,19 +510,16 @@ class KwinOutputs:
             name, adv = reg
             ver = min(adv, REG_WANT)
             if ver >= REG_MIN:
-                # the device resources this registry hands out are created at
-                # the version the REGISTRY was bound at, so this is the device
-                # version too -- there is no per-device bind on this path
+                # the device resources this registry hands out are created at the version the REGISTRY was bound
+                # at, so this is the device version too -- there is no per-device bind on this path
                 self.dev_version = ver
                 self.registry = self.conn.bind(name, REG, ver)
                 self.conn.on(self.registry, self._on_registry)
             elif not self._warned_registry:
-                # A registry we may not bind is only fatal when it is the
-                # only way outputs are published. Nothing real advertises it
-                # below 21 -- the interface did not exist before then -- but
-                # if something did while still exporting the globals, the
-                # globals path below still works and saying "no outputs can
-                # be listed" would be a lie.
+                # A registry we may not bind is only fatal when it is the only way outputs are published.
+                # Nothing real advertises it below 21 -- the interface did not exist before then -- but if
+                # something did while still exporting the globals, the globals path below still works and saying
+                # "no outputs can be listed" would be a lie.
                 self._warned_registry = True
                 globals_too = any(i == DEV for i, _v in regs.values())
                 warn("%s version %d is older than the %d this protocol "
@@ -569,12 +543,10 @@ class KwinOutputs:
             self._by_global.pop(name)["gone"] = True
 
     def _on_order(self, op, cur, fds):
-        """kde_output_order_v1: one `output(name)` per output, KWin's own
-        order, then `done`; resent whenever the order changes. The first
-        entry is what plasmashell and XWayland call the primary, and it is
-        the only readable primary on 5.27 (the device `priority` event needs
-        device v18, i.e. Plasma 6.3+). Shapes are checked rather than
-        trusted: the XML is not in the kwin tree."""
+        """kde_output_order_v1: one `output(name)` per output, KWin's own order, then `done`; resent whenever
+        the order changes. The first entry is what plasmashell and XWayland call the primary, and it is the only
+        readable primary on 5.27 (the device `priority` event needs device v18, i.e. Plasma 6.3+). Shapes are
+        checked rather than trusted: the XML is not in the kwin tree."""
         if op == 0 and cur.d:
             self._order_pending.append(cur.string())
         elif op == 1 and not cur.d:
@@ -582,12 +554,10 @@ class KwinOutputs:
             self._order_pending = []
 
     def _on_registry(self, op, cur, fds):
-        """kde_output_device_registry_v2's `output` event: one new_id of
-        kde_output_device_v2 per output. The interface has exactly two events
-        -- `finished` (opcode 0, no arguments, the answer to `stop`, which we
-        never send) and `output` (opcode 1, one new_id) -- so rather than
-        trust one index we accept any event whose whole payload is a single
-        server-range new_id. `finished` cannot look like that, and if the
+        """kde_output_device_registry_v2's `output` event: one new_id of kde_output_device_v2 per output. The
+        interface has exactly two events -- `finished` (opcode 0, no arguments, the answer to `stop`, which we
+        never send) and `output` (opcode 1, one new_id) -- so rather than trust one index we accept any event
+        whose whole payload is a single server-range new_id. `finished` cannot look like that, and if the
         announcement ever moves opcode we still read it."""
         if len(cur.d) != 4:
             return
@@ -695,9 +665,8 @@ class KwinOutputs:
         return self._topology() != sig
 
     def _read_primary(self, outs) -> str | None:
-        """KWin's own primary, when it is readable: the first entry of
-        kde_output_order_v1 (Workspace's output order -- what plasmashell and
-        XWayland follow, and readable on 5.27 too), else the lowest device
+        """KWin's own primary, when it is readable: the first entry of kde_output_order_v1 (Workspace's output
+        order -- what plasmashell and XWayland follow, and readable on 5.27 too), else the lowest device
         `priority` if we ever bind the device that high."""
         enabled = {o.name for o in outs if o.active}
         for name in self.output_order:
@@ -719,12 +688,10 @@ class KwinOutputs:
         (post-`done`) device state."""
         self._refresh()
         if not self.live():
-            # management without a single published device. Silently printing
-            # an empty screen and calling every apply a success is worse than
-            # saying so -- and which of the two discovery paths came up empty
-            # is the whole diagnosis, so the message names it. On the registry
-            # path this is also where a wrong guess about the 6.7 protocol
-            # would land: a `stop`-less registry that announces nothing is
+            # management without a single published device. Silently printing an empty screen and calling every
+            # apply a success is worse than saying so -- and which of the two discovery paths came up empty is
+            # the whole diagnosis, so the message names it. On the registry path this is also where a wrong
+            # guess about the 6.7 protocol would land: a `stop`-less registry that announces nothing is
             # indistinguishable from one we are failing to read, so say both.
             if self.registry is not None:
                 raise Fatal("%s announced no outputs (this compositor hands "
@@ -765,24 +732,19 @@ class KwinOutputs:
                                               self.ceil_logical)
             core.finish_modes(st, state.modes_for_output(name))
             outs.append(st)
-        # A replicated output is not a layout member on KWin at all -- no
-        # wl_output, gone from kde_output_order_v1, nothing of its own in the
-        # bounding box -- and its own position and scale are inert while it
-        # mirrors. What it shows is the source's rectangle, so that is the
-        # rectangle we report for it: the pair then reads as xrandr renders a
-        # mirror (one geometry, one position, each output keeping its own mode
-        # table and its own starred current mode), and the Screen line agrees
-        # with the desktop the compositor actually has.
+        # A replicated output is not a layout member on KWin at all -- no wl_output, gone from
+        # kde_output_order_v1, nothing of its own in the bounding box -- and its own position and scale are
+        # inert while it mirrors. What it shows is the source's rectangle, so that is the rectangle we report
+        # for it: the pair then reads as xrandr renders a mirror (one geometry, one position, each output
+        # keeping its own mode table and its own starred current mode), and the Screen line agrees with the
+        # desktop the compositor actually has.
         #
-        # A source has to be a layout output itself for any of that to hold.
-        # Measured on KWin 6.6: a source that is itself replicating is
-        # accepted and stored, takes the output out of the layout like any
-        # other replication -- and then paints nothing at all, so the panel
-        # keeps its last frame for ever (byte-identical screendumps across a
-        # window move that repainted every other head). We refuse to create
-        # one; one somebody else left behind is reported with the geometry
-        # KWin stores for it and said out loud, rather than dressed up as a
-        # mirror of a rectangle it is not showing.
+        # A source has to be a layout output itself for any of that to hold. Measured on KWin 6.6: a source that
+        # is itself replicating is accepted and stored, takes the output out of the layout like any other
+        # replication -- and then paints nothing at all, so the panel keeps its last frame for ever
+        # (byte-identical screendumps across a window move that repainted every other head). We refuse to create
+        # one; one somebody else left behind is reported with the geometry KWin stores for it and said out loud,
+        # rather than dressed up as a mirror of a rectangle it is not showing.
         by_uuid = {u: n for n, u in self.uuid.items() if u}
         active = {o.name: o for o in outs if o.active}
         src_of = {}
@@ -800,12 +762,10 @@ class KwinOutputs:
             self.mirror[name] = src
             o, source = active[name], active[src]
             o.x, o.y, o.w, o.h = source.x, source.y, source.w, source.h
-        # The primary comes from the compositor whenever it can be read
-        # (kde_output_order_v1, advertised on 5.27 as on 6.6) -- the state
-        # file is only the record of what we set on a KWin that offers
-        # neither that nor the device `priority` event, and it is read once so
-        # that a re-snapshot mid-apply cannot make a pending --primary look
-        # already done.
+        # The primary comes from the compositor whenever it can be read (kde_output_order_v1, advertised on 5.27
+        # as on 6.6) -- the state file is only the record of what we set on a KWin that offers neither that nor
+        # the device `priority` event, and it is read once so that a re-snapshot mid-apply cannot make a pending
+        # --primary look already done.
         self._current = outs
         live_primary = self._read_primary(outs)
         if live_primary is not None:
@@ -817,10 +777,9 @@ class KwinOutputs:
         return outs
 
     def _warn_blank(self, name: str, src: str, root: str):
-        """A replication KWin accepts, stores and never paints. Said once per
-        output per run: --query is where somebody meets the state their
-        System Settings or an older wxrandr left, and a silent listing would
-        show a rectangle for a panel that is frozen on its last frame."""
+        """A replication KWin accepts, stores and never paints. Said once per output per run: --query is where
+        somebody meets the state their System Settings or an older wxrandr left, and a silent listing would show
+        a rectangle for a panel that is frozen on its last frame."""
         if name in self._warned_blank:
             return
         self._warned_blank.add(name)
@@ -830,20 +789,17 @@ class KwinOutputs:
     # -- planning ------------------------------------------------------------
 
     def resolve_mode(self, t: core.Target, state: core.State) -> Mode:
-        """The real mode an enabled target will run: the stanza's, else the
-        current one, else the mode wxrandr disabled it at (state file), else
-        the preferred one. A custom (--newmode) mode is only applicable when a
-        real mode of the same size and rate exists -- KWin needs a mode object,
-        and creating one needs management v18 plus capability_custom_modes,
-        which nothing we bind offers. Its modes carry no interlace flag, so
-        that is not part of the match here."""
+        """The real mode an enabled target will run: the stanza's, else the current one, else the mode wxrandr
+        disabled it at (state file), else the preferred one. A custom (--newmode) mode is only applicable when a
+        real mode of the same size and rate exists -- KWin needs a mode object, and creating one needs
+        management v18 plus capability_custom_modes, which nothing we bind offers. Its modes carry no interlace
+        flag, so that is not part of the match here."""
         return core.resolve_real_mode(t, state, interlace_known=False)
 
     def supports_custom_modes(self, name: str) -> bool:
-        """Custom modes need management v18 (create_mode_list) *and* the
-        device's capability_custom_modes bit. We bind management at
-        min(advertised, 12), so this is False everywhere today -- it is the
-        honest form of the check, not a guess."""
+        """Custom modes need management v18 (create_mode_list) *and* the device's capability_custom_modes bit.
+        We bind management at min(advertised, 12), so this is False everywhere today -- it is the honest form of
+        the check, not a guess."""
         d = self.by_name.get(name)
         caps = d["pub"]["caps"] if d and d["pub"] else 0
         return (self.mgmt_version >= CUSTOM_MODES_MGMT and bool(caps & CAP_CUSTOM_MODES))
@@ -865,10 +821,9 @@ class KwinOutputs:
 
     @staticmethod
     def _mode_object(pub, mode: Mode):
-        """The device's mode object for `mode`: same size, nearest refresh.
-        Matching by value rather than by the remembered object id is what
-        survives a re-snapshot -- the server allocates a fresh id for every
-        mode event, so ids from the previous snapshot mean nothing."""
+        """The device's mode object for `mode`: same size, nearest refresh. Matching by value rather than by the
+        remembered object id is what survives a re-snapshot -- the server allocates a fresh id for every mode
+        event, so ids from the previous snapshot mean nothing."""
         cands = [m for m in pub["modes"] if (m["w"], m["h"]) == (mode.w, mode.h)]
         if not cands:
             return None
@@ -878,11 +833,10 @@ class KwinOutputs:
 
     @staticmethod
     def _root_of(graph: dict, name: str) -> str | None:
-        """The output whose scene `name` ends up showing: itself, or the far
-        end of the chain of mirrors it is in. `name` back again means the
-        chain closes on the output itself -- it is already showing its own
-        scene, so there is nothing to replicate -- and None means it closes
-        on somebody else, a loop KWin takes and leaves blank."""
+        """The output whose scene `name` ends up showing: itself, or the far end of the chain of mirrors it is
+        in. `name` back again means the chain closes on the output itself -- it is already showing its own
+        scene, so there is nothing to replicate -- and None means it closes on somebody else, a loop KWin takes
+        and leaves blank."""
         seen, cur = {name}, name
         while cur in graph:
             cur = graph[cur]
@@ -892,30 +846,24 @@ class KwinOutputs:
         return cur
 
     def _mirror_plan(self, known: list, dims: dict) -> tuple:
-        """(outputs to replicate -> their source, outputs to stop replicating,
-        every output that will be showing another one's scene).
+        """(outputs to replicate -> their source, outputs to stop replicating, every output that will be showing
+        another one's scene).
 
-        The narrow rule, straight off the measurement: `--same-as` is a shared
-        position while a shared position IS the clone -- which it is exactly
-        when the two pending logical rectangles coincide -- and
+        The narrow rule, straight off the measurement: `--same-as` is a shared position while a shared position
+        IS the clone -- which it is exactly when the two pending logical rectangles coincide -- and
         set_replication_source only when it is not.
 
-        The rectangle compared against is the one the *scene* comes from. An
-        output that is itself mirroring shows somebody else's scene, and KWin
-        will not copy a copy: naming one as a source is accepted, stored, and
-        then painted never (measured on KWin 6.6 -- the panel keeps its last
-        frame). So `--same-as` follows the chain to its root and replicates
-        that, which is also what makes a mirror of a mirror come out right,
-        and it can never build a loop: a chain that comes back to the output
-        itself means the output already shows that scene, so a shared
-        position is all it takes.
+        The rectangle compared against is the one the *scene* comes from. An output that is itself mirroring
+        shows somebody else's scene, and KWin will not copy a copy: naming one as a source is accepted, stored,
+        and then painted never (measured on KWin 6.6 -- the panel keeps its last frame). So `--same-as` follows
+        the chain to its root and replicates that, which is also what makes a mirror of a mirror come out right,
+        and it can never build a loop: a chain that comes back to the output itself means the output already
+        shows that scene, so a shared position is all it takes.
 
-        The replication source is touched only for an output this invocation
-        *positions* (a relation or a `--pos`): that is what sets one, and it is
-        also what has to clear one, because a position request on a replicating
-        output would otherwise be silently inert. Every other output keeps the
-        mirroring it has, so an unrelated invocation never dismantles a mirror
-        somebody else set up."""
+        The replication source is touched only for an output this invocation *positions* (a relation or a
+        `--pos`): that is what sets one, and it is also what has to clear one, because a position request on a
+        replicating output would otherwise be silently inert. Every other output keeps the mirroring it has, so
+        an unrelated invocation never dismantles a mirror somebody else set up."""
         want, drop, asked = {}, set(), {}
         by_name = {t.name: t for t in known}
         for t in known:
@@ -931,11 +879,10 @@ class KwinOutputs:
                 # and KWin ignores a source that is not enabled anyway
                 if src is not None and src.enabled and src.name != t.name:
                     asked[t.name] = src.name
-        # what each output will be showing after this apply: the `--same-as`
-        # of this invocation (a shared position shows the source's scene just
-        # as much as a replication does), plus the mirrors this invocation
-        # leaves alone -- minus the ones whose source it switches off, which
-        # KWin hands straight back to themselves.
+        # what each output will be showing after this apply: the `--same-as` of this invocation (a shared
+        # position shows the source's scene just as much as a replication does), plus the mirrors this
+        # invocation leaves alone -- minus the ones whose source it switches off, which KWin hands straight back
+        # to themselves.
         graph = dict(asked)
         for name, src in self.replica_of.items():
             replica, source = by_name.get(name), by_name.get(src)
@@ -952,9 +899,8 @@ class KwinOutputs:
             if mirror_needs_replication(dims[name], dims[root]):
                 want[name] = root
                 drop.discard(name)
-        # everything that will be out of the layout when this is applied --
-        # what we are setting, plus what we are leaving alone. A `--same-as`
-        # that stayed a shared position is NOT in it: it keeps a rectangle of
+        # everything that will be out of the layout when this is applied -- what we are setting, plus what we
+        # are leaving alone. A `--same-as` that stayed a shared position is NOT in it: it keeps a rectangle of
         # its own and is a layout output like any other.
         pending = {n: src for n, src in graph.items() if n not in drop and n in self.replica_of}
         pending.update(want)
@@ -972,12 +918,10 @@ class KwinOutputs:
                     "leaves blank\n" % (name, src, " mirrors ".join(chain)))
 
     def _refuse_replication(self, name: str, src: str, dims: dict):
-        """The one case a KWin without replication cannot do, by name. The
-        management request is what sends a mirror and the device event is what
-        reads one back, and without the read-back a mirror could never be
-        cleared again (the delta against a source we cannot see is always
-        empty), so both have to be there and whichever is missing is the one
-        named."""
+        """The one case a KWin without replication cannot do, by name. The management request is what sends a
+        mirror and the device event is what reads one back, and without the read-back a mirror could never be
+        cleared again (the delta against a source we cannot see is always empty), so both have to be there and
+        whichever is missing is the one named."""
         iface, need, has = MGMT, REPL_MGMT, self.mgmt_advertised
         if self.mgmt_version >= REPL_MGMT:
             iface, need, has = DEV, REPL_DEV, self.dev_version
@@ -991,11 +935,10 @@ class KwinOutputs:
     def plan(self, state: core.State, targets: list) -> tuple:
         """(per-output delta records, primary device id or None).
 
-        Deltas only, against the published device state: unmentioned outputs
-        and unmentioned properties are left alone by KWin, and a changeset
-        that changes nothing still costs a modeset. An output coming back from
-        disabled gets the full set -- KWin's stored geometry for a disabled
-        output is not what the query showed."""
+        Deltas only, against the published device state: unmentioned outputs and unmentioned properties are left
+        alone by KWin, and a changeset that changes nothing still costs a modeset. An output coming back from
+        disabled gets the full set -- KWin's stored geometry for a disabled output is not what the query
+        showed."""
         known = [t for t in targets if t.name in self.by_name]
         if known and not any(t.enabled for t in known):
             raise Fatal("cannot disable all outputs (KWin requires at least " "one enabled output)\n")
@@ -1012,15 +955,12 @@ class KwinOutputs:
         if mirrors and not self.can_replicate:
             name, src = sorted(mirrors.items())[0]
             self._refuse_replication(name, src, dims)
-        # A replicating output has no rectangle of its own on the desktop --
-        # no wl_output, nothing in the bounding box -- so what a relation has
-        # to measure from is the rectangle the pair occupies, which is the
-        # source's and is what --query prints for it. Measured on KWin 6.6
-        # with the panel's own size instead: `--right-of` a 1280x1024 replica
-        # of a 1920x1080 output landed the neighbour at x=1280, 640 px INSIDE
-        # its source, two overlapping panels on a desktop meant to be a row.
-        # A copy of a copy is the exception: KWin paints it never, so it is
-        # not showing its source's rectangle either and keeps its own.
+        # A replicating output has no rectangle of its own on the desktop -- no wl_output, nothing in the
+        # bounding box -- so what a relation has to measure from is the rectangle the pair occupies, which is
+        # the source's and is what --query prints for it. Measured on KWin 6.6 with the panel's own size
+        # instead: `--right-of` a 1280x1024 replica of a 1920x1080 output landed the neighbour at x=1280, 640 px
+        # INSIDE its source, two overlapping panels on a desktop meant to be a row. A copy of a copy is the
+        # exception: KWin paints it never, so it is not showing its source's rectangle either and keeps its own.
         layout = dict(dims)
         for name, src in pending.items():
             if src not in pending and name in dims and src in dims:
@@ -1063,15 +1003,13 @@ class KwinOutputs:
                 repl = None            # leave the mirroring it has alone
             if repl is not None and repl != p["repl"]:
                 rec["repl"] = repl
-            # "will KWin ignore this output's position?" -- which is not the
-            # same question as "does it carry a replication source": a source
-            # that this invocation disables, or that never was enabled, hands
-            # the output back to itself, position and all (measured).
+            # "will KWin ignore this output's position?" -- which is not the same question as "does it carry a
+            # replication source": a source that this invocation disables, or that never was enabled, hands the
+            # output back to itself, position and all (measured).
             mirroring = t.name in pending
             xy = pos.get(t.name)
-            # An output that goes on mirroring ignores its position, so one is
-            # sent only when the invocation asked for it: the query reports a
-            # replica at its source's position, and re-sending that as a delta
+            # An output that goes on mirroring ignores its position, so one is sent only when the invocation
+            # asked for it: the query reports a replica at its source's position, and re-sending that as a delta
             # would cost a modeset for nothing.
             asked = t.stanza is not None and (t.stanza.relation is not None or t.stanza.pos is not None)
             if (xy is not None and (full or xy != (p["x"], p["y"])) and (asked or not mirroring)):
@@ -1081,9 +1019,8 @@ class KwinOutputs:
             if any(rec[k] is not None for k in ("enable", "mode", "transform", "position", "scale", "repl")):
                 records.append(rec)
         if self.primary in mirrors and state.primary in (None, self.primary):
-            # measured: the replica leaves kde_output_order_v1, so KWin's
-            # primary moves on its own. Say which output is losing it rather
-            # than let --query answer a different name next time.
+            # measured: the replica leaves kde_output_order_v1, so KWin's primary moves on its own. Say which
+            # output is losing it rather than let --query answer a different name next time.
             warn("%s mirrors %s and is no longer the primary output on "
                  "KWin\n" % (self.primary, mirrors[self.primary]))
         primary = None
@@ -1111,12 +1048,10 @@ class KwinOutputs:
         return records, primary
 
     def _priority_plan(self, want: str) -> list:
-        """set_priority(dev, 1..N) over every live output, `want` first and
-        the others keeping the order KWin already has. Priorities are one
-        global sequence, so setting a single output's would leave two outputs
-        sharing a rank; libkscreen sends the whole list too. This -- not
-        set_primary_output, which is accepted and ignored on both 5.27 and
-        6.6 -- is what actually moves the primary."""
+        """set_priority(dev, 1..N) over every live output, `want` first and the others keeping the order KWin
+        already has. Priorities are one global sequence, so setting a single output's would leave two outputs
+        sharing a rank; libkscreen sends the whole list too. This -- not set_primary_output, which is accepted
+        and ignored on both 5.27 and 6.6 -- is what actually moves the primary."""
         names = list(self.by_name)
         ordered = [n for n in self.output_order if n in self.by_name]
         rest = [n for n in ordered + names if n != want]
@@ -1126,9 +1061,8 @@ class KwinOutputs:
     # -- apply ---------------------------------------------------------------
 
     def _send(self, records: list, primary, sig=None):
-        """One configuration object, the deltas, one apply. The object is
-        never reused: a second apply on it is a fatal `already_applied`
-        protocol error that takes the whole connection down."""
+        """One configuration object, the deltas, one apply. The object is never reused: a second apply on it is
+        a fatal `already_applied` protocol error that takes the whole connection down."""
         cfg = self.conn.alloc()
         result = {}
 
@@ -1166,10 +1100,9 @@ class KwinOutputs:
             if reason and INVALID_HINT in reason:
                 raise _Invalidated(reason)
             if sig is not None and self._topology_moved(sig):
-                # Below management 12 there is no failure_reason at all, so
-                # on 5.27 the string can never say "no longer available": the
-                # outputs having moved under the configuration is the
-                # evidence, and it is the same evidence on 6.x.
+                # Below management 12 there is no failure_reason at all, so on 5.27 the string can never say "no
+                # longer available": the outputs having moved under the configuration is the evidence, and it is
+                # the same evidence on 6.x.
                 raise _Invalidated(reason or "the outputs changed")
             if reason:
                 raise Fatal("KWin rejected the output configuration: %s\n" % reason)
@@ -1210,9 +1143,8 @@ class KwinOutputs:
         self.conn.send(cfg, REQ_APPLY, [])
 
     def _warn_saved(self):
-        """Said once, and only once KWin really has saved something: the line
-        below tells the user their layout is already on disk, and the restore
-        command it prints *changes* the live configuration."""
+        """Said once, and only once KWin really has saved something: the line below tells the user their layout
+        is already on disk, and the restore command it prints *changes* the live configuration."""
         if self._warned_save:
             return
         self._warned_save = True
@@ -1239,15 +1171,14 @@ class KwinOutputs:
         return out
 
     def verify(self, state: core.State, targets: list):
-        """--dryrun: KWin has no verify request (and building a configuration
-        without applying it changes nothing), so this only re-runs the plan --
-        client-side rejections still surface, the compositor is not touched."""
+        """--dryrun: KWin has no verify request (and building a configuration without applying it changes
+        nothing), so this only re-runs the plan -- client-side rejections still surface, the compositor is not
+        touched."""
         self.plan(state, targets)
 
     def apply(self, state: core.State, targets: list, persistent: bool = False) -> list:
-        """One atomic configuration, applied once. Returns the fresh
-        snapshot. `persistent` is accepted for contract parity and ignored:
-        KWin persists every applied layout itself."""
+        """One atomic configuration, applied once. Returns the fresh snapshot. `persistent` is accepted for
+        contract parity and ignored: KWin persists every applied layout itself."""
         want = state.primary
         records, primary = self.plan(state, targets)
         if records or primary is not None:
@@ -1260,9 +1191,8 @@ class KwinOutputs:
                 # a hotplug between create_configuration and apply silently
                 # invalidated the object: rebuild from a fresh snapshot, once
                 targets = self._rebind(targets, self.snapshot(state))
-                # after the re-snapshot, not before: snapshot() overwrites
-                # state.primary with what kde_output_order_v1 still reports,
-                # which would eat a --primary that has not been applied yet
+                # after the re-snapshot, not before: snapshot() overwrites state.primary with what
+                # kde_output_order_v1 still reports, which would eat a --primary that has not been applied yet
                 state.primary = want
                 records, primary = self.plan(state, targets)
                 if records or primary is not None:
@@ -1273,8 +1203,7 @@ class KwinOutputs:
             self._warn_saved()
             core.record_lastmodes(state, targets)
         outs = self.snapshot(state)
-        # the state file records the primary KWin has, never one we merely
-        # wanted: --primary on a compositor too old to take it, or on an
-        # output that is not being enabled, must not make --query lie
+        # the state file records the primary KWin has, never one we merely wanted: --primary on a compositor too
+        # old to take it, or on an output that is not being enabled, must not make --query lie
         state.primary = self.primary
         return outs

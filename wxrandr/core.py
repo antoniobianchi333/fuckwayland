@@ -113,13 +113,11 @@ WL_TRANSFORM = {"normal": 0, "90": 1, "180": 2, "270": 3, "flipped": 4,
                 "flipped-90": 5, "flipped-180": 6, "flipped-270": 7}
 WL_TRANSFORM_NAME = {v: k for k, v in WL_TRANSFORM.items()}
 
-# The same enum read the way the spec's counter-clockwise 90 implies, which
-# is how both Mutter and KWin number transforms: libkscreen's
-# toKScreenRotation and Xwayland's wl_transform_to_xrandr agree that 1 is
-# xrandr `left` and 3 is `right`, where the sway table above has "90" ==
-# `right`. So the two numberings differ by a 90<->270 swap (1<->3, 5<->7).
-# The words below are what real xrandr prints through Mutter's XWayland for
-# each of the eight (all eight measured on GNOME 50).
+# The same enum read the way the spec's counter-clockwise 90 implies, which is how both Mutter and KWin number
+# transforms: libkscreen's toKScreenRotation and Xwayland's wl_transform_to_xrandr agree that 1 is xrandr `left`
+# and 3 is `right`, where the sway table above has "90" == `right`. So the two numberings differ by a 90<->270
+# swap (1<->3, 5<->7). The words below are what real xrandr prints through Mutter's XWayland for each of the
+# eight (all eight measured on GNOME 50).
 WL_SPEC_RANDR_VIEW = {0: ("normal", "normal"), 1: ("left", "normal"),
                       2: ("inverted", "normal"), 3: ("right", "normal"),
                       4: ("normal", "x"), 5: ("left", "x"),
@@ -251,11 +249,10 @@ def layout_box(outputs) -> tuple[int, int, int, int]:
 
 # -- wlroots scale arithmetic -------------------------------------------------
 #
-# Two single-precision steps, and both of them matter.  sway quantises any
-# scale it is given to 120ths -- fractional-scale-v1's unit -- in float32
-# (sway 1.9 output.c: `scale = round(scale * 120) / 120`), and
-# wlr_output_effective_resolution then divides the pixel size by that float
-# and truncates.  Modelling either step in double gets real layouts wrong.
+# Two single-precision steps, and both of them matter.  sway quantises any scale it is given to 120ths --
+# fractional-scale-v1's unit -- in float32 (sway 1.9 output.c: `scale = round(scale * 120) / 120`), and
+# wlr_output_effective_resolution then divides the pixel size by that float and truncates.  Modelling either
+# step in double gets real layouts wrong.
 SCALE_STEPS = 120
 WL_FIXED_UNIT = 256
 
@@ -274,13 +271,11 @@ def round_half_away(x: float) -> int:
 def wlr_scale(scale: float, wire: str = "text") -> float:
     """The scale a wlroots compositor really ends up running.
 
-    What it quantises depends on how the number reached it.  The sway IPC
-    takes it as text (`output NAME scale 1.03`, printed with %g and read back
-    with strtof); zwlr_output_management takes a wl_fixed, and wayland_mini's
-    marshaller truncates to 256ths on the way out.  So `--scale 1.03` runs as
-    1.0333 on the sway backend and as 1.025 on the wlr one, and a predicted
-    logical size has to know which it is being asked about -- placing the
-    neighbour of a fractionally scaled output against the wrong one leaves a
+    What it quantises depends on how the number reached it.  The sway IPC takes it as text
+    (`output NAME scale 1.03`, printed with %g and read back with strtof); zwlr_output_management takes a
+    wl_fixed, and wayland_mini's marshaller truncates to 256ths on the way out.  So `--scale 1.03` runs as
+    1.0333 on the sway backend and as 1.025 on the wlr one, and a predicted logical size has to know which it is
+    being asked about -- placing the neighbour of a fractionally scaled output against the wrong one leaves a
     gap or an overlap of 1-10 px that nobody asked for."""
     if wire == "fixed":
         scale = int(scale * WL_FIXED_UNIT) / float(WL_FIXED_UNIT)
@@ -290,14 +285,13 @@ def wlr_scale(scale: float, wire: str = "text") -> float:
 
 
 def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float) -> tuple[int, int]:
-    """sway/wlroots logical dimensions: the transform swap, then
-    wlr_output_effective_resolution -- `*width /= output->scale` with an int
-    on the left and a C float on the right, so a single-precision division
-    truncated back to an int (observed: 1111/1.5->740, 1281/2->640,
-    1280/1.5->853, and 1920/1.6->1200 where a double division says 1199).
+    """sway/wlroots logical dimensions: the transform swap, then wlr_output_effective_resolution --
+    `*width /= output->scale` with an int on the left and a C float on the right, so a single-precision division
+    truncated back to an int (observed: 1111/1.5->740, 1281/2->640, 1280/1.5->853, and 1920/1.6->1200 where a
+    double division says 1199).
 
-    `scale` is what the compositor RUNS, not what was asked for: a prediction
-    passes it through wlr_scale() first."""
+    `scale` is what the compositor RUNS, not what was asked for: a prediction passes it through wlr_scale()
+    first."""
     if transform_swaps(sway_tf):
         px_w, px_h = px_h, px_w
     return (int(f32(f32(px_w) / f32(scale))), int(f32(f32(px_h) / f32(scale))))
@@ -356,9 +350,8 @@ class SwayIPC:
         return results
 
     def run_collect(self, command: str):
-        """RUN_COMMAND without raising: sway runs every ';'-joined subcommand
-        regardless of individual failures, so the caller can act on the ones
-        that succeeded (e.g. still position outputs a partial phase-1
+        """RUN_COMMAND without raising: sway runs every ';'-joined subcommand regardless of individual failures,
+        so the caller can act on the ones that succeeded (e.g. still position outputs a partial phase-1
         configured) before reporting the failure."""
         return self.msg(RUN_COMMAND, command)
 
@@ -372,10 +365,9 @@ class SwayIPC:
 # -- state file ---------------------------------------------------------------
 
 def _state_path() -> str:
-    """The state file in session.runtime_dir(). A layout cache is never worth
-    failing a command for, so a runtime dir we cannot have degrades to the
-    0.2 name in shared /tmp -- where _read_state's checks below are what
-    stand between us and a planted file."""
+    """The state file in session.runtime_dir(). A layout cache is never worth failing a command for, so a
+    runtime dir we cannot have degrades to the 0.2 name in shared /tmp -- where _read_state's checks below are
+    what stand between us and a planted file."""
     try:
         return os.path.join(session.runtime_dir(), "wxrandr-state.json")
     except CmdError:
@@ -385,18 +377,14 @@ def _state_path() -> str:
 def _read_state(path: str) -> dict:
     """The state dict on disk, or `{}` when it is not ours to trust.
 
-    This file decides what wxrandr does next: which pid `--brightness` sends
-    SIGTERM to when it drops a gamma hold, the mode lines `--newmode` added,
-    which output is primary, what mode a re-enabled output goes back to. With
-    no XDG_RUNTIME_DIR -- which is every `sudo` run, and cron -- it lives in
-    the private directory session.runtime_dir() makes, or, when even that
-    cannot be made ours, in world-writable /tmp under a guessable name, where
-    another local user can create it before we do and choose those answers,
-    including the pid a root wxrandr signals. The state is a cache and never
-    load-bearing, so anything we cannot prove is ours (a symlink, another
-    user's file, a file others may write) is ignored rather than obeyed.
-    Group-writable is left alone: that is the default umask on some
-    distributions, and a group is not the open door /tmp is."""
+    This file decides what wxrandr does next: which pid `--brightness` sends SIGTERM to when it drops a gamma
+    hold, the mode lines `--newmode` added, which output is primary, what mode a re-enabled output goes back to.
+    With no XDG_RUNTIME_DIR -- which is every `sudo` run, and cron -- it lives in the private directory
+    session.runtime_dir() makes, or, when even that cannot be made ours, in world-writable /tmp under a
+    guessable name, where another local user can create it before we do and choose those answers, including the
+    pid a root wxrandr signals. The state is a cache and never load-bearing, so anything we cannot prove is ours
+    (a symlink, another user's file, a file others may write) is ignored rather than obeyed. Group-writable is
+    left alone: that is the default umask on some distributions, and a group is not the open door /tmp is."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError:
@@ -420,12 +408,11 @@ def _read_state(path: str) -> dict:
 
 
 def _merge3(base: dict, ours: dict, theirs: dict) -> dict:
-    """Three-way merge of one state key across a concurrent writer: `base` is
-    the value we loaded, `ours` our in-memory edits, `theirs` what is on disk
-    now (possibly another wxrandr's write). We start from `theirs` so a
-    sibling's changes survive, then replay only the entries WE actually
-    touched (added / changed / deleted) — so two parallel --brightness runs on
-    different outputs keep both gamma holder records instead of clobbering."""
+    """Three-way merge of one state key across a concurrent writer: `base` is the value we loaded, `ours` our
+    in-memory edits, `theirs` what is on disk now (possibly another wxrandr's write). We start from `theirs` so
+    a sibling's changes survive, then replay only the entries WE actually touched (added / changed / deleted) —
+    so two parallel --brightness runs on different outputs keep both gamma holder records instead of
+    clobbering."""
     result = dict(theirs)
     for k in set(base) | set(ours):
         if k not in ours:                       # we removed it
@@ -447,9 +434,8 @@ def _merge3(base: dict, ours: dict, theirs: dict) -> dict:
 
 
 class State:
-    """Per-compositor persisted oddments: primary output, user mode lines
-    (--newmode), mode->output attachments (--addmode), gamma holder pids,
-    last known mode of outputs wxrandr turned off."""
+    """Per-compositor persisted oddments: primary output, user mode lines (--newmode), mode->output attachments
+    (--addmode), gamma holder pids, last known mode of outputs wxrandr turned off."""
 
     def __init__(self, key: str, path: str | None = None):
         self.path = path or _state_path()
@@ -470,9 +456,8 @@ class State:
         except OSError:
             lock_fd = None  # locking unavailable: proceed best-effort
         try:
-            # re-read under the lock and merge, so a concurrent wxrandr's
-            # writes (other compositor keys, or another output's gamma record
-            # under this key) are not lost by our snapshot-then-replace
+            # re-read under the lock and merge, so a concurrent wxrandr's writes (other compositor keys, or
+            # another output's gamma record under this key) are not lost by our snapshot-then-replace
             disk = _read_state(self.path)
             theirs = disk.get(self.key)
             theirs = theirs if isinstance(theirs, dict) else {}
@@ -483,11 +468,10 @@ class State:
             self._orig = copy.deepcopy(merged)
             tmp = "%s.%d.tmp" % (self.path, os.getpid())
             try:
-                # O_EXCL|O_NOFOLLOW: the default state path is under /tmp
-                # when there is no XDG_RUNTIME_DIR, so the name is guessable
-                # and the directory is shared.  A symlink planted there must
-                # not be written through, and a leftover from a crashed run
-                # of ours (the name carries our pid) is unlinked, not opened.
+                # O_EXCL|O_NOFOLLOW: the default state path is under /tmp when there is no XDG_RUNTIME_DIR, so
+                # the name is guessable and the directory is shared.  A symlink planted there must not be
+                # written through, and a leftover from a crashed run of ours (the name carries our pid) is
+                # unlinked, not opened.
                 flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
                 try:
                     fd = os.open(tmp, flags, 0o600)
@@ -525,12 +509,10 @@ class State:
 
     # custom modes -----------------------------------------------------------
     def _container(self, key: str) -> dict:
-        """One of the store's sub-dicts, coerced.  The state file is a plain
-        JSON file, hand-editable by design and shared by every wxrandr in the
-        session: a value of the wrong type used to survive setdefault() and
-        come back as a str, an int or a list, whose next [] or .get() raises
-        a TypeError somewhere else entirely.  __init__ already does exactly
-        this for the top level."""
+        """One of the store's sub-dicts, coerced.  The state file is a plain JSON file, hand-editable by design
+        and shared by every wxrandr in the session: a value of the wrong type used to survive setdefault() and
+        come back as a str, an int or a list, whose next [] or .get() raises a TypeError somewhere else
+        entirely.  __init__ already does exactly this for the top level."""
         d = self.d.get(key)
         if not isinstance(d, dict):
             d = self.d[key] = {}
@@ -580,9 +562,8 @@ class State:
 class WlrOutputs:
     """zwlr_output_management_unstable_v1 client over wayland_mini.
 
-    Serves two roles: enrich queries (physical mm, preferred flags, make/
-    model/serial — data sway IPC lacks) and apply whole-layout configurations
-    atomically (the generic-wlroots backend)."""
+    Serves two roles: enrich queries (physical mm, preferred flags, make/model/serial — data sway IPC lacks) and
+    apply whole-layout configurations atomically (the generic-wlroots backend)."""
 
     name = "wlroots"
 
@@ -724,9 +705,8 @@ class WlrOutputs:
                 if not self.conn.dispatch(timeout=1.0):
                     continue
         finally:
-            # whatever happens in here, the socket keeps a deadline: the
-            # post-apply re-read must not block forever on a compositor that
-            # has gone quiet (kwin.py carries the same guard)
+            # whatever happens in here, the socket keeps a deadline: the post-apply re-read must not block
+            # forever on a compositor that has gone quiet (kwin.py carries the same guard)
             try:
                 self.conn.sock.settimeout(10.0)
             except OSError:
@@ -757,14 +737,12 @@ class WlrOutputs:
         return predicted_dims(t, state, wire="fixed")
 
     def verify(self, state: "State", targets: list):
-        """--dryrun: zwlr_output_management can only be asked by applying,
-        and an apply is what a dryrun must not do, so there is nothing to
-        send here."""
+        """--dryrun: zwlr_output_management can only be asked by applying, and an apply is what a dryrun must
+        not do, so there is nothing to send here."""
 
     def apply(self, state: "State", targets: list, persistent: bool = False) -> list:
-        """Single atomic zwlr_output_configuration apply (positions resolved
-        against predicted logical sizes — same math wlroots uses), then the
-        fresh snapshot. `persistent` is accepted for contract parity and
+        """Single atomic zwlr_output_configuration apply (positions resolved against predicted logical sizes —
+        same math wlroots uses), then the fresh snapshot. `persistent` is accepted for contract parity and
         ignored: wlroots stores no layout of its own."""
         dims = {}
         for t in targets:
@@ -772,9 +750,8 @@ class WlrOutputs:
                 dims[t.name] = predicted_dims(t, state, wire="fixed")
         pos = resolve_positions(targets, dims)
         self.send({t.name: t for t in targets}, pos)
-        # re-read the heads for the post-apply query.  A compositor that
-        # accepted the configuration and then stopped answering gets a
-        # sentence rather than the socket's own `timed out`.
+        # re-read the heads for the post-apply query.  A compositor that accepted the configuration and then
+        # stopped answering gets a sentence rather than the socket's own `timed out`.
         try:
             self.conn.roundtrip()
             return snapshot_wlr(self, state)
@@ -793,10 +770,9 @@ def wlr_snapshot_safe():
 # -- unified snapshot ---------------------------------------------------------
 
 def finish_modes(st: OutputState, customs: list):
-    """The last two steps of every backend's snapshot: xrandr always marks
-    one mode preferred, so a compositor that flags none makes the first
-    listed one preferred; then the state file's custom modes join the list
-    (they are ours, no compositor knows them)."""
+    """The last two steps of every backend's snapshot: xrandr always marks one mode preferred, so a compositor
+    that flags none makes the first listed one preferred; then the state file's custom modes join the list (they
+    are ours, no compositor knows them)."""
     if not any(m.preferred for m in st.modes) and st.modes:
         st.modes[0].preferred = True
     st.modes.extend(customs)
@@ -851,9 +827,8 @@ def snapshot_sway(ipc: SwayIPC, state: State, wlr=None) -> list:
         if st.active and cm:
             st.current = Mode(w=cm.get("width", 0), h=cm.get("height", 0), refresh_mhz=cm.get("refresh", 0))
             for m in st.modes + customs:
-                # a custom mode currently applied via `mode --custom` comes
-                # back nameless from sway; match it up by w/h/refresh so the
-                # named row gets the `*`
+                # a custom mode currently applied via `mode --custom` comes back nameless from sway; match it up
+                # by w/h/refresh so the named row gets the `*`
                 if (m.w, m.h) == (st.current.w, st.current.h) and abs(
                         m.refresh_mhz - st.current.refresh_mhz) <= 1:
                     st.current = m
@@ -868,8 +843,8 @@ def snapshot_sway(ipc: SwayIPC, state: State, wlr=None) -> list:
 def snapshot_wlr(wlr: WlrOutputs, state: State | None = None) -> list:
     """OutputState list from zwlr head events alone (generic wlroots).
 
-    `state` may be None for a caller that wants the live layout and nothing
-    else: the state file only ever adds custom modes to the lists."""
+    `state` may be None for a caller that wants the live layout and nothing else: the state file only ever adds
+    custom modes to the lists."""
     outs = []
     for i, h in enumerate(wlr.live_heads()):
         st = OutputState(
@@ -989,9 +964,8 @@ def mode_interlaced(m: Mode) -> bool:
 def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
                tolerance: float | None = None,
                interlaced: bool | None = False) -> Mode | None:
-    """The real (mode-id bearing) mode of size w x h: nearest refresh when a
-    rate is given (within `tolerance` Hz if set), else the first listed.
-    `interlaced=None` leaves the flag out of the match, for a compositor
+    """The real (mode-id bearing) mode of size w x h: nearest refresh when a rate is given (within `tolerance`
+    Hz if set), else the first listed. `interlaced=None` leaves the flag out of the match, for a compositor
     whose mode list carries no interlace bit to compare against."""
     cands = [m for m in modes if m.mode_id and (m.w, m.h) == (w, h)
              and (interlaced is None or mode_interlaced(m) == interlaced)]
@@ -1006,16 +980,14 @@ def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
 
 
 def resolve_real_mode(t: Target, state: State, interlace_known: bool = True) -> Mode:
-    """The real mode an enabled target will run: the stanza's, else the
-    current one, else the mode wxrandr disabled it at (state file), else the
-    preferred one. A custom (--newmode) mode is only applicable when a real
-    mode of the same size and rate exists -- a compositor that hands out
-    mode objects or ids cannot be given a modeline.
+    """The real mode an enabled target will run: the stanza's, else the current one, else the mode wxrandr
+    disabled it at (state file), else the preferred one. A custom (--newmode) mode is only applicable when a
+    real mode of the same size and rate exists -- a compositor that hands out mode objects or ids cannot be
+    given a modeline.
 
-    `interlace_known` says whether this compositor's mode list carries the
-    interlace flag. Mutter's does, so a custom interlaced mode may only
-    resolve onto an interlaced real one; KWin's modes are flagless, and
-    matching them against a flag none of them can carry would find nothing.
+    `interlace_known` says whether this compositor's mode list carries the interlace flag. Mutter's does, so a
+    custom interlaced mode may only resolve onto an interlaced real one; KWin's modes are flagless, and matching
+    them against a flag none of them can carry would find nothing.
     """
     o = t.output
     want = False if interlace_known else None
@@ -1044,10 +1016,9 @@ def resolve_real_mode(t: Target, state: State, interlace_known: bool = True) -> 
 
 
 def build_targets(outputs: list, stanzas: list, state: State, global_auto: bool = False) -> list:
-    """Match stanzas to outputs and settle everything except positions.
-    Unknown --output names warn (`warning: output %s not found; ignoring`,
-    exit stays 0) exactly like xrandr; relatives naming unknown outputs are
-    fatal later, in resolve_positions."""
+    """Match stanzas to outputs and settle everything except positions. Unknown --output names warn
+    (`warning: output %s not found; ignoring`, exit stays 0) exactly like xrandr; relatives naming unknown
+    outputs are fatal later, in resolve_positions."""
     by_name = {o.name: o for o in outputs}
     targets = {}
     for o in outputs:
@@ -1072,11 +1043,9 @@ def build_targets(outputs: list, stanzas: list, state: State, global_auto: bool 
             t.enabled = True
         if s.auto:
             t.enabled = True
-            # xrandr set_name_preferred (xrandr.c:1820): --auto on a connected
-            # output with no explicit mode switches it to the PREFERRED mode,
-            # even when it is already active on another one — so re-derive
-            # whenever the stanza carries no mode/rate/preferred (not only when
-            # t.mode happens to be unset).
+            # xrandr set_name_preferred (xrandr.c:1820): --auto on a connected output with no explicit mode
+            # switches it to the PREFERRED mode, even when it is already active on another one — so re-derive
+            # whenever the stanza carries no mode/rate/preferred (not only when t.mode happens to be unset).
             if s.mode is None and s.rate is None and not s.preferred:
                 try:
                     t.mode = _find_mode_for(o, None, None, True)
@@ -1117,9 +1086,8 @@ def build_targets(outputs: list, stanzas: list, state: State, global_auto: bool 
 
 
 def predicted_dims(t: Target, state: State, wire: str = "text") -> tuple[int, int]:
-    """Pending logical size of an enabled target (for dryrun + wlr backend +
-    relative math when we cannot re-read).  `wire` is how the scale will
-    reach the compositor -- "text" over the sway IPC, "fixed" over
+    """Pending logical size of an enabled target (for dryrun + wlr backend + relative math when we cannot
+    re-read).  `wire` is how the scale will reach the compositor -- "text" over the sway IPC, "fixed" over
     zwlr_output_management -- because that decides which 120th it lands on."""
     mode = t.mode
     if mode is None:
@@ -1134,11 +1102,9 @@ def predicted_dims(t: Target, state: State, wire: str = "text") -> tuple[int, in
 
 
 def resolve_positions(targets: list, dims: dict) -> dict:
-    """xrandr set_positions() (xrandr.c:1964) against PENDING geometry:
-    iterative resolution so chains within one invocation work, fatal on
-    circular relations, then the whole layout is normalized so
-    min x = min y = 0. `dims` maps name -> (w, h) pending logical size.
-    Returns {name: (x, y)} for every enabled output."""
+    """xrandr set_positions() (xrandr.c:1964) against PENDING geometry: iterative resolution so chains within
+    one invocation work, fatal on circular relations, then the whole layout is normalized so min x = min y = 0.
+    `dims` maps name -> (w, h) pending logical size. Returns {name: (x, y)} for every enabled output."""
     by_name = {t.name: t for t in targets}
     pos = {}
     pending = set()
@@ -1236,9 +1202,8 @@ def phase1_commands(targets: list) -> list:
 
 
 def position_commands(targets: list, pos: dict) -> list:
-    """Pin every enabled output to its resolved position (also re-pins
-    untouched outputs: normalization can move the whole layout, and pinning
-    stops sway's auto-arranger from second-guessing the plan)."""
+    """Pin every enabled output to its resolved position (also re-pins untouched outputs: normalization can move
+    the whole layout, and pinning stops sway's auto-arranger from second-guessing the plan)."""
     cmds = []
     for t in targets:
         if t.enabled and t.name in pos:
@@ -1248,11 +1213,10 @@ def position_commands(targets: list, pos: dict) -> list:
 
 
 def _settle_modes(ipc: SwayIPC, state: State, targets: list):
-    """Wait (bounded ~1s) until the compositor's re-read logical sizes match
-    what we asked for, so resolve_positions packs against fresh geometry.
-    Replaces a fixed settle sleep that raced under load; on a mismatch that
-    never converges (a rounding quirk) it simply times out and the caller
-    falls back to whatever sway reports — no worse than the old sleep."""
+    """Wait (bounded ~1s) until the compositor's re-read logical sizes match what we asked for, so
+    resolve_positions packs against fresh geometry. Replaces a fixed settle sleep that raced under load; on a
+    mismatch that never converges (a rounding quirk) it simply times out and the caller falls back to whatever
+    sway reports — no worse than the old sleep."""
     want = {t.name: predicted_dims(t, state) for t in targets if t.changed and t.enabled}
     if not want:
         return
@@ -1268,9 +1232,8 @@ def _settle_modes(ipc: SwayIPC, state: State, targets: list):
 
 
 def record_lastmodes(state: State, targets: list):
-    """Remember the mode of every output this run switches off, so that a
-    later --auto can bring it back at the one it was running: a disabled
-    output has no current mode left to ask the compositor for."""
+    """Remember the mode of every output this run switches off, so that a later --auto can bring it back at the
+    one it was running: a disabled output has no current mode left to ask the compositor for."""
     for t in targets:
         if t.changed and not t.enabled and t.output.active:
             cur = t.output.current
@@ -1279,17 +1242,15 @@ def record_lastmodes(state: State, targets: list):
 
 
 def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
-    """Two-phase apply: (1) modes/transforms/scales/enable/disable in one
-    RUN_COMMAND, (2) re-read actual logical sizes, resolve positions against
-    them, pin all positions in a second RUN_COMMAND. Returns the re-read
-    OutputState list. Wayland has no fb concept, so unlike xrandr there is no
-    screen-resize step in between.
+    """Two-phase apply: (1) modes/transforms/scales/enable/disable in one RUN_COMMAND, (2) re-read actual
+    logical sizes, resolve positions against them, pin all positions in a second RUN_COMMAND. Returns the
+    re-read OutputState list. Wayland has no fb concept, so unlike xrandr there is no screen-resize step in
+    between.
 
-    Phase 1 is not raise-on-first-failure: sway runs every ';'-joined
-    subcommand regardless, so a mid-batch rejection would otherwise leave the
-    survivors re-moded but un-positioned for sway's auto-arranger to scramble.
-    We collect the results, still position everything that IS enabled, then
-    re-raise the first failure."""
+    Phase 1 is not raise-on-first-failure: sway runs every ';'-joined subcommand regardless, so a mid-batch
+    rejection would otherwise leave the survivors re-moded but un-positioned for sway's auto-arranger to
+    scramble. We collect the results, still position everything that IS enabled, then re-raise the first
+    failure."""
     record_lastmodes(state, targets)
     p1 = phase1_commands(targets)
     p1_err = None
@@ -1327,12 +1288,11 @@ def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
 
 
 class SwayBackend:
-    """The sway/i3 IPC backend in the shape all four of them share:
-    snapshot, predicted_dims, verify, apply, close and a name.
+    """The sway/i3 IPC backend in the shape all four of them share: snapshot, predicted_dims, verify, apply,
+    close and a name.
 
-    It holds the IPC socket and, when the compositor also speaks
-    zwlr_output_management, the connection whose head data enriches a query
-    with what sway IPC does not report (physical mm, preferred flags,
+    It holds the IPC socket and, when the compositor also speaks zwlr_output_management, the connection whose
+    head data enriches a query with what sway IPC does not report (physical mm, preferred flags,
     make/model/serial)."""
 
     name = "sway"
@@ -1354,15 +1314,12 @@ class SwayBackend:
         return predicted_dims(t, state)
 
     def verify(self, state: State, targets: list):
-        """--dryrun: sway has nothing to validate against ahead of time.
-        RUN_COMMAND is the only request there is, and running it would be
-        the apply."""
+        """--dryrun: sway has nothing to validate against ahead of time. RUN_COMMAND is the only request there
+        is, and running it would be the apply."""
 
     def apply(self, state: State, targets: list, persistent: bool = False) -> list:
-        """The two-phase RUN_COMMAND apply, and the fresh snapshot it
-        re-reads. `persistent` is accepted for contract parity and ignored:
-        a sway layout lives in sway's own config, which is not ours to
-        write."""
+        """The two-phase RUN_COMMAND apply, and the fresh snapshot it re-reads. `persistent` is accepted for
+        contract parity and ignored: a sway layout lives in sway's own config, which is not ours to write."""
         return apply_sway(self.ipc, state, targets)
 
     def close(self):
@@ -1417,9 +1374,8 @@ def render_output_header(o: OutputState, primary: str | None, verbose=False, ids
         if verbose and o.current is not None and ids is not None:
             line += " (0x%x)" % mode_xid(ids, o.current)
         rot, refl = RANDR_VIEW.get(o.transform, ("normal", "normal"))
-        # xrandr's rotation field carries the reflection bits too: any
-        # reflection makes the whole rotation+reflection phrase print
-        # (`normal X axis`), xrandr.c:3758
+        # xrandr's rotation field carries the reflection bits too: any reflection makes the whole
+        # rotation+reflection phrase print (`normal X axis`), xrandr.c:3758
         if rot != "normal" or refl != "normal" or verbose:
             line += " " + rot
             if refl != "normal":
@@ -1454,15 +1410,13 @@ def render_mode_table(o: OutputState) -> list:
 
 
 def render_verbose_block(o: OutputState, state: State, crtc_index) -> list:
-    """Per-output verbose block. Fields with no Wayland source are printed
-    honestly (identity transform is the compositor default; gamma/brightness
-    come from our holder records, not a degenerate XWayland ramp)."""
+    """Per-output verbose block. Fields with no Wayland source are printed honestly (identity transform is the
+    compositor default; gamma/brightness come from our holder records, not a degenerate XWayland ramp)."""
     g = state.gamma().get(o.name, {})
     gam = g.get("gamma", [1.0, 1.0, 1.0])
     bright = g.get("brightness", 1.0)
-    # only report holder values while the holder is actually alive: after it
-    # is killed externally (kill -9, compositor restart) the compositor
-    # restored the neutral ramp, so stale 0.50 would be a lie.
+    # only report holder values while the holder is actually alive: after it is killed externally (kill -9,
+    # compositor restart) the compositor restored the neutral ramp, so stale 0.50 would be a lie.
     pid = g.get("pid")
     if pid is not None:
         if procs.proc_starttime(pid) != g.get("start"):
@@ -1495,9 +1449,8 @@ def render_prop_block(o: OutputState) -> list:
 
 
 def render_verbose_mode(m: Mode, ids: dict, current: bool) -> list:
-    """print_verbose_mode (xrandr.c:593). Custom modes carry a real modeline;
-    compositor modes only expose WxH+refresh, so their timings print as the
-    degenerate blanking-free modeline (total == display)."""
+    """print_verbose_mode (xrandr.c:593). Custom modes carry a real modeline; compositor modes only expose
+    WxH+refresh, so their timings print as the degenerate blanking-free modeline (total == display)."""
     if m.timings:
         hss, hse, htot, vss, vse, vtot = m.timings
         clock = m.clock_mhz
@@ -1551,12 +1504,10 @@ def render_query(outputs, state: State, screen_num=0, verbose=False, props=False
 
 
 def render_monitors(outputs, state: State, primary_first: bool = False) -> list:
-    """RandR 1.5 monitor listing (xrandr.c:4030). Every enabled output is one
-    automatic monitor; primary comes from the state file; mm are the physical
-    size when known, else synthesized exactly like XWayland (96dpi,
-    round-half-even). The X server lists the primary monitor first
-    (rrmonitor.c) — only observable where the compositor has a real primary
-    XWayland knows about (Mutter), hence opt-in."""
+    """RandR 1.5 monitor listing (xrandr.c:4030). Every enabled output is one automatic monitor; primary comes
+    from the state file; mm are the physical size when known, else synthesized exactly like XWayland (96dpi,
+    round-half-even). The X server lists the primary monitor first (rrmonitor.c) — only observable where the
+    compositor has a real primary XWayland knows about (Mutter), hence opt-in."""
     act = [o for o in outputs if o.active]
     if primary_first and state.primary:
         act.sort(key=lambda o: o.name != state.primary)
@@ -1571,9 +1522,8 @@ def render_monitors(outputs, state: State, primary_first: bool = False) -> list:
 
 
 def render_providers(outputs, compositor_name="sway") -> list:
-    """One synthesized provider for the compositor (documented invention:
-    Wayland has no GPU provider objects; cap 0xb mirrors a typical primary
-    GPU: Source Output, Sink Output, Sink Offload)."""
+    """One synthesized provider for the compositor (documented invention: Wayland has no GPU provider objects;
+    cap 0xb mirrors a typical primary GPU: Source Output, Sink Output, Sink Offload)."""
     n = len(outputs)
     return ["Providers: number : 1",
             "Provider 0: id: 0x1 cap: 0xb, Source Output, Sink Output, "

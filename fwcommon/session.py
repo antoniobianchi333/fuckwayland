@@ -47,25 +47,20 @@ FALLBACK_RUNTIME_DIR = "/tmp/wdotool-%d"
 
 
 def runtime_dir() -> str:
-    """The directory these tools keep session-lifetime files in -- the input
-    daemon's socket, the KWin script lock, the per-compositor state files:
-    $XDG_RUNTIME_DIR when the session gave us one, else a private
+    """The directory these tools keep session-lifetime files in -- the input daemon's socket, the KWin script
+    lock, the per-compositor state files: $XDG_RUNTIME_DIR when the session gave us one, else a private
     `/tmp/wdotool-<uid>`, created 0700 and then verified.
 
-    The fallback is not exotic: `sudo` drops XDG_RUNTIME_DIR, and so do
-    `su -`, cron and a bare container -- all documented ways to run these
-    tools. /tmp is world-writable, so any file we would put there under a
-    guessable name can be created by another local user first. For the
-    socket that means every request -- the text of `type` included -- is
-    delivered to them, and they can reply {"ok":true} so the caller sees a
-    success; for a state file it means they choose the answers it holds,
-    including the pid a root process signals. A directory nobody else may
-    enter closes that for everything inside it. It is verified after
-    creation because an attacker may have created it first.
+    The fallback is not exotic: `sudo` drops XDG_RUNTIME_DIR, and so do `su -`, cron and a bare container -- all
+    documented ways to run these tools. /tmp is world-writable, so any file we would put there under a guessable
+    name can be created by another local user first. For the socket that means every request -- the text of
+    `type` included -- is delivered to them, and they can reply {"ok":true} so the caller sees a success; for a
+    state file it means they choose the answers it holds, including the pid a root process signals. A directory
+    nobody else may enter closes that for everything inside it. It is verified after creation because an
+    attacker may have created it first.
 
-    Raises CmdError when that directory cannot be made, or is not ours.
-    Callers for which a runtime path is a convenience rather than a
-    contract catch it and fall back to their own name under /tmp."""
+    Raises CmdError when that directory cannot be made, or is not ours. Callers for which a runtime path is a
+    convenience rather than a contract catch it and fall back to their own name under /tmp."""
     rd = os.environ.get("XDG_RUNTIME_DIR")
     if rd and os.path.isdir(rd):
         return rd
@@ -112,10 +107,9 @@ def _has_wayland_socket(d: str) -> bool:
 
 
 def runtime_dir_candidates() -> list[tuple[int, str]]:
-    """(uid, dir) candidates, best first: dirs holding a wayland-* socket
-    (the graphical session) before the rest; within each group
-    $XDG_RUNTIME_DIR, then the sudo/pkexec-invoking user, then real users
-    (uid>=1000), then the others."""
+    """(uid, dir) candidates, best first: dirs holding a wayland-* socket (the graphical session) before the
+    rest; within each group $XDG_RUNTIME_DIR, then the sudo/pkexec-invoking user, then real users (uid>=1000),
+    then the others."""
     out = []
     d = os.environ.get("XDG_RUNTIME_DIR")
     if d and os.path.isdir(d):
@@ -151,17 +145,13 @@ def _scan(match) -> tuple[int, str] | None:
 def find_wayland_socket() -> tuple[int, str, str] | None:
     """(uid, runtime_dir, socket_path) of the graphical session, or None.
 
-    $WAYLAND_DISPLAY alone names the socket. It used to be honoured only
-    together with $XDG_RUNTIME_DIR, and the two do not always travel
-    together: under `sudo` XDG_RUNTIME_DIR is root's own (or unset) while
-    WAYLAND_DISPLAY survives, and a display named on the command line
-    (`wxrandr -d wayland-1`, which sets WAYLAND_DISPLAY and nothing else)
-    sets only the one variable. Requiring both dropped the named display on
-    the floor and scanned up whichever socket sorted first instead -- so
-    `sudo wxrandr -d wayland-1` answered about wayland-0. The name is
-    therefore looked for in $XDG_RUNTIME_DIR first (the in-session case,
-    unchanged) and then in the candidate runtime dirs; only a name that
-    exists nowhere falls through to the scan."""
+    $WAYLAND_DISPLAY alone names the socket. It used to be honoured only together with $XDG_RUNTIME_DIR, and the
+    two do not always travel together: under `sudo` XDG_RUNTIME_DIR is root's own (or unset) while
+    WAYLAND_DISPLAY survives, and a display named on the command line (`wxrandr -d wayland-1`, which sets
+    WAYLAND_DISPLAY and nothing else) sets only the one variable. Requiring both dropped the named display on
+    the floor and scanned up whichever socket sorted first instead -- so `sudo wxrandr -d wayland-1` answered
+    about wayland-0. The name is therefore looked for in $XDG_RUNTIME_DIR first (the in-session case, unchanged)
+    and then in the candidate runtime dirs; only a name that exists nowhere falls through to the scan."""
     rd = os.environ.get("XDG_RUNTIME_DIR")
     wd = os.environ.get("WAYLAND_DISPLAY")
     if wd and wd.startswith("/"):
@@ -194,12 +184,10 @@ def find_sway_socket() -> str | None:
 def find_user_bus() -> tuple[int, str] | None:
     """(uid, DBUS_SESSION_BUS_ADDRESS) of the graphical session, or None.
 
-    $DBUS_SESSION_BUS_ADDRESS wins when its socket sits next to a Wayland
-    socket (the in-session case). `ssh root@box` gets its own
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus from pam_systemd --
-    a bus with no compositor on it -- so a scanned bus that does live in the
-    graphical session's runtime dir beats an environment bus that does not.
-    With no Wayland socket anywhere the old order holds (env, then scan)."""
+    $DBUS_SESSION_BUS_ADDRESS wins when its socket sits next to a Wayland socket (the in-session case).
+    `ssh root@box` gets its own DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus from pam_systemd -- a bus
+    with no compositor on it -- so a scanned bus that does live in the graphical session's runtime dir beats an
+    environment bus that does not. With no Wayland socket anywhere the old order holds (env, then scan)."""
     addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
     env_hit = None
     if addr.startswith("unix:path="):
@@ -219,12 +207,10 @@ def find_user_bus() -> tuple[int, str] | None:
 
 
 def find_session_bus() -> tuple[int, str] | None:
-    """(uid, DBUS_SESSION_BUS_ADDRESS) of the bus the *compositor* lives on.
-    Additive (GNOME): under `ssh root@host` pam_systemd hands root its own
-    /run/user/0 (with a user bus of its own, where no Mutter is), so
-    find_user_bus() lands on the wrong bus. Anchor on the runtime dir that
-    owns the Wayland socket instead; $DBUS_SESSION_BUS_ADDRESS still wins
-    when it belongs to that same user (the normal session / `sudo -E`)."""
+    """(uid, DBUS_SESSION_BUS_ADDRESS) of the bus the *compositor* lives on. Additive (GNOME): under
+    `ssh root@host` pam_systemd hands root its own /run/user/0 (with a user bus of its own, where no Mutter is),
+    so find_user_bus() lands on the wrong bus. Anchor on the runtime dir that owns the Wayland socket instead;
+    $DBUS_SESSION_BUS_ADDRESS still wins when it belongs to that same user (the normal session / `sudo -E`)."""
     hit = find_wayland_socket()
     if hit is None:
         return find_user_bus()
@@ -267,19 +253,16 @@ _SESSION_LEADERS = ("gnome-shell", "startplasma-x11", "kwin_x11",
 
 
 def _shell_environ(uid: int | None) -> dict[str, str]:
-    """Environment of the session's own compositor or session leader
-    (readable as root or as that user), {} when not found/readable.
+    """Environment of the session's own compositor or session leader (readable as root or as that user), {} when
+    not found/readable.
 
-    More than gnome-shell, because a display manager may keep the X cookie
-    where no search can find it: SDDM writes /tmp/xauth_<random>, which is
-    neither ~/.Xauthority nor anything in a runtime directory, so on a
-    Plasma X11 session one of the session's own processes is the only place
-    a root shell (`ssh root@box`, cron) can learn the cookie path at all --
-    without it the original we hand over to dies with `Authorization
-    required, but no authorization protocol specified` where it should have
-    worked. The scan is uid-qualified, exactly as before, so it never reads
-    another user's session; what it trusts is a process of the target user,
-    the same trust ~/.Xauthority already gets."""
+    More than gnome-shell, because a display manager may keep the X cookie where no search can find it: SDDM
+    writes /tmp/xauth_<random>, which is neither ~/.Xauthority nor anything in a runtime directory, so on a
+    Plasma X11 session one of the session's own processes is the only place a root shell (`ssh root@box`, cron)
+    can learn the cookie path at all -- without it the original we hand over to dies with
+    `Authorization required, but no authorization protocol specified` where it should have worked. The scan is
+    uid-qualified, exactly as before, so it never reads another user's session; what it trusts is a process of
+    the target user, the same trust ~/.Xauthority already gets."""
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
     except OSError:
@@ -313,11 +296,10 @@ def _shell_environ(uid: int | None) -> dict[str, str]:
 
 
 def xwayland_running(uid: int | None = None) -> bool:
-    """Is an Xwayland server process alive (for `uid`'s session, or any)?
-    Mutter and KWin spawn Xwayland on demand and keep the listening socket
-    themselves, so the socket's existence says nothing -- and connecting to
-    it to find out would start the server. The process table answers
-    without side effects (comm is world-readable)."""
+    """Is an Xwayland server process alive (for `uid`'s session, or any)? Mutter and KWin spawn Xwayland on
+    demand and keep the listening socket themselves, so the socket's existence says nothing -- and connecting to
+    it to find out would start the server. The process table answers without side effects (comm is
+    world-readable)."""
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
     except OSError:
@@ -336,10 +318,9 @@ def xwayland_running(uid: int | None = None) -> bool:
 
 
 def find_x_display(uid: int | None = None) -> str | None:
-    """DISPLAY of the session's X server (Xwayland), or None. $DISPLAY when
-    its socket exists; else gnome-shell's own DISPLAY (procfs); else the
-    lowest-numbered X11_SOCKET_DIR/X* socket owned by the session user
-    (a root-owned one only when the user owns none: see below)."""
+    """DISPLAY of the session's X server (Xwayland), or None. $DISPLAY when its socket exists; else
+    gnome-shell's own DISPLAY (procfs); else the lowest-numbered X11_SOCKET_DIR/X* socket owned by the session
+    user (a root-owned one only when the user owns none: see below)."""
     d = os.environ.get("DISPLAY", "")
     if d.startswith(":"):
         num = d[1:].split(".")[0]
@@ -362,15 +343,12 @@ def find_x_display(uid: int | None = None) -> str | None:
             mine.append(int(num))
         elif owner == 0:
             root.append(int(num))
-    # The session user's own socket first, and only then a root-owned one.
-    # A Wayland compositor creates the listening socket for its Xwayland
-    # itself, as the session user; a display manager's greeter leaves a
-    # root-owned Xorg socket behind on the *lower* number, and taking that
-    # one (as "owner == uid or owner == 0, lowest wins" did) hands out a
-    # DISPLAY that the session's cookie cannot open -- the whole X plane
-    # then silently disappears from a `sudo` or `ssh root@` run, on KDE
-    # with SDDM in particular. A plain X11 session's Xorg *is* root-owned,
-    # so that stays the fallback.
+    # The session user's own socket first, and only then a root-owned one. A Wayland compositor creates the
+    # listening socket for its Xwayland itself, as the session user; a display manager's greeter leaves a
+    # root-owned Xorg socket behind on the *lower* number, and taking that one (as "owner == uid or owner == 0,
+    # lowest wins" did) hands out a DISPLAY that the session's cookie cannot open -- the whole X plane then
+    # silently disappears from a `sudo` or `ssh root@` run, on KDE with SDDM in particular. A plain X11
+    # session's Xorg *is* root-owned, so that stays the fallback.
     found = mine or root
     if found:
         return ":%d" % min(found)
@@ -378,11 +356,9 @@ def find_x_display(uid: int | None = None) -> str | None:
 
 
 def find_xauthority(uid: int | None = None) -> str | None:
-    """Cookie file for the session's X server, or None: $XAUTHORITY when it
-    exists; the session leader's own XAUTHORITY (gnome-shell, Plasma's
-    startplasma/kwin/plasmashell, xfce4-session, sway -- the only route to
-    SDDM's /tmp/xauth_<random>); the newest
-    <runtime dir>/.mutter-Xwaylandauth.* (Mutter) or xauth_* (GDM);
+    """Cookie file for the session's X server, or None: $XAUTHORITY when it exists; the session leader's own
+    XAUTHORITY (gnome-shell, Plasma's startplasma/kwin/plasmashell, xfce4-session, sway -- the only route to
+    SDDM's /tmp/xauth_<random>); the newest <runtime dir>/.mutter-Xwaylandauth.* (Mutter) or xauth_* (GDM);
     ~/.Xauthority of the session user."""
     p = os.environ.get("XAUTHORITY", "")
     if p and os.path.exists(p):

@@ -20,10 +20,9 @@ def cmd_set_num_desktops(ctx, args):
     if not rest:
         raise CmdError(usage.rstrip("\n"))
     n = _strtol(rest[0])
-    # B9: actually ask the compositor (the GNOME bridge has SetNWorkspaces and
-    # it works whenever Mutter's dynamic-workspaces is off). Only a genuine
-    # capability gap -- a compositor whose workspace count is not ours to
-    # choose -- degrades to a warning, like the other cosmetic no-ops.
+    # B9: actually ask the compositor (the GNOME bridge has SetNWorkspaces and it works whenever Mutter's
+    # dynamic-workspaces is off). Only a genuine capability gap -- a compositor whose workspace count is not
+    # ours to choose -- degrades to a warning, like the other cosmetic no-ops.
     try:
         ctx.backend().set_num_desktops(n)
     except CmdError as e:

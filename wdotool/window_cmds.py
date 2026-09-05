@@ -1,5 +1,5 @@
-"""Window commands: search/selectwindow/getactivewindow/... (cmd_search.c and
-friends). Output strings are byte-parity copies of the real xdotool.
+"""Window commands: search/selectwindow/getactivewindow/... (cmd_search.c and friends). Output strings are
+byte-parity copies of the real xdotool.
 
 Command contract per ctx.py: cmd_foo(ctx, args) -> tokens consumed."""
 
@@ -161,9 +161,8 @@ def cmd_search(ctx, args):
         try:
             rx = re.compile(pattern, re.IGNORECASE)
         except (re.error, RecursionError, OverflowError) as e:
-            # re.compile can also raise RecursionError (deeply nested groups)
-            # and OverflowError (huge repetition counts); C regcomp fails
-            # gracefully on those, so treat them all as a bad regex.
+            # re.compile can also raise RecursionError (deeply nested groups) and OverflowError (huge repetition
+            # counts); C regcomp fails gracefully on those, so treat them all as a bad regex.
             sys.stderr.write("Failed to compile regex: '%s'; error %s\n" % (pattern, e))
             rx_broken = True
 
@@ -188,10 +187,9 @@ def cmd_search(ctx, args):
                 # WM_CLASS class for X clients, app_id for native toplevels.
                 conds.append(rx.search(w.class_ or "") is not None)
             if want_classname:
-                # WM_CLASS *instance* -- `xterm -name myinst` is findable by
-                # "myinst" like it is under X11 (B4). Native Wayland
-                # toplevels have no instance, so they keep matching their
-                # app_id and --class/--classname stay equivalent there.
+                # WM_CLASS *instance* -- `xterm -name myinst` is findable by "myinst" like it is under X11 (B4).
+                # Native Wayland toplevels have no instance, so they keep matching their app_id and
+                # --class/--classname stay equivalent there.
                 conds.append(rx.search(w.instance or w.class_ or "") is not None)
             if want_role:
                 # Window roles do not exist on Wayland; match against ""
@@ -368,17 +366,14 @@ def cmd_getwindowgeometry(ctx, args):
 # ---------------------------------------------------------------------------
 # window actions
 
-# Bounded --sync waits (B3). xdotool's waits are bounded too -- xdo.c loops
-# MAX_TRIES (500) x 30ms = 15s and then quietly returns success -- but ours
-# looped for ever, so a windowsize --sync that Mutter snapped to a different
-# size, or ten concurrent `windowactivate --sync`, hung until the script was
-# killed (8-9 of 10 hung for 614s in the stress run). Ten seconds is generous
-# for any compositor round trip we make; WDOTOOL_SYNC_TIMEOUT overrides it in
-# seconds, and 0 restores the old wait-for-ever behaviour.
+# Bounded --sync waits (B3). xdotool's waits are bounded too -- xdo.c loops MAX_TRIES (500) x 30ms = 15s and
+# then quietly returns success -- but ours looped for ever, so a windowsize --sync that Mutter snapped to a
+# different size, or ten concurrent `windowactivate --sync`, hung until the script was killed (8-9 of 10 hung
+# for 614s in the stress run). Ten seconds is generous for any compositor round trip we make;
+# WDOTOOL_SYNC_TIMEOUT overrides it in seconds, and 0 restores the old wait-for-ever behaviour.
 #
-# `search --sync` is deliberately NOT bounded: its manpage entry is the one
-# that promises to "block until there are results", for scripts that launch
-# an application and wait for its window. selectwindow and behave are
+# `search --sync` is deliberately NOT bounded: its manpage entry is the one that promises to "block until there
+# are results", for scripts that launch an application and wait for its window. selectwindow and behave are
 # likewise unbounded by definition.
 SYNC_TIMEOUT = 10.0
 
@@ -536,9 +531,8 @@ def cmd_windowkill(ctx, args):
 def cmd_windowreparent(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowreparent")
     usage = "Usage: %s [window_source=%%1] window_destination\n" % cmd
-    # Alone among the window commands, xdotool's windowreparent answers the
-    # long --help (and every abbreviation of it) on stderr with rc 1, and
-    # only the short -h on stdout with rc 0. Measured against 3.20160805.1.
+    # Alone among the window commands, xdotool's windowreparent answers the long --help (and every abbreviation
+    # of it) on stderr with rc 1, and only the short -h on stdout with rc 0. Measured against 3.20160805.1.
     try:
         raw, nopts = getopt_long_only(cmd, args, "h", [("help", False)])
     except GetoptError as e:
@@ -622,10 +616,9 @@ def cmd_windowmove(ctx, args):
             msg = ("xdo_move_window reported an error while moving window %d" % wid)
             sys.stderr.write("%s\n" % msg)
             if not isinstance(e, SoftCmdError):
-                # A stale window id, a KWin script that failed, a compositor
-                # that said no: xdotool's own loop keeps going but returns
-                # the error, and exiting 0 here made every one of those look
-                # like a move that happened.
+                # A stale window id, a KWin script that failed, a compositor that said no: xdotool's own loop
+                # keeps going but returns the error, and exiting 0 here made every one of those look like a move
+                # that happened.
                 raise CmdError(msg) from None
             continue
         if opsync:
@@ -636,14 +629,12 @@ def cmd_windowmove(ctx, args):
     return nopts + used + 2
 
 
-# Mutter, like any window manager honouring WM_NORMAL_HINTS increments,
-# snaps a resize to the client's cell grid: an xterm asked for 497x392 stays
-# at 496x392, so "the size changed" never became true and windowsize --sync
-# waited for ever (B3a). xdotool's equivalent loop is bounded and its X11
-# clients usually take the exact pixels; on Wayland we additionally treat a
-# size the compositor has snapped to -- within one cell-ish tolerance of the
-# request -- as the answer, the way xdotool treats a size that already
-# satisfies the window's hints as done.
+# Mutter, like any window manager honouring WM_NORMAL_HINTS increments, snaps a resize to the client's cell
+# grid: an xterm asked for 497x392 stays at 496x392, so "the size changed" never became true and windowsize
+# --sync waited for ever (B3a). xdotool's equivalent loop is bounded and its X11 clients usually take the exact
+# pixels; on Wayland we additionally treat a size the compositor has snapped to -- within one cell-ish tolerance
+# of the request -- as the answer, the way xdotool treats a size that already satisfies the window's hints as
+# done.
 _SNAP_TOL = 32  # px; a terminal cell is at most ~24px tall, ~12px wide
 
 
@@ -751,12 +742,10 @@ def cmd_windowstate(ctx, args):
     if parsed is None:
         return len(args)
     opts, nopts = parsed
-    # The last --add/--remove/--toggle on the line wins, and that is parity,
-    # not an oversight: xdotool's own cmd_windowstate.c keeps a single
-    # action/arg_property pair and its getopt_long_only switch overwrites both
-    # in every arm, so `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` maximizes
-    # horizontally only there too (read from 4.20260303.1, the release this
-    # tree claims parity against). Applying each option would be a nicer
+    # The last --add/--remove/--toggle on the line wins, and that is parity, not an oversight: xdotool's own
+    # cmd_windowstate.c keeps a single action/arg_property pair and its getopt_long_only switch overwrites both
+    # in every arm, so `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` maximizes horizontally only there too (read
+    # from 4.20260303.1, the release this tree claims parity against). Applying each option would be a nicer
     # command and a different one; README says so under Compatibility.
     action = None
     prop = None
@@ -769,9 +758,8 @@ def cmd_windowstate(ctx, args):
     warg, used = _window_arg(ctx, args[nopts:], 0, usage)
     name = prop.upper()
     if name not in _EWMH_STATES:
-        # A name no _NET_WM_STATE has is a typo, not a capability gap: the
-        # backends turned it into "not supported by the <backend> backend",
-        # which read as "this desktop cannot do it" and sent people looking
+        # A name no _NET_WM_STATE has is a typo, not a capability gap: the backends turned it into "not
+        # supported by the <backend> backend", which read as "this desktop cannot do it" and sent people looking
         # for a compositor feature.
         raise CmdError(
             "windowstate: no such property %s\n"
@@ -782,9 +770,8 @@ def cmd_windowstate(ctx, args):
         try:
             why = ctx.backend().set_state(wid, name, action)
             if why:
-                # the compositor took the request and did not apply it; the
-                # X tools cannot tell either, so this is a warning, not a
-                # failure (wwmctl has a second route and uses it instead)
+                # the compositor took the request and did not apply it; the X tools cannot tell either, so this
+                # is a warning, not a failure (wwmctl has a second route and uses it instead)
                 sys.stderr.write("wdotool: %s\n" % why)
         except CmdError as e:
             has_error = True
@@ -843,9 +830,8 @@ _USAGE_BEHAVE = (
 
 
 def cmd_behave(ctx, args):
-    # Help and a wrong argument count are answered before the refusal: they
-    # are ours to get right, not something the compositor declines
-    # (behave_screen_edge has done it this way all along).
+    # Help and a wrong argument count are answered before the refusal: they are ours to get right, not something
+    # the compositor declines (behave_screen_edge has done it this way all along).
     cmd = getattr(ctx, "cmd_name", "behave")
     usage = _USAGE_BEHAVE % cmd
     parsed = _opts(cmd, args, "h", [("help", False)], usage)
