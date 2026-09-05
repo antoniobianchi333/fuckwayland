@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import select
 import shutil
 import socket
 import struct
@@ -21,6 +22,7 @@ import threading
 import time
 import unittest
 import warnings
+from unittest import mock
 from collections import deque
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -419,8 +421,13 @@ class MockBus:
     """dbus-daemon stand-in on a unix socket (a directory of its own so
     `unix:path=` parsing, percent-escapes and abstract sockets are testable)."""
 
-    def __init__(self, agree_fds=True, reject_auth=False, abstract=False, subdir=None):
+    def __init__(self, agree_fds=True, reject_auth=False, abstract=False, subdir=None,
+                 die_mid_auth=0):
         self.agree_fds, self.reject_auth = agree_fds, reject_auth
+        #: how many of the next connections die mid-auth: accepted, our AUTH
+        #: line left sitting unread, then closed -- which is ECONNRESET on the
+        #: client's read (and EPIPE on its next write)
+        self.die_mid_auth = die_mid_auth
         self.dir = tempfile.mkdtemp(prefix="dbus-mini-")
         d = os.path.join(self.dir, subdir) if subdir else self.dir
         os.makedirs(d, exist_ok=True)
@@ -454,6 +461,11 @@ class MockBus:
                 s, _ = self.srv.accept()
             except OSError:
                 return
+            if self.die_mid_auth > 0:
+                self.die_mid_auth -= 1
+                select.select([s], [], [], 5.0)   # let the AUTH line land...
+                s.close()                         # ...and never read it
+                continue
             c = _Conn(self, s)
             with self.lock:
                 self.conns.append(c)
@@ -1380,6 +1392,45 @@ class MockBusVariants(unittest.TestCase):
             self.assertIn("REJECTED EXTERNAL", cm.exception.message)
         finally:
             mock.close()
+
+    def test_a_bus_that_dies_mid_auth_is_a_dbus_error(self):
+        """authenticate() talks to the socket with raw sendall/recv, so the
+        ConnectionResetError from a peer that never drains our AUTH line used
+        to escape past Bus() -- and past backend_detect.session_bus(), which
+        catches DBusError only -- as a traceback out of wdotool and wwmctl."""
+        bus = MockBus(die_mid_auth=1)
+        try:
+            with self.assertRaises(DBusError) as cm:
+                Bus(bus.address, timeout=5.0)
+            self.assertEqual(cm.exception.name, ERR + "Disconnected")
+            self.assertIn("during authentication", cm.exception.message)
+            with Bus(bus.address) as ok:          # and the bus is still usable
+                self.assertTrue(ok.list_names())
+        finally:
+            bus.close()
+
+    def test_a_bus_that_dies_mid_auth_still_lets_root_retry_as_the_owner(self):
+        """The documented euid-0 retry fires on AuthFailed, Disconnected and
+        AccessDenied; a bare OSError defeated it, so a root caller never got
+        to the fork path at all. Real privileges are not needed: geteuid and
+        the setuid step are stubbed, the child authenticates as the owner uid
+        the retry chose."""
+        owner = os.getuid() or 424242            # never 0: root gets no retry
+        bus = MockBus(die_mid_auth=1)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)  # fork()
+                with mock.patch.object(dbus_mini.os, "geteuid", lambda: 0), \
+                     mock.patch.object(dbus_mini, "_drop_privileges", lambda uid: None), \
+                     mock.patch.object(Bus, "_owner_uid", lambda self: owner):
+                    conn = Bus(bus.address, timeout=5.0)
+            with conn:
+                self.assertEqual(conn.auth_path, "fork")
+                self.assertIn(conn.unique_name, conn.list_names())
+                self.assertEqual(bus.conn_of(conn.unique_name).auth_lines[0],
+                                 "AUTH EXTERNAL " + str(owner).encode().hex())
+        finally:
+            bus.close()
 
     def test_abstract_and_escaped_and_multi_address(self):
         mock = MockBus(abstract=True)
