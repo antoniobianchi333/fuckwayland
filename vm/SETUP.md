@@ -47,6 +47,12 @@ that *has* `/dev/kvm` is the other common case: Ubuntu's udev rules make it
 which an ssh login is not, so a user who works over ssh needs
 `sudo usermod -aG kvm $USER` and a new login.
 
+One level is not the limit. This document, `vm/setup-host.sh`, a `noble-gnome` golden
+image and a passing `vm/selftest.sh` were all checked on a machine that was itself a
+guest of a KVM host, with the rig's own guests one level below that again: slower at
+each level, but not different. What matters is that `/dev/kvm` works where you are,
+not how many machines are stacked above you.
+
 ## Sizing
 
 What the scripts ask for, per virtual machine (all of it changeable with `--cpus`,
@@ -235,6 +241,10 @@ installer's). Builds run one at a time per flavor and refuse to overwrite a gold
 without `--force`; two *different* flavors can build side by side on a machine with
 the memory for it.
 
+The same build with `--cpus 2 --mem 3G`, on two cores and 3.8 GB with KVM one level
+further down, took 17.2 minutes — and produced the image the roomy run produces:
+5.5 GB, the same 1695 packages. A smaller machine is slower, not less able.
+
 ## The self-test
 
 ```console
@@ -251,7 +261,17 @@ vmctl: noble-gnome-t: desktop painted its first frame 6s later
 
 52 seconds for GNOME with three other instances competing for the same cores, 35
 seconds on an idle host (`vm/README.md` says roughly 40; a desktop that starts more
-slowly takes correspondingly longer). What it asserts, step by step,
+slowly takes correspondingly longer); 143 seconds on the two cores above, 108 of them
+the guest's own boot.
+
+The self-test starts its instance with `vmctl start`'s defaults — 3 vCPU, 4 GB — and
+takes no options of its own, so a machine with less than that has to say so:
+
+```console
+$ SELFTEST_VM_ARGS='--cpus 2 --mem 3G' vm/selftest.sh noble-gnome
+```
+
+What it asserts, step by step,
 is under *Self-test* in `vm/README.md`; the two things that are easy to miss: it
 leaves the instance **running** for inspection (`vm/vmctl stop noble-gnome-t`, or
 `destroy`), and its three screenshots (1.3 MB each) stay in `/tmp/vmctl-selftest-<name>/`.

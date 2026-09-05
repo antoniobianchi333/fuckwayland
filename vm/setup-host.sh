@@ -96,7 +96,7 @@ build_memmb=6144
 build_args=
 if [ "$ncpu" -lt 4 ]; then build_cpus=$ncpu; fi
 if [ "$memmb" -gt 0 ]; then
-    ok "$ncpu vCPU, $((memmb / 1024)) GB of memory"
+    ok "$ncpu vCPU, $((memmb / 1024)).$(( memmb * 10 / 1024 % 10 )) GB of memory"
     # leave the machine itself about 768 MB; QEMU's resident size grows only to
     # what the guest actually touches, so this is the request, not a reservation.
     if [ $((memmb - 768)) -lt "$build_memmb" ]; then build_memmb=$((memmb - 768)); fi
