@@ -652,6 +652,12 @@ column is the ACL mask, nobody is in that group). Security-wise, whoever can
 open `/dev/uinput` can type as you; the rule limits that to the physically
 logged-in user — not to a group — which is the X11 status quo.
 
+The kernel device is also why none of these tools ever shows an
+authorization dialog: the route that makes GNOME and KDE ask — the desktop
+portal's RemoteDesktop/InputCapture, the one libei clients take — is one we
+never take. See **No authorization dialog** in the top-level `README.md` for
+what each desktop uses instead and for the measurement behind that claim.
+
 ## Uninstall
 
 ```sh

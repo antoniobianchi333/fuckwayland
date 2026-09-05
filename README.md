@@ -534,6 +534,52 @@ One gotcha while you are experimenting: `wdotool` keeps the virtual devices
 alive in a small `__daemon` process, and one started while access existed keeps
 injecting after the rule is removed. Log out, or kill it, to see the change.
 
+None of these routes goes through the desktop portal, so none of them raises
+its consent dialog — the next section is the measurement behind that.
+
+### No authorization dialog
+
+GNOME and KDE both show a consent dialog to an application that injects
+input through the **desktop portal** — the *Remote Desktop* / *Input
+Capture* prompt every libei client has to get past, once per session.
+Nothing here ever raises it, and nothing here ever raises a **polkit**
+prompt either: no tool of ours speaks to the portal at all, and none of them
+defines, calls or needs a PolicyKit action. There is nothing to switch off
+with `sudo` — there is no consent step on the path to begin with.
+
+What is on the path instead:
+
+* **GNOME and KDE Plasma** — the kernel's `/dev/uinput` for input, opened as
+  root or through the [udev rule](#input-access) above, and the compositor's
+  own session-bus interfaces for windows and displays (the [bridge
+  extension](#gnome) on GNOME, [KWin scripting](#kde-plasma) on KDE): plain
+  method calls with no authorization behind them.
+* **sway and the wlroots family** — `zwp_virtual_keyboard_v1` and
+  `zwlr_virtual_pointer_v1`, which the compositor hands to every client of
+  your socket; no root, no rule, nobody asked.
+* **X11 sessions** — the real `xdotool`, `wmctrl`, `xprop` and `xrandr`,
+  which predate portals entirely.
+
+**Measured, not assumed.** Six images — GNOME 46 and GNOME 50 (the 26.04
+default install off the ISO among them) and Plasma 5.27, 6.6 and 6.7 — with
+every command run three ways: as root, as a plain user with the udev rule,
+and as a plain user with neither. Watching throughout: the session bus for
+portal traffic, the system bus for polkit `CheckAuthorization` and
+`BeginAuthentication`, the window list for windows we did not open, and both
+screens compared pixel by pixel around every command. On all six, and for
+the installer and the udev rule as well as the tools: **no prompt, no window
+we did not open, and not one portal call from anything of ours.** The same
+rig pointed at a real portal client and at `pkexec` produced both dialogs on
+every image, so it does see one when there is one. `tests/test_no_portal.py`
+is what keeps it true.
+
+**The one prompt that does exist** is GNOME's own *Keep these display
+settings?*, and only an explicit `wxrandr --persistent` asks for it — that is
+what the flag is for, it is the only way a wxrandr layout reaches
+`monitors.xml`, and wxrandr says on stderr that it is coming (see [Keeping a
+layout](#keeping-a-layout)). Leave the flag off and nothing appears. KWin has
+no equivalent: it applies and saves at once, and says so.
+
 ### Installing over the originals
 
 These are drop-in clones, so the last step is usually to put them where your
@@ -739,6 +785,10 @@ real tools, whichever desktop is drawing it.
 All of it works **as the desktop user and as root** — `sudo`, `ssh root@box`, cron —
 because the session's compositor socket, session bus, `DISPLAY` and X cookie are
 found for you. **(e)** is the one exception, and it is not one we can fix.
+And on none of these desktops does any of it show an authorization dialog or
+touch the desktop portal — measured on six of the rig's images, GNOME 46 and
+50 and Plasma 5.27, 6.6 and 6.7: [No authorization
+dialog](#no-authorization-dialog).
 
 **(a)** With the differences in the [KDE Plasma](#kde-plasma) table above (raise,
 lower, shading, maximize on 5.27, minted window ids).
@@ -835,7 +885,9 @@ X11 session has Xorg, not Xwayland.
 Neither KWin nor Mutter implements either (on KWin the latter is an open
 feature request), so on GNOME and KDE the only capture route is the desktop
 portal, which asks the user for permission once per session — useless from a
-hotkey. wmirror says exactly that and exits 1, rather than half-working.
+hotkey, and the one thing these tools will not do ([No authorization
+dialog](#no-authorization-dialog)). wmirror says exactly that and exits 1,
+rather than half-working.
 
 ## Compatibility
 
@@ -1773,6 +1825,17 @@ vulnerability.
   Then the tools find the graphical session by scanning `/run/user/*` and
   logind, and talk to that user's compositor as root.
 
+**What is never asked at run time.** Nothing here uses the desktop portal, so
+GNOME's and KDE's *Remote Desktop* consent dialog never appears; nothing here
+uses PolicyKit, so no polkit agent window does either. Measured on GNOME 46
+and 50 and on Plasma 5.27, 6.6 and 6.7, and held there by
+`tests/test_no_portal.py` — see [No authorization
+dialog](#no-authorization-dialog). That is a deliberate choice, and this
+section is its cost: with no per-use prompt, everything is granted once and
+standing, by the bullets above — the udev rule, the bridge extension, or
+`sudo`. The only prompt any of it can raise is GNOME's *Keep these display
+settings?*, on an explicit `wxrandr --persistent`.
+
 **What is deliberately not defended against.** Anyone who can already run
 code as you: they can type through the daemon, read the same files and talk
 to the same buses — a same-uid boundary is not one we can enforce, and we do
@@ -1817,5 +1880,7 @@ and every head screenshotted. `vm/selftest.sh <flavor>` is its own check;
 
 The original sway rig (`mkvm.sh`, `run.sh`, `compositor.sh`) is still there and
 still works. `tests/` holds the suite: unit tests, wire-level fake compositors
-and X servers, live-compositor integration, hostile-input torture, and
-byte-parity oracles against the real xdotool, wmctrl, xprop and xrandr.
+and X servers, live-compositor integration, hostile-input torture,
+byte-parity oracles against the real xdotool, wmctrl, xprop and xrandr, and
+one static check that no package ever reaches for the desktop portal or
+PolicyKit ([No authorization dialog](#no-authorization-dialog)).
