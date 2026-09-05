@@ -96,28 +96,13 @@ def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
     return (round_half_away(px_w / scale), round_half_away(px_h / scale))
 
 
-# What real xrandr prints through Mutter's XWayland for each Mutter transform
-# (measured on GNOME 50, all eight): Xwayland's wl_transform_to_xrandr maps
-# n -> RR_Rotate_(90*n) [| RR_Reflect_X], and the spec's 90 is
-# counter-clockwise, i.e. xrandr `left`. sway's verified table
-# (core.RANDR_VIEW) has "90" == `right`, so the two numberings differ by a
-# 90<->270 swap (1<->3, 5<->7); the renderer keeps speaking sway names.
-MUTTER_RANDR_VIEW = {0: ("normal", "normal"), 1: ("left", "normal"),
-                     2: ("inverted", "normal"), 3: ("right", "normal"),
-                     4: ("normal", "x"), 5: ("left", "x"),
-                     6: ("inverted", "x"), 7: ("right", "x")}
-SWAY_FROM_MUTTER = {n: next(tf for tf, v in core.RANDR_VIEW.items() if v == view)
-                    for n, view in MUTTER_RANDR_VIEW.items()}
-MUTTER_FROM_SWAY = {tf: n for n, tf in SWAY_FROM_MUTTER.items()}
-
-
-def to_transform(sway_tf: str) -> int:
-    """sway transform name (what core/RANDR_VIEW use) -> Mutter transform."""
-    return MUTTER_FROM_SWAY.get(sway_tf, 0)
-
-
-def from_transform(n: int) -> str:
-    return SWAY_FROM_MUTTER.get(n, "normal")
+# Mutter numbers transforms exactly as the wl_output spec does, so the
+# measured table lives in core (WL_SPEC_RANDR_VIEW) next to the sway one it
+# is a permutation of. These are this module's names for it.
+MUTTER_RANDR_VIEW = core.WL_SPEC_RANDR_VIEW
+MUTTER_FROM_SWAY = core.WL_SPEC_FROM_SWAY
+to_transform = core.to_wl_spec_transform
+from_transform = core.from_wl_spec_transform
 
 
 def snap_scale(scale: float, supported) -> float:
@@ -129,25 +114,9 @@ def snap_scale(scale: float, supported) -> float:
     return min(supported, key=lambda s: (abs(s - scale), s))
 
 
-def _interlaced(m: Mode) -> bool:
-    return any(f.lower() == "interlace" for f in m.flags)
-
-
-def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
-               tolerance: float | None = None,
-               interlaced: bool = False) -> Mode | None:
-    """The real (mode-id bearing) mode of size w x h: nearest refresh when a
-    rate is given (within `tolerance` Hz if set), else the first listed."""
-    cands = [m for m in modes if m.mode_id and (m.w, m.h) == (w, h)
-             and _interlaced(m) == interlaced]
-    if not cands:
-        return None
-    if rate_hz:
-        best = min(cands, key=lambda m: abs(m.refresh_hz - rate_hz))
-        if tolerance is not None and abs(best.refresh_hz - rate_hz) > tolerance:
-            return None
-        return best
-    return cands[0]
+# Mutter's mode list carries the interlace flag, so core.match_mode's
+# default (progressive unless asked) is the right one here.
+match_mode = core.match_mode
 
 
 def _mode_from_wire(mid: str, w: int, h: int, rate: float, mp: dict) -> Mode:
@@ -459,9 +428,7 @@ class MutterOutputs:
                                               self.layout_mode)
                     current_ids[connector] = st.current.mode_id
                 st.primary = lm_of[connector] is primary_lm
-            if not any(m.preferred for m in st.modes) and st.modes:
-                st.modes[0].preferred = True
-            st.modes.extend(state.modes_for_output(connector))
+            core.finish_modes(st, state.modes_for_output(connector))
             outs.append(st)
         self.current_config = _canon([
             {"x": lm[0], "y": lm[1], "scale": lm[2], "transform": lm[3],
@@ -510,30 +477,9 @@ class MutterOutputs:
         """The real mode an enabled target will run: the stanza's, else the
         current one, else the mode wxrandr disabled it at (state file), else
         the preferred one. A custom (--newmode) mode is only applicable when
-        a real mode of the same size and rate exists."""
-        o = t.output
-        mode = t.mode
-        if mode is None:
-            mode = o.current
-        if mode is None:
-            last = state.lastmodes().get(t.name)
-            if last:
-                mode = match_mode(o.modes, last[0], last[1],
-                                  (last[2] or 0) / 1000.0 or None)
-        if mode is None:
-            mode = next((m for m in o.modes if m.preferred and m.mode_id),
-                        None)
-        if mode is None:
-            mode = next((m for m in o.modes if m.mode_id), None)
-        if mode is None:
-            raise Fatal("cannot find preferred mode\n")
-        if mode.mode_id:
-            return mode
-        real = match_mode(o.modes, mode.w, mode.h, mode.refresh_hz or None,
-                          tolerance=1.0, interlaced=_interlaced(mode))
-        if real is None:
-            raise Fatal("cannot find mode %s\n" % mode.display_name)
-        return real
+        a real mode of the same size and rate exists -- and Mutter's modes
+        say whether they are interlaced, so that has to match too."""
+        return core.resolve_real_mode(t, state, interlace_known=True)
 
     def _scale_for(self, t: core.Target, mode: Mode) -> float:
         """The scale Mutter will accept: an output keeping its mode and scale
@@ -701,11 +647,7 @@ class MutterOutputs:
         method = PERSISTENT if persistent else TEMPORARY
         if method == TEMPORARY and _canon(plan) == self.current_config:
             return self.snapshot(state)
-        for t in targets:
-            if t.changed and not t.enabled and t.output.active:
-                cur = t.output.current
-                if cur:
-                    state.lastmodes()[t.name] = [cur.w, cur.h, cur.refresh_mhz]
+        core.record_lastmodes(state, targets)
         if method == PERSISTENT:
             warn(PERSIST_WARNING)
         if not self._matched:

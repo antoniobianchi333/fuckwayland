@@ -111,6 +111,31 @@ WL_TRANSFORM = {"normal": 0, "90": 1, "180": 2, "270": 3, "flipped": 4,
                 "flipped-90": 5, "flipped-180": 6, "flipped-270": 7}
 WL_TRANSFORM_NAME = {v: k for k, v in WL_TRANSFORM.items()}
 
+# The same enum read the way the spec's counter-clockwise 90 implies, which
+# is how both Mutter and KWin number transforms: libkscreen's
+# toKScreenRotation and Xwayland's wl_transform_to_xrandr agree that 1 is
+# xrandr `left` and 3 is `right`, where the sway table above has "90" ==
+# `right`. So the two numberings differ by a 90<->270 swap (1<->3, 5<->7).
+# The words below are what real xrandr prints through Mutter's XWayland for
+# each of the eight (all eight measured on GNOME 50).
+WL_SPEC_RANDR_VIEW = {0: ("normal", "normal"), 1: ("left", "normal"),
+                      2: ("inverted", "normal"), 3: ("right", "normal"),
+                      4: ("normal", "x"), 5: ("left", "x"),
+                      6: ("inverted", "x"), 7: ("right", "x")}
+SWAY_FROM_WL_SPEC = {n: next(tf for tf, v in RANDR_VIEW.items() if v == view)
+                     for n, view in WL_SPEC_RANDR_VIEW.items()}
+WL_SPEC_FROM_SWAY = {tf: n for n, tf in SWAY_FROM_WL_SPEC.items()}
+
+
+def to_wl_spec_transform(sway_tf: str) -> int:
+    """sway transform name (what RANDR_VIEW uses) -> the spec's number."""
+    return WL_SPEC_FROM_SWAY.get(sway_tf, 0)
+
+
+def from_wl_spec_transform(n: int) -> str:
+    """The spec's transform number -> the sway name the renderer speaks."""
+    return SWAY_FROM_WL_SPEC.get(n, "normal")
+
 REFLECTION_SUFFIX = {"x": " X axis", "y": " Y axis", "xy": " X and Y axis"}
 
 
@@ -735,6 +760,16 @@ def wlr_snapshot_safe():
 
 # -- unified snapshot ---------------------------------------------------------
 
+def finish_modes(st: OutputState, customs: list):
+    """The last two steps of every backend's snapshot: xrandr always marks
+    one mode preferred, so a compositor that flags none makes the first
+    listed one preferred; then the state file's custom modes join the list
+    (they are ours, no compositor knows them)."""
+    if not any(m.preferred for m in st.modes) and st.modes:
+        st.modes[0].preferred = True
+    st.modes.extend(customs)
+
+
 _SUBPIXEL = {"rgb": "horizontal rgb", "bgr": "horizontal bgr",
              "vrgb": "vertical rgb", "vbgr": "vertical bgr",
              "none": "none", "unknown": "unknown"}
@@ -794,9 +829,7 @@ def snapshot_sway(ipc: SwayIPC, state: State, wlr=None) -> list:
                     break
             else:
                 st.modes.insert(0, st.current)
-        if not any(m.preferred for m in st.modes) and st.modes:
-            st.modes[0].preferred = True
-        st.modes.extend(customs)
+        finish_modes(st, customs)
         outs.append(st)
     return outs
 
@@ -836,9 +869,7 @@ def snapshot_wlr(wlr: WlrOutputs, state: State) -> list:
                         st.modes.remove(st.current)
                     st.current = m
                     break
-        if not any(m.preferred for m in st.modes) and st.modes:
-            st.modes[0].preferred = True
-        st.modes.extend(customs)
+        finish_modes(st, customs)
         outs.append(st)
     return outs
 
@@ -917,6 +948,70 @@ def _find_mode_for(output: OutputState, spec: str | None, rate: float | None,
         if output.current and m is output.current:
             return m
     return cands[0]
+
+
+def mode_interlaced(m: Mode) -> bool:
+    """Whether a mode is interlaced, by the flag xrandr prints."""
+    return any(f.lower() == "interlace" for f in m.flags)
+
+
+def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
+               tolerance: float | None = None,
+               interlaced: bool | None = False) -> Mode | None:
+    """The real (mode-id bearing) mode of size w x h: nearest refresh when a
+    rate is given (within `tolerance` Hz if set), else the first listed.
+    `interlaced=None` leaves the flag out of the match, for a compositor
+    whose mode list carries no interlace bit to compare against."""
+    cands = [m for m in modes if m.mode_id and (m.w, m.h) == (w, h)
+             and (interlaced is None or mode_interlaced(m) == interlaced)]
+    if not cands:
+        return None
+    if rate_hz:
+        best = min(cands, key=lambda m: abs(m.refresh_hz - rate_hz))
+        if tolerance is not None and abs(best.refresh_hz - rate_hz) > tolerance:
+            return None
+        return best
+    return cands[0]
+
+
+def resolve_real_mode(t: Target, state: State,
+                      interlace_known: bool = True) -> Mode:
+    """The real mode an enabled target will run: the stanza's, else the
+    current one, else the mode wxrandr disabled it at (state file), else the
+    preferred one. A custom (--newmode) mode is only applicable when a real
+    mode of the same size and rate exists -- a compositor that hands out
+    mode objects or ids cannot be given a modeline.
+
+    `interlace_known` says whether this compositor's mode list carries the
+    interlace flag. Mutter's does, so a custom interlaced mode may only
+    resolve onto an interlaced real one; KWin's modes are flagless, and
+    matching them against a flag none of them can carry would find nothing.
+    """
+    o = t.output
+    want = False if interlace_known else None
+    mode = t.mode
+    if mode is None:
+        mode = o.current
+    if mode is None:
+        last = state.lastmodes().get(t.name)
+        if last:
+            mode = match_mode(o.modes, last[0], last[1],
+                              (last[2] or 0) / 1000.0 or None, interlaced=want)
+    if mode is None:
+        mode = next((m for m in o.modes if m.preferred and m.mode_id), None)
+    if mode is None:
+        mode = next((m for m in o.modes if m.mode_id), None)
+    if mode is None:
+        raise Fatal("cannot find preferred mode\n")
+    if mode.mode_id:
+        return mode
+    real = match_mode(o.modes, mode.w, mode.h, mode.refresh_hz or None,
+                      tolerance=1.0,
+                      interlaced=mode_interlaced(mode) if interlace_known
+                      else None)
+    if real is None:
+        raise Fatal("cannot find mode %s\n" % mode.display_name)
+    return real
 
 
 def build_targets(outputs: list, stanzas: list, state: State,
@@ -1148,6 +1243,17 @@ def _settle_modes(ipc: SwayIPC, state: State, targets: list):
             return
 
 
+def record_lastmodes(state: State, targets: list):
+    """Remember the mode of every output this run switches off, so that a
+    later --auto can bring it back at the one it was running: a disabled
+    output has no current mode left to ask the compositor for."""
+    for t in targets:
+        if t.changed and not t.enabled and t.output.active:
+            cur = t.output.current
+            if cur:
+                state.lastmodes()[t.name] = [cur.w, cur.h, cur.refresh_mhz]
+
+
 def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
     """Two-phase apply: (1) modes/transforms/scales/enable/disable in one
     RUN_COMMAND, (2) re-read actual logical sizes, resolve positions against
@@ -1160,11 +1266,7 @@ def apply_sway(ipc: SwayIPC, state: State, targets: list) -> list:
     survivors re-moded but un-positioned for sway's auto-arranger to scramble.
     We collect the results, still position everything that IS enabled, then
     re-raise the first failure."""
-    for t in targets:
-        if t.changed and not t.enabled and t.output.active:
-            cur = t.output.current
-            if cur:
-                state.lastmodes()[t.name] = [cur.w, cur.h, cur.refresh_mhz]
+    record_lastmodes(state, targets)
     p1 = phase1_commands(targets)
     p1_err = None
     if p1:

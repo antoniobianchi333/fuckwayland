@@ -287,28 +287,14 @@ def logical_size(px_w: int, px_h: int, sway_tf: str, scale: float,
     return (math.ceil(px_w / scale), math.ceil(px_h / scale))
 
 
-# libkscreen's toKScreenRotation (waylandoutputdevice.cpp) reads the wl_output
-# transform enum the way the spec's counter-clockwise 90 implies: 1 -> xrandr
-# `left`, 3 -> `right`, 4..7 the same rotations with a reflection. sway's
-# verified table (core.RANDR_VIEW) numbers "90" the other way round, so the
-# sway transform *names* the renderer speaks differ from the wl numbers by a
-# 90<->270 swap (1<->3, 5<->7) -- the same permutation the Mutter backend needs.
-KWIN_RANDR_VIEW = {0: ("normal", "normal"), 1: ("left", "normal"),
-                   2: ("inverted", "normal"), 3: ("right", "normal"),
-                   4: ("normal", "x"), 5: ("left", "x"),
-                   6: ("inverted", "x"), 7: ("right", "x")}
-SWAY_FROM_KWIN = {n: next(tf for tf, v in core.RANDR_VIEW.items() if v == view)
-                  for n, view in KWIN_RANDR_VIEW.items()}
-KWIN_FROM_SWAY = {tf: n for n, tf in SWAY_FROM_KWIN.items()}
-
-
-def to_transform(sway_tf: str) -> int:
-    """sway transform name (what core/RANDR_VIEW use) -> wl_output enum."""
-    return KWIN_FROM_SWAY.get(sway_tf, 0)
-
-
-def from_transform(n: int) -> str:
-    return SWAY_FROM_KWIN.get(n, "normal")
+# libkscreen's toKScreenRotation (waylandoutputdevice.cpp) reads the
+# wl_output transform enum as the spec's counter-clockwise 90 implies, the
+# same numbering Mutter uses: core.WL_SPEC_RANDR_VIEW is that table, and the
+# 90<->270 swap against the sway names the renderer speaks follows from it.
+KWIN_RANDR_VIEW = core.WL_SPEC_RANDR_VIEW
+KWIN_FROM_SWAY = core.WL_SPEC_FROM_SWAY
+to_transform = core.to_wl_spec_transform
+from_transform = core.from_wl_spec_transform
 
 
 def normalise(pos: dict) -> dict:
@@ -327,19 +313,10 @@ def normalise(pos: dict) -> dict:
     return {n: (x + dx, y + dy) for n, (x, y) in pos.items()}
 
 
-def match_mode(modes, w: int, h: int, rate_hz: float | None = None,
-               tolerance: float | None = None) -> Mode | None:
-    """The real (object-bearing) mode of size w x h: nearest refresh when a
-    rate is given (within `tolerance` Hz if set), else the first listed."""
-    cands = [m for m in modes if m.mode_id and (m.w, m.h) == (w, h)]
-    if not cands:
-        return None
-    if rate_hz:
-        best = min(cands, key=lambda m: abs(m.refresh_hz - rate_hz))
-        if tolerance is not None and abs(best.refresh_hz - rate_hz) > tolerance:
-            return None
-        return best
-    return cands[0]
+# KWin's modes are objects with a size and a refresh and nothing else --
+# no interlace flag -- so every candidate here is flagless and the shared
+# matcher's progressive default excludes none of them.
+match_mode = core.match_mode
 
 
 def mirror_needs_replication(replica: tuple, source: tuple) -> bool:
@@ -798,9 +775,7 @@ class KwinOutputs:
                     st.w, st.h = logical_size(st.current.w, st.current.h,
                                               st.transform, st.scale,
                                               self.ceil_logical)
-            if not any(m.preferred for m in st.modes) and st.modes:
-                st.modes[0].preferred = True
-            st.modes.extend(state.modes_for_output(name))
+            core.finish_modes(st, state.modes_for_output(name))
             outs.append(st)
         # A replicated output is not a layout member on KWin at all -- no
         # wl_output, gone from kde_output_order_v1, nothing of its own in the
@@ -873,29 +848,9 @@ class KwinOutputs:
         the preferred one. A custom (--newmode) mode is only applicable when a
         real mode of the same size and rate exists -- KWin needs a mode object,
         and creating one needs management v18 plus capability_custom_modes,
-        which nothing we bind offers."""
-        o = t.output
-        mode = t.mode
-        if mode is None:
-            mode = o.current
-        if mode is None:
-            last = state.lastmodes().get(t.name)
-            if last:
-                mode = match_mode(o.modes, last[0], last[1],
-                                  (last[2] or 0) / 1000.0 or None)
-        if mode is None:
-            mode = next((m for m in o.modes if m.preferred and m.mode_id), None)
-        if mode is None:
-            mode = next((m for m in o.modes if m.mode_id), None)
-        if mode is None:
-            raise Fatal("cannot find preferred mode\n")
-        if mode.mode_id:
-            return mode
-        real = match_mode(o.modes, mode.w, mode.h, mode.refresh_hz or None,
-                          tolerance=1.0)
-        if real is None:
-            raise Fatal("cannot find mode %s\n" % mode.display_name)
-        return real
+        which nothing we bind offers. Its modes carry no interlace flag, so
+        that is not part of the match here."""
+        return core.resolve_real_mode(t, state, interlace_known=False)
 
     def supports_custom_modes(self, name: str) -> bool:
         """Custom modes need management v18 (create_mode_list) *and* the
@@ -1354,12 +1309,7 @@ class KwinOutputs:
                 self.primary = primary["name"]
             # only now: KWin has applied and saved something
             self._warn_saved()
-            for t in targets:
-                if t.changed and not t.enabled and t.output.active:
-                    cur = t.output.current
-                    if cur:
-                        state.lastmodes()[t.name] = [cur.w, cur.h,
-                                                     cur.refresh_mhz]
+            core.record_lastmodes(state, targets)
         outs = self.snapshot(state)
         # the state file records the primary KWin has, never one we merely
         # wanted: --primary on a compositor too old to take it, or on an

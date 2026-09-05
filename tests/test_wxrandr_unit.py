@@ -18,6 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from wxrandr import cli, core                                   # noqa: E402
+from wxrandr import kwin, mutter                                # noqa: E402
 from wxrandr.core import (Mode, OutputState, Stanza, State,     # noqa: E402
                           build_targets, resolve_positions)
 
@@ -166,6 +167,78 @@ class TransformMapping(unittest.TestCase):
         self.assertEqual(core.logical_size(1280, 720, "270", 2), (360, 640))
         self.assertEqual(core.logical_size(1280, 720, "flipped-90", 1),
                          (720, 1280))
+
+
+class SharedModeResolver(unittest.TestCase):
+    """One transform table and one mode resolver serve both D-Bus backends.
+    The single thing that differs between them stays a parameter: Mutter's
+    mode list says whether a mode is interlaced, and KWin's does not."""
+
+    def test_the_spec_table_is_the_sway_table_permuted(self):
+        """1<->3 and 5<->7, and nothing else, between the two numberings."""
+        swap = {0: 0, 1: 3, 2: 2, 3: 1, 4: 4, 5: 7, 6: 6, 7: 5}
+        for n, view in core.WL_SPEC_RANDR_VIEW.items():
+            sway_name = core.WL_TRANSFORM_NAME[swap[n]]
+            self.assertEqual(core.RANDR_VIEW[sway_name], view, n)
+        self.assertIs(mutter.MUTTER_RANDR_VIEW, core.WL_SPEC_RANDR_VIEW)
+        self.assertIs(kwin.KWIN_RANDR_VIEW, core.WL_SPEC_RANDR_VIEW)
+
+    def real_modes(self, flagged: bool):
+        """Two real 1920x1080 modes, one of them interlaced -- carrying the
+        flag only where the compositor reports one."""
+        return [Mode(w=1920, h=1080, refresh_mhz=60000, mode_id="p"),
+                Mode(w=1920, h=1080, refresh_mhz=59940, mode_id="i",
+                     flags=("interlace",) if flagged else ())]
+
+    def custom(self):
+        """A `--newmode 1920x1080i ... Interlace` mode: no compositor id."""
+        return Mode(w=1920, h=1080, refresh_mhz=59940, custom=True,
+                    name="1920x1080i", flags=("interlace",))
+
+    def target(self, modes, mode):
+        o = OutputState(name="DP-1", active=True, modes=modes)
+        return core.Target(output=o, stanza=None, mode=mode)
+
+    def test_a_flagged_list_resolves_a_custom_interlaced_mode_onto_one(self):
+        m = core.resolve_real_mode(self.target(self.real_modes(True),
+                                               self.custom()),
+                                   mk_state(), interlace_known=True)
+        self.assertEqual(m.mode_id, "i")
+
+    def test_a_flagged_list_never_answers_with_a_progressive_mode(self):
+        """Mutter reports the flag, so an interlaced request that only a
+        progressive mode could satisfy is `cannot find mode`, not a silent
+        substitution."""
+        t = self.target([Mode(w=1920, h=1080, refresh_mhz=59940,
+                              mode_id="p")], self.custom())
+        with self.assertRaises(core.Fatal) as e:
+            core.resolve_real_mode(t, mk_state(), interlace_known=True)
+        self.assertEqual(str(e.exception), "cannot find mode 1920x1080i\n")
+
+    def test_a_flagless_list_matches_on_size_and_rate_alone(self):
+        """KWin's modes carry no flag at all, so comparing against one would
+        find nothing and turn every custom mode into an error. The flag is
+        left out of the match there, and the size/rate twin wins."""
+        m = core.resolve_real_mode(self.target(self.real_modes(False),
+                                               self.custom()),
+                                   mk_state(), interlace_known=False)
+        self.assertEqual(m.mode_id, "i")           # 59.940, the nearest rate
+
+    def test_the_same_flagless_list_under_the_mutter_rule_finds_nothing(self):
+        """The divergence itself: identical inputs, one parameter apart."""
+        t = self.target(self.real_modes(False), self.custom())
+        with self.assertRaises(core.Fatal):
+            core.resolve_real_mode(t, mk_state(), interlace_known=True)
+
+    def test_each_backend_asks_for_the_rule_that_fits_its_wire(self):
+        """resolve_mode() uses no instance state, so the wiring can be read
+        off the unbound methods."""
+        t = self.target(self.real_modes(False), self.custom())
+        self.assertEqual(
+            kwin.KwinOutputs.resolve_mode(None, t, mk_state()).mode_id, "i")
+        t2 = self.target(self.real_modes(False), self.custom())
+        with self.assertRaises(core.Fatal):
+            mutter.MutterOutputs.resolve_mode(None, t2, mk_state())
 
 
 class ModelineMath(unittest.TestCase):
