@@ -482,6 +482,19 @@ class MutterCase(unittest.TestCase):
         self.state_path = os.path.join(self.tmp, "state.json")
         self.opened = []
         self.mock.mutter = self.fixture()
+        # --persistent reads ~/.config/monitors.xml and keeps a copy of it beside it
+        # (SavedConfigurationFile below): point that at the per-test directory, so no
+        # test can read or write the saved display configuration of the account
+        # running the suite.
+        self._xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = self.tmp
+        self.addCleanup(self._restore_xdg)
+
+    def _restore_xdg(self):
+        if self._xdg is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._xdg
 
     def tearDown(self):
         for mo in self.opened:
@@ -1396,6 +1409,204 @@ class Apply(MutterCase):
 
 
 # ---------------------------------------------------------------- backend selection
+
+class SavedConfigurationFile(MutterCase):
+    """`~/.config/monitors.xml` -- GNOME's saved display configuration, one entry per
+    monitor set the user ever kept.
+
+    Mutter's reader verifies every entry in it and **one failure discards the whole
+    file** (measured on GNOME 46 and 50, tests/test_monitors_xml.py), while Mutter's
+    writer verifies nothing.  So the invariant these tests hold is that no path of ours
+    can leave a file Mutter will refuse: wxrandr never writes that file -- every layout
+    goes out as `ApplyMonitorsConfig`, which validates before anything is applied, and
+    Mutter itself writes the file only after its "Keep changes?" dialog is confirmed.
+    What we do write, and only for `--persistent`, is a copy of the previous file: a
+    confirmed apply rewrites it whole, and after somebody else's bad entry has been
+    discarded "whole" means "without every other layout the user had saved".
+    """
+
+    def fixture(self):
+        return three_monitors()
+
+    def setUp(self):
+        super().setUp()
+        self.path = os.path.join(self.tmp, "monitors.xml")   # XDG_CONFIG_HOME=self.tmp
+        with open(os.path.join(ROOT, "tests", "fixtures",
+                               "monitors-gnome50.xml"), "rb") as f:
+            self.good = f.read()
+
+    def put(self, data):
+        with open(self.path, "wb") as f:
+            f.write(data)
+        return data
+
+    def file_bytes(self):
+        with open(self.path, "rb") as f:
+            return f.read()
+
+    def backup_path(self):
+        return self.path + ".wxrandr-backup"
+
+    def config_dir(self):
+        return sorted(f for f in os.listdir(self.tmp) if f.startswith("monitors"))
+
+    # -- the file is never written by us -------------------------------------
+
+    def test_a_temporary_apply_does_not_go_near_the_file(self):
+        """The common case: no --persistent, so the new code is not even reached."""
+        self.put(self.good)
+
+        def boom(*_a, **_kw):
+            self.fail("a temporary apply read monitors.xml")
+
+        real, mutter.monitors_xml.snapshot = mutter.monitors_xml.snapshot, boom
+        try:
+            code, _, err = self.run_cli("--output", "HDMI-1", "--off")
+        finally:
+            mutter.monitors_xml.snapshot = real
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(self.file_bytes(), self.good)
+        self.assertEqual(self.config_dir(), ["monitors.xml"])
+
+    def test_every_layout_mutter_refuses_leaves_the_file_untouched(self):
+        for argv, refusal in (
+                (("--output", "DP-1", "--pos", "100x0"),
+                 REFUSED % "Logical monitors overlap"),
+                (("--output", "HDMI-1", "--pos", "9000x0"),
+                 REFUSED % "Logical monitors not adjacent"),
+                (("--output", "eDP-1", "--pos", "0x0", "--output", "DP-1",
+                  "--same-as", "eDP-1"),
+                 "xrandr: cannot mirror DP-1 onto eDP-1: Mutter needs the same mode, "
+                 "rotation and scale (2560x1600 normal scale 1 vs 1920x1080 normal "
+                 "scale 1)\n")):
+            with self.subTest(argv=argv):
+                self.put(self.good)
+                code, _, err = self.run_cli("--persistent", *argv)
+                self.assertEqual(code, 1)
+                self.assertIn(refusal, err)
+                self.assertEqual(self.file_bytes(), self.good)
+                # a refused apply never even gets as far as the copy
+                self.assertEqual(self.config_dir(), ["monitors.xml"])
+
+    def test_an_accepted_persistent_apply_writes_the_copy_and_nothing_else(self):
+        self.put(self.good)
+        code, _, err = self.run_cli("--persistent", "--output", "HDMI-1", "--off")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.applied()[-1][1], 2)          # method 2 reached Mutter
+        self.assertTrue(self.svc.persisted)
+        # the file itself is Mutter's to write, on the confirmation, and we did not
+        self.assertEqual(self.file_bytes(), self.good)
+        self.assertEqual(self.config_dir(), ["monitors.xml", "monitors.xml.wxrandr-backup"])
+        with open(self.backup_path(), "rb") as f:
+            self.assertEqual(f.read(), self.good)
+        self.assertIn('GNOME will ask "Keep changes?"', err)
+        self.assertIn("the saved display configuration as it was is kept in %s\n"
+                      % self.backup_path(), err)
+
+    def test_a_fresh_account_has_no_file_and_gets_no_copy(self):
+        code, _, err = self.run_cli("--persistent", "--output", "HDMI-1", "--off")
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "xrandr: " + mutter.PERSIST_WARNING)
+        self.assertEqual(self.config_dir(), [])
+
+    # -- somebody else's bad entry, and what we say about it -----------------
+
+    def test_a_file_gnome_has_already_discarded_is_reported_and_kept(self):
+        """An overlapping entry can only come from a writer that skipped the
+        validator (Mutter's own save path does, on GNOME-on-Xorg and behind
+        DisplayConfig): the whole file is then inactive, and the next confirmed save
+        rewrites it without the other entries.  Say so, and keep the bytes."""
+        poisoned = self.good.replace(b"<x>1920</x>", b"<x>100</x>", 1)
+        self.put(poisoned)
+        code, _, err = self.run_cli("--persistent", "--output", "HDMI-1", "--off")
+        self.assertEqual(code, 0)
+        self.assertIn("GNOME has already discarded %s" % self.path, err)
+        self.assertIn("logical monitors not adjacent", err)
+        self.assertIn("every layout saved in it is inactive", err)
+        self.assertEqual(self.file_bytes(), poisoned)       # still not ours to write
+        with open(self.backup_path(), "rb") as f:
+            self.assertEqual(f.read(), poisoned)            # recoverable, entries and all
+
+    def test_a_file_that_is_not_xml_at_all_does_not_stop_the_apply(self):
+        self.put(b"<monitors version=\"2\"><configuration")
+        code, _, err = self.run_cli("--persistent", "--output", "HDMI-1", "--off")
+        self.assertEqual(code, 0)
+        self.assertIn("not valid XML", err)
+        self.assertEqual(self.applied()[-1][1], 2)
+
+    def test_an_unreadable_file_is_not_a_reason_to_fail_an_apply(self):
+        self.put(self.good)
+        os.chmod(self.path, 0)
+        self.addCleanup(os.chmod, self.path, 0o600)
+        code, _, err = self.run_cli("--persistent", "--output", "HDMI-1", "--off")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.applied()[-1][1], 2)
+        self.assertNotIn("wxrandr-backup", err)
+
+
+class LayoutModeRot(MutterCase):
+    """A layout Mutter accepts, applies and writes, which stops being readable when the
+    user changes one setting: `--persistent` says so at the moment of saving.
+
+    In physical layout mode -- GNOME 46's default, i.e. Fractional Scaling off -- a
+    scaled monitor keeps its pixel width, so its neighbour is saved right after it.
+    Mutter writes no `<layoutmode>` there, and with Fractional Scaling on the same
+    numbers are read as logical pixels, where the scaled monitor is narrower and the
+    row no longer touches.  Measured on 24.04 with a scale-2 head: the whole file goes,
+    the other saved monitor set with it.
+    """
+
+    def fixture(self):
+        return three_monitors(layout_mode=2)
+
+    def test_a_scaled_row_in_physical_layout_mode_is_flagged(self):
+        code, _, err = self.run_cli("--persistent", "--output", "eDP-1", "--scale", "2",
+                                    "--output", "DP-1", "--right-of", "eDP-1",
+                                    "--output", "HDMI-1", "--right-of", "DP-1")
+        self.assertEqual(code, 0)
+        self.assertIn("saved as physical-pixel positions", err)
+        self.assertIn("refuses the whole saved file", err)
+        # and it was still applied, exactly as asked: we never refuse a layout
+        self.assertEqual(self.applied()[-1][1], 2)
+        self.assertEqual([(lm[0], lm[2]) for lm in self.lms()],
+                         [(0, 2.0), (1920, 1.0), (4480, 1.0)])
+
+    def test_an_unscaled_layout_is_not(self):
+        code, _, err = self.run_cli("--persistent", "--output", "HDMI-1", "--off")
+        self.assertEqual((code, err), (0, "xrandr: " + mutter.PERSIST_WARNING))
+
+    def test_a_temporary_apply_is_not(self):
+        code, _, err = self.run_cli("--output", "eDP-1", "--scale", "2",
+                                    "--output", "DP-1", "--right-of", "eDP-1",
+                                    "--output", "HDMI-1", "--right-of", "DP-1")
+        self.assertEqual((code, err), (0, ""))
+
+
+class LayoutModeRotAtTheEndOfTheRow(MutterCase):
+    def fixture(self):
+        return two_monitors(layout_mode=2)
+
+    def test_the_last_head_in_the_row_can_shrink_without_breaking_it(self):
+        """Nothing is saved after it, so the row is adjacent in either layout mode and
+        there is nothing to warn about."""
+        code, _, err = self.run_cli("--persistent", "--output", "DP-1", "--scale", "2")
+        self.assertEqual(code, 0)
+        self.assertNotIn("physical-pixel", err)
+        self.assertEqual([(lm[0], lm[2]) for lm in self.lms()], [(0, 1.0), (1920, 2.0)])
+
+
+class LayoutModeRotInLogicalMode(MutterCase):
+    def fixture(self):
+        return three_monitors(layout_mode=1)
+
+    def test_logical_layout_mode_says_nothing(self):
+        """There the file records `logical` and the numbers keep their meaning."""
+        code, _, err = self.run_cli("--persistent", "--output", "eDP-1", "--scale", "2",
+                                    "--output", "DP-1", "--right-of", "eDP-1",
+                                    "--output", "HDMI-1", "--right-of", "DP-1")
+        self.assertEqual(code, 0)
+        self.assertNotIn("physical-pixel", err)
+
 
 class Detection(MutterCase):
     def setUp(self):

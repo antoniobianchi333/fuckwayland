@@ -63,7 +63,7 @@ import struct
 
 from fwcommon import session as wsession
 from fwcommon.dbus_mini import Bus, DBusError, Variant
-from wxrandr import core
+from wxrandr import core, monitors_xml
 from wxrandr.core import Fatal, Mode, OutputState, round_half_away, warn  # noqa: F401
 
 DEST = "org.gnome.Mutter.DisplayConfig"
@@ -76,6 +76,20 @@ MONITORS_CHANGED_TIMEOUT = 5.0
 CANCELLED = ("output configuration cancelled by a concurrent change; " "try again\n")
 _MATCH = "type='signal',interface='%s',member='MonitorsChanged'" % IFACE
 PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the ' "dialog or the layout reverts\n")
+BACKUP_NOTE = "the saved display configuration as it was is kept in %s\n"
+# Measured on 24.04/GNOME 46: with Fractional Scaling off the session is in physical
+# layout mode, Mutter writes the file with no <layoutmode> at all, and the positions in
+# it are re-read in whatever layout mode the session has *then*.  Turn the setting on
+# and a scale-2 output is half as wide as the gap its neighbour was saved at --
+# "Logical monitors not adjacent" -- and the whole file goes, every other
+# saved monitor set with it.  The layout is valid, Mutter accepted it, Mutter wrote it;
+# it is the meaning of the numbers that changed.  Nothing on either side can prevent
+# that, so the answer is to say so at the one moment the user is choosing to save.
+LAYOUT_MODE_WARNING = (
+    "saved as physical-pixel positions (this session has Fractional Scaling off): if "
+    "it is ever turned on, a scaled output changes width, this layout stops being "
+    "adjacent and GNOME then refuses the whole saved file, every other layout in it "
+    "too\n")
 
 
 # -- pure helpers (unit-tested) ----------------------------------------------
@@ -594,6 +608,34 @@ class MutterOutputs:
         """--dryrun: method 0 — Mutter validates, nothing changes."""
         self._send(VERIFY, self.plan(state, targets))
 
+    def _file_layout_mode(self):
+        """The layout mode monitors.xml is read in: this session's."""
+        return (monitors_xml.PHYSICAL if self.layout_mode == LAYOUT_PHYSICAL
+                else monitors_xml.LOGICAL)
+
+    def _rots_with_the_layout_mode(self, plan, targets, state) -> bool:
+        """True when this layout is adjacent as Mutter measures it now and would not be
+        in the other layout mode -- see LAYOUT_MODE_WARNING.  Only ever asked in
+        physical layout mode and only when something is scaled, so the ordinary layout
+        (every scale 1, where the two modes are the same arithmetic) never gets here.
+        """
+        if self.layout_mode != LAYOUT_PHYSICAL or all(p["scale"] == 1 for p in plan):
+            return False
+        px = {}
+        for t in targets:
+            if t.enabled:
+                m = self.resolve_mode(t, state)
+                px[t.name] = (m.w, m.h, t.sway_tf)
+        rects = []
+        for p in plan:
+            connector = p["members"][0][0]
+            if connector not in px:
+                return False                 # cannot tell: say nothing
+            w, h, tf = px[connector]
+            rects.append((p["x"], p["y"])
+                         + logical_size(w, h, tf, p["scale"], LAYOUT_LOGICAL))
+        return bool(monitors_xml.fault(rects))
+
     def apply(self, state: core.State, targets: list, persistent: bool = False) -> list:
         """One ApplyMonitorsConfig for the whole layout, then wait for MonitorsChanged (<= 5 s) and return the
         fresh snapshot. An unchanged temporary layout is not re-applied (no modeset for `--primary` on the
@@ -603,8 +645,16 @@ class MutterOutputs:
         if method == TEMPORARY and _canon(plan) == self.current_config:
             return self.snapshot(state)
         core.record_lastmodes(state, targets)
+        saved = None
         if method == PERSISTENT:
             warn(PERSIST_WARNING)
+            # Only this branch ever opens monitors.xml: a temporary apply, which is
+            # what nearly every run does, does not go near the file.
+            saved = monitors_xml.snapshot()
+            for line in monitors_xml.describe(saved, self._file_layout_mode()):
+                warn(line)
+            if self._rots_with_the_layout_mode(plan, targets, state):
+                warn(LAYOUT_MODE_WARNING)
         if not self._matched:
             try:
                 self.bus.add_match(_MATCH)
@@ -612,6 +662,14 @@ class MutterOutputs:
                 pass
             self._matched = True
         self._send(method, plan)
+        if saved:
+            # Mutter accepted the layout, so its own writer may replace the file the
+            # moment the user confirms the dialog -- and it writes the file whole, out
+            # of what it holds in memory, which after a discarded read is only this
+            # layout.  Keep what was there; a refused apply gets here not at all.
+            backup = monitors_xml.keep_backup(saved)
+            if backup:
+                warn(BACKUP_NOTE % backup)
         try:
             self.bus.wait_signal(IFACE, "MonitorsChanged", MONITORS_CHANGED_TIMEOUT)
         except DBusError:

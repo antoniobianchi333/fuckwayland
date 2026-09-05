@@ -582,6 +582,106 @@ round-trip byte-identically, arandr's own files included. They cannot be one, be
 one is an editable model of a screen that does not exist yet and the other is a
 serialisation contract with a program from 2010.
 
+### GNOME's saved display configuration is all or nothing
+
+`~/.config/monitors.xml` holds one `<configuration>` per monitor set the user has ever
+kept — the laptop alone, the laptop plus the desk monitor, the three heads at work —
+and GNOME applies the entry whose monitors are plugged in. Mutter's **reader** verifies
+every entry in the file with the same `meta_verify_logical_monitor_config_list()` that
+`ApplyMonitorsConfig` uses, and **one failure discards the whole file**. Measured on
+the 26.04 default install (GNOME 50.1, `resolute-gnome-iso`, three heads), on a file
+holding a three-head layout and a two-head one, with one `<x>` in the two-head entry
+edited so that its monitors overlap:
+
+```console
+$ journalctl -b | grep 'monitors config'
+Failed to read monitors config file '/home/test/.config/monitors.xml': Logical monitors not adjacent
+$ wxrandr --query | grep '^Virtual'      # at the next login
+Virtual-1 connected primary 1920x1080+0+0      # Mutter's default row -- not the saved
+Virtual-2 connected 1920x1080+1920+0           # three-head layout, which is still in
+Virtual-3 connected 1920x1080+3840+0           # the file, untouched and perfectly valid
+```
+
+Nothing says so: no window, no notification, nothing on any screen. The file stays on
+disk exactly as it was and every layout in it is inactive, at every login, until
+somebody edits it back by hand. Mutter's **writer** verifies nothing —
+`meta_monitor_config_manager_save_current()` serialises whatever configuration is
+current — so a file in that state can be written by anything that reaches libmutter
+without going through DisplayConfig (GNOME on Xorg derives its logical monitors from
+the X layout with no verification at all; a Shell extension can ship its own typelib
+and call the symbols DisplayConfig does not export). And the next confirmed save
+rewrites the file **whole**, from what Mutter holds in memory, which after a discarded
+read is only the layout being saved: that is the moment the other monitor sets stop
+being recoverable. Measured, same rig: our confirmed `--persistent` on top of a
+discarded file left one `<configuration>` where there had been three.
+
+**No path through our own tools can put a bad entry in that file**, and that is
+measured rather than argued — every route tried on both default installs (GNOME 50.1
+on 26.04 and GNOME 46.0 on 24.04, three virtio heads, the "Keep changes?" dialog
+confirmed with `wdotool key Return`, `sha256sum` on the file after every step):
+
+| what was tried | what happened | the file afterwards |
+|---|---|---|
+| overlapping `--pos`, `--persistent` | refused: `Logical monitors not adjacent` | unchanged, byte for byte (absent on a fresh account, and still absent) |
+| a gap in the row, `--persistent` | refused, same sentence | unchanged |
+| a vertical overlap, `--persistent` | refused, same sentence | unchanged |
+| `--same-as` between two different modes, `--persistent` | refused by us, before the bus | unchanged |
+| a valid layout, `--persistent`, dialog left alone | applied, reverted after 20 s | **never written**: Mutter writes only on the confirmation |
+| a valid layout, `--persistent`, the session killed while the dialog was up | the old layout at the next login | never written |
+| a valid layout, `--persistent`, confirmed | applied | Mutter writes it: the entry for *this* monitor set is replaced, every other entry survives byte for byte |
+| a second monitor set (one head unplugged), confirmed | applied | a second `<configuration>` appended; both verify, and plugging the head back in restores the first |
+| `warandr`: Apply, from the GUI, of a layout loaded from a saved script | applied through `wxrandr`, no `--persistent` | unchanged |
+| `warandr`: Save As / `--save` | writes a layout **script** (`~/.screenlayout/*.sh` shape) | unchanged; warandr never writes this file |
+| any apply without `--persistent` | applied | unchanged, and the file is not even opened |
+
+The asymmetry that makes this safe is Mutter's own: `ApplyMonitorsConfig` validates on
+*every* method, method 0 included, so the only layout that can reach the writer is one
+the validator has already accepted, and the writer runs only after the user confirms.
+A refused `--persistent` reaches neither.
+
+**One thing can still rot a file we caused to be written, and it is not a layout
+error.** With Fractional Scaling off — GNOME 46's default — the session is in physical
+layout mode, where a scaled monitor keeps its pixel width, and Mutter writes the file
+with no `<layoutmode>` element at all. Turn the setting on and the same numbers are
+read as logical pixels, where a `--scale 2` head is half as wide as the gap its
+neighbour was saved at. Measured on 24.04, a three-head row with the scaled head first
+and a two-head set saved beside it:
+
+```console
+$ gsettings set org.gnome.mutter experimental-features "['scale-monitor-framebuffer']"
+$ # ... reboot ...
+$ journalctl -b | grep 'monitors config'
+Failed to read monitors config file '/home/test/.config/monitors.xml': Logical monitors not adjacent
+```
+
+Both entries gone. The layout was valid, Mutter validated it, Mutter wrote it; what
+changed is what the numbers mean. GNOME Settings' own 200% scaling writes exactly the
+same file, so this is not a wxrandr defect — but `--persistent` is the moment the user
+chooses to save, and it is the moment to say so.
+
+**What `wxrandr --persistent` therefore does** (`wxrandr/monitors_xml.py`, about 200
+lines, none of it reached by a temporary apply):
+
+1. reads the file before the apply and prints one line when Mutter has already
+   discarded it — with Mutter's own verifier, in Mutter's order (adjacency first, so
+   the sentence matches the one in the journal), judging an entry that names its layout
+   mode in that one and an entry that does not in the session's;
+2. warns, before the dialog, when the layout being saved is one that a later
+   Fractional Scaling change would break — only in physical layout mode, only when
+   something is scaled, and only when the row really does come apart in the other mode;
+3. copies the previous bytes to `monitors.xml.wxrandr-backup` once Mutter has accepted
+   the layout, so that a rewrite that drops the other monitor sets is recoverable. A
+   refused apply copies nothing. GNOME keeps one generation of its own in
+   `monitors.xml~` (glib writes it when Mutter replaces the file), but every save
+   overwrites that one, including the save that does the damage.
+
+It never writes `monitors.xml` itself. `tests/test_monitors_xml.py` holds the verifier
+and the copy against real files from both releases, and
+`tests/test_wxrandr_mutter.py:SavedConfigurationFile` holds the invariant end to end:
+every refusal leaves the file byte-identical and writes no copy, an accepted persistent
+apply writes the copy and still does not touch the file, and a temporary apply does not
+open it — that last one enforced by making the reader explode if it is called.
+
 ## 7. Detached children, runtime paths and stdio
 
 **One detach protocol.** `fwcommon/procs.py` is the whole of it, and both callers use
@@ -702,7 +802,7 @@ hold across all of them and are enforced by tests of their own:
 | `fwcommon/wayland_mini.py` | exercised by every wire test above | `wl_fake` |
 | `wwmctl/` | `test_wwmctl_cli`, `test_wwmctl_live`, `test_wwmctl_hardening`, `test_wwmctl_gnome` | `FakeSwayBackend`, `FakeX11`; real sway with XWayland for the live file |
 | `wxprop/` | `test_wxprop_cli`, `test_wxprop_fmt`, `test_wxprop_live`, `test_wxprop_gnome`, `test_wxprop_x11` | captured real-xprop bytes; a live XWayland server as the oracle |
-| `wxrandr/` | `test_wxrandr_unit`, `test_wxrandr_backend`, `test_wxrandr_mutter`, `test_wxrandr_kwin`, `test_wxrandr_live`, `test_wxrandr_hostile`, `test_wxrandr_gamma` | `FakeMutter` on the mock bus; a wire-level fake KWin; real sway with real `xrandr` through XWayland as the oracle |
+| `wxrandr/` | `test_wxrandr_unit`, `test_wxrandr_backend`, `test_wxrandr_mutter`, `test_wxrandr_kwin`, `test_wxrandr_live`, `test_wxrandr_hostile`, `test_wxrandr_gamma`, `test_monitors_xml` | `FakeMutter` on the mock bus; a wire-level fake KWin; real sway with real `xrandr` through XWayland as the oracle; real `monitors.xml` files from both default installs |
 | `warandr/` | `test_warandr_model`, `test_warandr_parse`, `test_warandr_gui` | `tests/fixtures/fake_xrandr.py`, a RandR simulator; Xvfb plus xdotool driving the real editor |
 | `wmirror/` | `test_wmirror_cli`, `test_wmirror_lifetime` | a fake `wl-mirror` binary, and the detach protocol driven for real |
 | `procs.py`, `stdio.py` | `test_wmirror_lifetime`, `test_stdout_gone` | real forks; `>/dev/full`, `\| head -1`, `>&-` |
