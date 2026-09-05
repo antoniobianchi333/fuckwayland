@@ -18,7 +18,7 @@ Six tools, and on sway nothing wdotool injects needs a privilege at all.
   0.000 error, measured over 14 targets on a three-head layout with one head at a
   negative origin and one at scale 1.5, and relative moves cannot be accelerated
   there at all, because a virtual pointer is not a libinput device. See
-  [WDOTOOL.md](WDOTOOL.md#typing-and-clicking-with-no-privilege---vkbd).
+  [WDOTOOL.md](docs/WDOTOOL.md#typing-and-clicking-with-no-privilege---vkbd).
 - **What each desktop does with a layout after you set it**, measured through a
   hotplug and a reboot on all four, with where each one keeps it and what that means
   for a layout script. KDE saves whether you want it to or not: KWin has no temporary
@@ -26,7 +26,7 @@ Six tools, and on sway nothing wdotool injects needs a privilege at all.
   second, and `--persistent` is accepted and means nothing there. GNOME writes
   nothing unless a `--persistent` apply is confirmed in Mutter's own *Keep these
   display settings?* dialog. sway and X11 write nothing either way. The tables are in
-  [WXRANDR.md](WXRANDR.md) and [WARANDR.md](WARANDR.md).
+  [WXRANDR.md](docs/WXRANDR.md) and [WARANDR.md](docs/WARANDR.md).
 - **Plasma over Xorg** is an X11 session like any other and is handled like one, on
   both generations, with the two things that look like they should change the answer
   named and measured: KWin owns `org.kde.KWin` on the session bus there exactly as it

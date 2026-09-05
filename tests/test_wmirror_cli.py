@@ -5,7 +5,7 @@ a core's worth of compositing, so it may only run for the pictures the
 layout cannot produce: a region, or a whole output onto one of a different
 logical size. Two same-sized outputs at one position already mirror on
 wlroots, byte for byte, and that must stay the answer -- measured on sway
-1.11, see WMIRROR.md."""
+1.11, see docs/WMIRROR.md."""
 
 import contextlib
 import io

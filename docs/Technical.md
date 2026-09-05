@@ -7,11 +7,11 @@ backends that are one shape. Read it if you are about to change something and wa
 know where that something lives.
 
 The user-facing documents are elsewhere and this file does not repeat them: the
-[README](README.md) is the install and the per-desktop support, and each tool has a
+[README](../README.md) is the install and the per-desktop support, and each tool has a
 contract of its own — [WDOTOOL.md](WDOTOOL.md), [WWMCTL.md](WWMCTL.md),
 [WXPROP.md](WXPROP.md), [WXRANDR.md](WXRANDR.md), [WARANDR.md](WARANDR.md),
-[WMIRROR.md](WMIRROR.md), plus [gnome/README.md](gnome/README.md) for the bridge
-extension and [vm/README.md](vm/README.md) for the rig.
+[WMIRROR.md](WMIRROR.md), plus [gnome/README.md](../gnome/README.md) for the bridge
+extension and [vm/README.md](../vm/README.md) for the rig.
 
 ## 1. The six tools
 
@@ -740,8 +740,8 @@ type, autologin landed, the heads are there, the compositor is painting,
 `vmctl user` reconstructs an environment in which the desktop's own tools work. It is
 the check you run after building an image and before believing anything measured on
 it. The tools' own behaviour per flavor is the separate table in
-[vm/README.md](vm/README.md), *What the six tools do on each flavor*, and that is what
+[vm/README.md](../vm/README.md), *What the six tools do on each flavor*, and that is what
 the README's support matrix is a summary of.
 
-[vm/SETUP.md](vm/SETUP.md) is how to stand the rig up on a machine of your own, and
+[vm/SETUP.md](../vm/SETUP.md) is how to stand the rig up on a machine of your own, and
 `vm/setup-host.sh` does the mechanical part of it.

@@ -472,7 +472,7 @@ def _run(argv=None) -> int:
         elif c == "p":
             show_pid = True
         elif c == "S":
-            # 1.07+git: list in stacking order. Ours always is (WWMCTL.md),
+            # 1.07+git: list in stacking order. Ours always is (docs/WWMCTL.md),
             # so this only silences the option.
             pass
         elif c in ("a", "c", "R", "Y", "z", "E"):

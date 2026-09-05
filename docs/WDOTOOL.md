@@ -8,7 +8,7 @@ tool *is*.
 
 Read [Technical.md](Technical.md) for what wdotool shares with the other five tools:
 session discovery, the X11 handover, the two wire clients, the environment table and
-the test map. Read [gnome/README.md](gnome/README.md) for the bridge extension's own
+the test map. Read [gnome/README.md](../gnome/README.md) for the bridge extension's own
 interface.
 
 ## Architecture
@@ -70,8 +70,8 @@ Wayland forces a few honest approximations:
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
 scratchpad on sway. GNOME has a longer list of honest differences (shell grabs, the
 lock screen, `selectwindow`): see **Known limitations on GNOME** in
-[gnome/README.md](gnome/README.md). The per-desktop cells are the support matrix in
-the [README](README.md#desktop-support).
+[gnome/README.md](../gnome/README.md). The per-desktop cells are the support matrix in
+the [README](../README.md#desktop-support).
 
 ## Keyboard layouts
 

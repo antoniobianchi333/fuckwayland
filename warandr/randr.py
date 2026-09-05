@@ -46,7 +46,7 @@ ALIASES = {"gnome": "mutter", "kde": "kwin"}
 #: What a *partial* overlap (two active outputs intersecting at different
 #: origins) means per backend: whether the backend takes one, and the one
 #: sentence the window says about it.  Measured on two 1920x1080 heads with
-#: the second at x=960 -- see WARANDR.md, "What an overlap means"; on X11,
+#: the second at x=960 -- see docs/WARANDR.md, "What an overlap means"; on X11,
 #: KWin and wlroots the shared region came back byte-identical on both
 #: heads, and Mutter answered every non-adjacent layout, overlap and gap
 #: alike, with the message quoted here.

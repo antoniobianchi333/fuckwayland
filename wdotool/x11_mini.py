@@ -452,7 +452,7 @@ class X11Conn:
         self._send(opcode, data_byte, payload)
         self._wait_reply(self._send(_OP_GET_INPUT_FOCUS, 0))
 
-    # -- public API (frozen per WWMCTL.md) -----------------------------------
+    # -- public API (frozen per docs/WWMCTL.md) -----------------------------------
 
     def root(self) -> int:
         return self._root

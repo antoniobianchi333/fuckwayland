@@ -4,7 +4,7 @@
     wmirror --list | --stop TARGET | --stop-all | --check
 
 This is its own command, not a wxrandr flag, and it is deliberate: see the
-"Why a separate command" section of WMIRROR.md. The short of it is that a
+"Why a separate command" section of docs/WMIRROR.md. The short of it is that a
 mirror here is a resident process, not a layout, so it cannot be spelled in
 a saved layout script that has to keep running on a plain X11 box with the
 real xrandr.

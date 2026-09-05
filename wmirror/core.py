@@ -3,7 +3,7 @@
 wmirror drives the external `wl-mirror` -- an unprivileged wlroots
 screen-copy client, packaged in Ubuntu universe -- and owns its lifetime.
 It exists for the two pictures output geometry alone cannot produce on
-wlroots (both measured on sway 1.11, see WMIRROR.md):
+wlroots (both measured on sway 1.11, see docs/WMIRROR.md):
 
   * a REGION of one output shown on another: no layout expresses it;
   * a whole output shown on a differently-shaped one: two outputs sharing a

@@ -303,7 +303,7 @@ second path is the only way to see an output at all, and `wxrandr` takes it: que
 mode, position, rotation, scale, `--off`, `--primary`, `--same-as` and hotplug all
 measured there, on the `stonking-kde` VM image (Ubuntu 26.10), against
 `kscreen-doctor`. See
-[WXRANDR.md](WXRANDR.md#kwin-backend-wxrandrkwinpy).
+[WXRANDR.md](docs/WXRANDR.md#kwin-backend-wxrandrkwinpy).
 
 That is the *only* thing measured on 6.7 so far. `wdotool`, `wwmctl` and `wxprop`
 reach KWin through its scripting interface, which this change does not touch, but
@@ -420,7 +420,7 @@ we find the session's `DISPLAY` and `XAUTHORITY` and hand them to the original, 
 `sudo xdotool key a` works *through* us where `sudo /usr/bin/xdotool key a` says
 `Can't open display`. Where the cookie is looked for, and why the session leader's
 own environment is the only route to SDDM 0.20's, is
-[Technical.md](Technical.md#2-session-discovery-and-the-x11-handover). `warandr` gets
+[Technical.md](docs/Technical.md#2-session-discovery-and-the-x11-handover). `warandr` gets
 the same repair for the `xrandr` it runs, so `--command` and `--save` answer from a
 root shell too, but a *saved* layout script calls the bare command word, exactly as
 arandr's does, so running the script itself still wants a session (on Wayland that
@@ -594,7 +594,7 @@ imports. `warandr` carries `wxrandr` inside itself and still imports the system 
 bindings at run time, so the GUI wants `python3-gi` and `gir1.2-gtk-3.0` like
 everywhere else. The other five are stdlib only, and `wmirror` runs `wl-mirror` as a
 program rather than importing anything of it.
-[Technical.md](Technical.md#the-single-file-builds) has the table of what is in each.
+[Technical.md](docs/Technical.md#the-single-file-builds) has the table of what is in each.
 
 Prefer this when you would rather not touch apt at all, when you want no venv, when
 you are on a machine you do not administer, or when you want one file to copy to
@@ -718,7 +718,7 @@ Xwayland's real root window, and every other desktop gives root the real X root.
 **(f)** KWin applies a layout immediately and permanently, with no temporary mode and
 no confirmation dialog, and says so on stderr, together with the line that puts the
 previous layout back. Where it keeps that layout, and how to clear it, is
-[WXRANDR.md](WXRANDR.md#keeping-a-layout). `--same-as` is plainly the same position,
+[WXRANDR.md](docs/WXRANDR.md#keeping-a-layout). `--same-as` is plainly the same position,
 which on KWin already shows identical pixels. It reaches for the compositor's own
 `set_replication_source` only when the two outputs' logical rectangles differ and a
 shared position would give a crop instead of a copy (and says which KWin version that
@@ -745,7 +745,7 @@ where every injecting command (`key`, `keydown`, `keyup`, `type`, `click`,
 `mousedown`, `mouseup`, `mousemove`, `mousemove_relative`) runs with no root, no
 group and no udev rule. Mutter and KWin (6.6 and 5.27, both measured) implement
 neither, so on GNOME and KDE every injecting command still goes through
-`/dev/uinput`. [WDOTOOL.md](WDOTOOL.md#typing-and-clicking-with-no-privilege---vkbd)
+`/dev/uinput`. [WDOTOOL.md](docs/WDOTOOL.md#typing-and-clicking-with-no-privilege---vkbd)
 is the measurement.
 
 **(j)** Plasma on Xorg is an X11 session like any other and is handled like one,
@@ -824,7 +824,7 @@ character up backwards, and on a plain US layout none of that code runs at all.
 `wdotool keys` is the layout machinery pointed the other way: what to press for a
 character, or what you just pressed.
 
-**Everything about it is in [WDOTOOL.md](WDOTOOL.md)**: the honest approximations
+**Everything about it is in [WDOTOOL.md](docs/WDOTOOL.md)**: the honest approximations
 table, keyboard layouts and `--layout`, the two privilege-free injection paths and
 `--vkbd`, `wdotool keys`, exit codes, the bounded `--sync` waits, pointer accuracy,
 the input daemon and the per-compositor backend notes.
@@ -865,7 +865,7 @@ real per-axis maximize. The X plane is reached with Mutter's own Xwayland cookie
 it works from a custom shortcut, under `sudo` and from `ssh root@` alike, and
 Xwayland (which Mutter starts on demand) is never spawned just to be listed.
 
-Contract: [WWMCTL.md](WWMCTL.md).
+Contract: [WWMCTL.md](docs/WWMCTL.md).
 
 ### wxprop
 
@@ -903,7 +903,7 @@ XWayland twin prints `DIALOG`. And under `-len` truncation real xprop renders
 *uninitialised heap* past the end of the fetched data, which nothing can reproduce,
 so we stop at the budget instead.
 
-Contract: [WXPROP.md](WXPROP.md).
+Contract: [WXPROP.md](docs/WXPROP.md).
 
 ### wxrandr
 
@@ -960,9 +960,9 @@ $ wxrandr --backends
 autostart entry, and what becomes of a layout after you set it is the desktop's
 business, which the four desktops do not agree on. The measured table, and the recipe
 for putting a layout on a hotkey, are
-[WXRANDR.md § Keeping a layout](WXRANDR.md#keeping-a-layout).
+[WXRANDR.md § Keeping a layout](docs/WXRANDR.md#keeping-a-layout).
 
-Contract: [WXRANDR.md](WXRANDR.md).
+Contract: [WXRANDR.md](docs/WXRANDR.md).
 
 ### warandr
 
@@ -1006,7 +1006,7 @@ it and redraws. If it cannot be reached you get the dialog and the previous one 
 never an empty window. The same spellings work on the command line, so a hotkey can
 pin one.
 
-Contract: [WARANDR.md](WARANDR.md), including where the layout scripts go and how to
+Contract: [WARANDR.md](docs/WARANDR.md), including where the layout scripts go and how to
 bind one to a key on each desktop.
 
 ### wmirror
@@ -1058,7 +1058,7 @@ wmirror's own supervisor is killed.
 missing if it does not, and **(k)** in the support matrix is why GNOME and KDE cannot
 have it.
 
-Contract: [WMIRROR.md](WMIRROR.md).
+Contract: [WMIRROR.md](docs/WMIRROR.md).
 
 ## Threat model
 
@@ -1201,14 +1201,14 @@ shipped. Vibe-check the code yourself, it can take it.
 
 | file | what it is |
 |---|---|
-| [WDOTOOL.md](WDOTOOL.md) | wdotool's reference: the 48 commands, layouts, the two injection paths, the daemon, the backends |
-| [WWMCTL.md](WWMCTL.md) | wwmctl's contract: the dual-plane trick, the wmctrl surface, GNOME and KDE |
-| [WXPROP.md](WXPROP.md) | wxprop's contract: the two planes, the formatting machine, GNOME and KDE |
-| [WXRANDR.md](WXRANDR.md) | wxrandr's contract: the backends, overlaps, keeping a layout, the command surface |
-| [WARANDR.md](WARANDR.md) | warandr's contract: backend selection, the model, layout scripts, the GUI |
-| [WMIRROR.md](WMIRROR.md) | wmirror's contract: why it exists, the policy, lifetime, what it costs |
-| [Technical.md](Technical.md) | how the tree is put together, for whoever changes it next |
-| [Blogpost.md](Blogpost.md) | the long story: what X11 got right, four compositors with four answers, and what the measurements found |
+| [WDOTOOL.md](docs/WDOTOOL.md) | wdotool's reference: the 48 commands, layouts, the two injection paths, the daemon, the backends |
+| [WWMCTL.md](docs/WWMCTL.md) | wwmctl's contract: the dual-plane trick, the wmctrl surface, GNOME and KDE |
+| [WXPROP.md](docs/WXPROP.md) | wxprop's contract: the two planes, the formatting machine, GNOME and KDE |
+| [WXRANDR.md](docs/WXRANDR.md) | wxrandr's contract: the backends, overlaps, keeping a layout, the command surface |
+| [WARANDR.md](docs/WARANDR.md) | warandr's contract: backend selection, the model, layout scripts, the GUI |
+| [WMIRROR.md](docs/WMIRROR.md) | wmirror's contract: why it exists, the policy, lifetime, what it costs |
+| [Technical.md](docs/Technical.md) | how the tree is put together, for whoever changes it next |
+| [Blogpost.md](docs/Blogpost.md) | the long story: what X11 got right, four compositors with four answers, and what the measurements found |
 | [CHANGELOG.md](CHANGELOG.md) | the long form release notes |
 | [gnome/README.md](gnome/README.md) | the bridge extension's own interface and its live verification |
 | [vm/README.md](vm/README.md) | the rig: twelve flavors, what each one is, and what the six tools do on it |
