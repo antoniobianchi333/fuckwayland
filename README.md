@@ -19,6 +19,43 @@ In the box:
 - **warandr** — arandr, the drag-your-monitors GUI, on Wayland (via wxrandr) and X11 (via xrandr)
 - **wmirror** — the one that clones nothing: mirror a *region*, or an odd-shaped output, on wlroots
 
+## Install the package
+
+Ubuntu 24.04 and 26.04, one file and one command. Take
+`fuckwayland_0.2.0_all.deb` from the
+[releases page](https://github.com/antoniobianchi333/fuckwayland/releases), or
+build it from a clone with `sh scripts/build-deb.sh`.
+
+```sh
+sudo apt install ./fuckwayland_0.2.0_all.deb
+```
+
+That is the six tools in `/usr/bin`, the GNOME Shell bridge extension where
+`gnome-shell` looks for it, the udev rule that opens `/dev/uinput` to whoever
+is at the seat, and the `warandr` menu entry. The real `xdotool`, `wmctrl`,
+`xprop` and `xrandr` stay exactly as they were, so a script that calls both
+keeps working.
+
+Then the one thing the desktop forces on you: on GNOME, **log out and back in
+once**. `gnome-shell` reads extension directories only when a session starts,
+so until you do that the window commands say the bridge is not running. The
+package enables the extension for you inside that first session. Everything
+else works the moment apt finishes: the display commands, the GUI, typing and
+clicking.
+
+To take it away:
+
+```sh
+sudo apt remove fuckwayland
+```
+
+The extension, the udev rule and the six commands go with the package,
+`/dev/uinput` goes back to `root:root 0600`, and the session you are in keeps
+running. Add `sudo apt purge fuckwayland` to drop the last of its bookkeeping.
+
+More about the package, including how it sits beside a pip install of the same
+source, is under [the .deb](#the-deb).
+
 ## wdotool
 
 xdotool, but it works on Wayland. Drop-in: same commands, same flags, same output
@@ -163,7 +200,7 @@ There is no X server to lie to, so wdotool goes underneath instead:
 
 Four routes:
 
-1. **[the .deb](#the-deb)** — Ubuntu 24.04 and 26.04: one package, and the
+1. **[the .deb](#the-deb)** for Ubuntu 24.04 and 26.04. One package, and the
    extension, the udev rule and the menu entry come with it.
 2. **[pip, from a clone](#from-a-clone-with-pip)** — the normal one: one apt
    package, one venv, one pip line.
@@ -177,39 +214,47 @@ nothing at all on [KDE Plasma](#kde-plasma), the GTK bindings on a minimal
 [sway](#sway-and-other-wlroots-compositors) — and injecting input needs
 [access to `/dev/uinput`](#input-access). Then
 [check it worked](#check-it-worked). The .deb is the one route that brings the
-extension and the udev rule along with it; the other three leave both to you.
+extension and the udev rule along with it. The other three leave both to you.
 
 ### The .deb
 
-```sh
-sh scripts/build-deb.sh                              # -> dist/fuckwayland_0.2.0_all.deb
-sudo apt install ./dist/fuckwayland_0.2.0_all.deb
-```
+The two lines are [at the top of this file](#install-the-package). What they
+get you, and why it is one package and not two:
 
-**One** `Architecture: all` package for **both** Ubuntu 24.04 and 26.04: every
-module here is pure standard library, so it lands in the version-independent
-`/usr/lib/python3/dist-packages` and your own `python3` byte-compiles it at
-install time — 3.12 on 24.04, 3.14 on 26.04, same file. In the box: the six
-tools in `/usr/bin`, the [GNOME bridge extension](#gnome) system-wide, the
-[udev rule](#input-access) (applied at once, no reboot), and the `warandr`
-menu entry.
+**One** `Architecture: all` package for **both** Ubuntu 24.04 and 26.04. Every
+module here is pure standard library, so it lands in the version independent
+`/usr/lib/python3/dist-packages` and your own `python3` byte compiles it at
+install time, 3.12 on 24.04 and 3.14 on 26.04, from the same file. In the box:
+the six tools in `/usr/bin`, the [GNOME bridge extension](#gnome) system wide,
+the [udev rule](#input-access) applied at once with no reboot, and the
+`warandr` menu entry.
 
-It does **not** replace the real `xdotool`, `wmctrl`, `xprop` or `xrandr`: not
-one path it ships is owned by their packages, so the [X11
-handover](#x11) keeps finding them and the
-[symlinks over the originals](#installing-over-the-originals) stay your choice.
+It does **not** replace the real `xdotool`, `wmctrl`, `xprop` or `xrandr`. Not
+one path it ships is owned by their packages, so the [X11 handover](#x11) keeps
+finding them and the [symlinks over the
+originals](#installing-over-the-originals) stay your choice.
 
-The one manual step is the one the desktop itself forces — **log out and back
-in once**, because gnome-shell scans extension directories only at login. The
-package enables the extension for you in that first session (a once-per-user
-autostart helper, which never touches the setting again), and says so while it
-installs. `apt remove` puts `/dev/uinput` back to `root:root 0600`.
+The relogin is the whole of the manual procedure, because `gnome-shell` scans
+extension directories only at login. The package enables the extension for you
+in that first session, with an autostart helper that runs once per user and
+then leaves the setting alone, and it says so while it installs. A later
+`apt remove` puts `/dev/uinput` back to `root:root 0600` and takes the
+extension, the rule and the helper with it.
+
+Alongside a pip install of the same source, the two do not fight. The
+`/usr/local/bin` symlinks the [pip route](#from-a-clone-with-pip) makes keep
+winning for the six names, because `/usr/local/bin` comes first on the Ubuntu
+`PATH`, and the package owns nothing under `/usr/local`. One thing to know if
+the clone is what you work on: inside a `--system-site-packages` venv, an
+editable install loses to the packaged modules, so `import wdotool` finds the
+packaged copy. `debian/README.Debian` has the detail and the one line that
+gets you back to the clone.
 
 `scripts/build-deb.sh` installs its own build tools from the Ubuntu archive on
-first run — `dpkg-dev debhelper dh-python pybuild-plugin-pyproject python3-all
-python3-setuptools`, nothing from a PPA — or `--no-deps` and do it yourself.
-What goes where, and why the extension and the rule are handled the way they
-are, is in `debian/README.Debian`.
+first run, namely `dpkg-dev debhelper dh-python pybuild-plugin-pyproject
+python3-all python3-setuptools`, nothing from a PPA. Pass `--no-deps` to
+install them yourself instead. What goes where, and why the extension and the
+rule are handled the way they are, is in `debian/README.Debian`.
 
 ### From a clone, with pip
 
