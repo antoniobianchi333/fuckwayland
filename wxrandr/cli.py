@@ -202,8 +202,7 @@ def parse(argv: list) -> Opts:
             v = need()
             m = re.fullmatch(r"(\d+)x(\d+)", v)
             if not m:
-                raise ArgErr("failed to parse '%s' as a framebuffer size\n"
-                             % v)
+                raise ArgErr("failed to parse '%s' as a framebuffer size\n" % v)
             o.fb = (int(m.group(1)), int(m.group(2)))
             o.setit_1_2 = True
             o.action = True
@@ -298,8 +297,7 @@ def parse(argv: list) -> Opts:
             if v not in core.REFLECTIONS:
                 raise ArgErr("%s: invalid argument '%s'\n" % (a, v))
             cur.reflect = v
-        elif a in ("--left-of", "--right-of", "--above", "--below",
-                   "--same-as"):
+        elif a in ("--left-of", "--right-of", "--above", "--below", "--same-as"):
             per_output(a)
             cur.relation = (a[2:], need())
         elif a == "--set":
@@ -332,8 +330,7 @@ def parse(argv: list) -> Opts:
             v = need()
             m = re.fullmatch(r"(-?\d+)x(-?\d+)", v)
             if not m:
-                raise ArgErr("failed to parse '%s' as a scale-from size\n"
-                             % v)
+                raise ArgErr("failed to parse '%s' as a scale-from size\n" % v)
             w, h = int(m.group(1)), int(m.group(2))
             if w < 0 or h < 0:
                 raise ArgErr("--scale-from dimensions must be nonnegative\n")
@@ -344,14 +341,12 @@ def parse(argv: list) -> Opts:
             if v != "none":
                 parts = v.split(",")
                 if len(parts) != 9:
-                    raise ArgErr("failed to parse '%s' as a transformation\n"
-                                 % v)
+                    raise ArgErr("failed to parse '%s' as a transformation\n" % v)
                 for p in parts:
                     try:
                         float(p)
                     except ValueError:
-                        raise ArgErr("failed to parse '%s' as a "
-                                     "transformation\n" % v)
+                        raise ArgErr("failed to parse '%s' as a " "transformation\n" % v)
             core.warn("--transform is not supported on Wayland; ignoring\n")
         elif a == "--filter":
             per_output(a)
@@ -420,8 +415,7 @@ def parse(argv: list) -> Opts:
             # wxrandr extension: force the backend for this invocation
             v = a.split("=", 1)[1] if a.startswith("--backend=") else need()
             if canonical_backend(v) is None:
-                raise ArgErr("--backend: invalid argument '%s'; valid: %s\n"
-                             % (v, ", ".join(BACKEND_NAMES)))
+                raise ArgErr("--backend: invalid argument '%s'; valid: %s\n" % (v, ", ".join(BACKEND_NAMES)))
             o.backend = canonical_backend(v)
         elif a == "--newmode":
             name = need()
@@ -565,8 +559,7 @@ class Probe:
     connection the probe opened, which Session reuses so a session still
     opens exactly one; `close()` drops it when nothing wants it."""
 
-    def __init__(self, name, available, reason="", detail="",
-                 compositor=None, protocol=None, handle=None):
+    def __init__(self, name, available, reason="", detail="", compositor=None, protocol=None, handle=None):
         self.name = name
         self.available = available
         self.reason = reason            # short, true, only when unavailable
@@ -590,8 +583,7 @@ def _probe_x11(env):
     except passthrough.RealToolError as e:
         return Probe("x11", False, str(e).split("\n")[0])
     if real is None:
-        return Probe("x11", False,
-                     "no real xrandr on PATH (install x11-xserver-utils)")
+        return Probe("x11", False, "no real xrandr on PATH (install x11-xserver-utils)")
     return Probe("x11", True, detail=real, compositor="X server (RandR)")
 
 
@@ -623,8 +615,7 @@ def _probe_kwin():
     if conn is None:
         if wsession.find_wayland_socket() is None:
             return Probe("kwin", False, "no wayland socket")
-        return Probe("kwin", False, "the compositor does not advertise "
-                     + kwin_mod.MGMT)
+        return Probe("kwin", False, "the compositor does not advertise " + kwin_mod.MGMT)
     ver = None
     try:
         for iface, v in conn.get_registry().values():
@@ -633,8 +624,7 @@ def _probe_kwin():
     except Exception:
         pass
     what = kwin_mod.MGMT + ("" if ver is None else " version %d" % ver)
-    return Probe("kwin", True, detail=what, compositor="KWin", protocol=what,
-                 handle=conn)
+    return Probe("kwin", True, detail=what, compositor="KWin", protocol=what, handle=conn)
 
 
 def _probe_mutter():
@@ -644,8 +634,7 @@ def _probe_mutter():
     if bus is None:
         if not wsession.find_session_bus():
             return Probe("mutter", False, "no session bus")
-        return Probe("mutter", False, "%s is not on the session bus"
-                     % mutter_mod.DEST)
+        return Probe("mutter", False, "%s is not on the session bus" % mutter_mod.DEST)
     return Probe("mutter", True,
                  detail="%s on the session bus" % mutter_mod.DEST,
                  compositor="Mutter", protocol="%s (D-Bus)" % mutter_mod.DEST,
@@ -672,11 +661,9 @@ def _probe_wlr():
             conn.close()
         except Exception:
             pass
-        return Probe("wlr", False,
-                     "the compositor does not advertise " + _WLR_IFACE)
+        return Probe("wlr", False, "the compositor does not advertise " + _WLR_IFACE)
     what = "%s version %d" % (_WLR_IFACE, g[1])
-    return Probe("wlr", True, detail=what, compositor="wlroots",
-                 protocol=what, handle=conn)
+    return Probe("wlr", True, detail=what, compositor="wlroots", protocol=what, handle=conn)
 
 
 def probe_backend(name, env=None, verbose=False):
@@ -747,18 +734,15 @@ def print_backend_lines(flag=None, env=None, verbose=False):
     if verbose:
         p = probes.get(name) or probe_backend(name, env=env, verbose=True)
         probes[name] = p
-        lines.append("session: %s"
-                     % (passthrough.session_kind("xrandr", env) or "unknown"))
-        lines.append("chosen by: %s"
-                     % (source if note is None else "%s (%s)" % (source, note)))
+        lines.append("session: %s" % (passthrough.session_kind("xrandr", env) or "unknown"))
+        lines.append("chosen by: %s" % (source if note is None else "%s (%s)" % (source, note)))
         if p.compositor:
             lines.append("compositor: %s" % p.compositor)
         if p.protocol:
             lines.append("protocol: %s" % p.protocol)
         if name == "x11" and p.available:
             lines.append("real xrandr: %s" % p.detail)
-        lines.append("available: %s"
-                     % ("yes" if p.available else "no (%s)" % p.reason))
+        lines.append("available: %s" % ("yes" if p.available else "no (%s)" % p.reason))
     for p in probes.values():
         p.close()
     return lines
@@ -840,8 +824,7 @@ class Session:
             p = probes[name] = probe_backend(name)
             if not p.available:
                 p.close()
-                raise Fatal("--backend %s is not available in this session: "
-                            "%s\n" % (name, p.reason))
+                raise Fatal("--backend %s is not available in this session: " "%s\n" % (name, p.reason))
         self.backend = name
 
         def reuse(bname):
@@ -856,8 +839,7 @@ class Session:
         # left to the garbage collector (which reports them as a
         # ResourceWarning at whatever moment it gets round to them)
         self.probes = probes
-        keep = {id(h) for h in (sway_sock, kprobe, probe, wprobe)
-                if h is not None}
+        keep = {id(h) for h in (sway_sock, kprobe, probe, wprobe) if h is not None}
         for p in probes.values():
             if p.handle is not None and id(p.handle) not in keep:
                 p.close()
@@ -908,8 +890,7 @@ class Session:
 
     @staticmethod
     def _cant_open():
-        sys.stderr.write("Can't open display %s\n"
-                         % os.environ.get("WAYLAND_DISPLAY", ""))
+        sys.stderr.write("Can't open display %s\n" % os.environ.get("WAYLAND_DISPLAY", ""))
         raise SystemExit(1)
 
     def snapshot(self):
@@ -930,8 +911,7 @@ class Session:
         pos = core.resolve_positions(targets, dims)
         if self.backend == "mutter":
             from wxrandr import mutter as mutter_mod
-            moved = {n for n, _p, _via in
-                     mutter_mod.keep_adjacent(targets, dims, pos)}
+            moved = {n for n, _p, _via in mutter_mod.keep_adjacent(targets, dims, pos)}
             for t in targets:
                 if t.name in moved:
                     t.changed = True   # its crtc line belongs in the plan
@@ -1011,8 +991,7 @@ def _dpi_and_mm(opts: Opts, outputs, new_w, new_h):
     """The verbose/dryrun screen line pieces (xrandr main + set_screen_size):
     dpi from the *current* screen height unless --dpi/--fbmm."""
     if opts.fbmm:
-        return (25.4 * new_h / opts.fbmm[1] if opts.fbmm[1] else 96.0,
-                opts.fbmm[0], opts.fbmm[1])
+        return (25.4 * new_h / opts.fbmm[1] if opts.fbmm[1] else 96.0, opts.fbmm[0], opts.fbmm[1])
     dpi = None
     if isinstance(opts.dpi, float):
         dpi = opts.dpi
@@ -1021,8 +1000,7 @@ def _dpi_and_mm(opts: Opts, outputs, new_w, new_h):
             if o.name == opts.dpi and o.active and o.mm_h:
                 dpi = 25.4 * o.h / o.mm_h
         if dpi is None:
-            core.warn("output %s has no physical size; using 96dpi\n"
-                      % opts.dpi)
+            core.warn("output %s has no physical size; using 96dpi\n" % opts.dpi)
             dpi = 96.0
     if dpi is None:
         x0, y0, x1, y1 = core.layout_box(outputs)
@@ -1068,8 +1046,7 @@ def _print_plan(opts: Opts, outputs, targets, dims, pos):
     if opts.fb:
         new_w, new_h = opts.fb
     dpi, mm_w, mm_h = _dpi_and_mm(opts, outputs, new_w, new_h)
-    print("screen 0: %dx%d %dx%d mm %6.2fdpi" % (new_w, new_h, mm_w, mm_h,
-                                                 dpi))
+    print("screen 0: %dx%d %dx%d mm %6.2fdpi" % (new_w, new_h, mm_w, mm_h, dpi))
     for t in targets:
         if not t.changed or not t.enabled:
             continue
@@ -1118,10 +1095,8 @@ def _check_screen_size(opts: Opts, targets, dims, pos):
     if opts.fb:
         desired_w, desired_h = opts.fb
     else:
-        xs = [pos[t.name][0] + dims[t.name][0]
-              for t in targets if t.enabled and t.name in pos]
-        ys = [pos[t.name][1] + dims[t.name][1]
-              for t in targets if t.enabled and t.name in pos]
+        xs = [pos[t.name][0] + dims[t.name][0] for t in targets if t.enabled and t.name in pos]
+        ys = [pos[t.name][1] + dims[t.name][1] for t in targets if t.enabled and t.name in pos]
         desired_w = max(xs) if xs else 0
         desired_h = max(ys) if ys else 0
     if desired_w > core.MAX_WIDTH or desired_h > core.MAX_HEIGHT:
@@ -1158,12 +1133,9 @@ def _apply_gamma(sess: Session, opts: Opts, outputs):
                       "(no gamma LUT API); ignoring for %s\n" % s.name)
             continue
         rec = sess.state.gamma().get(s.name, {})
-        brightness = (s.brightness if s.brightness is not None
-                      else rec.get("brightness", 1.0))
-        gam = (s.gamma if s.gamma is not None
-               else tuple(rec.get("gamma", (1.0, 1.0, 1.0))))
-        err = gammamod.set_output_gamma(sess.state, s.name, brightness, gam,
-                                        wayland_socket=sock)
+        brightness = (s.brightness if s.brightness is not None else rec.get("brightness", 1.0))
+        gam = (s.gamma if s.gamma is not None else tuple(rec.get("gamma", (1.0, 1.0, 1.0))))
+        err = gammamod.set_output_gamma(sess.state, s.name, brightness, gam, wayland_socket=sock)
         changed = True
         if err == "refused":
             sess.state.save()
@@ -1186,10 +1158,8 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
                 else:
                     core.warn("--filter needs the sway backend; ignoring\n")
             else:
-                core.warn("--set %s is not supported on Wayland; ignoring\n"
-                          % prop)
-    targets = core.build_targets(outputs, opts.stanzas, sess.state,
-                                 opts.global_auto)
+                core.warn("--set %s is not supported on Wayland; ignoring\n" % prop)
+    targets = core.build_targets(outputs, opts.stanzas, sess.state, opts.global_auto)
     dims = {t.name: sess.dims(t) for t in targets if t.enabled}
     pos = sess.positions(targets, dims)
     _check_fb(opts, targets, dims, pos)
@@ -1201,20 +1171,16 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
     # send, and the dryrun branch puts this back before it saves.
     primary_before = sess.state.primary
     if opts.noprimary:
-        if (sess.backend == "mutter" and sess.impl.primary
-                and not any(s.primary for s in opts.stanzas)):
-            core.warn("GNOME requires a primary output; keeping %s\n"
-                      % sess.impl.primary)
-        if (sess.backend == "kwin" and sess.impl.primary
-                and not any(s.primary for s in opts.stanzas)):
+        if (sess.backend == "mutter" and sess.impl.primary and not any(s.primary for s in opts.stanzas)):
+            core.warn("GNOME requires a primary output; keeping %s\n" % sess.impl.primary)
+        if (sess.backend == "kwin" and sess.impl.primary and not any(s.primary for s in opts.stanzas)):
             # neither set_priority nor set_primary_output has an inverse:
             # KWin's output order always has a first entry
             core.warn("KWin keeps a primary output; keeping %s\n"
                       % sess.impl.primary)
         sess.state.primary = None
     for s in opts.stanzas:
-        if s.primary and any(t.name == s.name and t.stanza is s
-                             for t in targets):
+        if s.primary and any(t.name == s.name and t.stanza is s for t in targets):
             sess.state.primary = s.name
     if opts.dryrun:
         # what a verify can promise is the backend's business: Mutter really
@@ -1255,11 +1221,9 @@ def _do_1_0(sess: Session, opts: Opts, outputs) -> int:
     sizes = core.q1_sizes(outputs)
     if isinstance(opts.size, tuple):
         w, h = opts.size
-        idx = next((i for i, (sw, sh, _r) in enumerate(sizes)
-                    if (sw, sh) == (w, h)), None)
+        idx = next((i for i, (sw, sh, _r) in enumerate(sizes) if (sw, sh) == (w, h)), None)
         if idx is None:
-            sys.stderr.write("Size %dx%d not found in available modes\n"
-                             % (w, h))
+            sys.stderr.write("Size %dx%d not found in available modes\n" % (w, h))
             return 1
     elif opts.size >= 0:
         if opts.size >= len(sizes):
@@ -1278,11 +1242,9 @@ def _do_1_0(sess: Session, opts: Opts, outputs) -> int:
     if opts.rate >= 0 and sizes:
         rates = sizes[idx][2]
         if rates and round(opts.rate) not in rates:
-            sys.stderr.write("Rate %.2f Hz not available for this size\n"
-                             % opts.rate)
+            sys.stderr.write("Rate %.2f Hz not available for this size\n" % opts.rate)
             return 1
-    cur_rot, cur_refl = core.RANDR_VIEW.get(first.transform,
-                                            ("normal", "normal"))
+    cur_rot, cur_refl = core.RANDR_VIEW.get(first.transform, ("normal", "normal"))
     rot = _DIRECTION[opts.rot] if opts.rot >= 0 else cur_rot
     refl = set()
     if "x" in cur_refl:
@@ -1293,8 +1255,7 @@ def _do_1_0(sess: Session, opts: Opts, outputs) -> int:
         refl.symmetric_difference_update("x")
     if opts.toggle_y:
         refl.symmetric_difference_update("y")
-    new_refl = ("xy" if refl == {"x", "y"} else
-                "x" if refl == {"x"} else "y" if refl == {"y"} else "normal")
+    new_refl = ("xy" if refl == {"x", "y"} else "x" if refl == {"x"} else "y" if refl == {"y"} else "normal")
     if opts.query or opts.query_1:
         for line in core.render_q1(outputs, sess.state):
             print(line)
@@ -1349,8 +1310,7 @@ def _run_session(sess: Session, opts: Opts) -> int:
     if opts.persistent:
         sess.persistent = True
     if opts.screen > 0:
-        sys.stderr.write("Invalid screen number %d (display has 1)\n"
-                         % opts.screen)
+        sys.stderr.write("Invalid screen number %d (display has 1)\n" % opts.screen)
         return 1
     if opts.version:
         print("Server reports RandR version 1.6")
@@ -1386,8 +1346,7 @@ def _run_session(sess: Session, opts: Opts) -> int:
     if opts.query_1 and not opts.setit:
         for line in core.render_q1(outputs, sess.state):
             print(line)
-        for line in core.render_q1_state(outputs[0] if outputs else
-                                         core.OutputState("none", False)):
+        for line in core.render_q1_state(outputs[0] if outputs else core.OutputState("none", False)):
             print(line)
         return 0
     if opts.query:

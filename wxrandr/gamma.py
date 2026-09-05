@@ -85,18 +85,15 @@ def set_output_gamma(state, output: str, brightness: float, gamma_rgb,
         # before the new control asked for the LUT (two independent client
         # fds, no ordering): give it a moment and try once more.
         time.sleep(0.2)
-        err = _spawn_holder(state, output, brightness, gamma_rgb,
-                            wayland_socket)
+        err = _spawn_holder(state, output, brightness, gamma_rgb, wayland_socket)
     return err
 
 
-def _spawn_holder(state, output: str, brightness: float, gamma_rgb,
-                  wayland_socket: str | None) -> str | None:
+def _spawn_holder(state, output: str, brightness: float, gamma_rgb, wayland_socket: str | None) -> str | None:
     named = {}
 
     def record():
-        state.gamma()[output] = dict(named, brightness=brightness,
-                                     gamma=list(gamma_rgb))
+        state.gamma()[output] = dict(named, brightness=brightness, gamma=list(gamma_rgb))
 
     def on_line(line: str) -> bool:
         if not line.startswith("pid "):
@@ -112,8 +109,7 @@ def _spawn_holder(state, output: str, brightness: float, gamma_rgb,
         return True
 
     def child(status_fd):
-        holder_main(output, brightness, gamma_rgb, status_fd=status_fd,
-                    wayland_socket=wayland_socket)
+        holder_main(output, brightness, gamma_rgb, status_fd=status_fd, wayland_socket=wayland_socket)
 
     status = procs.spawn_detached(child, HOLDER_SECONDS, on_line)
     if status == "ok":

@@ -74,11 +74,9 @@ APPLY_SIG = "uua(iiduba(ssa{sv}))a{sv}"
 VERIFY, TEMPORARY, PERSISTENT = 0, 1, 2
 LAYOUT_LOGICAL, LAYOUT_PHYSICAL = 1, 2
 MONITORS_CHANGED_TIMEOUT = 5.0
-CANCELLED = ("output configuration cancelled by a concurrent change; "
-             "try again\n")
+CANCELLED = ("output configuration cancelled by a concurrent change; " "try again\n")
 _MATCH = "type='signal',interface='%s',member='MonitorsChanged'" % IFACE
-PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the '
-                   "dialog or the layout reverts\n")
+PERSIST_WARNING = ('GNOME will ask "Keep changes?" for 20 s; confirm the ' "dialog or the layout reverts\n")
 
 
 # -- pure helpers (unit-tested) ----------------------------------------------
@@ -187,8 +185,7 @@ def keep_adjacent(targets: list, dims: dict, pos: dict) -> list:
     to; Mutter reports the hole). Mutates `pos` (every enabled output,
     min x = min y = 0 as core.resolve_positions leaves it) and returns
     [(name, (x, y), neighbour)] for each output it moved, in move order."""
-    old = {t.name: (t.output.x, t.output.y, t.output.w, t.output.h)
-           for t in targets if t.output.active}
+    old = {t.name: (t.output.x, t.output.y, t.output.w, t.output.h) for t in targets if t.output.active}
     fixed = {t.name for t in targets if _positioned(t)}
     movable = [t.name for t in targets
                if t.enabled and t.name in old and t.name in pos
@@ -282,8 +279,7 @@ def wl_output_info(sock_path: str | None = None) -> dict:
         for gname, (iface, ver) in list(conn.get_registry().items()):
             if iface != "wl_output" or ver < 4:
                 continue
-            o = {"name": "", "mm_w": 0, "mm_h": 0, "subpixel": "unknown",
-                 "make": "", "model": ""}
+            o = {"name": "", "mm_w": 0, "mm_h": 0, "subpixel": "unknown", "make": "", "model": ""}
 
             def handler(op, cur, fds, o=o):
                 if op == 0:  # geometry(x, y, mm_w, mm_h, subpixel, make, model, tf)
@@ -311,8 +307,7 @@ class MutterOutputs:
 
     name = "mutter"
 
-    def __init__(self, bus: Bus | None = None, addr: str | None = None,
-                 wl_socket=None):
+    def __init__(self, bus: Bus | None = None, addr: str | None = None, wl_socket=None):
         """`wl_socket`: Wayland socket path for the wl_output enrichment
         (None = the session's, False = none)."""
         self.wl_socket = wl_socket
@@ -320,8 +315,7 @@ class MutterOutputs:
             if addr is None:
                 hit = wsession.find_session_bus()
                 if not hit:
-                    raise DBusError("org.freedesktop.DBus.Error.NoServer",
-                                    "no session D-Bus found")
+                    raise DBusError("org.freedesktop.DBus.Error.NoServer", "no session D-Bus found")
                 addr = hit[1]
             bus = Bus(addr)
         self.bus = bus
@@ -332,8 +326,7 @@ class MutterOutputs:
             raise
         if not owned:
             self.bus.close()
-            raise Fatal("%s is not on the session bus (not a GNOME "
-                        "session?)\n" % DEST)
+            raise Fatal("%s is not on the session bus (not a GNOME " "session?)\n" % DEST)
         self.serial = 0
         self.fingerprint = None      # monitors + layout the serial stood for
         self.props = {}
@@ -362,14 +355,12 @@ class MutterOutputs:
         layout mode, supported scales, the real primary (synced into
         state.primary — the state file never overrides Mutter here)."""
         serial, monitors, logical, props = self.get_current_state()
-        wl = {} if self.wl_socket is False else wl_output_info(
-            self.wl_socket or None)
+        wl = {} if self.wl_socket is False else wl_output_info(self.wl_socket or None)
         self.serial = serial
         self.fingerprint = self._fingerprint(monitors, logical)
         self.props = props
         self.layout_mode = _int(props.get("layout-mode")) or LAYOUT_LOGICAL
-        self.global_scale_required = bool(props.get("global-scale-required",
-                                                    False))
+        self.global_scale_required = bool(props.get("global-scale-required", False))
         lm_of = {}
         for lm in logical:
             for spec in lm[5]:
@@ -387,8 +378,7 @@ class MutterOutputs:
             self.primary = None
         else:
             members = [spec[0] for spec in primary_lm[5]]
-            self.primary = (state.primary if state.primary in members
-                            else members[0])
+            self.primary = (state.primary if state.primary in members else members[0])
         self.scales = {}
         self.underscan = {}
         current_ids = {}
@@ -402,8 +392,7 @@ class MutterOutputs:
                              make=vendor or "Unknown",
                              model=product or "Unknown",
                              serial=mserial or "Unknown")
-            self.underscan[connector] = bool(mprops.get("is-underscanning",
-                                                        False))
+            self.underscan[connector] = bool(mprops.get("is-underscanning", False))
             w_info = wl.get(connector)
             if w_info:
                 st.mm_w = st.mm_w or w_info["mm_w"]
@@ -412,8 +401,7 @@ class MutterOutputs:
             current = None
             for (mid, w, h, rate, _pscale, scales, mp) in modes:
                 m = _mode_from_wire(mid, w, h, rate, mp)
-                self.scales[(connector, mid)] = ([float(s) for s in scales]
-                                                 or [1.0])
+                self.scales[(connector, mid)] = ([float(s) for s in scales] or [1.0])
                 st.modes.append(m)
                 if mp.get("is-current"):
                     current = m
@@ -421,8 +409,7 @@ class MutterOutputs:
                 x, y, scale, transform, primary, _specs, _lp = lm_of[connector]
                 st.x, st.y, st.scale = x, y, float(scale)
                 st.transform = from_transform(transform)
-                st.current = current if current is not None else (
-                    st.modes[0] if st.modes else None)
+                st.current = current if current is not None else (st.modes[0] if st.modes else None)
                 if st.current is not None:
                     st.w, st.h = logical_size(st.current.w, st.current.h,
                                               st.transform, st.scale,
@@ -463,8 +450,7 @@ class MutterOutputs:
         if len(flagged) <= 1:
             return flagged[0] if flagged else None
         try:
-            _serial, _crtcs, outputs, _modes, _mw, _mh = self.bus.call(
-                DEST, PATH, IFACE, "GetResources")
+            _serial, _crtcs, outputs, _modes, _mw, _mh = self.bus.call(DEST, PATH, IFACE, "GetResources")
             for out in outputs:
                 if out[7].get("primary") and out[4] in lm_of:
                     return lm_of[out[4]]
@@ -492,16 +478,14 @@ class MutterOutputs:
                 and o.current.mode_id == mode.mode_id
                 and abs(t.scale - o.scale) < 1e-9):
             return t.scale
-        return snap_scale(t.scale,
-                          self.scales.get((t.name, mode.mode_id)) or [1.0])
+        return snap_scale(t.scale, self.scales.get((t.name, mode.mode_id)) or [1.0])
 
     def predicted_dims(self, t: core.Target, state: core.State) -> tuple:
         """Pending logical size of an enabled target in Mutter's space (the
         dryrun/verbose plan and --fb checks use this instead of the wlroots
         prediction)."""
         m = self.resolve_mode(t, state)
-        return logical_size(m.w, m.h, t.sway_tf, self._scale_for(t, m),
-                            self.layout_mode)
+        return logical_size(m.w, m.h, t.sway_tf, self._scale_for(t, m), self.layout_mode)
 
     @staticmethod
     def _floating(t: core.Target) -> bool:
@@ -517,11 +501,9 @@ class MutterOutputs:
             if not self._floating(t):
                 continue
             if placed:
-                right = max(placed, key=lambda n: (pos[n][0] + dims[n][0],
-                                                   -pos[n][1]))
+                right = max(placed, key=lambda n: (pos[n][0] + dims[n][0], -pos[n][1]))
                 pos[t.name] = (pos[right][0] + dims[right][0], pos[right][1])
-                warn("output %s enabled without a position; placing it "
-                     "right-of %s\n" % (t.name, right))
+                warn("output %s enabled without a position; placing it " "right-of %s\n" % (t.name, right))
             else:
                 pos[t.name] = (0, 0)
             placed.append(t.name)
@@ -544,16 +526,14 @@ class MutterOutputs:
             m = self.resolve_mode(t, state)
             s = self._scale_for(t, m)
             if abs(s - t.scale) > 1e-6:
-                warn("scale %g is not available for %s at %dx%d; using %g\n"
-                     % (t.scale, t.name, m.w, m.h, s))
+                warn("scale %g is not available for %s at %dx%d; using %g\n" % (t.scale, t.name, m.w, m.h, s))
             real[t.name], scales[t.name] = m, s
         by_name = {t.name: t for t in targets}
         dims = {n: logical_size(real[n].w, real[n].h, by_name[n].sway_tf,
                                 scales[n], self.layout_mode) for n in real}
         pos = core.resolve_positions(targets, dims)
         for n, (x, y), via in keep_adjacent(targets, dims, pos):
-            warn("output %s moved to +%d+%d to stay adjacent to %s\n"
-                 % (n, x, y, via))
+            warn("output %s moved to +%d+%d to stay adjacent to %s\n" % (n, x, y, via))
         self._auto_place(targets, dims, pos)
         groups, index = [], {}
         for t in targets:
@@ -638,8 +618,7 @@ class MutterOutputs:
         """--dryrun: method 0 — Mutter validates, nothing changes."""
         self._send(VERIFY, self.plan(state, targets))
 
-    def apply(self, state: core.State, targets: list,
-              persistent: bool = False) -> list:
+    def apply(self, state: core.State, targets: list, persistent: bool = False) -> list:
         """One ApplyMonitorsConfig for the whole layout, then wait for
         MonitorsChanged (<= 5 s) and return the fresh snapshot. An unchanged
         temporary layout is not re-applied (no modeset for `--primary` on the
@@ -659,8 +638,7 @@ class MutterOutputs:
             self._matched = True
         self._send(method, plan)
         try:
-            self.bus.wait_signal(IFACE, "MonitorsChanged",
-                                 MONITORS_CHANGED_TIMEOUT)
+            self.bus.wait_signal(IFACE, "MonitorsChanged", MONITORS_CHANGED_TIMEOUT)
         except DBusError:
             pass
         return self.snapshot(state)
