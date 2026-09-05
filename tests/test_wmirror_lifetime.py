@@ -30,9 +30,9 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wdotool import procs                                        # noqa: E402
-from wmirror import cli, core, supervise                         # noqa: E402
-from wxrandr import core as wxcore                               # noqa: E402
+from wdotool import procs
+from wmirror import cli, core, supervise
+from wxrandr import core as wxcore
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

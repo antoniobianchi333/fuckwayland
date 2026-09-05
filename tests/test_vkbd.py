@@ -28,9 +28,9 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 # session would have the kernel-path daemon read that session's keymap.
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
-import wl_fake  # noqa: E402
-from support import RecorderDev  # noqa: E402
-from wdotool import cli, daemon, keymap, us_keymap, vkbd, xkbmap  # noqa: E402
+import wl_fake
+from support import RecorderDev
+from wdotool import cli, daemon, keymap, us_keymap, vkbd, xkbmap
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(HERE, "fixtures", "keymaps")

@@ -24,11 +24,11 @@ from contextlib import redirect_stderr, redirect_stdout
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wdotool.backend import Window  # noqa: E402
-from wdotool.backend_sway import SwayBackend  # noqa: E402
-from wdotool.ctx import CmdError  # noqa: E402
-from wwmctl import cli, core  # noqa: E402
-from wwmctl.cli import WMCTRL_VERSION  # noqa: E402
+from wdotool.backend import Window
+from wdotool.backend_sway import SwayBackend
+from wdotool.ctx import CmdError
+from wwmctl import cli, core
+from wwmctl.cli import WMCTRL_VERSION
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

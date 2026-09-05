@@ -41,8 +41,8 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from tests.test_wwmctl_cli import SPECS, FakeSwayBackend, FakeX11, run
-from tests.test_wwmctl_x11 import FakeXServer
+from test_wwmctl_cli import SPECS, FakeSwayBackend, FakeX11, run
+from test_wwmctl_x11 import FakeXServer
 from wdotool.backend import Window
 from wdotool import x11_mini
 from wwmctl import core

@@ -28,8 +28,8 @@ from collections import deque
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from fwcommon import dbus_mini                                 # noqa: E402
-from fwcommon.dbus_mini import (Bus, DBusError, Message, Variant,   # noqa: E402
+from fwcommon import dbus_mini
+from fwcommon.dbus_mini import (Bus, DBusError, Message, Variant,
                                 marshal, split_signature, unmarshal)
 
 # The suite never hands a tool over to the real X11 one: see

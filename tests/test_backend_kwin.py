@@ -29,17 +29,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-from fwcommon import dbus_mini, session                               # noqa: E402
-from fwcommon.dbus_mini import ERR, Bus, DBusError, Message, Variant  # noqa: E402
-from test_dbus_mini import MockBus                                    # noqa: E402
-from wdotool import backend_detect, backend_kwin, kwin_js             # noqa: E402
-from wdotool.backend import View, Window, Workspace, hit_test         # noqa: E402
-from wdotool.backend_kwin import (BUS_NAME, IFACE, KWIN_IFACE,        # noqa: E402
+from fwcommon import dbus_mini, session
+from fwcommon.dbus_mini import ERR, Bus, DBusError, Message, Variant
+from test_dbus_mini import MockBus
+from wdotool import backend_detect, backend_kwin, kwin_js
+from wdotool.backend import View, Window, Workspace, hit_test
+from wdotool.backend_kwin import (BUS_NAME, IFACE, KWIN_IFACE,
                                   KWIN_NAME, KWIN_PATH, OBJECT_PATH,
                                   SCRIPTING_IFACE, SCRIPTING_PATH,
                                   SCRIPT_IFACE, VD_IFACE, VD_PATH,
                                   KwinBackend)
-from wdotool.ctx import CmdError, NoSessionError                      # noqa: E402
+from wdotool.ctx import CmdError, NoSessionError
 
 # See tests/conftest.py: no test process ever hands itself to the real xdotool.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"

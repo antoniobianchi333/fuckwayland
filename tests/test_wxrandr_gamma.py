@@ -22,9 +22,9 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wl_fake import wstr                                         # noqa: E402
-from wxrandr import gamma as gammamod                            # noqa: E402
-from wxrandr.core import State                                   # noqa: E402
+from wl_fake import wstr
+from wxrandr import gamma as gammamod
+from wxrandr.core import State
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

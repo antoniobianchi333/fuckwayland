@@ -32,9 +32,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
-import wl_fake  # noqa: E402
-from support import RecorderDev, abs_report  # noqa: E402
-from wdotool import daemon, uinput, vptr  # noqa: E402
+import wl_fake
+from support import RecorderDev, abs_report
+from wdotool import daemon, uinput, vptr
 
 # What a daemon that could not open /dev/uinput says today, and must keep
 # saying when there is no protocol to fall back to either.

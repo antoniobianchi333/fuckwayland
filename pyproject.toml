@@ -42,3 +42,7 @@ select = ["E4", "E7", "E9", "F", "W"]
 "wdotool/input_cmds.py" = ["W291"]
 # gi.require_version() has to run before the GTK imports it guards.
 "warandr/gui.py" = ["E402"]
+# Every test file bootstraps sys.path with the repo root before it can
+# import the packages under test, so its imports are never at the top of
+# the file. That was 97 identical  comments.
+"tests/**" = ["E402"]

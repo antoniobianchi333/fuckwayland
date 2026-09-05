@@ -20,13 +20,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-import gi                                                        # noqa: E402
+import gi
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk                         # noqa: E402
+from gi.repository import Gdk, GLib, Gtk
 
-from warandr import gui, randr, xrandr_parse                     # noqa: E402
-from warandr.model import Layout                                 # noqa: E402
+from warandr import gui, randr, xrandr_parse
+from warandr.model import Layout
 
 ROTS = "(normal left inverted right x axis y axis)"
 TEXT = ("Screen 0: minimum 8 x 8, current 3200 x 1080, maximum 32767 x 32767\n"

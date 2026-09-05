@@ -26,12 +26,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-from fwcommon import dbus_mini, session as wsession             # noqa: E402
-from fwcommon.dbus_mini import Bus, Message, Variant            # noqa: E402
-import test_dbus_mini as tdm                                    # noqa: E402
-from wl_fake import msg, wstr                                 # noqa: E402
-from wxrandr import cli, core, mutter                           # noqa: E402
-from wxrandr.core import Mode, Stanza, State                    # noqa: E402
+from fwcommon import dbus_mini, session as wsession
+from fwcommon.dbus_mini import Bus, Message, Variant
+import test_dbus_mini as tdm
+from wl_fake import msg, wstr
+from wxrandr import cli, core, mutter
+from wxrandr.core import Mode, Stanza, State
 
 #: every refusal reaches the user in Mutter's name: we pass overlapping and
 #: gapped layouts on unchanged, so a "no" is always GNOME's, not ours

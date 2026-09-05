@@ -27,8 +27,8 @@ sys.path.insert(0, ROOT)
 # Never hand this process over to the real X11 tools (see tests/conftest.py).
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-from support import FakeEvdev, MOUSE_CAPS, env  # noqa: E402
-from wdotool import (cli, commands, daemon, keymap, keys_cmds,  # noqa: E402
+from support import FakeEvdev, MOUSE_CAPS, env
+from wdotool import (cli, commands, daemon, keymap, keys_cmds,
                      keystate, xkbmap)
 
 KEYMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)),

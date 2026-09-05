@@ -23,13 +23,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
-from fwcommon import passthrough                  # noqa: E402
-from support import env                           # noqa: E402
-from fwcommon import session                      # noqa: E402
-from wxrandr import cli as wxrandr_cli            # noqa: E402
+from fwcommon import passthrough
+from support import env
+from fwcommon import session
+from wxrandr import cli as wxrandr_cli
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

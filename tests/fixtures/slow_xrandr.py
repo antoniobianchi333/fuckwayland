@@ -9,7 +9,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import fake_xrandr                                               # noqa: E402
+import fake_xrandr
 
 QUERY = ([], ["-q"], ["--query"], ["--current"], ["--verbose"],
          ["--query", "--verbose"], ["--verbose", "--query"])

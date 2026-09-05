@@ -2,7 +2,11 @@
 
 import os
 import string
+import sys
 import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from wdotool import keymap
 from wdotool.keysyms import KEYSYM_TO_UNICODE, NAME_TO_KEYSYM

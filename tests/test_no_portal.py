@@ -43,7 +43,7 @@ import unittest
 # already here.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Everything that runs on a user's machine as one of our commands: the six
 # tools, and the package they all share.
@@ -95,7 +95,7 @@ def _hits(paths):
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for n, line in enumerate(fh, 1):
                 if _RE.search(line):
-                    found.append((os.path.relpath(path, REPO), n,
+                    found.append((os.path.relpath(path, ROOT), n,
                                   line.strip()[:120]))
     return found
 
@@ -110,14 +110,14 @@ class NoPortalNoPolkit(unittest.TestCase):
     def test_every_package_is_all_there(self):
         """A rename must not turn the scan below into a no-op."""
         for pkg in PACKAGES:
-            self.assertTrue(os.path.isdir(os.path.join(REPO, pkg)),
+            self.assertTrue(os.path.isdir(os.path.join(ROOT, pkg)),
                             "package %s is gone: fix PACKAGES, or the "
                             "guarantee stops being checked for it" % pkg)
 
     def test_no_package_references_the_portal_or_polkit(self):
         paths = []
         for pkg in PACKAGES:
-            paths += _files(os.path.join(REPO, pkg))
+            paths += _files(os.path.join(ROOT, pkg))
         # Guard against a scan that walks nothing and passes vacuously.
         self.assertGreater(len(paths), len(PACKAGES))
         hits = _hits(paths)
@@ -131,7 +131,7 @@ class NoPortalNoPolkit(unittest.TestCase):
         """`gnome/` is installed too, and the installer runs as root."""
         paths = []
         for d in EXTRA_DIRS:
-            paths += _files(os.path.join(REPO, d), skip_docs=True)
+            paths += _files(os.path.join(ROOT, d), skip_docs=True)
         self.assertGreater(len(paths), 0)
         hits = _hits(paths)
         self.assertEqual(hits, [], "the bridge extension and its installer "

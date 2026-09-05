@@ -19,11 +19,11 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from fwcommon import passthrough                                 # noqa: E402
-from fwcommon import session                                     # noqa: E402
-from wmirror import cli, core                                    # noqa: E402
-from wmirror import supervise                                    # noqa: E402
-from wxrandr import core as wxcore                               # noqa: E402
+from fwcommon import passthrough
+from fwcommon import session
+from wmirror import cli, core
+from wmirror import supervise
+from wxrandr import core as wxcore
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

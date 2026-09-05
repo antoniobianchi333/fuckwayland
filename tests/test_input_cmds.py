@@ -7,6 +7,9 @@ import sys
 import tempfile
 import unittest
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
 from wdotool import cli, input_cmds
 from wdotool.backend import Window, WindowBackend
 from wdotool.ctx import CmdError, Context

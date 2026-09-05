@@ -27,14 +27,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-from fwcommon.dbus_mini import Bus  # noqa: E402
-from test_backend_gnome import (CALC, DESKTOP, EDITOR, XTERM, XTERM_XID,  # noqa: E402
+from fwcommon.dbus_mini import Bus
+from test_backend_gnome import (CALC, DESKTOP, EDITOR, XTERM, XTERM_XID,
                                 MockBridge, _Base)
-from test_wxprop_cli import _CapStdout  # noqa: E402
-from wdotool import backend_detect  # noqa: E402
-from wdotool.backend_gnome import IFACE, OBJECT_PATH, GnomeBackend  # noqa: E402
-from wdotool.x11_mini import X11Error  # noqa: E402
-from wxprop import cli, core  # noqa: E402
+from test_wxprop_cli import _CapStdout
+from wdotool import backend_detect
+from wdotool.backend_gnome import IFACE, OBJECT_PATH, GnomeBackend
+from wdotool.x11_mini import X11Error
+from wxprop import cli, core
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

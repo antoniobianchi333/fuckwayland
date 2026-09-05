@@ -17,9 +17,9 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wxrandr import cli, core                                   # noqa: E402
-from wxrandr import kwin, mutter                                # noqa: E402
-from wxrandr.core import (Mode, OutputState, Stanza, State,     # noqa: E402
+from wxrandr import cli, core
+from wxrandr import kwin, mutter
+from wxrandr.core import (Mode, OutputState, Stanza, State,
                           build_targets, resolve_positions)
 
 # The suite never hands a tool over to the real X11 one: see

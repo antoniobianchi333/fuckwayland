@@ -3,8 +3,12 @@ using WDOTOOL_FAKE_UINPUT to write into a regular file."""
 
 import os
 import struct
+import sys
 import tempfile
 import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from wdotool import uinput
 

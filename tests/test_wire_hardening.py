@@ -24,9 +24,9 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from fwcommon.wayland_mini import Cursor, WlConn       # noqa: E402
-from wl_fake import msg, wstr                          # noqa: E402
-from wdotool.ctx import CmdError                       # noqa: E402
+from fwcommon.wayland_mini import Cursor, WlConn
+from wl_fake import msg, wstr
+from wdotool.ctx import CmdError
 
 
 def _tmpsock(prefix):
@@ -336,7 +336,7 @@ class SwayWireGuards(unittest.TestCase):
 
 # -- D-Bus -----------------------------------------------------------------
 
-from fwcommon import dbus_mini as D                     # noqa: E402
+from fwcommon import dbus_mini as D
 
 
 def _raw_bus():

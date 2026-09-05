@@ -24,14 +24,14 @@ import unittest
 import warnings
 from unittest import mock
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
-from fwcommon import passthrough                  # noqa: E402
-from wdotool import cli as wdotool_cli            # noqa: E402
-from wwmctl import cli as wwmctl_cli              # noqa: E402
-from wxprop import cli as wxprop_cli              # noqa: E402
-from wxrandr import cli as wxrandr_cli            # noqa: E402
+from fwcommon import passthrough
+from wdotool import cli as wdotool_cli
+from wwmctl import cli as wwmctl_cli
+from wxprop import cli as wxprop_cli
+from wxrandr import cli as wxrandr_cli
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -39,7 +39,7 @@ from wxrandr import cli as wxrandr_cli            # noqa: E402
 # not loaded, and it reaches every subprocess a test spawns.
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-FIXTURES = os.path.join(REPO, "tests", "fixtures")
+FIXTURES = os.path.join(ROOT, "tests", "fixtures")
 SHIM = os.path.join(FIXTURES, "fw_shim.py")
 FAKE = os.path.join(FIXTURES, "fake_real_tool.py")
 
@@ -446,7 +446,7 @@ class RealTool(Base):
         """scripts/build-pyz.sh must stamp the marker into the first 4 KiB —
         the head sniff is the only guard that survives two *copies* of us
         under two names in two PATH directories."""
-        dist = os.path.join(REPO, "dist")
+        dist = os.path.join(ROOT, "dist")
         built = [os.path.join(dist, n) for n in
                  ("wdotool", "wwmctl", "wxprop", "wxrandr", "warandr")]
         built = [p for p in built if os.path.exists(p)]
@@ -546,7 +546,7 @@ class SuiteGuard(Base):
         """pytest imports conftest.py before collection; prove it is what
         sets the hatch, not just this file's own line."""
         import importlib
-        sys.path.insert(0, os.path.join(REPO, "tests"))
+        sys.path.insert(0, os.path.join(ROOT, "tests"))
         self.addCleanup(os.environ.__setitem__, "FUCKWAYLAND_PASSTHROUGH",
                         os.environ["FUCKWAYLAND_PASSTHROUGH"])
         del os.environ["FUCKWAYLAND_PASSTHROUGH"]
@@ -559,7 +559,7 @@ class SuiteGuard(Base):
         conftest.py never loads — so every file carries the line itself, and
         every *new* file has to. A test that spawns one of our tools would
         otherwise watch it hand itself over on an X11 box."""
-        tests = os.path.join(REPO, "tests")
+        tests = os.path.join(ROOT, "tests")
         missing = []
         for name in sorted(os.listdir(tests)):
             if not (name.startswith("test_") and name.endswith(".py")):
@@ -612,7 +612,7 @@ class SuiteGuard(Base):
         """tests/test_cli_parity.py shells a shim named `xdotool` while the
         real one is on PATH: without the escape hatch, on an X11 box it would
         compare the real xdotool with itself and pass tautologically."""
-        with open(os.path.join(REPO, "tests", "test_cli_parity.py")) as f:
+        with open(os.path.join(ROOT, "tests", "test_cli_parity.py")) as f:
             src = f.read()
         head = src.split("compare(")[0]
         self.assertIn("FUCKWAYLAND_PASSTHROUGH", head)

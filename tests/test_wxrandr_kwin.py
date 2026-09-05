@@ -30,11 +30,11 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from fwcommon import session as wsession                       # noqa: E402
-from fwcommon.wayland_mini import Cursor                       # noqa: E402
-from wl_fake import msg, wstr                                  # noqa: E402
-from wxrandr import cli, core, kwin, mutter                    # noqa: E402
-from wxrandr.core import Mode, State                           # noqa: E402
+from fwcommon import session as wsession
+from fwcommon.wayland_mini import Cursor
+from wl_fake import msg, wstr
+from wxrandr import cli, core, kwin, mutter
+from wxrandr.core import Mode, State
 
 # The suite never hands a tool over to the real X11 one: see tests/conftest.py
 # (which covers pytest). This line covers `python3 tests/<file>.py`.

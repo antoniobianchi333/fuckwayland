@@ -20,9 +20,9 @@ FIXTURES = os.path.join(ROOT, "tests", "fixtures")
 sys.path.insert(0, ROOT)
 sys.path.insert(0, FIXTURES)
 
-import fake_xrandr                                                # noqa: E402
-from warandr import cli, model, randr, xrandr_parse              # noqa: E402
-from warandr.model import Layout, LayoutError, Mode, Output      # noqa: E402
+import fake_xrandr
+from warandr import cli, model, randr, xrandr_parse
+from warandr.model import Layout, LayoutError, Mode, Output
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

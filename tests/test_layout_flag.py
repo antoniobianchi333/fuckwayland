@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # the code under test
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
-from wdotool import cli, ctx as ctxmod, daemon, xkbmap  # noqa: E402
+from wdotool import cli, ctx as ctxmod, daemon, xkbmap
 
 
 class _Spy:
