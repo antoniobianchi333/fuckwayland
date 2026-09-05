@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1040" viewBox="0 0 800 1040">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520">
   <!-- "Reject Modernity, Embrace Tradition" — fuckwayland edition.
        Wayland logo: (c) the Wayland project (CC-BY-SA), via Wikimedia Commons.
        X.Org logo: the X.Org Foundation, via Wikimedia Commons.
        Used nominatively, with love, in a meme. -->
-  <rect width="800" height="1040" fill="#0d0f12"/>
+  <rect width="1600" height="520" fill="#0d0f12"/>
 
-  <!-- top panel: modernity, bleak -->
+  <!-- left panel: modernity, bleak -->
   <rect x="10" y="10" width="780" height="500" fill="#23262d"/>
   <text x="400" y="90" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif"
         font-size="52" font-weight="bold" fill="#c8ccd4" letter-spacing="6">REJECT MODERNITY</text>
@@ -15,23 +15,25 @@
   <text x="400" y="470" text-anchor="middle" font-family="Georgia, serif" font-size="22"
         fill="#8a8f99" font-style="italic">"we removed that for your own good"</text>
 
-  <!-- bottom panel: tradition, glorious -->
-  <rect x="10" y="530" width="780" height="500" fill="#3a2e14"/>
-  <radialGradient id="glow" cx="0.5" cy="0.45" r="0.75">
-    <stop offset="0" stop-color="#ffe9a8" stop-opacity="0.95"/>
-    <stop offset="0.55" stop-color="#e8b84b" stop-opacity="0.45"/>
-    <stop offset="1" stop-color="#3a2e14" stop-opacity="0"/>
-  </radialGradient>
-  <rect x="10" y="530" width="780" height="500" fill="url(#glow)"/>
-  <g stroke="#f5d67a" stroke-opacity="0.35" stroke-width="7">
-    <line x1="400" y1="770" x2="70"  y2="570"/><line x1="400" y1="770" x2="400" y2="545"/>
-    <line x1="400" y1="770" x2="730" y2="570"/><line x1="400" y1="770" x2="120" y2="990"/>
-    <line x1="400" y1="770" x2="680" y2="990"/><line x1="400" y1="770" x2="60"  y2="770"/>
-    <line x1="400" y1="770" x2="740" y2="770"/>
+  <g transform="translate(800,-520)">
+    <!-- right panel: tradition, glorious -->
+    <rect x="10" y="530" width="780" height="500" fill="#3a2e14"/>
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.75">
+      <stop offset="0" stop-color="#ffe9a8" stop-opacity="0.95"/>
+      <stop offset="0.55" stop-color="#e8b84b" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#3a2e14" stop-opacity="0"/>
+    </radialGradient>
+    <rect x="10" y="530" width="780" height="500" fill="url(#glow)"/>
+    <g stroke="#f5d67a" stroke-opacity="0.35" stroke-width="7">
+      <line x1="400" y1="770" x2="70"  y2="570"/><line x1="400" y1="770" x2="400" y2="545"/>
+      <line x1="400" y1="770" x2="730" y2="570"/><line x1="400" y1="770" x2="120" y2="990"/>
+      <line x1="400" y1="770" x2="680" y2="990"/><line x1="400" y1="770" x2="60"  y2="770"/>
+      <line x1="400" y1="770" x2="740" y2="770"/>
+    </g>
+    <text x="400" y="615" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif"
+          font-size="52" font-weight="bold" fill="#ffedb8" letter-spacing="6">EMBRACE TRADITION</text>
+    <image x="260" y="650" width="280" height="224" href="data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0idXRmLTgiIHN0YW5kYWxvbmU9InllcyI/Pg0KPCFET0NUWVBFIHN2ZyBQVUJMSUMgIi0vL1czQy8vRFREIFNWRyAxLjEvL0VOIiAiaHR0cDovL3d3dy53My5vcmcvR3JhcGhpY3MvU1ZHLzEuMS9EVEQvc3ZnMTEuZHRkIj4NCjxzdmcgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIiB4bWxuczpzdmc9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MzEiIGhlaWdodD0iMzQ1IiB2ZXJzaW9uPSIxLjEiPg0KPHN0eWxlIHR5cGU9InRleHQvY3NzIj48IVtDREFUQVsNCiNQMSB7ZmlsbDp1cmwoI0xPKX0NCnJlY3Qge29wYWNpdHk6LjQwNzQwNzM5O2ZpbGw6IzAwMGNmZjt3aWR0aDouNTA1MDc2Mjk7aGVpZ2h0OjB9DQpdXT48L3N0eWxlPg0KICA8ZGVmcz4NCiAgICA8bGluZWFyR3JhZGllbnQgaWQ9IkxPIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSIgeDE9IjMxOS4yMDgyMiIgeTE9IjIzNS4xNDg3NyIgeDI9IjY1Ny42NTI5NSIgeTI9IjI2OS40OTM5NiI+DQogICAgICA8c3RvcCBzdHlsZT0ic3RvcC1jb2xvcjojZTU0YzE4IiBvZmZzZXQ9IjAiLz4NCiAgICAgIDxzdG9wIHN0eWxlPSJzdG9wLWNvbG9yOiNmZWMzNTAiIG9mZnNldD0iMSIvPg0KICAgIDwvbGluZWFyR3JhZGllbnQ+DQogIDwvZGVmcz4NCiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTQyLjI4MzksLTI0Ljk5NzA1KSI+DQogICAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoLTQxMy4yMTAyLC00MC43MDM4NykiPg0KICAgICAgPHBhdGggZD0iTTM0Mi4wNzM5LDM5MC43MDIxOUwgNDUzLjE3MTE4LDI0NS40NDU5OUwgMzM4Ljc5NDQ1LDg1LjczMzAxM0wgNDEyLjMwODgxLDg1Ljc5NDA5M0wgNTAzLjQ0NjgyLDIxMS4zNzY5NkwgMzY3LjE3NjY5LDM5MC43MDIxOUwgMzQyLjA3MzksMzkwLjcwMjE5IHogTTU1OS41MjE2OSwzOTAuODA0OUwgNDY5LjAxMjg5LDI2NS4wMDY0NEwgNjA2LjQxNzczLDg1LjU5NjkzM0wgNjMwLjg5OTQ2LDg1LjU5NjkzM0wgNTE5LjM0ODc5LDIzMS41Mzg0OEwgNjMzLjAzNzIyLDM5MC44MDQ5TCA1NTkuNTIxNjksMzkwLjgwNDl6Ii8+DQogICAgICA8cGF0aCBpZD0iUDEiIGQ9Ik00ODYuNDEwNzEsMTQzLjgyNjUxQyA0NzcuNTU5NjgsMTQzLjgyNjUxIDQ2OC4xMDM0MiwxNDQuNTExODcgNDU5LjU5MDYsMTQ1LjMyOTA0QyA0NzQuNzU2NTMsMTY1LjEwOTAzIDQ4Ny4zNDA2NywxODEuODU4NTUgNTAxLjgyMzQ3LDIwMC44ODA5MkMgNDkzLjY5NDcxLDE4My4zODc5OSA0NzYuOTg3ODMsMTY2LjYxMzMzIDQ4Mi43NjM1LDE1Ny45ODYyNUMgNDg4LjQ4MDY3LDE0OS40NDY1NiA0OTkuMDE0NTcsMTUwLjg4MzkzIDQ5OS44MTY5NiwxNTAuODgzOTNDIDUxNi43MDU0NSwxNTAuODgzOTMgNTMyLjk2MjIxLDE1Mi43OTEzMiA1NDguMTYwNzEsMTU2LjMyMTQzTCA1NTEuNzIzMjEsMTUxLjQxNTE4QyA1MzEuNDUyNCwxNDYuMTk2OTIgNTA5LjQzNDcyLDE0My44MjY1MSA0ODYuNDEwNzEsMTQzLjgyNjUxIHogTTU3Ny44Nzk0NiwxNTkuNzkwMThMIDU3NC41OTgyMSwxNjQuNDc3NjhDIDYyMS40MjQwMSwxODIuODE0MzIgNjUzLjA5ODIxLDIxNy44Mzc5NyA2NTMuMDk4MjEsMjU3Ljk3NzY3QyA2NTMuMDk4MjEsMzE3LjA4MzcgNTg0LjQzMzM2LDM2NS4wNDAxNyA0OTkuODE2OTYsMzY1LjA0MDE3QyA0MTUuMjAwNTYsMzY1LjA0MDE2IDM0Ni41MDQ0NiwzMTcuMDgzNjkgMzQ2LjUwNDQ2LDI1Ny45Nzc2N0MgMzQ2LjUwNDQ3LDIyNS43ODk5MSAzNjYuODc2MDQsMTk2Ljg5NzY1IDM5OS4wOTgyMSwxNzcuMjU4OTNMIDM4OS4xOTE5NiwxNjIuMTY1MThDIDMzOC42NDU4MiwxODMuNTk3MDEgMzA1LjA5ODIyLDIyMS4yMTQ4IDMwNS4wOTgyMSwyNjQuMDQwMTdDIDMwNS4wOTgyMSwzMzAuNjczODUgMzg2LjMyMDcxLDM4NC43Mjc2NyA0ODYuNDEwNzEsMzg0LjcyNzY3QyA1ODYuNTAwNywzODQuNzI3NjcgNjY3Ljc1NDQ1LDMzMC42NzM4NiA2NjcuNzU0NDYsMjY0LjA0MDE3QyA2NjcuNzU0NDYsMjE5LjYwNzI1IDYzMS42MzE5MSwxODAuNzQ3NzIgNTc3Ljg3OTQ2LDE1OS43OTAxOHoiLz4NCiAgICA8L2c+DQogICAgPHJlY3QgeD0iMzIyLjM2NDkzIiB5PSIxODAuODUzMDciIHdpZHRoPSIuNTA1MDc2MjkiIGhlaWdodD0iMCIvPg0KICA8L2c+DQo8L3N2Zz4NCg=="/>
+    <text x="400" y="985" text-anchor="middle" font-family="Georgia, serif" font-size="22"
+          fill="#e5c87d" font-style="italic">"it has had a --help since 1984"</text>
   </g>
-  <text x="400" y="615" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif"
-        font-size="52" font-weight="bold" fill="#ffedb8" letter-spacing="6">EMBRACE TRADITION</text>
-  <image x="260" y="650" width="280" height="224" href="data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0idXRmLTgiIHN0YW5kYWxvbmU9InllcyI/Pg0KPCFET0NUWVBFIHN2ZyBQVUJMSUMgIi0vL1czQy8vRFREIFNWRyAxLjEvL0VOIiAiaHR0cDovL3d3dy53My5vcmcvR3JhcGhpY3MvU1ZHLzEuMS9EVEQvc3ZnMTEuZHRkIj4NCjxzdmcgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIiB4bWxuczpzdmc9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MzEiIGhlaWdodD0iMzQ1IiB2ZXJzaW9uPSIxLjEiPg0KPHN0eWxlIHR5cGU9InRleHQvY3NzIj48IVtDREFUQVsNCiNQMSB7ZmlsbDp1cmwoI0xPKX0NCnJlY3Qge29wYWNpdHk6LjQwNzQwNzM5O2ZpbGw6IzAwMGNmZjt3aWR0aDouNTA1MDc2Mjk7aGVpZ2h0OjB9DQpdXT48L3N0eWxlPg0KICA8ZGVmcz4NCiAgICA8bGluZWFyR3JhZGllbnQgaWQ9IkxPIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSIgeDE9IjMxOS4yMDgyMiIgeTE9IjIzNS4xNDg3NyIgeDI9IjY1Ny42NTI5NSIgeTI9IjI2OS40OTM5NiI+DQogICAgICA8c3RvcCBzdHlsZT0ic3RvcC1jb2xvcjojZTU0YzE4IiBvZmZzZXQ9IjAiLz4NCiAgICAgIDxzdG9wIHN0eWxlPSJzdG9wLWNvbG9yOiNmZWMzNTAiIG9mZnNldD0iMSIvPg0KICAgIDwvbGluZWFyR3JhZGllbnQ+DQogIDwvZGVmcz4NCiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTQyLjI4MzksLTI0Ljk5NzA1KSI+DQogICAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoLTQxMy4yMTAyLC00MC43MDM4NykiPg0KICAgICAgPHBhdGggZD0iTTM0Mi4wNzM5LDM5MC43MDIxOUwgNDUzLjE3MTE4LDI0NS40NDU5OUwgMzM4Ljc5NDQ1LDg1LjczMzAxM0wgNDEyLjMwODgxLDg1Ljc5NDA5M0wgNTAzLjQ0NjgyLDIxMS4zNzY5NkwgMzY3LjE3NjY5LDM5MC43MDIxOUwgMzQyLjA3MzksMzkwLjcwMjE5IHogTTU1OS41MjE2OSwzOTAuODA0OUwgNDY5LjAxMjg5LDI2NS4wMDY0NEwgNjA2LjQxNzczLDg1LjU5NjkzM0wgNjMwLjg5OTQ2LDg1LjU5NjkzM0wgNTE5LjM0ODc5LDIzMS41Mzg0OEwgNjMzLjAzNzIyLDM5MC44MDQ5TCA1NTkuNTIxNjksMzkwLjgwNDl6Ii8+DQogICAgICA8cGF0aCBpZD0iUDEiIGQ9Ik00ODYuNDEwNzEsMTQzLjgyNjUxQyA0NzcuNTU5NjgsMTQzLjgyNjUxIDQ2OC4xMDM0MiwxNDQuNTExODcgNDU5LjU5MDYsMTQ1LjMyOTA0QyA0NzQuNzU2NTMsMTY1LjEwOTAzIDQ4Ny4zNDA2NywxODEuODU4NTUgNTAxLjgyMzQ3LDIwMC44ODA5MkMgNDkzLjY5NDcxLDE4My4zODc5OSA0NzYuOTg3ODMsMTY2LjYxMzMzIDQ4Mi43NjM1LDE1Ny45ODYyNUMgNDg4LjQ4MDY3LDE0OS40NDY1NiA0OTkuMDE0NTcsMTUwLjg4MzkzIDQ5OS44MTY5NiwxNTAuODgzOTNDIDUxNi43MDU0NSwxNTAuODgzOTMgNTMyLjk2MjIxLDE1Mi43OTEzMiA1NDguMTYwNzEsMTU2LjMyMTQzTCA1NTEuNzIzMjEsMTUxLjQxNTE4QyA1MzEuNDUyNCwxNDYuMTk2OTIgNTA5LjQzNDcyLDE0My44MjY1MSA0ODYuNDEwNzEsMTQzLjgyNjUxIHogTTU3Ny44Nzk0NiwxNTkuNzkwMThMIDU3NC41OTgyMSwxNjQuNDc3NjhDIDYyMS40MjQwMSwxODIuODE0MzIgNjUzLjA5ODIxLDIxNy44Mzc5NyA2NTMuMDk4MjEsMjU3Ljk3NzY3QyA2NTMuMDk4MjEsMzE3LjA4MzcgNTg0LjQzMzM2LDM2NS4wNDAxNyA0OTkuODE2OTYsMzY1LjA0MDE3QyA0MTUuMjAwNTYsMzY1LjA0MDE2IDM0Ni41MDQ0NiwzMTcuMDgzNjkgMzQ2LjUwNDQ2LDI1Ny45Nzc2N0MgMzQ2LjUwNDQ3LDIyNS43ODk5MSAzNjYuODc2MDQsMTk2Ljg5NzY1IDM5OS4wOTgyMSwxNzcuMjU4OTNMIDM4OS4xOTE5NiwxNjIuMTY1MThDIDMzOC42NDU4MiwxODMuNTk3MDEgMzA1LjA5ODIyLDIyMS4yMTQ4IDMwNS4wOTgyMSwyNjQuMDQwMTdDIDMwNS4wOTgyMSwzMzAuNjczODUgMzg2LjMyMDcxLDM4NC43Mjc2NyA0ODYuNDEwNzEsMzg0LjcyNzY3QyA1ODYuNTAwNywzODQuNzI3NjcgNjY3Ljc1NDQ1LDMzMC42NzM4NiA2NjcuNzU0NDYsMjY0LjA0MDE3QyA2NjcuNzU0NDYsMjE5LjYwNzI1IDYzMS42MzE5MSwxODAuNzQ3NzIgNTc3Ljg3OTQ2LDE1OS43OTAxOHoiLz4NCiAgICA8L2c+DQogICAgPHJlY3QgeD0iMzIyLjM2NDkzIiB5PSIxODAuODUzMDciIHdpZHRoPSIuNTA1MDc2MjkiIGhlaWdodD0iMCIvPg0KICA8L2c+DQo8L3N2Zz4NCg=="/>
-  <text x="400" y="985" text-anchor="middle" font-family="Georgia, serif" font-size="22"
-        fill="#e5c87d" font-style="italic">"it has had a --help since 1984"</text>
 </svg>

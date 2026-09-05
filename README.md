@@ -5,16 +5,9 @@ drop-in clones that work on Wayland. Same commands, same flags, same output byte
 same scripts, bugs faithfully included. Symlink them over the originals and your
 muscle memory never finds out the compositor changed underneath it.
 
-<table>
-<tr>
-<td width="50%" align="center"><img src="media/meme.svg" width="420" alt="reject modernity, embrace tradition"></td>
-<td width="50%" align="center"><img src="media/demo.gif" width="420" alt="wdotool driving a real Wayland desktop"></td>
-</tr>
-</table>
-
-*On the right, wdotool driving a live sway session: typing, chaining, window search,
-floating-window moves, fullscreen, mouse, close, recorded in the VM this repo tests
-in.*
+<p align="center">
+<img src="media/meme.svg" width="620" alt="reject modernity, embrace tradition">
+</p>
 
 In the box:
 
