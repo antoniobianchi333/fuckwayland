@@ -21,6 +21,8 @@ a machine with no Plasma 6.7 on it.
 | `kdex11-1-sddm-x-cookie.sh` | Plasma on X11: SDDM keeps the X cookie in `/tmp/xauth_*`, so from a root shell the handover found no cookie at all (run as **root**) | `noble-kde-x11` |
 | `kde5-verify.sh` | SHADED on a native window, the X-plane state fallback, WM_CLASS case, `-l -G` | `noble-kde` |
 | `kde6-before.sh`, `kde6-verify-a.sh`, `kde6-verify-b.sh` | the Plasma 6.6 sweep | `resolute-kde` |
+| `kde-keys-1-group-guess.sh` | typing and chords into a real Kate window under a German layout: right on one configured layout, wrong on `us, de` switched to German, where group 1 is assumed | `resolute-kde`, `noble-kde` |
+| `kde-keys-2-nonlatin-chord.sh` | the same on Greek: `type` warns and skips the Latin it cannot reach, `key ctrl+s` silently presses the US position instead | `resolute-kde`, `noble-kde` |
 | `kde-outreg-conformance.py` | every wire constant in `wxrandr/kwin.py` against the upstream protocol XML — run it when a new Plasma lands | none (host, needs network) |
 | `kde-outreg-specfake.py` | a Plasma 6.7 compositor generated from that XML: the registry discovery path end to end, and its three failure modes | none (host) |
 | `matrix-1-warandr-empty-env.sh` | `env -i warandr --command` | any |

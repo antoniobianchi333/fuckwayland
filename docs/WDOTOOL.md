@@ -106,7 +106,7 @@ $ wdotool type 'Grüße, ça va?'      # de, fr, es, dvorak ... all fine
   never a failure.
 
 Two things are still on the honest list. **Compose-only characters**: a character the
-layout reaches only through a Compose *sequence* that is not a dead-key pair (`ø` on
+layout reaches only through a Compose *sequence* that is not a dead-key pair (`ñ` on
 German, say) is skipped with the warning above — wdotool composes nothing itself, it
 presses keys. And **which of several configured layouts is active**:
 `wl_keyboard.modifiers` carries that and every compositor sends it only to the window

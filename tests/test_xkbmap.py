@@ -32,7 +32,8 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 KEYMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "keymaps")
 FIXTURES = ("us", "de", "fr", "es", "gb", "dvorak", "us_de", "de_fr",
-            "noble_de", "sway_de", "us_swapescape", "us_grptoggle")
+            "noble_de", "sway_de", "us_swapescape", "us_grptoggle",
+            "kde_us", "kde_de", "kde_gr", "kde_us_de", "kde5_de")
 
 
 def text(name: str) -> str:
@@ -387,6 +388,83 @@ class TestGroups(unittest.TestCase):
         self.assertEqual(xkbmap.choose_group(text("us_de"), 2), (2, True))
 
 
+class TestKwinKeymaps(unittest.TestCase):
+    """The five keymaps KWin hands its clients: Plasma 6.6 on Ubuntu 26.04
+    (`kde_us`, `kde_de`, `kde_gr`, `kde_us_de`) and Plasma 5.27 on 24.04
+    (`kde5_de`).
+
+    Every keystroke asserted here was also sent into a real Kate window on
+    `resolute-kde` and `noble-kde` and read back out of the saved file:
+    repro/kde-keys-1-group-guess.sh.
+    """
+
+    def test_kwin_compiles_exactly_the_configured_layouts(self):
+        """One configured layout is one group -- what sway does, and what
+        mutter does not."""
+        for name, want in (("kde_us", ["English (US)"]),
+                           ("kde_de", ["German"]),
+                           ("kde_gr", ["Greek"]),
+                           ("kde5_de", ["German"]),
+                           ("kde_us_de", ["English (US)", "German"])):
+            self.assertEqual(xkbmap.parse(text(name)).group_names, want, name)
+        # the same two sessions on GNOME, with its appended fallback group
+        self.assertEqual(xkbmap.parse(text("us")).group_names,
+                         ["English (US)", "English (US)"])
+        self.assertEqual(xkbmap.parse(text("de")).group_names,
+                         ["German", "English (US)"])
+
+    def test_kwins_german_is_sways_byte_for_byte(self):
+        """Nothing in a keymap is the compositor's own work: KWin and sway
+        hand out the same libxkbcommon output for the same layout on the same
+        release, down to the byte. What the KDE fixtures add is the *shape*
+        the compositor asks for, not new bytes."""
+        self.assertEqual(text("kde_de"), text("sway_de").rstrip("\x00"))
+
+    def test_plasma_5_is_the_other_keysym_dialect(self):
+        """24.04's libxkbcommon writes keysym names, 26.04's writes hex
+        numbers. Same layout, same answers, on KDE as on GNOME."""
+        self.assertIn("symbols[Group1]", text("kde5_de"))
+        self.assertNotIn("symbols[Group1]", text("kde_de"))
+        five, six = rmap("kde5_de"), rmap("kde_de")
+        for ch in "yz\u00e4\u00f6\u00fc\u00df@\u20ac\u00e9|\u0142\u2014\u00e7":
+            self.assertEqual(five.lookup_char(ch), six.lookup_char(ch), ch)
+
+    def test_greek_is_the_first_non_latin_fixture(self):
+        S, L3 = xkbmap.MOD_SHIFT, xkbmap.MOD_LEVEL3
+        gr = rmap("kde_gr")
+        self.assertEqual(gr.name, "Greek")
+        for ch, want in (("\u03b1", [(30, 0)]), ("\u039a", [(37, S)]),
+                         ("\u03bb", [(38, 0)]),
+                         ("\u20ac", [(6, L3)]), ("\u00b2", [(3, S | L3)]),
+                         # the tonos key is dead_acute, and shifted it is
+                         # dead_diaeresis: both are two keystrokes
+                         ("\u03ad", [(39, 0), (18, 0)]),
+                         ("\u03ca", [(39, S), (23, 0)])):
+            self.assertEqual(gr.lookup_char(ch), want, ch)
+
+    def test_a_greek_only_layout_cannot_type_latin(self):
+        """gr(basic) binds no Latin letter on any level, so `type` has to
+        warn and skip them the way it skips any other unreachable
+        character."""
+        gr = rmap("kde_gr")
+        for ch in "abzQ\u00e4":
+            self.assertIsNone(gr.lookup_char(ch), ch)
+
+    def test_one_group_means_nothing_to_guess(self):
+        for name in ("kde_us", "kde_de", "kde_gr", "kde5_de"):
+            self.assertEqual(xkbmap.group_count(text(name)), 1, name)
+            self.assertEqual(xkbmap.choose_group(text(name)), (1, True), name)
+
+    def test_two_configured_layouts_are_a_guess_on_kde_too(self):
+        """`us, de` in System Settings, switched to German with the layout
+        switcher: KWin does not reorder the groups and does not tell an
+        unfocused client which one is live, so group 1 is a guess -- and on
+        this one it is the wrong one."""
+        self.assertEqual(xkbmap.choose_group(text("kde_us_de")), (1, False))
+        self.assertTrue(xkbmap.active_group_is_plain_us(text("kde_us_de"), 1))
+        self.assertEqual(xkbmap.build(text("kde_us_de"), 2).name, "German")
+
+
 class TestUsBypassDetection(unittest.TestCase):
     """`active_group_is_plain_us` decides whether any of this runs at all."""
 
@@ -401,6 +479,10 @@ class TestUsBypassDetection(unittest.TestCase):
             ("de_fr", 1): False, ("de_fr", 2): False, ("de_fr", 3): True,
             ("noble_de", 1): False, ("noble_de", 2): True,
             ("sway_de", 1): False,
+            # KWin's, which have no appended fallback group to be true of
+            ("kde_us", 1): True, ("kde_de", 1): False, ("kde_gr", 1): False,
+            ("kde5_de", 1): False,
+            ("kde_us_de", 1): True, ("kde_us_de", 2): False,
         }
         for (name, group), want in cases.items():
             self.assertEqual(xkbmap.active_group_is_plain_us(text(name), group),
@@ -561,6 +643,51 @@ class TestTypingThroughTheLayout(unittest.TestCase):
         warns = d.op_key("bogus", "press", 0, False)
         self.assertEqual(len([w for w in warns if "assuming" in w]), 1)
         self.assertEqual(len([w for w in warns if "No such key name" in w]), 2)
+
+    def test_greek_types_and_skips_the_latin_it_cannot_reach(self):
+        """Plasma 6.6 with one `gr` source. Measured in Kate: the Greek
+        arrives, the Latin does not and says so."""
+        d = self.daemon_for("kde_gr")
+        warns = d.op_type("\u03b1a\u03b2", 0, False)
+        self.assertEqual(taps(d.kb), [(30, 1), (30, 0), (48, 1), (48, 0)])
+        self.assertEqual(warns,
+                         ["Can't type character 'a' (not on the Greek layout)."
+                          " Skipping."])
+
+    def test_a_latin_chord_on_a_greek_layout_takes_the_us_position(self):
+        """A gap, recorded rather than fixed: `type` refuses a character the
+        layout cannot make, but `key` falls back to the built-in US table's
+        *position* for it and says nothing -- `wdotool key ctrl+s` on a
+        Greek-only session presses <AC02> and Kate receives Ctrl+sigma, which
+        is not Save. `keys explain ctrl+s` calls the same 's' unreachable.
+        With `gr, us` configured (what a Greek user really has) the fallback
+        is right and the chord lands."""
+        d = self.daemon_for("kde_gr")
+        warns = d.op_key("ctrl+s", "press", 0, False)
+        self.assertEqual(taps(d.kb), [(29, 1), (31, 1), (29, 0), (31, 0)])
+        self.assertEqual([w for w in warns if "reachable" in w], [])
+
+    def test_a_chord_on_kwins_german_moves_with_the_layout(self):
+        """Ctrl+Z is the physical <AB01> on a US board and <AB03> on a German
+        one; measured in Kate, this is the press that undoes."""
+        d = self.daemon_for("kde_de")
+        d.op_key("ctrl+z", "press", 0, False)
+        self.assertEqual(taps(d.kb), [(29, 1), (21, 1), (29, 0), (21, 0)])
+
+    def test_kwins_two_layout_session_types_us_until_the_group_is_pinned(self):
+        """`us, de` switched to German in the layout switcher: group 1 is
+        assumed, so 'y' and 'z' come out swapped and the umlauts are
+        skipped. WDOTOOL_XKB_GROUP=2 is the documented way out, and it is the
+        one that types what was asked for."""
+        d = self.daemon_for("kde_us_de")
+        warns = d.op_type("\u00fcyz", 0, False)
+        self.assertEqual(taps(d.kb), [(21, 1), (21, 0), (44, 1), (44, 0)])
+        self.assertIn("Can't type character '\u00fc' (not on the US layout)."
+                      " Skipping.", warns)
+        d2 = self.daemon_for("kde_us_de", group="2")
+        d2.op_type("\u00fcyz", 0, False)
+        self.assertEqual(taps(d2.kb), [(26, 1), (26, 0),
+                                       (44, 1), (44, 0), (21, 1), (21, 0)])
 
     def test_group_two_of_a_two_layout_session(self):
         d = self.daemon_for("us_de", group="2")
