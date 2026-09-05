@@ -1,0 +1,81 @@
+#cloud-config
+# vmctl flavor noble-gnome-iso: Ubuntu 24.04 LTS desktop installed from the release
+# DESKTOP ISO by the real installer, unattended -- the 24.04 counterpart of
+# resolute-gnome-iso, and the second reference "default install".  The cloud-image
+# flavor of the same release, noble-gnome, is an Ubuntu CLOUD image plus a desktop
+# metapackage; this one is what a person gets from https://releases.ubuntu.com/24.04/
+# with every installer question left alone, so it is the image a claim about "a default
+# Ubuntu 24.04 desktop" has to rest on.
+#
+# This file is NOT cloud-init user-data for a build VM (that is what the cloud-image
+# flavors are).  It is the NoCloud seed of the LIVE installer: subiquity picks an
+# autoinstall description up from cloud-config (source 4 of the 5 its
+# select_autoinstall() looks at -- the 24.04.4 and 26.04.1 installers have the same
+# five, in the same order), so the stock ISO needs no remastering.
+# vm/build-iso-golden.sh drives the two stages, unchanged from the 26.04 flavor:
+#   1. boot the ISO's own kernel/initrd with `autoinstall` on the command line and this
+#      seed attached; the installer partitions, installs and powers off.
+#   2. boot the installed system once and run vm/build-iso-image.sh in it (below).
+# `vmctl build` does not apply here and says so; `vmctl start/session/user/head/shot`
+# and vm/selftest.sh work on the result exactly as on every other flavor.
+#
+# vmctl-desktop: gnome
+# vmctl-iso: ubuntu-24.04.4-desktop-amd64.iso
+# vmctl-iso-sha256: 3a4c9877b483ab46d7c3fbe165a0db275e1ae3cfe56a5657e5a47c2f99a99d1e
+# vmctl-iso-url: https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso
+#
+# EVERY DEVIATION FROM AN UNTOUCHED INSTALL IS LISTED HERE AND IN vm/README.md.
+# They are the same eight as resolute-gnome-iso's, numbered the same way: stage 1
+# (this file) deviates in four places, all marked DEVIATION below; stage 2
+# (vm/build-iso-image.sh) in four more, of which the last one only marks the first-run
+# welcome as completed -- the way a person completes it -- rather than removing it.
+# Nothing else is added, removed or turned off: screen lock, blanking, idle sleep and
+# suspend, the apt-daily timers, unattended-upgrades, motd-news, snap auto-refresh, the
+# update notifier and the whole first-run machinery are left exactly as the installer
+# leaves them, which is the whole point of this image.
+autoinstall:
+  version: 1
+  # The installer's own defaults, made explicit because an unattended run has nobody to
+  # accept them: US English/US keyboard (the ISO boots that way), the DEFAULT install
+  # source -- 24.04.4's /casper/install-sources.yaml marks ubuntu-desktop-minimal
+  # ("Ubuntu Desktop (minimized)") default: true and the full ubuntu-desktop
+  # default: false, the same two ids with the same defaults as 26.04.1's -- no
+  # third-party drivers, no restricted codecs, the whole disk with no encryption, and
+  # security updates during the install: exactly the state of the GUI's checkboxes when
+  # a person clicks through without changing anything.
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  source:
+    id: ubuntu-desktop-minimal
+    search_drivers: false
+  storage:
+    layout:
+      name: direct
+  # DEVIATION 1 (reproducibility, not content): the GUI offers to update itself before
+  # it starts.  Held back so that the same ISO always installs the same way; the
+  # installer snap on the ISO (ubuntu-desktop-bootstrap rev 494) is the one that runs.
+  refresh-installer:
+    update: false
+  identity:
+    hostname: noble-gnome-iso
+    realname: Test User
+    username: test
+    # "test", as on every other flavor (openssl passwd -6).  A default install has no
+    # passwordless account either -- this is the account the installer's own form makes.
+    password: "$6$psXdibSV2awd8RnD$S.4LWCvIdUGCr8tJFMmOpDXWXk70gaQeYAjAmxzbf5tW0z6Ssns/uFr9wQGIOtCi00dOw0kmMkm.AP6z7bcJF/"
+  ssh:
+    # DEVIATION 2: a default Ubuntu DESKTOP install has no ssh server at all.  The rig
+    # has no other way in -- vmctl ssh/user/session/selftest.sh are all ssh -- so this
+    # is the "way in" and the only package this flavor adds to a default install.
+    install-server: true
+    # DEVIATION 3: the rig's own root key (vmctl's ~/vm-data/keys/id_ed25519, filled in
+    # by vm/build-iso-golden.sh), so stage 2 can log in without a password prompt.  It
+    # lands in /home/test/.ssh/authorized_keys; from the next boot on vmctl's per-instance
+    # cloud-init seed installs the same key for root, as it does on every flavor.
+    authorized-keys:
+      - @@ROOT_PUBKEY@@
+    allow-pw: true
+  # DEVIATION 4: power off instead of the installer's "Restart now" dialog, so the host
+  # can tell that stage 1 finished.  A human clicks Restart; the state on disk is the same.
+  shutdown: poweroff

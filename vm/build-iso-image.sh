@@ -27,6 +27,12 @@ APT="apt-get -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force
 
 say "flavor $FLAVOR ($DESKTOP): $(. /etc/os-release; echo "$PRETTY_NAME"), kernel $(uname -r)"
 say "installed by: $(sed -n 's/^ *//p' /var/log/installer/media-info 2>/dev/null | head -1)"
+# Reported, not changed: how the installer left cloud-init and netplan.  This boot is the
+# target's SECOND: on its first, cloud-init ran once from 99-installer.cfg (DataSourceNone) and
+# then wrote cloud-init.disabled itself.  The releases differ in what else the installer left
+# in cloud.cfg.d -- 26.04 a file disabling cloud-init networking, 24.04 the live session's
+# network config, which that first run rendered into /etc/netplan (see vm/README.md).
+say "cloud-init as installed: $([ -e /etc/cloud/cloud-init.disabled ] && echo cloud-init.disabled || echo 'NO cloud-init.disabled'); cloud.cfg.d: $(ls /etc/cloud/cloud.cfg.d | tr '\n' ' '); netplan: $(ls /etc/netplan | tr '\n' ' ')"
 
 # ---- DEVIATION 5: bring the install up to date -------------------------------------
 # "tested on a fresh, UPDATED, as-standard-as-possible installation": the installer
@@ -53,13 +59,15 @@ snap refresh 2>&1 | tail -5 | while read -r l; do say "  snap: $l"; done || say 
 # touched: WaylandEnable (stock: absent, i.e. Wayland), InitialSetupEnable (stock:
 # absent, i.e. GDM's own initial-setup behaviour), AccountsService's per-user session.
 [ -f /etc/gdm3/custom.conf ] || fail "no /etc/gdm3/custom.conf (is this a GDM install?)"
-cp -a /etc/gdm3/custom.conf /etc/gdm3/custom.conf.stock
+# (kept only once: a --from-stage2 re-run must not overwrite it with the edited file)
+[ -e /etc/gdm3/custom.conf.stock ] || cp -a /etc/gdm3/custom.conf /etc/gdm3/custom.conf.stock
 python3 - <<'PY'
 import re
 p = "/etc/gdm3/custom.conf"
 s = open(p).read()
 add = ("# vmctl (vm/build-iso-image.sh): the test VM has no keyboard for the greeter.\n"
        "AutomaticLoginEnable=true\nAutomaticLogin=test\n")
+s = s.replace(add, "")          # a re-run (--from-stage2) starts from the same file
 for key in ("AutomaticLoginEnable", "AutomaticLogin"):
     s = re.sub(r"(?m)^\s*#?\s*%s\s*=.*\n" % key, "", s)
 if re.search(r"(?m)^\[daemon\]\s*$", s):
@@ -89,6 +97,8 @@ install -d -o test -g test -m 0700 /home/test/.config
 # above exists AND its own does not.  So writing only the first marker switches that dialog
 # on at every login -- measured, not guessed: with just the first marker this image came up
 # running `gnome-initial-setup --upgrade-user`.  Write whatever the installed unit names.
+# (gnome-initial-setup 46 on 24.04 has no such unit -- only first-login and copy-worker,
+# both conditioned on the first marker -- so there the loop writes nothing.)
 for u in /usr/lib/systemd/user/gnome-initial-setup-upgrade-login.service; do
     [ -f "$u" ] || continue
     for m in $(sed -n 's/^ConditionPathExists=!%E\/\([^ ]*\)$/\1/p' "$u"); do
@@ -97,11 +107,15 @@ for u in /usr/lib/systemd/user/gnome-initial-setup-upgrade-login.service; do
     done
 done
 chown -R test:test /home/test/.config
-say "first-run: markers written ($(cd /home/test/.config && ls -d gnome-initial-setup-done gnome-initial-setup/* 2>/dev/null | tr '\n' ' ')); the package, its autostart, update-notifier and ubuntu-report all stay enabled"
+# (the `|| true`: on 24.04 there is no second unit and so no gnome-initial-setup/ directory,
+# and an unmatched glob inside this report would otherwise trip the ERR trap above)
+markers=$(cd /home/test/.config && { ls -d gnome-initial-setup-done gnome-initial-setup/* 2>/dev/null || true; } | tr '\n' ' ')
+say "first-run: markers written ($markers); the package, its autostart, update-notifier and ubuntu-report all stay enabled"
 
 # ---- DEVIATION 7: cloud-init back on, networking left to NetworkManager -------------
 # The installer switches cloud-init off in the target (/etc/cloud/cloud.cfg.d/99-installer.cfg
-# with datasource_list: [None], plus /etc/cloud/cloud-init.disabled).  vmctl gives every
+# with datasource_list: [None], plus /etc/cloud/cloud-init.disabled, which cloud-init's own
+# first run writes from that config).  vmctl gives every
 # instance a NoCloud seed that sets the hostname and installs the root ssh key, so the
 # golden has to be able to read it.  Undone the way the installer itself undoes it for a
 # golden image: /etc/cloud/clean.d/99-installer deletes exactly those two files, and
