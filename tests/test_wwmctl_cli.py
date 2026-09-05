@@ -450,6 +450,12 @@ class DesktopTest(unittest.TestCase):
         rc, _o, _e, b = run(["-s", "junk"])  # C atoi() -> 0
         self.assertEqual((rc, b.calls), (0, [("set_desktop", 0)]))
 
+    def test_s_unicode_digits_are_not_digits(self):
+        """atoi() is ASCII. Arabic-Indic "42" is junk to wmctrl, so it is
+        junk here: desktop 0, not desktop 42."""
+        rc, _o, _e, b = run(["-s", "\u0664\u0662"])
+        self.assertEqual((rc, b.calls), (0, [("set_desktop", 0)]))
+
 
 class WmInfoTest(unittest.TestCase):
     def test_m_with_x_plane(self):
@@ -1080,6 +1086,11 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(core._atoi("-1"), -1)
         self.assertEqual(core._atoi("  8x"), 8)
         self.assertEqual(core._atoi("x8"), 0)
+        # ASCII classes, like C in the "C" locale: neither an Arabic-Indic
+        # digit nor U+00A0 as leading space is one.
+        self.assertEqual(core._atoi("\u0664\u0662"), 0)
+        self.assertEqual(core._atoi("4\u0662"), 4)
+        self.assertEqual(core._atoi("\xa042"), 0)
 
     def test_dot_class(self):
         self.assertEqual(core._dot_class("a", "B"), "a.B")

@@ -33,6 +33,7 @@ import struct
 import sys
 
 from wdotool import backend, passthrough, stdio
+from wdotool.cnum import atoi as _atoi
 from wxprop import core
 from wxprop import fmt as fmtmod
 from wxprop.fmt import FatalError
@@ -170,11 +171,6 @@ def _c_int(v: int) -> int:
     """A Python int as C would keep it in an `int`."""
     v &= 0xFFFFFFFF
     return v - 0x100000000 if v >= 0x80000000 else v
-
-
-def _atoi(s: str) -> int:
-    m = re.match(r"[ \t\n\v\f\r]*([+-]?[0-9]+)", s)
-    return int(m.group(1)) if m else 0
 
 
 def _strtoul(s: str) -> int:

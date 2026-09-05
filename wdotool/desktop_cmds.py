@@ -3,8 +3,9 @@ compositor workspaces, 0-based like EWMH (sway workspace N -> desktop N-1)."""
 
 import sys
 
+from wdotool.cnum import atoi as _atoi, strtol as _strtol
 from wdotool.ctx import CmdError
-from wdotool.window_cmds import _opts, _out, _strtol, _warn_noop, _window_arg, _atoi
+from wdotool.window_cmds import _opts, _out, _warn_noop, _window_arg
 
 _SEE_STACK = "If no window is given, %1 is used. See WINDOW STACK in xdotool(1)\n"
 

@@ -698,9 +698,19 @@ class TestStrtonum(unittest.TestCase):
             "0b101": 0,         # strtoul stops at the 'b'; int(s, 0) says 5
             "0x1f": 31, "0X1F": 31, "0": 0, "08": 0, "  12": 12,
             "12ms": 12, "-5": -5, "+7": 7, "": 0, "abc": 0, "0xzz": 0,
+            "\u0664\u0662": 0,  # not ASCII digits, so not digits
         }
         for text, want in cases.items():
             self.assertEqual(input_cmds._strtonum(text), want, text)
+
+    def test_atoi_is_ascii(self):
+        """C isspace()/isdigit() in the "C" locale, which Python's \\d and
+        str.strip() are not: `click \u0664` is button 0, not button 4."""
+        self.assertEqual(input_cmds._atoi("\u0664\u0662"), 0)
+        self.assertEqual(input_cmds._atoi("4\u0662"), 4)
+        self.assertEqual(input_cmds._atoi("\xa042"), 0)
+        self.assertEqual(input_cmds._atoi("  -7x"), -7)
+        self.assertEqual(input_cmds._atoi(12), 12)   # an int default
 
     def test_delay_option_uses_it(self):
         ctx = make_ctx()

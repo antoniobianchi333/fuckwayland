@@ -10,26 +10,10 @@ import time
 
 from wdotool import commands
 from wdotool.cli import ChainAbort, GetoptError, getopt_long_only
+from wdotool.cnum import atoi as _atoi, strtol as _strtol
 from wdotool.ctx import CmdError, SoftCmdError
 
 _SEE_STACK = "If no window is given, %1 is used. See WINDOW STACK in xdotool(1)\n"
-
-_INT_RE = re.compile(r"[ \t\n\r\f\v]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|\d+)")
-
-
-def _strtol(s: str) -> int:
-    """C strtol(s, NULL, 0): parse a leading integer (dec/hex/octal), 0 if none."""
-    m = _INT_RE.match(s or "")
-    if not m:
-        return 0
-    sign, digits = m.group(1), m.group(2)
-    base = 16 if digits[:2].lower() == "0x" else 8 if digits.startswith("0") else 10
-    return int(sign + digits, base)
-
-
-def _atoi(s: str) -> int:
-    m = re.match(r"[ \t\n\r\f\v]*([+-]?\d+)", s or "")
-    return int(m.group(1)) if m else 0
 
 
 def _out(line: str):

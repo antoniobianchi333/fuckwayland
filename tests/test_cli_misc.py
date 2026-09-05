@@ -67,6 +67,10 @@ assert _atof("0x2") == 2.0  # strtod hex floats
 assert _atoi("42abc") == 42
 assert _atoi("abc") == 0
 assert _atoi("  -7") == -7
+# ASCII classes, as C has in the "C" locale
+assert _atoi("\u0664\u0662") == 0
+assert _atof("\u0664\u0662") == 0.0
+assert _atoi("\xa042") == 0
 
 # ---- sleep ----
 t0 = time.monotonic()

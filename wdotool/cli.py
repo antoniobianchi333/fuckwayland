@@ -6,10 +6,10 @@ same messages, same exit codes, same argument-consumption accounting.
 
 import io
 import os
-import re
 import sys
 
 from wdotool import backend, commands, passthrough, stdio
+from wdotool.cnum import atoi as _atoi
 from wdotool.ctx import CmdError, Context
 
 # What `version`/-v prints. Must match the real xdotool byte-for-byte so
@@ -201,14 +201,6 @@ def run_chain(ctx: Context, prog: str, tokens: list[str]) -> int:
             n = len(args)
         i += 1 + n
     return ret
-
-
-_ATOI_RE = re.compile(r"[ \t\n\r\f\v]*([+-]?\d+)")
-
-
-def _atoi(s: str) -> int:
-    m = _ATOI_RE.match(s or "")
-    return int(m.group(1)) if m else 0
 
 
 class _ScriptError(Exception):

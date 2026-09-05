@@ -6,12 +6,12 @@ command name), raise CmdError to abort the chain.
 """
 
 import math
-import re
 import sys
 import time
 
 from wdotool import commands
 from wdotool.cli import ChainAbort
+from wdotool.cnum import atoi as _atoi, strtol as _strtonum
 from wdotool.ctx import CmdError
 
 # ---------------------------------------------------------------------------
@@ -47,43 +47,6 @@ def _parse(cmdname, args, usage, shortopts, longopts, shortmap=None):
         raise CmdError(f"{e}\n" + usage.rstrip("\n")) from None
     opts, want_help = convert(pairs)
     return opts, i, want_help
-
-
-def _atoi(s) -> int:
-    """C atoi: leading whitespace, optional sign, leading digits, else 0."""
-    s = str(s).strip()
-    n = ""
-    for idx, ch in enumerate(s):
-        if ch in "+-" and idx == 0:
-            n += ch
-        elif ch.isdigit():
-            n += ch
-        else:
-            break
-    try:
-        return int(n)
-    except ValueError:
-        return 0
-
-
-_STRTOUL_RE = re.compile(
-    r"[ \t\n\r\f\v]*([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)")
-
-
-def _strtonum(s) -> int:
-    """C strtoul(s, NULL, 0): optional sign, then 0x-hex / 0-octal / decimal,
-    stopping at the first character that does not fit the base.
-
-    Python's int(s, 0) is a different function and got two cases wrong
-    (B14): it rejects C's octal `0755` (we then fell back to atoi and read
-    755) and accepts `0b101` as binary where strtoul stops at the 'b' and
-    returns 0."""
-    m = _STRTOUL_RE.match(str(s))
-    if not m:
-        return 0
-    sign, digits = m.group(1), m.group(2)
-    base = 16 if digits[:2].lower() == "0x" else 8 if digits.startswith("0") else 10
-    return int(sign + digits, base)
 
 
 def _activate_settle(ctx, wid):

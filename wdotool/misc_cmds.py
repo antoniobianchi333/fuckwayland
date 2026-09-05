@@ -2,44 +2,13 @@
 cmd_get_display_geometry.c)."""
 
 import math
-import re
 import subprocess
 import sys
 import time
 
 from wdotool.cli import ChainAbort, GetoptError, getopt_long_only
+from wdotool.cnum import atof as _atof, atoi as _atoi
 from wdotool.ctx import CmdError, NoSessionError
-
-_ATOI_RE = re.compile(r"[ \t\n\r\f\v]*([+-]?\d+)")
-_ATOF_RE = re.compile(
-    r"[ \t\n\r\f\v]*[+-]?(?:0[xX][0-9a-fA-F]*(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?\d+)?"
-    r"|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
-    r"|[iI][nN][fF](?:[iI][nN][iI][tT][yY])?|[nN][aA][nN])"
-)
-
-
-def _atoi(s: str) -> int:
-    m = _ATOI_RE.match(s or "")
-    return int(m.group(1)) if m else 0
-
-
-def _atof(s: str) -> float:
-    """C atof(): parse a leading double (decimal, exponent, or hex float),
-    0.0 when nothing parses."""
-    m = _ATOF_RE.match(s or "")
-    if not m:
-        return 0.0
-    t = m.group().strip()
-    try:
-        return float.fromhex(t) if re.match(r"[+-]?0[xX]", t) else float(t)
-    except ValueError:
-        return 0.0
-    except OverflowError:
-        # C strtod() saturates to +-HUGE_VAL and sets ERANGE; only the hex
-        # spelling gets here, because float("1e400") already answers inf.
-        # `sleep 0x1p1024` used to end in "hexadecimal value too large to
-        # represent as a float" where the oracle returns 0 at once.
-        return -math.inf if t.startswith("-") else math.inf
 
 
 def _help_requested(opts) -> bool:
