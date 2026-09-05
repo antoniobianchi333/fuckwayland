@@ -93,9 +93,8 @@ REQUEST_NAME_REPLY_PRIMARY_OWNER = 1
 
 
 class DBusError(Exception):
-    """An ERROR reply (`name` like org.freedesktop.DBus.Error.UnknownMethod)
-    or a local failure reported with the matching standard name: NoServer
-    (connect), AuthFailed, NoReply (timeout), Disconnected."""
+    """An ERROR reply (`name` like org.freedesktop.DBus.Error.UnknownMethod) or a local failure reported with
+    the matching standard name: NoServer (connect), AuthFailed, NoReply (timeout), Disconnected."""
 
     def __init__(self, name: str, message: str = ""):
         super().__init__(f"{name}: {message}" if message else name)
@@ -104,9 +103,8 @@ class DBusError(Exception):
 
 
 def no_bus_text(e: DBusError) -> str:
-    """Why the session bus could not be reached, in one line. "There is no
-    bus here" and "the bus refused us" are different problems -- the first is
-    a login-session question, the second a permissions one -- and every
+    """Why the session bus could not be reached, in one line. "There is no bus here" and "the bus refused us"
+    are different problems -- the first is a login-session question, the second a permissions one -- and every
     backend that opens a bus has to tell the user which it hit."""
     if e.name == ERR + "NoServer":
         return ("no session D-Bus found (set DBUS_SESSION_BUS_ADDRESS or run "
@@ -310,9 +308,8 @@ class _Writer:
 
 
 def guess_variant(v) -> Variant:
-    """Variant for a plain Python value where the type is unambiguous:
-    bool->b, int->i (x when out of range), float->d, str->s, bytes->ay,
-    Variant passthrough. Lists/dicts/tuples need an explicit Variant."""
+    """Variant for a plain Python value where the type is unambiguous: bool->b, int->i (x when out of range),
+    float->d, str->s, bytes->ay, Variant passthrough. Lists/dicts/tuples need an explicit Variant."""
     if isinstance(v, Variant):
         return v
     if isinstance(v, bool):
@@ -543,10 +540,9 @@ class Message:
                    destination=destination, signature=sig, body=body, fds=fds)
 
     def to_bytes(self, serial: int | None = None) -> bytes:
-        """Serialize (little-endian). Header fields in libdbus order:
-        PATH, DESTINATION, INTERFACE, MEMBER, ERROR_NAME, REPLY_SERIAL,
-        SENDER, SIGNATURE, UNIX_FDS -- byte-identical to gdbus/libdbus for
-        the common call shape."""
+        """Serialize (little-endian). Header fields in libdbus order: PATH, DESTINATION, INTERFACE, MEMBER,
+        ERROR_NAME, REPLY_SERIAL, SENDER, SIGNATURE, UNIX_FDS -- byte-identical to gdbus/libdbus for the common
+        call shape."""
         if serial is not None:
             self.serial = serial
         if self.type == METHOD_CALL and not (self.path and self.member):
@@ -593,9 +589,8 @@ class Message:
 
     @classmethod
     def from_bytes(cls, data, fds=()) -> "Message":
-        """Parse one complete message (header validated, body kept for
-        `args()`); `fds` are the SCM_RIGHTS fds that came with it. Unknown
-        message types (5+) parse -- the spec says ignore them, which is the
+        """Parse one complete message (header validated, body kept for `args()`); `fds` are the SCM_RIGHTS fds
+        that came with it. Unknown message types (5+) parse -- the spec says ignore them, which is the
         receiver's job; type 0 (INVALID) and malformed headers raise."""
         e = _endian_of(data[0])
         r = _Reader(data, e, wrap_variants=True)
@@ -690,9 +685,8 @@ def socket_path_of(addr: str) -> str | None:
 
 
 def _connect_socket(addr: str, timeout: float | None = 10.0) -> socket.socket:
-    """Connect to the first reachable element of `addr` within `timeout`
-    seconds; the returned socket stays in timeout mode so every later send
-    is bounded too."""
+    """Connect to the first reachable element of `addr` within `timeout` seconds; the returned socket stays in
+    timeout mode so every later send is bounded too."""
     last = None
     for kv in parse_address(addr):
         if kv["transport"] != "unix":
@@ -710,9 +704,8 @@ def _connect_socket(addr: str, timeout: float | None = 10.0) -> socket.socket:
             continue
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         if timeout is not None:
-            # AF_UNIX connect() sleeps in the kernel (unix_wait_for_peer) while
-            # the listener's backlog is full and returns EAGAIN once
-            # SO_SNDTIMEO expires; O_NONBLOCK would make it fail at once.
+            # AF_UNIX connect() sleeps in the kernel (unix_wait_for_peer) while the listener's backlog is full
+            # and returns EAGAIN once SO_SNDTIMEO expires; O_NONBLOCK would make it fail at once.
             s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO,
                          struct.pack("ll", int(timeout), int(timeout % 1 * 1e6)))
         try:
@@ -796,15 +789,12 @@ def _drop_privileges(uid: int):
 
 
 def connect_as_uid(addr: str, uid: int, timeout: float = 10.0):
-    """Connect + authenticate + Hello as `uid` in a forked child and pass the
-    live socket back over a socketpair with SCM_RIGHTS. The bus pinned the
-    child's SO_PEERCRED at connect(), so the parent (typically root) now
-    holds a connection the bus attributes to `uid`. Returns
-    (socket, unique_name, fds_negotiated, leftover_bytes). A child failure
-    comes back as a DBusError with the child's own error name (NoServer,
-    AuthFailed, AccessDenied when not root, ...); a child that is still
-    silent `timeout + _FORK_GRACE` seconds in is killed (it holds every
-    inherited fd) and reported as NoServer."""
+    """Connect + authenticate + Hello as `uid` in a forked child and pass the live socket back over a socketpair
+    with SCM_RIGHTS. The bus pinned the child's SO_PEERCRED at connect(), so the parent (typically root) now
+    holds a connection the bus attributes to `uid`. Returns (socket, unique_name, fds_negotiated,
+    leftover_bytes). A child failure comes back as a DBusError with the child's own error name (NoServer,
+    AuthFailed, AccessDenied when not root, ...); a child that is still silent `timeout + _FORK_GRACE` seconds
+    in is killed (it holds every inherited fd) and reported as NoServer."""
     parent, child = socket.socketpair()
     with warnings.catch_warnings():
         # 3.12 warns about fork() in threaded processes; the child only does
@@ -903,27 +893,21 @@ def _hello_raw(sock: socket.socket, buf: bytearray, timeout: float) -> tuple[str
 class Bus:
     """A connection to one message bus.
 
-    Bus(addr=None, as_uid=None, timeout=10.0): `addr` is a D-Bus address
-    string; None means the graphical session's bus from
-    `session.find_user_bus()`. `as_uid` forces the connection to be made by
-    a forked child running as that uid (see `connect_as_uid`); with
-    as_uid=None a root caller that the bus turns away retries the same way
-    as the socket's owner. dbus-daemon (Ubuntu 24.04 session.conf, no
-    `<allow user="*"/>`) answers root's EXTERNAL auth with OK and then
-    silently closes the socket when the policy check runs, so the Hello
-    dies with EPIPE/EOF -- AuthFailed, Disconnected and AccessDenied before
-    Hello completes all trigger the retry. `auth_path` records which
-    happened: 'direct' or 'fork'.
+    Bus(addr=None, as_uid=None, timeout=10.0): `addr` is a D-Bus address string; None means the graphical
+    session's bus from `session.find_user_bus()`. `as_uid` forces the connection to be made by a forked child
+    running as that uid (see `connect_as_uid`); with as_uid=None a root caller that the bus turns away retries
+    the same way as the socket's owner. dbus-daemon (Ubuntu 24.04 session.conf, no `<allow user="*"/>`) answers
+    root's EXTERNAL auth with OK and then silently closes the socket when the policy check runs, so the Hello
+    dies with EPIPE/EOF -- AuthFailed, Disconnected and AccessDenied before Hello completes all trigger the
+    retry. `auth_path` records which happened: 'direct' or 'fork'.
 
-    `timeout` bounds connect, auth, Hello and every later send (see the
-    module docstring); a send that times out closes the connection.
+    `timeout` bounds connect, auth, Hello and every later send (see the module docstring); a send that times out
+    closes the connection.
 
-    Incoming messages that are not replies to our calls (signals; method
-    calls aimed at our unique name) are queued for `messages()` /
-    `wait_signal()`; fds they carry belong to the caller that takes them.
-    With `serve_calls=False` (default) method calls are answered with
-    UnknownMethod immediately (Peer.Ping with an empty return) so callers
-    never wait 25 s on us; set it to True to reply yourself via `reply()` /
+    Incoming messages that are not replies to our calls (signals; method calls aimed at our unique name) are
+    queued for `messages()` / `wait_signal()`; fds they carry belong to the caller that takes them. With
+    `serve_calls=False` (default) method calls are answered with UnknownMethod immediately (Peer.Ping with an
+    empty return) so callers never wait 25 s on us; set it to True to reply yourself via `reply()` /
     `error_reply()`."""
 
     def __init__(self, addr: str | None = None, as_uid: int | None = None,
@@ -983,15 +967,12 @@ class Bus:
         try:
             self.guid, self.fds_ok, self._buf = authenticate(s, None, timeout, want_fds)
         except OSError as e:
-            # authenticate() speaks to the socket with plain sendall/recv, so
-            # a bus that goes away mid-handshake used to escape as a bare
-            # OSError -- past Bus() and past backend_detect.session_bus(),
-            # which catches DBusError only, and out of wwmctl/wdotool as a
-            # traceback. Closing without draining our AUTH line gives
-            # ECONNRESET on the read and EPIPE on the next write; a peer that
-            # stops reading gives TimeoutError (also an OSError). All of them
-            # are the same event as a hangup after OK, and get its name --
-            # which is also one of the three the euid-0 retry acts on.
+            # authenticate() speaks to the socket with plain sendall/recv, so a bus that goes away mid-handshake
+            # used to escape as a bare OSError -- past Bus() and past backend_detect.session_bus(), which
+            # catches DBusError only, and out of wwmctl/wdotool as a traceback. Closing without draining our
+            # AUTH line gives ECONNRESET on the read and EPIPE on the next write; a peer that stops reading
+            # gives TimeoutError (also an OSError). All of them are the same event as a hangup after OK, and get
+            # its name -- which is also one of the three the euid-0 retry acts on.
             s.close()
             raise DBusError(ERR + "Disconnected",
                             f"lost the connection during authentication: {e}") from None
@@ -1081,11 +1062,10 @@ class Bus:
         self._buf += data
 
     def _parse_one(self) -> Message | None:
-        # A frame we cannot even measure stays in the buffer for ever, and a
-        # frame we cannot parse leaves the fds that came with it attached to
-        # the next message. Neither is recoverable -- the byte stream has no
-        # resynchronisation point -- so the connection goes, as one clear
-        # DBusError rather than a ValueError out of the marshaller.
+        # A frame we cannot even measure stays in the buffer for ever, and a frame we cannot parse leaves the
+        # fds that came with it attached to the next message. Neither is recoverable -- the byte stream has no
+        # resynchronisation point -- so the connection goes, as one clear DBusError rather than a ValueError out
+        # of the marshaller.
         try:
             n = Message.frame_length(self._buf)
         except (ValueError, RecursionError) as e:
@@ -1259,9 +1239,8 @@ class Bus:
     # -- signals / queue
 
     def messages(self, timeout: float | None = None):
-        """Yield queued messages (signals, and calls when serve_calls) as they
-        arrive; stops after `timeout` seconds of silence (None = forever).
-        Fds in a yielded message (`m.args()`) are the caller's to close."""
+        """Yield queued messages (signals, and calls when serve_calls) as they arrive; stops after `timeout`
+        seconds of silence (None = forever). Fds in a yielded message (`m.args()`) are the caller's to close."""
         while True:
             while self._queue:
                 yield self._queue.popleft()
@@ -1271,11 +1250,9 @@ class Bus:
     def wait_signal(self, iface: str | None, member: str | None,
                     timeout: float | None = 25.0, path: str | None = None,
                     sender: str | None = None) -> Message | None:
-        """Next queued/incoming signal matching the given fields (None =
-        any); other messages stay queued. None on timeout. Remember to
-        `add_match` first -- the bus only routes subscribed signals. A
-        signal's `sender` is always a unique name (`:1.42`) or
-        `org.freedesktop.DBus`, never the well-known name."""
+        """Next queued/incoming signal matching the given fields (None = any); other messages stay queued. None
+        on timeout. Remember to `add_match` first -- the bus only routes subscribed signals. A signal's `sender`
+        is always a unique name (`:1.42`) or `org.freedesktop.DBus`, never the well-known name."""
         def match(m):
             return (m.type == SIGNAL
                     and (iface is None or m.interface == iface)

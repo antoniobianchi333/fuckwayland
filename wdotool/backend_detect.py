@@ -1,18 +1,15 @@
 """Backend detection.
 
-Order: WDOTOOL_BACKEND override -> sway/i3 IPC socket -> KWin (org.kde.KWin
-owned on the session bus) -> GNOME (org.gnome.Shell owned) -> wlr
-foreign-toplevel probe -> clear error. The two D-Bus checks are ONE ListNames
-call over dbus_mini (no gdbus/busctl spawns); the connection is kept for the
-process so the GNOME backend reuses it.
+Order: WDOTOOL_BACKEND override -> sway/i3 IPC socket -> KWin (org.kde.KWin owned on the session bus) -> GNOME
+(org.gnome.Shell owned) -> wlr foreign-toplevel probe -> clear error. The two D-Bus checks are ONE ListNames
+call over dbus_mini (no gdbus/busctl spawns); the connection is kept for the process so the GNOME backend reuses
+it.
 
-Neither D-Bus branch is ever swallowed: a GNOME session without the bridge
-extension is reported as such (the install hint), and so is a KWin failure.
-Mutter offers no foreign-toplevel protocol, and KWin implements neither
-zwlr_foreign_toplevel_manager_v1 nor ext_foreign_toplevel_list_v1 (checked
-against KWin 5.27 through 6.6 and master), so the generic probe below could
-never succeed on either -- falling through would only replace a precise
-message with "the compositor does not offer wlr-foreign-toplevel"."""
+Neither D-Bus branch is ever swallowed: a GNOME session without the bridge extension is reported as such (the
+install hint), and so is a KWin failure. Mutter offers no foreign-toplevel protocol, and KWin implements neither
+zwlr_foreign_toplevel_manager_v1 nor ext_foreign_toplevel_list_v1 (checked against KWin 5.27 through 6.6 and
+master), so the generic probe below could never succeed on either -- falling through would only replace a
+precise message with "the compositor does not offer wlr-foreign-toplevel"."""
 
 import os
 

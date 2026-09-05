@@ -41,9 +41,8 @@ from wxprop.fmt import FatalError
 
 MAXSTR = fmtmod.MAXSTR
 
-# what -version prints. NOT byte parity with the oracle: the binary on both
-# supported flavors is 1.2.6/1.2.7, and this string is deliberately the
-# newest release, so a version-sniffing script sees a clone that implements
+# what -version prints. NOT byte parity with the oracle: the binary on both supported flavors is 1.2.6/1.2.7,
+# and this string is deliberately the newest release, so a version-sniffing script sees a clone that implements
 # everything it may ask for. The package identity lives in wxprop.VERSION.
 XPROP_VERSION = "xprop 1.2.8"
 
@@ -120,15 +119,13 @@ def print_grammar(prog: str):
 
 
 def _setup_locale():
-    """setlocale(LC_CTYPE, "") + nl_langinfo(CODESET) == "UTF-8" -- asked as a
-    question, and left the way it was found.
+    """setlocale(LC_CTYPE, "") + nl_langinfo(CODESET) == "UTF-8" -- asked as a question, and left the way it was
+    found.
 
-    Only the answer is ever used: every byte we print goes out of
-    `sys.stdout.buffer`, so nothing downstream reads the C locale. Leaving
-    LC_CTYPE switched is a change to global process state, and since 3.12 it
-    is state `open()` reads -- so a caller that runs `main()` in-process (the
-    suite does, and with LC_ALL=C in the environment) would find its own
-    default text encoding quietly become ASCII for the rest of the run.
+    Only the answer is ever used: every byte we print goes out of `sys.stdout.buffer`, so nothing downstream
+    reads the C locale. Leaving LC_CTYPE switched is a change to global process state, and since 3.12 it is
+    state `open()` reads -- so a caller that runs `main()` in-process (the suite does, and with LC_ALL=C in the
+    environment) would find its own default text encoding quietly become ASCII for the rest of the run.
     """
     try:
         import locale
@@ -174,12 +171,10 @@ def _c_int(v: int) -> int:
 
 
 def _strtoul(s: str) -> int:
-    """strtoul(s, NULL, 0): C number syntax, invalid -> 0. Overflow
-    SATURATES the magnitude at ULONG_MAX (glibc's ERANGE return) before the
-    sign is applied in unsigned arithmetic — so "-1" is ULONG_MAX, an
-    overflowing positive is ULONG_MAX (verified: -set 32c
-    18446744073709551617 stores 0xffffffff, not 1), and an overflowing
-    negative wraps small, exactly like glibc."""
+    """strtoul(s, NULL, 0): C number syntax, invalid -> 0. Overflow SATURATES the magnitude at ULONG_MAX
+    (glibc's ERANGE return) before the sign is applied in unsigned arithmetic — so "-1" is ULONG_MAX, an
+    overflowing positive is ULONG_MAX (verified: -set 32c 18446744073709551617 stores 0xffffffff, not 1), and an
+    overflowing negative wraps small, exactly like glibc."""
     m = re.match(r"[ \t\n\v\f\r]*([+-]?)(0[xX][0-9a-fA-F]+|[0-9]+)", s)
     if not m:
         return 0
@@ -198,15 +193,12 @@ def _strtoul(s: str) -> int:
 
 
 def _parse_window_id(arg: str) -> int:
-    """dsimple.c: sscanf("0x%lx") else sscanf("%lu"), partial parses count,
-    0 (or nothing) is fatal.
+    """dsimple.c: sscanf("0x%lx") else sscanf("%lu"), partial parses count, 0 (or nothing) is fatal.
 
-    The literal "0x" of the first format matches no whitespace and no
-    uppercase X -- sscanf only skips whitespace for a conversion, and the
-    format has none before the 0 -- so " 0x20" and "0X20" fall through to
-    %lu, parse as 0 and are fatal (verified against the oracle). %lu is
-    strtoul, which does skip whitespace and does accept a sign: "-5" is
-    ULONG_MAX-4, wrapped into the id below."""
+    The literal "0x" of the first format matches no whitespace and no uppercase X -- sscanf only skips
+    whitespace for a conversion, and the format has none before the 0 -- so " 0x20" and "0X20" fall through to
+    %lu, parse as 0 and are fatal (verified against the oracle). %lu is strtoul, which does skip whitespace and
+    does accept a sign: "-5" is ULONG_MAX-4, wrapped into the id below."""
     w = 0
     m = re.match(r"0x([0-9a-fA-F]+)", arg)
     if m:
@@ -320,9 +312,8 @@ def _extract_display(args):
 
 
 def _select_window_args(sess, args):
-    """Select_Window_Args: -root/-id/-name consumed anywhere, later wins,
-    -name resolved on the spot (its no-match error fires before any later
-    bad-flag diagnosis, like real xprop)."""
+    """Select_Window_Args: -root/-id/-name consumed anywhere, later wins, -name resolved on the spot (its
+    no-match error fires before any later bad-flag diagnosis, like real xprop)."""
     spec = None
     out = []
     i = 0
@@ -435,9 +426,9 @@ def main(argv=None) -> int:
     stdio.repair_std()      # fd 1 or 2 closed before Python started
     prog = _progname()
     backend.set_program(prog)
-    # X11 session: hand over to the real xprop. Unlike the other three we do
-    # have a native X11 path (core.Session talks to $DISPLAY directly), so a
-    # box with no x11-utils installed keeps working instead of exiting 127.
+    # X11 session: hand over to the real xprop. Unlike the other three we do have a native X11 path
+    # (core.Session talks to $DISPLAY directly), so a box with no x11-utils installed keeps working instead of
+    # exiting 127.
     rc = passthrough.maybe_exec_real(
         "xprop", sys.argv[1:] if argv is None else argv, entry=argv is None,
         fallback_native=True)
@@ -468,9 +459,8 @@ def main(argv=None) -> int:
             sys.stderr.write(core.x_error_report(e))
         else:
             sys.stderr.write("%s: error: %s\n" % (prog, e))
-        # An OSError here is a write to stdout that failed (a full disk,
-        # a quota, `>/dev/full`): the flush below is about to fail with
-        # the same errno, and the originals print one line, not two.
+        # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
+        # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)
         code = 1
     return code if stdio.flush_stdout(prog, quiet) else (code or 1)
@@ -499,9 +489,8 @@ def _main(prog: str, args) -> int:
         notype=False, max_len=MAXSTR, utf8_locale=utf8_locale,
         truecolor=(os.environ.get("COLORTERM") == "truecolor"),
         term_width=_term_width())
-    # xprop picks its property-format table before the option loop runs,
-    # by scanning argv for -font (xprop.c:1961): the FONT table replaces
-    # the window one for the whole run.
+    # xprop picks its property-format table before the option loop runs, by scanning argv for -font
+    # (xprop.c:1961): the FONT table replaces the window one for the whole run.
     if "-font" in args:
         formatter.setup_font_table()
     else:
@@ -543,11 +532,9 @@ def _main(prog: str, args) -> int:
         if a == "-len":
             if i >= len(args):
                 raise UsageError("-len requires an argument")
-            # xprop keeps max_len in a long but parses it with atoi(),
-            # which returns an int: "-len 4294967296" is 0 there (nothing
-            # is printed), and "-len 2147483648" is INT_MIN, whose negative
-            # word count reaches the server as a huge unsigned one and
-            # fetches everything.
+            # xprop keeps max_len in a long but parses it with atoi(), which returns an int: "-len 4294967296"
+            # is 0 there (nothing is printed), and "-len 2147483648" is INT_MIN, whose negative word count
+            # reaches the server as a huge unsigned one and fetches everything.
             formatter.max_len = _c_int(_atoi(args[i]))
             i += 1
             continue
@@ -573,9 +560,8 @@ def _main(prog: str, args) -> int:
             if i + 2 > len(args):
                 raise UsageError("insufficient arguments for -set")
             sets.append((args[i], args[i + 1]))
-            # xprop.c:2052 advances argv by 3 AND the loop increment eats
-            # one more: `-set name value` swallows the next argument
-            # unexamined. Bug-for-bug — the oracle really does this.
+            # xprop.c:2052 advances argv by 3 AND the loop increment eats one more: `-set name value` swallows
+            # the next argument unexamined. Bug-for-bug — the oracle really does this.
             i += 3
             continue
         if a == "-frame":
@@ -663,10 +649,9 @@ def _main(prog: str, args) -> int:
             if target.intern(prop_b, create=False):
                 specs.append((prop_b, f_b, d_b))
             seg = bytearray()
-            # xprop writes each property as it renders it, so a fatal
-            # halfway through a value still leaves the name line (and every
-            # property before it) on stdout. Ours built the whole segment
-            # first and dropped it on the way out.
+            # xprop writes each property as it renders it, so a fatal halfway through a value still leaves the
+            # name line (and every property before it) on stdout. Ours built the whole segment first and dropped
+            # it on the way out.
             try:
                 core.show_prop(formatter, target, seg, f_b, d_b, prop_b)
             finally:

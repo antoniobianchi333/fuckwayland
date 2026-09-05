@@ -52,9 +52,8 @@ from fwcommon.wayland_mini import now_ms as _now_ms, roundtrip
 from wdotool.us_keymap import TEXT as US_KEYMAP
 
 MANAGER = "zwp_virtual_keyboard_manager_v1"
-# The only version there is (sway 1.11 advertises v1). We bind
-# min(advertised, MAX_VERSION) so a future v2 compositor still gets a v1
-# client rather than an object whose events we would not understand.
+# The only version there is (sway 1.11 advertises v1). We bind min(advertised, MAX_VERSION) so a future v2
+# compositor still gets a v1 client rather than an object whose events we would not understand.
 MAX_VERSION = 1
 
 # wire opcodes
@@ -78,12 +77,10 @@ MOD_MOD3 = 1 << 5
 MOD_MOD4 = 1 << 6
 MOD_MOD5 = 1 << 7
 
-# evdev keycode -> the bit it carries IN THE KEYMAP WE UPLOAD. Not a guess
-# about keyboards in general: these are that file's own `modifier_map` lines,
-# and tests/test_vkbd.py reads them back out of the keymap text to prove this
-# table still matches it. (<RALT> is Mod1 there -- plain `us` has no AltGr
-# level-three key, which is the same reason the fixed US table needs no mask
-# but Shift.)
+# evdev keycode -> the bit it carries IN THE KEYMAP WE UPLOAD. Not a guess about keyboards in general: these are
+# that file's own `modifier_map` lines, and tests/test_vkbd.py reads them back out of the keymap text to prove
+# this table still matches it. (<RALT> is Mod1 there -- plain `us` has no AltGr level-three key, which is the
+# same reason the fixed US table needs no mask but Shift.)
 _MOD_BITS = {
     42: MOD_SHIFT,    # KEY_LEFTSHIFT   <LFSH>
     54: MOD_SHIFT,    # KEY_RIGHTSHIFT  <RTSH>
@@ -103,9 +100,8 @@ _LOCKING = {58: MOD_LOCK, 69: MOD_MOD2}
 
 
 class VkbdError(Exception):
-    """The virtual-keyboard path is not usable. Always caught by the daemon,
-    which says why and falls back to the kernel device (or, when there is no
-    kernel device either, reports the kernel device's own reason)."""
+    """The virtual-keyboard path is not usable. Always caught by the daemon, which says why and falls back to
+    the kernel device (or, when there is no kernel device either, reports the kernel device's own reason)."""
 
 
 def keymap_blob(text: str = US_KEYMAP) -> bytes:
@@ -137,9 +133,8 @@ def _keymap_fd(data: bytes) -> int:
 class VirtualKeyboard:
     """One connection + one zwp_virtual_keyboard_v1, with our keymap on it.
 
-    `key(code, down)` is deliberately the same call as
-    `uinput.UinputDevice.key`, so the daemon's press/release/type loops inject
-    through either without knowing which -- everything this path does
+    `key(code, down)` is deliberately the same call as `uinput.UinputDevice.key`, so the daemon's
+    press/release/type loops inject through either without knowing which -- everything this path does
     differently happens inside it.
     """
 
@@ -153,9 +148,8 @@ class VirtualKeyboard:
         self._locked = 0
         self._group = 0
         self._sent = None   # last (depressed, locked) actually put on the wire
-        # Keycodes we have told the compositor are down. The daemon tracks
-        # the same thing for its own reasons; this one exists so a reconnect
-        # knows the mask it must not carry over.
+        # Keycodes we have told the compositor are down. The daemon tracks the same thing for its own reasons;
+        # this one exists so a reconnect knows the mask it must not carry over.
         self.held: set[int] = set()
 
     # -- construction ------------------------------------------------------
@@ -190,9 +184,8 @@ class VirtualKeyboard:
             seat = conn.find_global("wl_seat")
             if seat is None:
                 raise VkbdError("the compositor advertises no wl_seat")
-            # The seat's keyboard *capability* is deliberately not required:
-            # a seat with no keyboard is exactly where a virtual one is worth
-            # creating, and the protocol asks for the seat, not the keyboard.
+            # The seat's keyboard *capability* is deliberately not required: a seat with no keyboard is exactly
+            # where a virtual one is worth creating, and the protocol asks for the seat, not the keyboard.
             seat_id = conn.bind(seat[0], "wl_seat", min(seat[1], 7))
             mgr = conn.bind(found[0], MANAGER, version)
             vk = conn.alloc()
@@ -210,9 +203,8 @@ class VirtualKeyboard:
             raise VkbdError(f"virtual keyboard setup failed: {e}") from None
 
     def _upload(self):
-        """keymap(format, fd, size). A `key` before this is a protocol error
-        ("Cannot send a keypress before defining a keymap"), so it happens
-        once, here, before the object is handed out -- and again on every
+        """keymap(format, fd, size). A `key` before this is a protocol error ("Cannot send a keypress before
+        defining a keymap"), so it happens once, here, before the object is handed out -- and again on every
         reconnect, because nothing survives a compositor restart."""
         data = keymap_blob(self.keymap_text)
         fd = _keymap_fd(data)
@@ -231,10 +223,9 @@ class VirtualKeyboard:
     def key(self, code: int, down: bool):
         """Press or release one evdev keycode.
 
-        A modifier keycode also moves the mask and sends `modifiers` -- on
-        press before the key, on release after it, which is the order a real
-        keyboard's events reach a client in. wlroots will not do this for us:
-        it does not run a virtual keyboard's keys through xkb state.
+        A modifier keycode also moves the mask and sends `modifiers` -- on press before the key, on release
+        after it, which is the order a real keyboard's events reach a client in. wlroots will not do this for
+        us: it does not run a virtual keyboard's keys through xkb state.
         """
         bit = _MOD_BITS.get(code, 0)
         if down:
@@ -258,9 +249,8 @@ class VirtualKeyboard:
     def clear_modifiers(self):
         """Say, once and authoritatively, that no modifier is down.
 
-        Only meaningful on this path: the mask we send is ours alone, so
-        unlike the uinput path there is nothing here we cannot clear and
-        nothing that could be left stuck (see --clearmodifiers in daemon.py).
+        Only meaningful on this path: the mask we send is ours alone, so unlike the uinput path there is nothing
+        here we cannot clear and nothing that could be left stuck (see --clearmodifiers in daemon.py).
         """
         self._depressed = 0
         # The LOCKED mask is deliberately left alone: `--clearmodifiers`
@@ -272,16 +262,14 @@ class VirtualKeyboard:
         self._send_modifiers(force=True)
 
     def flush(self):
-        """Round-trip once, so a protocol error the compositor raised over
-        the keys we just sent is reported instead of noticed by nobody. Key
-        events themselves are not acknowledged one by one: that would put a
+        """Round-trip once, so a protocol error the compositor raised over the keys we just sent is reported
+        instead of noticed by nobody. Key events themselves are not acknowledged one by one: that would put a
         round trip in the middle of every keystroke of a `type`."""
         _roundtrip(self.conn, "key")
 
     def close(self):
-        """Destroy the keyboard and drop the connection. Safe to call on a
-        keyboard that already failed -- the socket is closed either way, so a
-        long-lived daemon cannot leak one per compositor restart."""
+        """Destroy the keyboard and drop the connection. Safe to call on a keyboard that already failed -- the
+        socket is closed either way, so a long-lived daemon cannot leak one per compositor restart."""
         if not self.closed:
             self.closed = True
             try:
@@ -300,10 +288,9 @@ class VirtualKeyboard:
         self._send(_VK_KEY, [("u", _now_ms()), ("u", code), ("u", state)])
 
     def _send_modifiers(self, force=False):
-        """Only when the mask really moved: pressing right shift while left
-        shift is down changes no state, and a compositor that re-sends the
-        seat's modifiers to the focused client on each one should not be made
-        to do it for nothing."""
+        """Only when the mask really moved: pressing right shift while left shift is down changes no state, and
+        a compositor that re-sends the seat's modifiers to the focused client on each one should not be made to
+        do it for nothing."""
         state = (self._depressed, self._locked)
         if state == self._sent and not force:
             return
@@ -318,9 +305,8 @@ class VirtualKeyboard:
             self.conn.send(self.vk, opcode, args)
         except OSError as e:
             self.closed = True
-            # The compositor released every key this keyboard was holding
-            # when the connection went; `held` must not go on claiming
-            # otherwise, or the daemon inherits a key it can never release.
+            # The compositor released every key this keyboard was holding when the connection went; `held` must
+            # not go on claiming otherwise, or the daemon inherits a key it can never release.
             self.held.clear()
             raise VkbdError(
                 f"the compositor closed the connection ({e}); the keys "

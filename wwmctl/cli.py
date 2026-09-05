@@ -38,9 +38,8 @@ from wwmctl import core
 # what -V/--version print: byte parity with the oracle binary
 WMCTRL_VERSION = "1.07"
 
-# vanilla wmctrl 1.07 optstring, kept for the record; what we parse is the
-# union below (1.07+git20240228's main.c adds S j Y: y: z: E:, and the
-# Debian/Ubuntu packaging adds M: and L on top)
+# vanilla wmctrl 1.07 optstring, kept for the record; what we parse is the union below (1.07+git20240228's
+# main.c adds S j Y: y: z: E:, and the Debian/Ubuntu packaging adds M: and L on top)
 OPTSTRING_107 = "FGVvhlupidmxa:r:s:c:t:w:k:o:n:g:e:b:N:I:T:R:"
 OPTSTRING = ("FGVvhSlupidjmxa:r:s:c:t:w:k:o:n:g:e:y:b:z:E:N:I:T:LR:Y:M:")
 
@@ -182,9 +181,8 @@ Copyright (C) 2003
 '''
 
 
-# The wmctrl of Ubuntu 25.04+/Debian 13+: upstream 1.07+git20240228 (six
-# more options and `-k toggle`) plus the two options the distro patches add,
-# -M and -L. This is the text the installed oracle prints, which is the one
+# The wmctrl of Ubuntu 25.04+/Debian 13+: upstream 1.07+git20240228 (six more options and `-k toggle`) plus the
+# two options the distro patches add, -M and -L. This is the text the installed oracle prints, which is the one
 # worth matching -- the unpatched tarball is what nobody has.
 HELP_GIT = '''wmctrl 1.07
 Usage: wmctrl [OPTION]...
@@ -331,9 +329,8 @@ Copyright (C) 2003
 
 
 def _prog() -> str:
-    """argv[0] verbatim, which is what wmctrl's getopt diagnostics print --
-    `/usr/bin/wmctrl -Q` says "/usr/bin/wmctrl: invalid option -- 'Q'".
-    `python -m wwmctl` has no name worth printing."""
+    """argv[0] verbatim, which is what wmctrl's getopt diagnostics print -- `/usr/bin/wmctrl -Q` says
+    "/usr/bin/wmctrl: invalid option -- 'Q'". `python -m wwmctl` has no name worth printing."""
     if sys.argv and sys.argv[0]:
         if os.path.basename(sys.argv[0]) != "__main__.py":
             return sys.argv[0]
@@ -344,18 +341,15 @@ _GENERATION = None
 
 
 def _oracle_generation() -> str:
-    """"1.07" or "git": which wmctrl this box's scripts were written
-    against.
+    """"1.07" or "git": which wmctrl this box's scripts were written against.
 
-    Both generations answer "1.07" to -V, so the only observable
-    difference is the help text -- which is what we are choosing here, so
-    reading it off the installed oracle is exactly right. One subprocess,
-    memoised, and only on the paths that print help. Without an oracle on
-    PATH (we may BE /usr/bin/wmctrl) nothing can be compared, and the
-    documented target of this clone is 1.07.
+    Both generations answer "1.07" to -V, so the only observable difference is the help text -- which is what we
+    are choosing here, so reading it off the installed oracle is exactly right. One subprocess, memoised, and
+    only on the paths that print help. Without an oracle on PATH (we may BE /usr/bin/wmctrl) nothing can be
+    compared, and the documented target of this clone is 1.07.
 
-    $WWMCTL_WMCTRL_GENERATION forces the answer, for tests and for a box
-    whose oracle is not the one its scripts expect."""
+    $WWMCTL_WMCTRL_GENERATION forces the answer, for tests and for a box whose oracle is not the one its scripts
+    expect."""
     global _GENERATION
     forced = (os.environ.get("WWMCTL_WMCTRL_GENERATION") or "").strip()
     if forced in ("1.07", "git"):
@@ -393,9 +387,9 @@ def _envir_utf8(force: bool) -> bool:
 
 
 def main(argv=None) -> int:
-    """Entry point: _run() plus the plumbing wmctrl gets from libc for free
-    (stdout may be a closed fd or a broken pipe; wmctrl dies of SIGPIPE or
-    lets printf fail silently — we exit quietly instead of tracing back)."""
+    """Entry point: _run() plus the plumbing wmctrl gets from libc for free (stdout may be a closed fd or a
+    broken pipe; wmctrl dies of SIGPIPE or lets printf fail silently — we exit quietly instead of tracing
+    back)."""
     stdio.repair_std()      # fd 1 or 2 closed before Python started
     backend.set_program("wwmctl")
     # X11 session: hand over to the real wmctrl (argv here is already
@@ -415,9 +409,8 @@ def main(argv=None) -> int:
         # never a traceback: a listing whose write to a full stdout
         # failed, a compositor that went away mid-query.
         sys.stderr.write("%s: %s\n" % (_prog(), e))
-        # An OSError here is a write to stdout that failed (a full disk,
-        # a quota, `>/dev/full`): the flush below is about to fail with
-        # the same errno, and the originals print one line, not two.
+        # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
+        # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)
         rc = 1
     return rc if stdio.flush_stdout(_prog(), quiet) else (rc or 1)

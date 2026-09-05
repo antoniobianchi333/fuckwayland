@@ -1,12 +1,10 @@
-"""Layout model: outputs with their configuration, arandr's edge snapping,
-origin normalisation, the xrandr command line, and the ``#!/bin/sh``
-layout-script format arandr reads.
+"""Layout model: outputs with their configuration, arandr's edge snapping, origin normalisation, the xrandr
+command line, and the ``#!/bin/sh`` layout-script format arandr reads.
 
-Overlapping outputs are the *backend's* business, not ours: two active
-outputs may intersect freely (arandr allows it and X11 has always drawn it),
-and a layout is refused here only when the backend in use refuses one -- the
-caller sets ``Layout.overlap_refusal`` to that backend's own sentence, which
-then becomes the error, so the user reads whose limit it is."""
+Overlapping outputs are the *backend's* business, not ours: two active outputs may intersect freely (arandr
+allows it and X11 has always drawn it), and a layout is refused here only when the backend in use refuses one --
+the caller sets ``Layout.overlap_refusal`` to that backend's own sentence, which then becomes the error, so the
+user reads whose limit it is."""
 
 import math
 import re
@@ -22,9 +20,8 @@ DEFAULT_TEMPLATE = [SHEBANG, PLACEHOLDER]        # arandr's DEFAULTTEMPLATE
 
 
 class LayoutError(Exception):
-    """A configuration the model refuses (off-screen, unknown output/mode,
-    or an overlap on a backend that refuses one) — the caller reverts and
-    tells the user."""
+    """A configuration the model refuses (off-screen, unknown output/mode, or an overlap on a backend that
+    refuses one) — the caller reverts and tells the user."""
 
 
 def fmt_rate(hz):
@@ -79,9 +76,8 @@ class Output:
         self.rotation = "normal"
         self.reflection = "normal"
         self.scale = 1.0
-        # the scale the screen was running when it was read: both xrandr and
-        # wxrandr keep an existing scale when --scale is not given, so
-        # returning to 1 must be said explicitly
+        # the scale the screen was running when it was read: both xrandr and wxrandr keep an existing scale when
+        # --scale is not given, so returning to 1 must be said explicitly
         self.screen_scale = 1.0
         self.x = 0
         self.y = 0
@@ -102,10 +98,9 @@ class Output:
         return self.modes[0] if self.modes else None
 
     def size(self):
-        """Logical (drawn) size: scale then the rotation swap.  Wayland
-        (wxrandr) scale is a HiDPI factor — the compositor truncates
-        ``px / scale``; X11 ``--scale`` is a framebuffer factor, xrandr rounds
-        the transformed rectangle outwards."""
+        """Logical (drawn) size: scale then the rotation swap.  Wayland (wxrandr) scale is a HiDPI factor — the
+        compositor truncates ``px / scale``; X11 ``--scale`` is a framebuffer factor, xrandr rounds the
+        transformed rectangle outwards."""
         if self.mode is None:
             return (0, 0)
         w, h = self.mode.w, self.mode.h
@@ -188,10 +183,9 @@ class Layout:
         return lay
 
     def _mark_clones(self):
-        """An active output sharing its origin with an earlier active one is
-        a clone of it (what ``--same-as`` produces, whatever the sizes):
-        record it as *Mirror of* so it is drawn as one, follows its target
-        and round-trips as ``--same-as``."""
+        """An active output sharing its origin with an earlier active one is a clone of it (what ``--same-as``
+        produces, whatever the sizes): record it as *Mirror of* so it is drawn as one, follows its target and
+        round-trips as ``--same-as``."""
         anchors = []
         for o in self.active_outputs():
             if o.mode is None:
@@ -236,9 +230,8 @@ class Layout:
                 max(r[1] + r[3] for r in rects))
 
     def normalize(self):
-        """Shift everything so the layout's top-left corner is (0, 0) —
-        xrandr accepts negative --pos, arandr refuses them; we never emit
-        them.  Mirrors follow their targets."""
+        """Shift everything so the layout's top-left corner is (0, 0) — xrandr accepts negative --pos, arandr
+        refuses them; we never emit them.  Mirrors follow their targets."""
         self._sync_mirrors()
         x0, y0, _, _ = self.bounding_box()
         if x0 or y0:
@@ -248,9 +241,8 @@ class Layout:
 
     def _sync_mirrors(self):
         """Mirrors take their target's position.  A script may chain them
-        (``A --same-as B --output B --same-as C``): xrandr iterates positions
-        to a fixpoint, we flatten every chain onto its root so the model
-        only ever holds one level; a cycle is an error."""
+        (``A --same-as B --output B --same-as C``): xrandr iterates positions to a fixpoint, we flatten every
+        chain onto its root so the model only ever holds one level; a cycle is an error."""
         for o in self.outputs:
             if not o.mirror_of:
                 continue
@@ -277,9 +269,8 @@ class Layout:
             o.x, o.y = t.x, t.y
 
     def overlaps(self):
-        """Pairs of active outputs that intersect at *different* origins — a
-        partial overlap, i.e. a region two screens both draw.  Outputs at the
-        same origin are a clone (xrandr's ``--same-as``, whatever their
+        """Pairs of active outputs that intersect at *different* origins — a partial overlap, i.e. a region two
+        screens both draw.  Outputs at the same origin are a clone (xrandr's ``--same-as``, whatever their
         sizes) and are not one."""
         pairs = []
         act = self.active_outputs()
@@ -294,20 +285,18 @@ class Layout:
         return pairs
 
     def shared_region(self, a, b):
-        """The rectangle two outputs both draw, ``(x, y, w, h)`` in layout
-        pixels — what a partial overlap actually mirrors.  Empty (w or h 0)
-        when they do not intersect."""
+        """The rectangle two outputs both draw, ``(x, y, w, h)`` in layout pixels — what a partial overlap
+        actually mirrors.  Empty (w or h 0) when they do not intersect."""
         ax, ay, aw, ah = self.get(a).rect()
         bx, by, bw, bh = self.get(b).rect()
         x, y = max(ax, bx), max(ay, by)
         return (x, y, max(0, min(ax + aw, bx + bw) - x), max(0, min(ay + ah, by + bh) - y))
 
     def check(self):
-        """Raise LayoutError for outputs beyond the server's maximum screen
-        size, and — only where the backend refuses one, `overlap_refusal`
-        holding its reason — for a partial overlap.  arandr allows overlaps
-        and X11 has always drawn them, so refusing one is never our own
-        policy: the sentence names the compositor that says no."""
+        """Raise LayoutError for outputs beyond the server's maximum screen size, and — only where the backend
+        refuses one, `overlap_refusal` holding its reason — for a partial overlap.  arandr allows overlaps and
+        X11 has always drawn them, so refusing one is never our own policy: the sentence names the compositor
+        that says no."""
         if self.overlap_refusal and self.overlaps():
             raise LayoutError(self.overlap_refusal)
         x0, y0, x1, y1 = self.bounding_box()
@@ -315,9 +304,8 @@ class Layout:
             raise LayoutError("A part of an output is outside the virtual screen.")
 
     def snap(self, name, x, y, tolerance):
-        """arandr's edge snapping: within `tolerance` layout pixels of another
-        active output's (or the virtual screen's) left/right/top/bottom edge,
-        the same edge of the dragged output, or its centre line, the
+        """arandr's edge snapping: within `tolerance` layout pixels of another active output's (or the virtual
+        screen's) left/right/top/bottom edge, the same edge of the dragged output, or its centre line, the
         coordinate snaps there.  The nearest candidate wins."""
         o = self.get(name)
         w, h = o.size()
@@ -475,13 +463,11 @@ class Layout:
     # -- command line -------------------------------------------------------
 
     def args(self):
-        """One stanza per output, arandr's order and shape (``--output N
-        [--primary] --mode M --pos XxY --rotate R`` / ``--output N --off``)
-        plus ``--rate``, ``--same-as``, ``--reflect``, ``--scale`` only when
-        they carry information.  ``--scale`` is written whenever the output
-        is scaled *or was scaled when the screen was read* (``1x1`` then):
-        xrandr and wxrandr both keep an existing scale when it is not
-        mentioned."""
+        """One stanza per output, arandr's order and shape
+        (``--output N [--primary] --mode M --pos XxY --rotate R`` / ``--output N --off``) plus ``--rate``,
+        ``--same-as``, ``--reflect``, ``--scale`` only when they carry information.  ``--scale`` is written
+        whenever the output is scaled *or was scaled when the screen was read* (``1x1`` then): xrandr and
+        wxrandr both keep an existing scale when it is not mentioned."""
         args = []
         for o in self.outputs:
             args += ["--output", o.name]
@@ -510,12 +496,10 @@ class Layout:
     # -- scripts ------------------------------------------------------------
 
     def to_script(self, word=None, notes=None):
-        """The layout script.  `notes` is warandr's comment header — one
-        line per note, about a *forced* backend and about what an overlap in
-        this layout means on it.  It goes only into the default template,
-        because a loaded file's own template is written back untouched
-        (arandr's rule), and it is only ever a comment: `sh script.sh` on a
-        plain X11 box must not care which backend the window used."""
+        """The layout script.  `notes` is warandr's comment header — one line per note, about a *forced* backend
+        and about what an overlap in this layout means on it.  It goes only into the default template, because a
+        loaded file's own template is written back untouched (arandr's rule), and it is only ever a comment:
+        `sh script.sh` on a plain X11 box must not care which backend the window used."""
         lines = list(self.template)
         if PLACEHOLDER not in lines:
             lines.append(PLACEHOLDER)
@@ -528,9 +512,8 @@ class Layout:
         return "\n".join(cmd if ln == PLACEHOLDER else ln for ln in lines) + "\n"
 
     def load_script(self, text):
-        """Apply a layout script (arandr's or ours) on top of this layout —
-        which must hold the *current* outputs and modes, like arandr's
-        load_from_string does after load_from_x.  The other lines become the
+        """Apply a layout script (arandr's or ours) on top of this layout — which must hold the *current*
+        outputs and modes, like arandr's load_from_string does after load_from_x.  The other lines become the
         template that to_script() writes back around the new command."""
         lines = text.split("\n")
         if lines and lines[-1] == "":
@@ -689,12 +672,11 @@ def _parse_stanzas(argv):
 
 
 def _parse_scale(text):
-    """``--scale`` out of a layout script.  The old ``[0-9.]+`` also matched
-    ``1.2.3`` and ``.``, whose bare float() raised a ValueError that warandr's
-    top level does not catch (it handles RandrError/LayoutError/OSError), so a
-    hand-edited script ended in a traceback; and a parsed ``0`` was accepted
-    here although set_scale refuses it, then divided by in Output.size().
-    Both spellings now give the one ``warandr:`` line xrandr would."""
+    """``--scale`` out of a layout script.  The old ``[0-9.]+`` also matched ``1.2.3`` and ``.``, whose bare
+    float() raised a ValueError that warandr's top level does not catch (it handles
+    RandrError/LayoutError/OSError), so a hand-edited script ended in a traceback; and a parsed ``0`` was
+    accepted here although set_scale refuses it, then divided by in Output.size(). Both spellings now give the
+    one ``warandr:`` line xrandr would."""
     m = re.fullmatch(r"(\d+(?:\.\d*)?|\.\d+)(?:x(\d+(?:\.\d*)?|\.\d+))?", text)
     if not m:
         raise LayoutError("failed to parse '%s' as a scaling factor" % text)
@@ -705,10 +687,9 @@ def _parse_scale(text):
 
 
 def _derive_scale(po, o, hidpi):
-    """Scale from the query: X11 prints it in the --verbose transform matrix;
-    Wayland compositors report identity there, but the logical geometry is
-    ``mode / scale`` (truncated) — recover the factor and snap it to a menu
-    value when it is within rounding of one."""
+    """Scale from the query: X11 prints it in the --verbose transform matrix; Wayland compositors report
+    identity there, but the logical geometry is ``mode / scale`` (truncated) — recover the factor and snap it to
+    a menu value when it is within rounding of one."""
     if po.transform is not None and abs(po.transform[0] - 1.0) > 1e-6 and not hidpi:
         return round(po.transform[0], 4)
     if o.mode is None or not po.w or not po.h:

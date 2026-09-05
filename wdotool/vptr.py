@@ -67,12 +67,11 @@ object for the life of anything held down.
 from fwcommon.wayland_mini import now_ms as _now_ms, roundtrip
 
 MANAGER = "zwlr_virtual_pointer_manager_v1"
-# sway advertises v2; we bind v1 on purpose. The only thing v2 adds is
-# `create_virtual_pointer_with_output`, and that constructor maps the ratio
-# into ONE output's logical box and CONFINES the cursor to it -- measured:
-# a relative motion of +4000 from the leftmost head stopped at that head's
-# own right edge. Every wdotool coordinate is a layout coordinate, so the
-# plain constructor is the one we want, and binding v1 says so on the wire.
+# sway advertises v2; we bind v1 on purpose. The only thing v2 adds is `create_virtual_pointer_with_output`, and
+# that constructor maps the ratio into ONE output's logical box and CONFINES the cursor to it -- measured: a
+# relative motion of +4000 from the leftmost head stopped at that head's own right edge. Every wdotool
+# coordinate is a layout coordinate, so the plain constructor is the one we want, and binding v1 says so on the
+# wire.
 MAX_VERSION = 1
 
 # wire opcodes -- manager
@@ -100,15 +99,13 @@ AXIS_HORIZONTAL = 1
 # wl_pointer.axis_source
 AXIS_SOURCE_WHEEL = 0
 
-# One wheel detent, as a real wheel reports it: value 15.0 with a discrete
-# step of 1, which reaches the client as `axis_value120` 120 at wl_pointer
-# >= 8 and as `axis_discrete` 1 at v5-7.
+# One wheel detent, as a real wheel reports it: value 15.0 with a discrete step of 1, which reaches the client
+# as `axis_value120` 120 at wl_pointer >= 8 and as `axis_discrete` 1 at v5-7.
 WHEEL_STEP = 15.0
 
-# wdotool's wheel "buttons" -> (axis, direction), in WAYLAND's sign: positive
-# vertical is scroll down and positive horizontal is scroll right, which is
-# the opposite of REL_WHEEL and the same as REL_HWHEEL. The kernel path's
-# table is daemon._WHEEL; these two are the same four gestures.
+# wdotool's wheel "buttons" -> (axis, direction), in WAYLAND's sign: positive vertical is scroll down and
+# positive horizontal is scroll right, which is the opposite of REL_WHEEL and the same as REL_HWHEEL. The kernel
+# path's table is daemon._WHEEL; these two are the same four gestures.
 WHEEL = {4: (AXIS_VERTICAL, -1),    # wheel up
          5: (AXIS_VERTICAL, 1),     # wheel down
          6: (AXIS_HORIZONTAL, -1),  # wheel left
@@ -116,18 +113,16 @@ WHEEL = {4: (AXIS_VERTICAL, -1),    # wheel up
 
 
 class VptrError(Exception):
-    """The virtual-pointer path is not usable. Always caught by the daemon,
-    which says why and falls back to the kernel devices (or, when there is no
-    kernel device either, reports the kernel device's own reason)."""
+    """The virtual-pointer path is not usable. Always caught by the daemon, which says why and falls back to the
+    kernel devices (or, when there is no kernel device either, reports the kernel device's own reason)."""
 
 
 class VirtualPointer:
     """One connection + one zwlr_virtual_pointer_v1.
 
-    The four injecting calls -- `warp`, `move`, `button`, `wheel` -- are
-    deliberately the ones `daemon._KernelPointer` answers to as well, so the
-    daemon's pointer ops inject through either without knowing which.
-    Everything this path does differently happens inside them.
+    The four injecting calls -- `warp`, `move`, `button`, `wheel` -- are deliberately the ones
+    `daemon._KernelPointer` answers to as well, so the daemon's pointer ops inject through either without
+    knowing which. Everything this path does differently happens inside them.
     """
 
     def __init__(self, conn, vp_id: int, version: int):
@@ -135,9 +130,8 @@ class VirtualPointer:
         self.vp = vp_id
         self.version = version
         self.closed = False
-        # Evdev button codes we have told the compositor are down. The daemon
-        # tracks the same thing for its own reasons (it must know which of the
-        # two sinks is holding them); this one exists so a dead connection
+        # Evdev button codes we have told the compositor are down. The daemon tracks the same thing for its own
+        # reasons (it must know which of the two sinks is holding them); this one exists so a dead connection
         # stops claiming to hold anything.
         self.held: set[int] = set()
 
@@ -170,21 +164,18 @@ class VirtualPointer:
                     f"this compositor does not implement {MANAGER} "
                     "(Mutter and KWin do not; sway/wlroots does)")
             version = min(found[1], MAX_VERSION)
-            # The seat argument is allow-null in this protocol and a NULL was
-            # accepted and moved the cursor when it was tried, but a seat that
-            # exists is the more precise statement -- and the seat's pointer
-            # *capability* is deliberately not required, since a seat with no
-            # pointer is exactly where a virtual one is worth creating.
+            # The seat argument is allow-null in this protocol and a NULL was accepted and moved the cursor when
+            # it was tried, but a seat that exists is the more precise statement -- and the seat's pointer
+            # *capability* is deliberately not required, since a seat with no pointer is exactly where a virtual
+            # one is worth creating.
             seat = conn.find_global("wl_seat")
             seat_id = 0
             if seat is not None:
                 seat_id = conn.bind(seat[0], "wl_seat", min(seat[1], 7))
             mgr = conn.bind(found[0], MANAGER, version)
-            # New object ids must be SENT in allocation order: reserving this
-            # one before the binds above have gone out makes libwayland reject
-            # the bind ("invalid arguments for wl_registry#2.bind") and drop
-            # the connection, which surfaces later as an unrelated
-            # BrokenPipeError. Bind first, allocate last.
+            # New object ids must be SENT in allocation order: reserving this one before the binds above have
+            # gone out makes libwayland reject the bind ("invalid arguments for wl_registry#2.bind") and drop
+            # the connection, which surfaces later as an unrelated BrokenPipeError. Bind first, allocate last.
             vp = conn.alloc()
             conn.send(mgr, _MGR_CREATE_VIRTUAL_POINTER,
                       [("u", seat_id), ("u", vp)])
@@ -202,15 +193,13 @@ class VirtualPointer:
     def warp(self, x: int, y: int, gx: int, gy: int, w: int, h: int):
         """Put the cursor at the layout coordinate (x, y).
 
-        `motion_absolute` takes a ratio, so the extents ARE the layout size
-        and the value is the offset from its origin -- exact, with no
-        quantisation and no rounding either way. The caller has already
-        clamped (x, y) into the layout; the max()es below are the wire's
-        own requirement, since the arguments are unsigned and a negative
-        would wrap into a huge value that clamps to the far edge.
+        `motion_absolute` takes a ratio, so the extents ARE the layout size and the value is the offset from its
+        origin -- exact, with no quantisation and no rounding either way. The caller has already clamped (x, y)
+        into the layout; the max()es below are the wire's own requirement, since the arguments are unsigned and
+        a negative would wrap into a huge value that clamps to the far edge.
 
-        An `x_extent` of 0 is a silent no-op -- no motion event at all -- so
-        a degenerate layout is floored at one pixel rather than dropped.
+        An `x_extent` of 0 is a silent no-op -- no motion event at all -- so a degenerate layout is floored at
+        one pixel rather than dropped.
         """
         self._send(_VP_MOTION_ABSOLUTE,
                    [("u", _now_ms()),
@@ -220,17 +209,15 @@ class VirtualPointer:
         self._frame()
 
     def move(self, dx: int, dy: int):
-        """Relative motion, in logical pixels, delivered as wl_fixed. No
-        acceleration curve can touch this (see the module docstring), so what
-        is asked for is what the cursor moves; the compositor crosses outputs
-        and clamps to the layout by itself."""
+        """Relative motion, in logical pixels, delivered as wl_fixed. No acceleration curve can touch this (see
+        the module docstring), so what is asked for is what the cursor moves; the compositor crosses outputs and
+        clamps to the layout by itself."""
         self._send(_VP_MOTION, [("u", _now_ms()), ("f", dx), ("f", dy)])
         self._frame()
 
     def button(self, code: int, down: bool):
-        """Press or release one evdev button code (BTN_LEFT 0x110 ..
-        BTN_TASK 0x117 -- the numbers reach the client unchanged, and they
-        are the ones daemon._BTN already uses)."""
+        """Press or release one evdev button code (BTN_LEFT 0x110 .. BTN_TASK 0x117 -- the numbers reach the
+        client unchanged, and they are the ones daemon._BTN already uses)."""
         if down:
             self.held.add(code)
         else:
@@ -242,11 +229,9 @@ class VirtualPointer:
     def wheel(self, btn: int):
         """One detent of wdotool's wheel button 4/5/6/7.
 
-        `axis_discrete` rather than `axis`: a wheel click is a notch, and
-        this is the request that tells the client so (value120 = 120 at
-        wl_pointer >= 8). `axis_source` says which kind of scroll it is --
-        wheel is the default, but a frame that states it is one the client
-        does not have to guess about.
+        `axis_discrete` rather than `axis`: a wheel click is a notch, and this is the request that tells the
+        client so (value120 = 120 at wl_pointer >= 8). `axis_source` says which kind of scroll it is -- wheel is
+        the default, but a frame that states it is one the client does not have to guess about.
         """
         axis, direction = WHEEL[btn]
         self._send(_VP_AXIS_SOURCE, [("u", AXIS_SOURCE_WHEEL)])
@@ -256,16 +241,14 @@ class VirtualPointer:
         self._frame()
 
     def flush(self):
-        """Round-trip once, so a protocol error the compositor raised over
-        what we just sent is reported instead of noticed by nobody. The
-        individual requests are not acknowledged one by one: that would put a
-        round trip in the middle of every click of a `click --repeat`."""
+        """Round-trip once, so a protocol error the compositor raised over what we just sent is reported instead
+        of noticed by nobody. The individual requests are not acknowledged one by one: that would put a round
+        trip in the middle of every click of a `click --repeat`."""
         _roundtrip(self.conn, "pointer")
 
     def close(self):
-        """Destroy the pointer and drop the connection. Safe to call on a
-        pointer that already failed -- the socket is closed either way, so a
-        long-lived daemon cannot leak one per compositor restart."""
+        """Destroy the pointer and drop the connection. Safe to call on a pointer that already failed -- the
+        socket is closed either way, so a long-lived daemon cannot leak one per compositor restart."""
         if not self.closed:
             self.closed = True
             try:
@@ -281,9 +264,8 @@ class VirtualPointer:
     # -- internals ---------------------------------------------------------
 
     def _frame(self):
-        """Motion is applied without a frame, but the client then never gets
-        `wl_pointer.frame`, and an axis is not delivered at all until one --
-        both measured. So every group of requests ends in a frame."""
+        """Motion is applied without a frame, but the client then never gets `wl_pointer.frame`, and an axis is
+        not delivered at all until one -- both measured. So every group of requests ends in a frame."""
         self._send(_VP_FRAME, [])
 
     def _send(self, opcode: int, args):
@@ -293,9 +275,8 @@ class VirtualPointer:
             self.conn.send(self.vp, opcode, args)
         except OSError as e:
             self.closed = True
-            # The compositor released every button this pointer was holding
-            # when the connection went; `held` must not go on claiming
-            # otherwise, or the daemon inherits a button it can never release.
+            # The compositor released every button this pointer was holding when the connection went; `held`
+            # must not go on claiming otherwise, or the daemon inherits a button it can never release.
             self.held.clear()
             raise VptrError(
                 f"the compositor closed the connection ({e}); the mouse "

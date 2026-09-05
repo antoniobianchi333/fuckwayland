@@ -34,10 +34,9 @@ from wxrandr import core as wxcore
 HELPER = "wl-mirror"
 INSTALL_HINT = "on Ubuntu/Debian: sudo apt install wl-mirror"
 
-# The capture protocols wl-mirror can actually use. export-dmabuf is an
-# optimisation on top of these (it is what `auto` picks for a whole output,
-# and it cannot serve a region at all), never a substitute: a compositor
-# with only export-dmabuf could not do --region, so it is not in this list.
+# The capture protocols wl-mirror can actually use. export-dmabuf is an optimisation on top of these (it is what
+# `auto` picks for a whole output, and it cannot serve a region at all), never a substitute: a compositor with
+# only export-dmabuf could not do --region, so it is not in this list.
 SCREENCOPY = "zwlr_screencopy_manager_v1"
 EXTCOPY = "ext_image_copy_capture_manager_v1"
 CAPTURE_GLOBALS = (SCREENCOPY, EXTCOPY)
@@ -60,9 +59,8 @@ class Refusal(Exception):
 
 # -- output model -------------------------------------------------------------
 #
-# There is no model here. An output is a wxcore.OutputState, read by
-# wxcore.snapshot_wlr from the zwlr_output_manager events -- the very call
-# `wxrandr --query` renders -- so the two can never disagree about a
+# There is no model here. An output is a wxcore.OutputState, read by wxcore.snapshot_wlr from the
+# zwlr_output_manager events -- the very call `wxrandr --query` renders -- so the two can never disagree about a
 # rectangle, and `.geom()` prints the same words on both sides.
 
 def by_name(outputs, name):
@@ -90,9 +88,8 @@ REGION_FORM = "WxH+X+Y (layout coordinates, e.g. 500x300+1400+100)"
 def parse_region(text: str):
     """`WxH+X+Y` -> (x, y, w, h).
 
-    X11 geometry order, the one `xrandr --fb`/`--pos` and `wwmctl -g` speak,
-    in LAYOUT coordinates -- the same numbers `slurp` prints and the same
-    ones `wxrandr --query` shows next to each output, so a region is copied
+    X11 geometry order, the one `xrandr --fb`/`--pos` and `wwmctl -g` speak, in LAYOUT coordinates -- the same
+    numbers `slurp` prints and the same ones `wxrandr --query` shows next to each output, so a region is copied
     from one and pasted here."""
     m = _REGION_RE.match((text or "").strip())
     if not m:
@@ -111,9 +108,8 @@ def fmt_region(region) -> str:
 def slurp_region(region) -> str:
     """wl-mirror's region syntax, which is slurp's: `<x>,<y> <w>x<h>`.
 
-    The output name is deliberately NOT appended: wl-mirror takes the output
-    from the positional argument then, so its "region and argument output
-    differ" path can never be reached (src/options.c)."""
+    The output name is deliberately NOT appended: wl-mirror takes the output from the positional argument then,
+    so its "region and argument output differ" path can never be reached (src/options.c)."""
     x, y, w, h = region
     return "%d,%d %dx%d" % (x, y, w, h)
 
@@ -124,9 +120,8 @@ def build_argv(source: str, target: str, region=None,
                scaling: str = DEFAULT_SCALING, helper: str = HELPER) -> list:
     """The wl-mirror invocation for one mirror.
 
-    `--fullscreen-output T` implies --fullscreen (upstream man page), so the
-    window opens fullscreen on the target and nowhere else. Options come
-    first: wl-mirror stops parsing at the first non-`-` argument."""
+    `--fullscreen-output T` implies --fullscreen (upstream man page), so the window opens fullscreen on the
+    target and nowhere else. Options come first: wl-mirror stops parsing at the first non-`-` argument."""
     argv = [helper, "--fullscreen-output", target]
     if scaling:
         argv += ["--scaling", scaling]
@@ -144,10 +139,9 @@ def find_helper(path=None):
 def helper_version(binary: str):
     """`wl-mirror --version`'s first line, or None. Never raises."""
     try:
-        # errors="replace" is what makes "never raises" true: text=True
-        # decodes strict, so a helper whose banner is not the locale's
-        # encoding (or is not text at all) raised UnicodeDecodeError out of
-        # subprocess.run, past the except below, and out of `wmirror --check`.
+        # errors="replace" is what makes "never raises" true: text=True decodes strict, so a helper whose banner
+        # is not the locale's encoding (or is not text at all) raised UnicodeDecodeError out of subprocess.run,
+        # past the except below, and out of `wmirror --check`.
         out = subprocess.run([binary, "--version"], capture_output=True,
                              timeout=5, text=True, errors="replace")
     except (OSError, subprocess.SubprocessError):
@@ -166,9 +160,8 @@ def missing_helper_lines() -> list:
 def no_session_lines() -> list:
     """What to say when there is no Wayland session to mirror on."""
     from fwcommon import passthrough
-    # respect_override=False: FUCKWAYLAND_PASSTHROUGH says what to do about
-    # handing over to an X11 original, and wmirror has no original to hand
-    # over to (warandr/randr.py reasons the same way).
+    # respect_override=False: FUCKWAYLAND_PASSTHROUGH says what to do about handing over to an X11 original, and
+    # wmirror has no original to hand over to (warandr/randr.py reasons the same way).
     if passthrough.session_kind(respect_override=False) == "x11":
         return ["this is an X11 session: there is no wl-mirror here",
                 "X11 mirrors whole outputs with `xrandr --output B "
@@ -251,9 +244,8 @@ def decide(outputs, source: str, target: str, region=None,
            keep_layout: bool = False, running=None) -> Decision:
     """Is the helper needed at all, and may it be started?
 
-    The policy, in one sentence: run wl-mirror only for what the layout
-    cannot express -- a region, or a whole output onto one of a different
-    logical size -- and never where the two outputs share pixels, because a
+    The policy, in one sentence: run wl-mirror only for what the layout cannot express -- a region, or a whole
+    output onto one of a different logical size -- and never where the two outputs share pixels, because a
     fullscreen window on the target is drawn on the source too."""
     running = running or {}
     if source == target:
@@ -279,10 +271,9 @@ def decide(outputs, source: str, target: str, region=None,
             "wl-mirror would silently clamp it to what fits, so wmirror "
             "asks for one that fits instead"])
 
-    # the self-capture guard. Over a shared rectangle sway draws BOTH
-    # outputs' windows on both heads (measured), so a mirror window
-    # fullscreen on the target lands on the source too and wl-mirror ends up
-    # capturing its own picture.
+    # the self-capture guard. Over a shared rectangle sway draws BOTH outputs' windows on both heads (measured),
+    # so a mirror window fullscreen on the target lands on the source too and wl-mirror ends up capturing its
+    # own picture.
     if rects_overlap(src, dst):
         if src.rect() == dst.rect() and region is None:
             return Decision(DONE, [
@@ -326,15 +317,13 @@ def decide(outputs, source: str, target: str, region=None,
 
 
 def watch_reason(outputs, source: str, target: str, region=None, src_rect=None):
-    """Why a running mirror must stop, or None. Evaluated by the supervisor
-    on every output change the compositor announces.
+    """Why a running mirror must stop, or None. Evaluated by the supervisor on every output change the
+    compositor announces.
 
-    The region rules are the start-time refusal, applied for as long as the
-    mirror lives. A region is a rectangle of the LAYOUT, resolved against
-    the source once, when wl-mirror starts: move or resize that output
-    afterwards and the same rectangle names different pixels, or pixels that
-    are no longer there at all -- and wl-mirror says nothing, it clamps. A
-    mirror that refuses to start on a region outside its source must not
+    The region rules are the start-time refusal, applied for as long as the mirror lives. A region is a
+    rectangle of the LAYOUT, resolved against the source once, when wl-mirror starts: move or resize that output
+    afterwards and the same rectangle names different pixels, or pixels that are no longer there at all -- and
+    wl-mirror says nothing, it clamps. A mirror that refuses to start on a region outside its source must not
     keep running when the layout puts it there."""
     src = by_name(outputs, source)
     dst = by_name(outputs, target)
@@ -368,11 +357,10 @@ def _rect_wh(rect) -> tuple:
 # -- state --------------------------------------------------------------------
 
 def state_path() -> str:
-    """This tool's own file, in session.runtime_dir(), next to wxrandr's and
-    shaped the same way. It is a separate file on purpose: these records are
-    ours, not the layout cache's, and the layout cache must not have to know
-    about them. A runtime dir we cannot have degrades to the 0.2 name in
-    shared /tmp rather than failing the command."""
+    """This tool's own file, in session.runtime_dir(), next to wxrandr's and shaped the same way. It is a
+    separate file on purpose: these records are ours, not the layout cache's, and the layout cache must not have
+    to know about them. A runtime dir we cannot have degrades to the 0.2 name in shared /tmp rather than failing
+    the command."""
     try:
         return os.path.join(session.runtime_dir(), "wmirror-state.json")
     except CmdError:
@@ -390,26 +378,21 @@ def lock_path() -> str:
 
 @contextlib.contextmanager
 def state_lock(timeout: float = LOCK_SECONDS):
-    """Serialise the commands that CHANGE the records, for the whole of
-    read-decide-start-write.
+    """Serialise the commands that CHANGE the records, for the whole of read-decide-start-write.
 
-    Without it two starts on one target both read an empty file, both spawn
-    a helper, and the second write drops the first record -- leaving a
-    wl-mirror fullscreen on somebody's screen that `--list` cannot see and
-    `--stop` cannot end (measured: two interleaved starts, two helpers, one
-    record). `State.save`'s own lock cannot close that window: it is taken
-    after the helper already exists.
+    Without it two starts on one target both read an empty file, both spawn a helper, and the second write drops
+    the first record -- leaving a wl-mirror fullscreen on somebody's screen that `--list` cannot see and
+    `--stop` cannot end (measured: two interleaved starts, two helpers, one record). `State.save`'s own lock
+    cannot close that window: it is taken after the helper already exists.
 
-    `fcntl.lockf`, not `flock`, and on a file of its own. A POSIX record
-    lock belongs to the process, so the supervisor we fork does NOT inherit
-    it -- with flock the mirror would hold the lock for its whole life
-    whenever an exception skipped the unlock (measured both ways). The file
-    is its own because closing any fd to a file drops that process's POSIX
-    locks on it, and `State.save` opens and closes its lock file on every
+    `fcntl.lockf`, not `flock`, and on a file of its own. A POSIX record lock belongs to the process, so the
+    supervisor we fork does NOT inherit it -- with flock the mirror would hold the lock for its whole life
+    whenever an exception skipped the unlock (measured both ways). The file is its own because closing any fd to
+    a file drops that process's POSIX locks on it, and `State.save` opens and closes its lock file on every
     write.
 
-    A lock we cannot get is not a reason to refuse: after `timeout` we go
-    ahead unlocked, exactly as State does when locking is unavailable."""
+    A lock we cannot get is not a reason to refuse: after `timeout` we go ahead unlocked, exactly as State does
+    when locking is unavailable."""
     fd = None
     try:
         fd = os.open(lock_path(), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -436,18 +419,16 @@ def state_lock(timeout: float = LOCK_SECONDS):
 
 
 def load_state():
-    """wxrandr's State (its locking, its three-way merge, its refusal to
-    trust a file that is not ours) over wmirror's own path, keyed by the
-    compositor socket like every other per-session store here."""
+    """wxrandr's State (its locking, its three-way merge, its refusal to trust a file that is not ours) over
+    wmirror's own path, keyed by the compositor socket like every other per-session store here."""
     hit = session.find_wayland_socket()
     key = hit[2] if hit else "?"
     return wxcore.State(key, path=state_path())
 
 
 def records(state) -> dict:
-    """The `mirrors` container, coerced like State's own sub-dicts: the file
-    is plain JSON and hand-editable, and a value of the wrong type must not
-    become a TypeError somewhere else."""
+    """The `mirrors` container, coerced like State's own sub-dicts: the file is plain JSON and hand-editable,
+    and a value of the wrong type must not become a TypeError somewhere else."""
     d = state.d.get("mirrors")
     if not isinstance(d, dict):
         d = state.d["mirrors"] = {}
@@ -457,10 +438,9 @@ def records(state) -> dict:
 def recorded(target: str, rec: dict) -> bool:
     """Is that record really on disk?
 
-    The one thing a start must not do is leave a helper nobody can find. If
-    the file could not be written -- a full or read-only XDG_RUNTIME_DIR,
-    State's own refusal to trust what it found there -- the mirror is
-    stopped again rather than left painting with no way to end it."""
+    The one thing a start must not do is leave a helper nobody can find. If the file could not be written -- a
+    full or read-only XDG_RUNTIME_DIR, State's own refusal to trust what it found there -- the mirror is stopped
+    again rather than left painting with no way to end it."""
     try:
         on_disk = records(load_state()).get(target)
     except Exception:

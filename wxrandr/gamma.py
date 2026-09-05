@@ -47,18 +47,16 @@ def compute_ramp(size: int, brightness: float, gamma_rgb) -> bytes:
             if g == 1.0 and brightness == 1.0:
                 v = frac
             else:
-                # clamp BOTH ends: xrandr accepts a negative --brightness and
-                # applies the (black) ramp, exit 0 — without the low clamp
-                # struct.pack("=H") would raise on a negative value.
+                # clamp BOTH ends: xrandr accepts a negative --brightness and applies the (black) ramp, exit 0 —
+                # without the low clamp struct.pack("=H") would raise on a negative value.
                 v = min(max(pow(frac, shift) * brightness, 0.0), 1.0)
             out += struct.pack("=H", int(v * 65535.0))
     return bytes(out)
 
 
 def stop_holder(state, output: str) -> bool:
-    """Kill the recorded holder for `output` (verifying ownership and
-    starttime, so neither a recycled pid nor somebody else's process is ever
-    signalled). Returns True if one was running."""
+    """Kill the recorded holder for `output` (verifying ownership and starttime, so neither a recycled pid nor
+    somebody else's process is ever signalled). Returns True if one was running."""
     rec = state.gamma().pop(output, None)
     if not rec or not rec.get("pid"):
         return False
@@ -72,18 +70,16 @@ def stop_holder(state, output: str) -> bool:
 
 def set_output_gamma(state, output: str, brightness: float, gamma_rgb,
                      wayland_socket: str | None = None) -> str | None:
-    """Kill any existing holder, then (unless identity) spawn a fresh one.
-    Returns None on success, else an error string ("refused" when the
-    compositor rejected the gamma control — headless outputs have no LUT)."""
+    """Kill any existing holder, then (unless identity) spawn a fresh one. Returns None on success, else an
+    error string ("refused" when the compositor rejected the gamma control — headless outputs have no LUT)."""
     had_holder = stop_holder(state, output)
     identity = (brightness == 1.0 and tuple(gamma_rgb) == (1.0, 1.0, 1.0))
     if identity:
         return None
     err = _spawn_holder(state, output, brightness, gamma_rgb, wayland_socket)
     if err == "refused" and had_holder:
-        # a replaced holder's socket-close may not have reached the compositor
-        # before the new control asked for the LUT (two independent client
-        # fds, no ordering): give it a moment and try once more.
+        # a replaced holder's socket-close may not have reached the compositor before the new control asked for
+        # the LUT (two independent client fds, no ordering): give it a moment and try once more.
         time.sleep(0.2)
         err = _spawn_holder(state, output, brightness, gamma_rgb, wayland_socket)
     return err
@@ -98,10 +94,9 @@ def _spawn_holder(state, output: str, brightness: float, gamma_rgb, wayland_sock
     def on_line(line: str) -> bool:
         if not line.startswith("pid "):
             return False
-        # the grandchild reports its identity BEFORE acquiring the control,
-        # and this runs the moment the line arrives, so even a later
-        # failure/timeout leaves a record a future wxrandr can stop — no
-        # unstoppable orphan.
+        # the grandchild reports its identity BEFORE acquiring the control, and this runs the moment the line
+        # arrives, so even a later failure/timeout leaves a record a future wxrandr can stop — no unstoppable
+        # orphan.
         parts = line.split()
         if len(parts) == 3:
             named.update(pid=int(parts[1]), start=parts[2])
@@ -129,9 +124,8 @@ def _spawn_holder(state, output: str, brightness: float, gamma_rgb, wayland_sock
 def holder_main(output: str, brightness: float, gamma_rgb,
                 status_fd: int | None = None,
                 wayland_socket: str | None = None):
-    """The detached holder: acquire the output's gamma control, submit the
-    ramp, report over status_fd, then keep the connection alive forever.
-    Exits when the compositor closes the connection or on SIGTERM."""
+    """The detached holder: acquire the output's gamma control, submit the ramp, report over status_fd, then
+    keep the connection alive forever. Exits when the compositor closes the connection or on SIGTERM."""
 
     def emit(msg: str, close: bool = False):
         procs.emit(status_fd, msg, close)
@@ -139,9 +133,8 @@ def holder_main(output: str, brightness: float, gamma_rgb,
     def report(msg: str):  # terminal status (closes the pipe)
         emit(msg, close=True)
 
-    # tell the parent who we are before touching the control, so a failure or
-    # timeout past this point still leaves a stoppable record (finding: no
-    # unstoppable orphan holder)
+    # tell the parent who we are before touching the control, so a failure or timeout past this point still
+    # leaves a stoppable record (finding: no unstoppable orphan holder)
     emit("pid %d %s" % (os.getpid(), procs.proc_starttime(os.getpid()) or "?"))
 
     try:

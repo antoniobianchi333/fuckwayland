@@ -1,8 +1,7 @@
 """Input-injection commands: key/keydown/keyup/type, mouse, getmouselocation.
 
-Command functions follow the ctx.py contract: consume their own flags and
-positionals from `args`, return the token count consumed (excluding the
-command name), raise CmdError to abort the chain.
+Command functions follow the ctx.py contract: consume their own flags and positionals from `args`, return the
+token count consumed (excluding the command name), raise CmdError to abort the chain.
 """
 
 import math
@@ -20,11 +19,9 @@ from wdotool.ctx import CmdError
 
 
 def _parse(cmdname, args, usage, shortopts, longopts, shortmap=None):
-    """cli._opts with the options as a dict, which is how the input commands
-    read them: longopts is [(name, takes_arg), ...] and shortmap maps short
-    chars to the long name used in the dict. Returns (opts, tokens consumed,
-    help_requested); when help was requested, usage has already been printed
-    and opts is empty."""
+    """cli._opts with the options as a dict, which is how the input commands read them: longopts is [(name,
+    takes_arg), ...] and shortmap maps short chars to the long name used in the dict. Returns (opts, tokens
+    consumed, help_requested); when help was requested, usage has already been printed and opts is empty."""
     parsed = _opts(cmdname, args, shortopts, longopts, usage, shortmap)
     if parsed is None:
         return {}, len(args), True
@@ -57,17 +54,13 @@ def _backend_pointer(ctx):
 def _pointer_opt(ctx, seed=True):
     """_pointer(), for the callers that only want the answer if there is one.
 
-    `mousemove` and `mousemove_relative` ask where the pointer is before they
-    move it -- the first to remember it for `mousemove restore`, the second to
-    count the delta from the real position (B1/B6). Neither NEEDS the answer:
-    an absolute move states its own destination, and a relative one is a delta
-    the compositor applies wherever the cursor happens to be. On sway with no
-    /dev/uinput -- the whole point of the virtual-pointer path -- there IS no
-    answer (zwlr_virtual_pointer_v1 has no events), so a query that raises
-    would fail the move itself and leave the pointer commands as unusable as
-    they were before the protocol. So: ask, and shrug if the answer is that
-    nobody knows. The real failure, if there is one, still comes out of the
-    move.
+    `mousemove` and `mousemove_relative` ask where the pointer is before they move it -- the first to remember
+    it for `mousemove restore`, the second to count the delta from the real position (B1/B6). Neither NEEDS the
+    answer: an absolute move states its own destination, and a relative one is a delta the compositor applies
+    wherever the cursor happens to be. On sway with no /dev/uinput -- the whole point of the virtual-pointer
+    path -- there IS no answer (zwlr_virtual_pointer_v1 has no events), so a query that raises would fail the
+    move itself and leave the pointer commands as unusable as they were before the protocol. So: ask, and shrug
+    if the answer is that nobody knows. The real failure, if there is one, still comes out of the move.
     """
     try:
         return _pointer(ctx, seed)
@@ -78,12 +71,10 @@ def _pointer_opt(ctx, seed=True):
 def _pointer(ctx, seed=True):
     """Where the pointer really is (B6).
 
-    The input daemon only knows the last position *it* injected; REL events,
-    a physical mouse, another daemon (one per euid and per XDG_RUNTIME_DIR)
-    or the compositor itself move the pointer behind its back, and a daemon
-    that has just started knows nothing at all. So ask the compositor first
-    and, when it answers, correct the daemon's model from it so a following
-    mousemove_relative counts from the real position (B1). Compositors
+    The input daemon only knows the last position *it* injected; REL events, a physical mouse, another daemon
+    (one per euid and per XDG_RUNTIME_DIR) or the compositor itself move the pointer behind its back, and a
+    daemon that has just started knows nothing at all. So ask the compositor first and, when it answers, correct
+    the daemon's model from it so a following mousemove_relative counts from the real position (B1). Compositors
     without a pointer query keep the tracked model."""
     real = _backend_pointer(ctx)
     if real is None:
@@ -103,14 +94,12 @@ def _target_windows(ctx, window_arg):
     return ctx.resolve_windows(window_arg)
 
 
-# --clearmodifiers travels *with* the injection request (`clearmods=`), never
-# as a clear call, an injection and a restore call: the daemon does all three
-# under one hold of its injection lock, so a second wdotool process cannot
-# land an injection in between, with the modifiers down or across the
-# restore. What it can put back is what wdotool itself was holding -- see the
-# daemon's "modifiers around an injection" note for why a modifier held on a
-# physical keyboard can be neither released nor safely pressed back from
-# here; the daemon says so, once per command, when it can tell.
+# --clearmodifiers travels *with* the injection request (`clearmods=`), never as a clear call, an injection and
+# a restore call: the daemon does all three under one hold of its injection lock, so a second wdotool process
+# cannot land an injection in between, with the modifiers down or across the restore. What it can put back is
+# what wdotool itself was holding -- see the daemon's "modifiers around an injection" note for why a modifier
+# held on a physical keyboard can be neither released nor safely pressed back from here; the daemon says so,
+# once per command, when it can tell.
 
 
 # ---------------------------------------------------------------------------
@@ -164,11 +153,9 @@ def _key_common(ctx, args, default_name, direction):
 
     daemon = ctx.daemon()
     failed = 0
-    # xdo.c converts the key sequence to keycodes once per press/release
-    # pass: `key` runs both (down then up), `keydown`/`keyup` only one. Every
-    # failing pass prints BOTH diagnostics and adds 1 to the command's exit
-    # status, so `key 'a b'` exits 2 with five stderr lines while
-    # `keydown 'a b'` exits 1 with three (B12).
+    # xdo.c converts the key sequence to keycodes once per press/release pass: `key` runs both (down then up),
+    # `keydown`/`keyup` only one. Every failing pass prints BOTH diagnostics and adds 1 to the command's exit
+    # status, so `key 'a b'` exits 2 with five stderr lines while `keydown 'a b'` exits 1 with three (B12).
     passes = 2 if direction == "press" else 1
     for wid in _target_windows(ctx, window_arg):
         if wid is not None:
@@ -230,9 +217,8 @@ If no window is given, %%1 is used. See WINDOW STACK in xdotool(1)
 
 
 def _mode_kw(ctx):
-    """`layout_mode=`/`vkbd_mode=` for the daemon call, each only when its
-    flag was given: an absent flag must leave the request exactly as it was,
-    so an older daemon and every test double keep their signature."""
+    """`layout_mode=`/`vkbd_mode=` for the daemon call, each only when its flag was given: an absent flag must
+    leave the request exactly as it was, so an older daemon and every test double keep their signature."""
     kw = {}
     for attr in ("layout_mode", "vkbd_mode"):
         mode = getattr(ctx, attr, None)
@@ -242,10 +228,9 @@ def _mode_kw(ctx):
 
 
 def _vkbd_kw(ctx):
-    """The same, for the pointer commands: `--vkbd` selects which pointer
-    injects as well as which keyboard (one switch, one decision -- see the
-    daemon's POLICY note), while `--layout` is a keyboard-only question and
-    has no meaning here."""
+    """The same, for the pointer commands: `--vkbd` selects which pointer injects as well as which keyboard (one
+    switch, one decision -- see the daemon's POLICY note), while `--layout` is a keyboard-only question and has
+    no meaning here."""
     mode = getattr(ctx, "vkbd_mode", None)
     return {"vkbd_mode": mode} if mode else {}
 
@@ -253,15 +238,12 @@ def _vkbd_kw(ctx):
 def _stdin_text() -> str:
     """`type --file -`: everything on stdin, as text.
 
-    Decoded with errors="replace", exactly like the `--file PATH` branch
-    beside it: xdotool types what it is given, and a byte that is not
-    UTF-8 is no reason to end in a traceback -- which is what
-    `sys.stdin.read()` did, since its own decoder is strict under a UTF-8
-    locale (and only quietly surrogate-escaping under LANG=C).  The bytes
-    come from the buffer under the text layer where there is one; a test
-    double or an embedding caller may hand us a text stream with none.
-    An fd 0 that was closed before we started (`--file - <&-`) leaves
-    sys.stdin None and types nothing, as the C fread() does."""
+    Decoded with errors="replace", exactly like the `--file PATH` branch beside it: xdotool types what it is
+    given, and a byte that is not UTF-8 is no reason to end in a traceback -- which is what `sys.stdin.read()`
+    did, since its own decoder is strict under a UTF-8 locale (and only quietly surrogate-escaping under
+    LANG=C).  The bytes come from the buffer under the text layer where there is one; a test double or an
+    embedding caller may hand us a text stream with none. An fd 0 that was closed before we started
+    (`--file - <&-`) leaves sys.stdin None and types nothing, as the C fread() does."""
     stdin = getattr(sys, "stdin", None)
     if stdin is None:
         return ""
@@ -510,13 +492,11 @@ def cmd_mousemove_relative(ctx, args):
         return i + 2
     if opts.get("polar"):
         x, y = _polar_to_xy(x, y, 0, 0)
-    # B1/B6: move from where the pointer really is. On a compositor that can
-    # be asked, this also decides pixel-exactness: the daemon then emits the
-    # target as an absolute warp instead of REL events that libinput's
-    # acceleration curve would scale. Outside the clearmodifiers window: it
-    # is a query, not part of the injection -- and an optional one: where
-    # nothing can answer it (sway, no /dev/uinput), the delta still moves the
-    # cursor the compositor is holding.
+    # B1/B6: move from where the pointer really is. On a compositor that can be asked, this also decides
+    # pixel-exactness: the daemon then emits the target as an absolute warp instead of REL events that
+    # libinput's acceleration curve would scale. Outside the clearmodifiers window: it is a query, not part of
+    # the injection -- and an optional one: where nothing can answer it (sway, no /dev/uinput), the delta still
+    # moves the cursor the compositor is holding.
     _pointer_opt(ctx)
     ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")), **_vkbd_kw(ctx))
     return i + 2
@@ -529,10 +509,9 @@ _USAGE_GETMOUSELOCATION = """Usage: %s [--shell] [--prefix <STR>]
 
 
 def _window_under_pointer(ctx, x, y) -> int:
-    """Hit-test the daemon-tracked pointer against the backend's window list;
-    0 with no backend, or with nothing under the point. backend.hit_test() is
-    the one rule -- the backends that can name a window_type (GNOME, KWin)
-    have their desktop-icon and dock layers looked through by it."""
+    """Hit-test the daemon-tracked pointer against the backend's window list; 0 with no backend, or with nothing
+    under the point. backend.hit_test() is the one rule -- the backends that can name a window_type (GNOME,
+    KWin) have their desktop-icon and dock layers looked through by it."""
     try:
         wins = ctx.backend().list()
     except Exception:

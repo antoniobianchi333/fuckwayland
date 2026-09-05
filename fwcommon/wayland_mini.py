@@ -24,9 +24,8 @@ def now_ms() -> int:
 
 
 def roundtrip(conn, what: str, error):
-    """conn.roundtrip(), with a protocol error or a dead socket turned into
-    `error` -- the daemon must never see a traceback out of a virtual-device
-    module."""
+    """conn.roundtrip(), with a protocol error or a dead socket turned into `error` -- the daemon must never see
+    a traceback out of a virtual-device module."""
     try:
         conn.roundtrip()
     except (OSError, RuntimeError, ValueError) as e:
@@ -103,12 +102,10 @@ class WlConn:
             self.sock.settimeout(timeout)
             self.sock.connect(path)
         except BaseException:
-            # a missing or refused socket is routine here (kwin.probe()
-            # asks a path that may have no compositor behind it); without
-            # this the fd lives on until the collector reaches it, which is
-            # a leak in a long-running process and, in a shared test runner,
-            # a stray ResourceWarning printed into whatever stderr some
-            # later test happens to be capturing
+            # a missing or refused socket is routine here (kwin.probe() asks a path that may have no compositor
+            # behind it); without this the fd lives on until the collector reaches it, which is a leak in a
+            # long-running process and, in a shared test runner, a stray ResourceWarning printed into whatever
+            # stderr some later test happens to be capturing
             self.sock.close()
             raise
         self.next_id = 2  # 1 is wl_display
@@ -141,9 +138,8 @@ class WlConn:
         self.sock.sendall(msg)
 
     def send_fds(self, obj_id: int, opcode: int, args, fds):
-        """Like send(), but passes file descriptors as SCM_RIGHTS ancillary
-        data (fd-typed request arguments occupy no payload bytes). ADDITIVE
-        helper for wxrandr's zwlr_gamma_control set_gamma(fd)."""
+        """Like send(), but passes file descriptors as SCM_RIGHTS ancillary data (fd-typed request arguments
+        occupy no payload bytes). ADDITIVE helper for wxrandr's zwlr_gamma_control set_gamma(fd)."""
         body = _marshal(args)
         msg = struct.pack("<II", obj_id, ((8 + len(body)) << 16) | opcode) + body
         self.sock.sendmsg(
@@ -197,11 +193,9 @@ class WlConn:
     def dispatch(self, timeout: float | None = None) -> bool:
         """Dispatch pending events; False on timeout without data.
 
-        The caller's own socket timeout is restored on the way out, never
-        cleared: a caller that armed a deadline before the loop (every
-        wxrandr backend does, so a compositor that goes quiet cannot hang
-        the CLI) would otherwise come back to a blocking socket and stall
-        forever on its next read.
+        The caller's own socket timeout is restored on the way out, never cleared: a caller that armed a
+        deadline before the loop (every wxrandr backend does, so a compositor that goes quiet cannot hang the
+        CLI) would otherwise come back to a blocking socket and stall forever on its next read.
         """
         prev = self.sock.gettimeout()
         self.sock.settimeout(timeout)

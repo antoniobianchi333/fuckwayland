@@ -1,8 +1,7 @@
 """sway/i3 window backend over raw i3-ipc (no external tools).
 
-Framing: b"i3-ipc" + u32 payload length + u32 message type + JSON payload.
-Window ids are sway node ids; commands address nodes with [con_id=N].
-Desktops are workspaces: xdotool desktop N == workspace number N+1."""
+Framing: b"i3-ipc" + u32 payload length + u32 message type + JSON payload. Window ids are sway node ids;
+commands address nodes with [con_id=N]. Desktops are workspaces: xdotool desktop N == workspace number N+1."""
 
 import json
 import select
@@ -25,9 +24,8 @@ EVENT_WINDOW = _EVENT_BIT | 3
 
 SCRATCHPAD_WS = "__i3_scratch"
 
-# Deadline for the command socket only (see __init__). Generous: every reply
-# is built in the compositor's own event loop, and GET_TREE on a busy desktop
-# is the slow one.
+# Deadline for the command socket only (see __init__). Generous: every reply is built in the compositor's own
+# event loop, and GET_TREE on a busy desktop is the slow one.
 IPC_TIMEOUT = 10.0
 
 
@@ -54,12 +52,10 @@ class SwayBackend(WindowBackend):
                 "no sway-ipc.* socket in any runtime dir)"
             )
         self.sock = self._connect()
-        # Only the command socket gets a deadline, and only here: everything
-        # it ever waits for is the answer to a request we have just sent, so
-        # silence means the compositor is wedged -- which used to hang every
-        # tool for ever. _connect() itself stays blocking on purpose;
-        # select_window() and wxprop's -spy share it and wait on their own
-        # socket for an event that may be minutes away.
+        # Only the command socket gets a deadline, and only here: everything it ever waits for is the answer to
+        # a request we have just sent, so silence means the compositor is wedged -- which used to hang every
+        # tool for ever. _connect() itself stays blocking on purpose; select_window() and wxprop's -spy share it
+        # and wait on their own socket for an event that may be minutes away.
         self.sock.settimeout(IPC_TIMEOUT)
 
     # -- wire ---------------------------------------------------------------
@@ -96,12 +92,10 @@ class SwayBackend(WindowBackend):
 
     @classmethod
     def _recv(cls, sock):
-        # A clean EOF is only the tidiest way for the compositor to go away:
-        # a session that ends mid-chain gives ECONNRESET on the read and EPIPE
-        # on the next write, and a compositor that answers with something that
-        # is not JSON gives ValueError. All three are the same event to the
-        # user -- one line, not a traceback (B5). A compositor that is still
-        # there but not answering is a different event, and says so.
+        # A clean EOF is only the tidiest way for the compositor to go away: a session that ends mid-chain gives
+        # ECONNRESET on the read and EPIPE on the next write, and a compositor that answers with something that
+        # is not JSON gives ValueError. All three are the same event to the user -- one line, not a traceback
+        # (B5). A compositor that is still there but not answering is a different event, and says so.
         try:
             hdr = cls._read_exact(sock, 14)
             if hdr[:6] != _MAGIC:
@@ -157,9 +151,8 @@ class SwayBackend(WindowBackend):
                         id=node["id"],
                         title=node.get("name") or "",
                         class_=node.get("app_id") or wp.get("class") or "",
-                        # WM_CLASS instance of an X11 client under Xwayland;
-                        # native Wayland views have none (search --classname
-                        # then falls back to class_ = app_id).
+                        # WM_CLASS instance of an X11 client under Xwayland; native Wayland views have none
+                        # (search --classname then falls back to class_ = app_id).
                         instance=wp.get("instance") or "",
                         pid=node.get("pid") or 0,
                         x=rect.get("x", 0),
@@ -229,10 +222,9 @@ class SwayBackend(WindowBackend):
     def resize(self, wid: int, w: int, h: int):
         node, win, floating, _ws = self._node(wid)
         if not floating:
-            # `resize set` on a tiled container moves the split ratio: the
-            # window ends up some other size on the axis the layout owns and
-            # unchanged on the other, which read as a silent partial success.
-            # Refuse it the way a tiled move is refused.
+            # `resize set` on a tiled container moves the split ratio: the window ends up some other size on the
+            # axis the layout owns and unchanged on the other, which read as a silent partial success. Refuse it
+            # the way a tiled move is refused.
             raise SoftCmdError(
                 "sway: cannot resize a tiled window to an absolute size "
                 "(floating enable it first)"
@@ -258,9 +250,8 @@ class SwayBackend(WindowBackend):
             self.run("[con_id=%d] move scratchpad" % wid)
 
     def is_mapped(self, wid: int) -> bool:
-        """Mapped = not stashed in the scratchpad. A window on an unfocused
-        workspace (or a background tab) is mapped but not visible; X11's
-        map state is what windowmap/windowunmap --sync must wait on."""
+        """Mapped = not stashed in the scratchpad. A window on an unfocused workspace (or a background tab) is
+        mapped but not visible; X11's map state is what windowmap/windowunmap --sync must wait on."""
         return self._node(wid)[3] != SCRATCHPAD_WS
 
     def raise_(self, wid: int):
@@ -304,11 +295,10 @@ class SwayBackend(WindowBackend):
         self.run("[con_id=%d] move container to workspace number %d" % (wid, n + 1))
 
     def workspaces(self) -> "list[Workspace]":
-        """One record per workspace, ascending. sway answers GET_WORKSPACES
-        in creation order and numbers only the numbered ones, so the sort
-        is on the raw `num` with the nameless-number workspaces last; the
-        index is the desktop number the tools use (workspace number N+1 is
-        desktop N), and a named workspace with no number is -1."""
+        """One record per workspace, ascending. sway answers GET_WORKSPACES in creation order and numbers only
+        the numbered ones, so the sort is on the raw `num` with the nameless-number workspaces last; the index
+        is the desktop number the tools use (workspace number N+1 is desktop N), and a named workspace with no
+        number is -1."""
         rows = sorted(self._msg(GET_WORKSPACES) or [],
                       key=lambda ws: (ws.get("num", -1) < 0,
                                       ws.get("num", -1),
@@ -345,17 +335,14 @@ class SwayBackend(WindowBackend):
         return len(self._msg(GET_WORKSPACES))
 
     def events(self, timeout: float | None = None, workspaces: bool = False):
-        """(id, change) for every sway window event, in sway's own
-        vocabulary (new, close, focus, title, fullscreen_mode, move,
-        floating, urgent), on a connection of its own: a subscription and
-        the command socket cannot share one, since every reply we wait for
-        would arrive behind an unbounded queue of events.
+        """(id, change) for every sway window event, in sway's own vocabulary (new, close, focus, title,
+        fullscreen_mode, move, floating, urgent), on a connection of its own: a subscription and the command
+        socket cannot share one, since every reply we wait for would arrive behind an unbounded queue of events.
 
-        With `workspaces` the workspace stream is folded in as
-        (0, "workspace") -- no view has node id 0 -- the way the GNOME and
-        KWin backends fold theirs, so a root-level watcher (wxprop -root
-        -spy) needs one stream only. Stops after `timeout` seconds of
-        silence; None waits for ever, which is what both callers do."""
+        With `workspaces` the workspace stream is folded in as (0, "workspace") -- no view has node id 0 -- the
+        way the GNOME and KWin backends fold theirs, so a root-level watcher (wxprop -root -spy) needs one
+        stream only. Stops after `timeout` seconds of silence; None waits for ever, which is what both callers
+        do."""
         s = self._connect()
         try:
             self._send(s, SUBSCRIBE,
@@ -386,13 +373,11 @@ class SwayBackend(WindowBackend):
     def select_window(self) -> int:
         """sway/i3: wait for the next window-focus event.
 
-        Not xdotool's semantics (the window under the pointer at the next
-        button press) and knowingly so: sway's IPC has no interactive picker,
-        no pointer position and no way to grab input from outside the
-        compositor, so there is nothing to click *with*. Clicking the window
-        that already has focus therefore does not end this wait -- focus it
-        from another window, or use another selector. Fixing it properly
-        needs a sway-side feature, not a client-side workaround."""
+        Not xdotool's semantics (the window under the pointer at the next button press) and knowingly so: sway's
+        IPC has no interactive picker, no pointer position and no way to grab input from outside the compositor,
+        so there is nothing to click *with*. Clicking the window that already has focus therefore does not end
+        this wait -- focus it from another window, or use another selector. Fixing it properly needs a sway-side
+        feature, not a client-side workaround."""
         for wid, change in self.events():
             if change == "focus":
                 return wid

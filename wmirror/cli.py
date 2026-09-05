@@ -77,19 +77,17 @@ def parser() -> argparse.ArgumentParser:
 # -- the queries --------------------------------------------------------------
 
 def _state():
-    """(state, records, whether reaping changed them). Every command that
-    reads the records verifies them first: the helper is invisible to output
-    management, so this file is the only record there is, and a stale line
-    in it would be a lie."""
+    """(state, records, whether reaping changed them). Every command that reads the records verifies them first:
+    the helper is invisible to output management, so this file is the only record there is, and a stale line in
+    it would be a lie."""
     state = core.load_state()
     recs = core.records(state)
     return state, recs, supervise.reap(recs)
 
 
 def _cmd_list() -> int:
-    # under the lock like every other command that may write: a reap that
-    # dropped a record a concurrent start had just replaced would take the
-    # new mirror out of the file and leave it running, unfindable.
+    # under the lock like every other command that may write: a reap that dropped a record a concurrent start
+    # had just replaced would take the new mirror out of the file and leave it running, unfindable.
     with core.state_lock():
         state, recs, changed = _state()
         if changed:
@@ -187,9 +185,8 @@ def _cmd_start(args) -> int:
 
     helper = core.find_helper()
     if helper is None:
-        # on an X11 box the missing binary is not the point: there is no
-        # wl-mirror for X11 and never will be, and `xrandr --same-as` is the
-        # answer. Say what is missing only where installing it would help.
+        # on an X11 box the missing binary is not the point: there is no wl-mirror for X11 and never will be,
+        # and `xrandr --same-as` is the answer. Say what is missing only where installing it would help.
         if session.find_wayland_socket() is None:
             raise core.Refusal(core.no_session_lines())
         raise core.Refusal(core.missing_helper_lines())
@@ -208,9 +205,8 @@ def _cmd_start(args) -> int:
 def _start_locked(args, source, target, region, outputs, helper) -> int:
     """Decide and start with the records held still.
 
-    The lock spans read-decide-start-write because every part of it reads
-    the file: two starts that both read it empty would both spawn a helper,
-    and the second write would drop the first record -- leaving a wl-mirror
+    The lock spans read-decide-start-write because every part of it reads the file: two starts that both read it
+    empty would both spawn a helper, and the second write would drop the first record -- leaving a wl-mirror
     fullscreen on the target that nothing here could find or stop."""
     state, recs, changed = _state()
     # --replace must not be destructive on a refusal: decide FIRST, with the
@@ -240,9 +236,8 @@ def _start_locked(args, source, target, region, outputs, helper) -> int:
                               wayland_socket=hit[2] if hit else None,
                               src_rect=src.rect() if src else None)
     finally:
-        # even a Ctrl-C in the second this blocks for must leave the mirror
-        # written down: the supervisor names itself before it can fail, and
-        # an unrecorded helper is one nobody can stop.
+        # even a Ctrl-C in the second this blocks for must leave the mirror written down: the supervisor names
+        # itself before it can fail, and an unrecorded helper is one nobody can stop.
         state.save()
     if err:
         _err(err)
@@ -291,10 +286,8 @@ def main(argv=None) -> int:
         args = p.parse_args(sys.argv[1:] if argv is None else list(argv))
         code = _run(args, p)
     except SystemExit as e:
-        # argparse's --help/--version and its usage errors: they used to
-        # leave main() with the help text still buffered, so a full or
-        # closed stdout became exit 120 out of the interpreter's own
-        # exit-time flush.
+        # argparse's --help/--version and its usage errors: they used to leave main() with the help text still
+        # buffered, so a full or closed stdout became exit 120 out of the interpreter's own exit-time flush.
         stdio.exit_after_flush("wmirror", e)
         raise               # unreachable; the line above raises
     except core.Refusal as e:
@@ -305,13 +298,11 @@ def main(argv=None) -> int:
     except BrokenPipeError:
         code = 1
     except Exception as e:
-        # never a traceback: a compositor that drops the connection
-        # mid-query, an unreadable state file, a helper that vanishes
-        # between the check and the signal -- one line, exit 1.
+        # never a traceback: a compositor that drops the connection mid-query, an unreadable state file, a
+        # helper that vanishes between the check and the signal -- one line, exit 1.
         _err(["%s" % e])
-        # An OSError here is a write to stdout that failed (a full disk,
-        # a quota, `>/dev/full`): the flush below is about to fail with
-        # the same errno, and the originals print one line, not two.
+        # An OSError here is a write to stdout that failed (a full disk, a quota, `>/dev/full`): the flush below
+        # is about to fail with the same errno, and the originals print one line, not two.
         quiet = isinstance(e, OSError)
         code = 1
     return code if stdio.flush_stdout("wmirror", quiet) else (code or 1)

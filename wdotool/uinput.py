@@ -10,9 +10,8 @@ import fcntl
 import os
 import struct
 
-# evdev event types (input-event-codes.h). keys_cmds decodes a recorded
-# stream with the same numbers and keystate derives an ioctl from EV_KEY,
-# so they import them from here rather than write 0x01 a third time.
+# evdev event types (input-event-codes.h). keys_cmds decodes a recorded stream with the same numbers and
+# keystate derives an ioctl from EV_KEY, so they import them from here rather than write 0x01 a third time.
 EV_SYN = 0x00
 EV_KEY = 0x01
 EV_REL = 0x02
@@ -45,9 +44,8 @@ UI_SET_EVBIT = 0x40045564
 UI_SET_KEYBIT = 0x40045565
 UI_SET_RELBIT = 0x40045566
 UI_SET_ABSBIT = 0x40045567
-# UI_GET_SYSNAME(len) = _IOR('U', 44, len): the "eventN" the kernel gave our
-# device. Linux 4.4+; older kernels answer EINVAL and the caller falls back to
-# matching on the device name.
+# UI_GET_SYSNAME(len) = _IOR('U', 44, len): the "eventN" the kernel gave our device. Linux 4.4+; older kernels
+# answer EINVAL and the caller falls back to matching on the device name.
 _UI_SYSNAME_LEN = 32
 UI_GET_SYSNAME = 0x8000552C | (_UI_SYSNAME_LEN << 16)
 
@@ -64,14 +62,12 @@ def dev_path() -> str:
 def access_ok() -> bool:
     """Can this process still open the uinput node?
 
-    The udev rule grants access through a logind ACL on the *active* seat
-    session, and logind takes it away again at a VT switch or a fast user
-    switch. The ACL is only consulted at open(), so a daemon that opened the
-    node while its user was at the seat keeps its devices -- and would keep
-    injecting into whoever owns the seat now. Re-checking before each
-    injection gives the grant back its meaning. Root (which needs no grant)
-    and the fake-device test mode always pass; anything but a permission
-    error is somebody else's problem and is left to the real open().
+    The udev rule grants access through a logind ACL on the *active* seat session, and logind takes it away
+    again at a VT switch or a fast user switch. The ACL is only consulted at open(), so a daemon that opened the
+    node while its user was at the seat keeps its devices -- and would keep injecting into whoever owns the seat
+    now. Re-checking before each injection gives the grant back its meaning. Root (which needs no grant) and the
+    fake-device test mode always pass; anything but a permission error is somebody else's problem and is left to
+    the real open().
     """
     if os.geteuid() == 0 or os.environ.get("WDOTOOL_FAKE_UINPUT") == "1":
         return True

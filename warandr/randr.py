@@ -87,11 +87,10 @@ class Backend:
         self.wayland = wayland
         self.env = dict(env if env is not None else os.environ)
         if not self.wayland:
-            # The X11 runner is a child, not a handover, so it does not go
-            # through passthrough.child_env() -- and without the same repair
-            # `warandr --command` / `--save` from a root shell or cron ran a
-            # bare xrandr with no $DISPLAY and died with "Can't open display",
-            # alone among the five tools.  set_display() still overrides it.
+            # The X11 runner is a child, not a handover, so it does not go through passthrough.child_env() --
+            # and without the same repair `warandr --command` / `--save` from a root shell or cron ran a bare
+            # xrandr with no $DISPLAY and died with "Can't open display", alone among the five tools.
+            # set_display() still overrides it.
             passthrough.repair_x_env(self.env)
         self.source = source
         #: the backend token: ``x11``, one of wxrandr's, or ``wayland``
@@ -110,9 +109,8 @@ class Backend:
 
     @property
     def run_word(self):
-        """The command word plus the flag Apply really passes, which is what
-        the status bar promises to show.  Scripts get ``word``: a saved
-        layout must stay arandr's."""
+        """The command word plus the flag Apply really passes, which is what the status bar promises to show.
+        Scripts get ``word``: a saved layout must stay arandr's."""
         if self.forced and self.wayland:
             return "%s --backend %s" % (self.word, self.forced)
         return self.word
@@ -146,9 +144,8 @@ class Backend:
         return self.overlap()[1]
 
     def overlap_refusal(self):
-        """The reason this backend refuses an overlap, or None when it takes
-        one.  It is what ``Layout.check()`` raises, so a refused drop is
-        reported in the compositor's name and never in ours."""
+        """The reason this backend refuses an overlap, or None when it takes one.  It is what ``Layout.check()``
+        raises, so a refused drop is reported in the compositor's name and never in ours."""
         taken, why = self.overlap()
         return None if taken else why
 
@@ -159,20 +156,17 @@ class Backend:
         return "%s (%s)" % (self.command(), self.kind)
 
     def info_lines(self):
-        """The explanation behind the indicator, as lines: what runs, why
-        warandr picked it, and what the tool on the other end says about
-        itself.  A key the tool repeats is dropped -- its own ``chosen by:``
-        only ever restates ours (we are the one who passed ``--backend``),
-        and two answers to one question in one paragraph is worse than
-        none."""
+        """The explanation behind the indicator, as lines: what runs, why warandr picked it, and what the tool
+        on the other end says about itself.  A key the tool repeats is dropped -- its own ``chosen by:`` only
+        ever restates ours (we are the one who passed ``--backend``), and two answers to one question in one
+        paragraph is worse than none."""
         lines = ["kind: %s" % self.kind, "runs: %s" % self.command(), "chosen by: %s" % self.source]
         seen = set(ln.split(":", 1)[0] for ln in lines)
         for ln in self.info[1:]:
             if ln.strip() and ln.split(":", 1)[0] not in seen:
                 lines.append(ln)
-        # what a partial overlap means here: the window has to say it
-        # somewhere, and this paragraph is the one that already explains
-        # the backend (indicator tooltip, About, Script Properties)
+        # what a partial overlap means here: the window has to say it somewhere, and this paragraph is the one
+        # that already explains the backend (indicator tooltip, About, Script Properties)
         lines.append("overlap: %s" % self.overlap_note())
         return lines
 
@@ -187,19 +181,16 @@ class Backend:
         return [self.name] + self.info_lines()
 
     def script_note(self):
-        """The single comment a saved layout script carries about the
-        backend -- only when one was forced, and only ever a comment, so
-        ``sh script.sh`` on a plain X11 box cannot care."""
+        """The single comment a saved layout script carries about the backend -- only when one was forced, and
+        only ever a comment, so ``sh script.sh`` on a plain X11 box cannot care."""
         if not self.forced:
             return None
         return "warandr: backend %s forced (%s)" % (self.forced, self.run_word)
 
     def identify(self, timeout=15):
-        """Ask which backend this really is: ``wxrandr --print-backend
-        --verbose``, whose first line is the token.  The X11 runner is the
-        real xrandr and has no such option, so its answer is composed here.
-        Never raises, and asks only once: a wxrandr too old for the option
-        just leaves the coarse name."""
+        """Ask which backend this really is: ``wxrandr --print-backend --verbose``, whose first line is the
+        token.  The X11 runner is the real xrandr and has no such option, so its answer is composed here. Never
+        raises, and asks only once: a wxrandr too old for the option just leaves the coarse name."""
         if self._identified:
             return self
         self._identified = True
@@ -273,15 +264,13 @@ def _package_root(name):
 
 
 def _wxrandr_runner(env):
-    """``(argv, source)`` for running wxrandr — the *same* interpreter with
-    ``-m wxrandr`` when the package is importable (a zipapp path works:
-    zipimport), else ``wxrandr`` on PATH.  ``(None, None)`` when there is
+    """``(argv, source)`` for running wxrandr — the *same* interpreter with ``-m wxrandr`` when the package is
+    importable (a zipapp path works: zipimport), else ``wxrandr`` on PATH.  ``(None, None)`` when there is
     neither.  ``env`` gains the PYTHONPATH that makes the first one work."""
     root = _package_root("wxrandr")
-    # `sys.executable` is "" for an interpreter that cannot work out its own
-    # path -- which is what happens under `env -i`, with no PATH to search.
-    # Handing execve an empty argv[0] is "Permission denied: ''", so fall
-    # back to a named python3 and, failing that, to the PATH branch below.
+    # `sys.executable` is "" for an interpreter that cannot work out its own path -- which is what happens under
+    # `env -i`, with no PATH to search. Handing execve an empty argv[0] is "Permission denied: ''", so fall back
+    # to a named python3 and, failing that, to the PATH branch below.
     exe = sys.executable or shutil.which("python3") or shutil.which("python")
     if root is not None and exe:
         old = env.get("PYTHONPATH")
@@ -293,9 +282,8 @@ def _wxrandr_runner(env):
 
 
 def choose(env=None, forced=None):
-    """The backend to run.  `forced` (``--backend NAME``, the GUI menu)
-    beats everything else and never falls back silently: a Wayland backend
-    with no wxrandr to run it is an error, not plain xrandr."""
+    """The backend to run.  `forced` (``--backend NAME``, the GUI menu) beats everything else and never falls
+    back silently: a Wayland backend with no wxrandr to run it is an error, not plain xrandr."""
     env = dict(os.environ if env is None else env)
     want = canonical_backend(forced)
     if forced and want is None:
@@ -329,11 +317,10 @@ def choose(env=None, forced=None):
         argv = base
         wayland = any("wxrandr" in os.path.basename(a) for a in argv)
         source = "WARANDR_XRANDR"
-    # respect_override=False: $FUCKWAYLAND_PASSTHROUGH says what to do about
-    # *handing over to the original*, and warandr never hands over -- it only
-    # picks a command word. Honouring `never` here would answer "wayland" on
-    # an X11 box and select wxrandr, i.e. break warandr for exactly the
-    # developers the variable is documented for.
+    # respect_override=False: $FUCKWAYLAND_PASSTHROUGH says what to do about *handing over to the original*, and
+    # warandr never hands over -- it only picks a command word. Honouring `never` here would answer "wayland" on
+    # an X11 box and select wxrandr, i.e. break warandr for exactly the developers the variable is documented
+    # for.
     elif passthrough.session_kind(env=env, respect_override=False) == "wayland":
         argv, source = _wxrandr_runner(env)
         if argv is None:
@@ -351,9 +338,8 @@ def choose(env=None, forced=None):
 
 def probe_backends(env=None, timeout=20):
     """What ``wxrandr --backends`` says about this session:
-    ``{name: {"available": bool, "reason": str, "auto": bool}}``, which is
-    what the GUI greys its Backend menu with.  Never raises: without wxrandr
-    (or with one too old to know the option) the Wayland backends are
+    ``{name: {"available": bool, "reason": str, "auto": bool}}``, which is what the GUI greys its Backend menu
+    with.  Never raises: without wxrandr (or with one too old to know the option) the Wayland backends are
     unavailable *for that reason* and x11 is judged here, from PATH."""
     env = dict(os.environ if env is None else env)
     override = env.get("WARANDR_XRANDR", "").strip()

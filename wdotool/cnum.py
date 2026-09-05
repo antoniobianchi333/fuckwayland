@@ -18,9 +18,8 @@ import re
 _SPACE = r"[ \t\n\r\f\v]*"  # C isspace() in the "C" locale
 
 _ATOI_RE = re.compile(_SPACE + r"([+-]?[0-9]+)")
-# strtol/strtoul with base 0: 0x-hex, then C octal, then decimal. The decimal
-# arm cannot start with 0 -- the octal arm has already taken that -- so it is
-# spelled [1-9] and no Unicode digit can reach int().
+# strtol/strtoul with base 0: 0x-hex, then C octal, then decimal. The decimal arm cannot start with 0 -- the
+# octal arm has already taken that -- so it is spelled [1-9] and no Unicode digit can reach int().
 _STRTOL_RE = re.compile(_SPACE + r"([+-]?)(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)")
 _ATOF_RE = re.compile(
     _SPACE + r"[+-]?(?:0[xX][0-9a-fA-F]*(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?[0-9]+)?"
@@ -41,10 +40,9 @@ def atoi(s) -> int:
 
 
 def strtol(s) -> int:
-    """C strtol(s, NULL, 0): a leading integer in hex, octal or decimal, 0 if
-    none. Python's int(s, 0) is a different function and gets two cases wrong:
-    it rejects C's octal `0755` and accepts `0b101` as binary where strtol
-    stops at the 'b' and returns 0."""
+    """C strtol(s, NULL, 0): a leading integer in hex, octal or decimal, 0 if none. Python's int(s, 0) is a
+    different function and gets two cases wrong: it rejects C's octal `0755` and accepts `0b101` as binary where
+    strtol stops at the 'b' and returns 0."""
     m = _STRTOL_RE.match(_text(s))
     if not m:
         return 0
@@ -65,8 +63,7 @@ def atof(s) -> float:
     except ValueError:
         return 0.0
     except OverflowError:
-        # C strtod() saturates to +-HUGE_VAL and sets ERANGE; only the hex
-        # spelling gets here, because float("1e400") already answers inf.
-        # `sleep 0x1p1024` used to end in "hexadecimal value too large to
+        # C strtod() saturates to +-HUGE_VAL and sets ERANGE; only the hex spelling gets here, because
+        # float("1e400") already answers inf. `sleep 0x1p1024` used to end in "hexadecimal value too large to
         # represent as a float" where the oracle returns 0 at once.
         return -math.inf if t.startswith("-") else math.inf

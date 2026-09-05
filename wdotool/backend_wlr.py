@@ -1,8 +1,6 @@
-"""wlr-foreign-toplevel window backend (zwlr_foreign_toplevel_management_v1)
-via wayland_mini. Capability floor for wlroots compositors without i3-ipc:
-list/activate/close/minimize/fullscreen only; no geometry, no pids, no
-desktops. Window ids are 1000000 + arrival order and are only stable within
-one wdotool process."""
+"""wlr-foreign-toplevel window backend (zwlr_foreign_toplevel_management_v1) via wayland_mini. Capability floor
+for wlroots compositors without i3-ipc: list/activate/close/minimize/fullscreen only; no geometry, no pids, no
+desktops. Window ids are 1000000 + arrival order and are only stable within one wdotool process."""
 
 import struct
 
@@ -116,9 +114,8 @@ class WlrBackend(WindowBackend):
     def _pump(self):
         """One roundtrip, with the wire's failures turned into one clear line.
 
-        A compositor that goes away mid-session (RuntimeError), or answers
-        with an event whose payload is shorter than the interface says
-        (struct.error), or whose socket errors or times out (OSError), is a
+        A compositor that goes away mid-session (RuntimeError), or answers with an event whose payload is
+        shorter than the interface says (struct.error), or whose socket errors or times out (OSError), is a
         routine thing for a session that is restarting -- not a traceback."""
         try:
             self.c.roundtrip()

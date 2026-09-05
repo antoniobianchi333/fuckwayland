@@ -158,9 +158,8 @@ class KwinBackend(WindowBackend):
     def _source(self, dest: str, token: str, op: str, **kw) -> str:
         """The script text: one JSON line naming the call, then the constant.
 
-        The same JSON is repeated as a comment on the first line so that a
-        file left behind by a crash explains itself (and so the tests can
-        drive a fake KWin without a JS engine)."""
+        The same JSON is repeated as a comment on the first line so that a file left behind by a crash explains
+        itself (and so the tests can drive a fake KWin without a JS engine)."""
         args = dict(kw, op=op, token=token, dest=dest, path=OBJECT_PATH, iface=IFACE)
         # ensure_ascii: a JSON string may carry U+2028/9 raw, a JS string
         # literal may not (before ES2019, and KWin 5.27 is Qt 5).
@@ -174,11 +173,9 @@ class KwinBackend(WindowBackend):
         except DBusError as e:
             raise _map_error(member, e) from None
         except (ValueError, OverflowError, struct.error) as e:
-            # An argument the wire format cannot carry (a desktop number or a
-            # window id that is negative or wider than its D-Bus type): one
-            # line, rc 1, never a marshalling traceback (B8). backend_gnome
-            # has answered this way all along; `wwmctl -s 4294967296` was a
-            # traceback on KDE and a message on GNOME.
+            # An argument the wire format cannot carry (a desktop number or a window id that is negative or
+            # wider than its D-Bus type): one line, rc 1, never a marshalling traceback (B8). backend_gnome has
+            # answered this way all along; `wwmctl -s 4294967296` was a traceback on KDE and a message on GNOME.
             raise CmdError("kwin backend: %s: invalid argument: %s" % (member, e)) from None
 
     def _script(self, op: str, timeout: float | None = None, **kw):
@@ -205,12 +202,11 @@ class KwinBackend(WindowBackend):
         return _payload(raw)
 
     def _live_script_ids(self):
-        """The script ids that own a D-Bus object right now, read off the
-        child nodes of the scripting object; None when neither shape answered.
+        """The script ids that own a D-Bus object right now, read off the child nodes of the scripting object;
+        None when neither shape answered.
 
-        Plasma 6 registers `/Scripting/Script<n>`, 5.27 `/<n>` among KWin's
-        other root objects, and the shape is remembered once a run() has
-        landed so the second introspection is paid for at most once."""
+        Plasma 6 registers `/Scripting/Script<n>`, 5.27 `/<n>` among KWin's other root objects, and the shape is
+        remembered once a run() has landed so the second introspection is paid for at most once."""
         out, got = set(), False
         if self._path_shape != "root":
             try:
@@ -229,36 +225,29 @@ class KwinBackend(WindowBackend):
         return frozenset(out) if got else None
 
     def _load_run(self, plugin: str, make_source, deadline: float) -> str:
-        """loadScript + run(); returns the pluginName the script that ran is
-        loaded under, which is `plugin` unless an id race renamed it.
+        """loadScript + run(); returns the pluginName the script that ran is loaded under, which is `plugin`
+        unless an id race renamed it.
 
-        `make_source(name)` builds the script text for a given pluginName --
-        a callable rather than a string because the name is baked into the
-        source (the resident events script unloads itself by it) and a race
+        `make_source(name)` builds the script text for a given pluginName -- a callable rather than a string
+        because the name is baked into the source (the resident events script unloads itself by it) and a race
         changes it.
 
-        `loadScript` answers with `m_scripts.size()`, so an id comes back
-        round the moment a *lower*-numbered script is unloaded while a
-        higher-numbered one is still alive: the count lands back on a live
-        index, KWin fails to register the new object at that path (silently --
-        the id is still returned), and run() there drives the OTHER script.
-        Measured on Plasma 6.6: load A -> 0, B -> 1, unload A, load C -> 1,
-        and /Scripting/Script1 is still B. Ten concurrent windowmoves lost
-        seven that way.
+        `loadScript` answers with `m_scripts.size()`, so an id comes back round the moment a *lower*-numbered
+        script is unloaded while a higher-numbered one is still alive: the count lands back on a live index,
+        KWin fails to register the new object at that path (silently -- the id is still returned), and run()
+        there drives the OTHER script. Measured on Plasma 6.6: load A -> 0, B -> 1, unload A, load C -> 1, and
+        /Scripting/Script1 is still B. Ten concurrent windowmoves lost seven that way.
 
-        So the id is checked against the objects that existed before the load
-        -- one round trip, next to a file read and a JS evaluation. On a
-        collision the colliding script is left LOADED as padding (unloading it
-        would hand the same index straight back) and another is loaded, which
-        lands on the next index up; the padding goes away with the files."""
+        So the id is checked against the objects that existed before the load -- one round trip, next to a file
+        read and a JS evaluation. On a collision the colliding script is left LOADED as padding (unloading it
+        would hand the same index straight back) and another is loaded, which lands on the next index up; the
+        padding goes away with the files."""
         padding: list[str] = []
         files: list[str] = []
         try:
-            # Held across load+run only. Two wdotools sharing a runtime dir
-            # cannot then interleave a load with an unload at all, which is
-            # the whole of the reproducible case; the id check is what covers
-            # a foreign scripting client, and a wdotool running as another
-            # user.
+            # Held across load+run only. Two wdotools sharing a runtime dir cannot then interleave a load with
+            # an unload at all, which is the whole of the reproducible case; the id check is what covers a
+            # foreign scripting client, and a wdotool running as another user.
             with _script_lock():
                 return self._load_run_locked(plugin, make_source, deadline, padding, files)
         finally:
@@ -277,12 +266,10 @@ class KwinBackend(WindowBackend):
             os.write(fd, source.encode("utf-8"))
         finally:
             os.close(fd)
-        # KWin reads the file as the session user; wdotool may be root (the
-        # sudo path), and mkstemp's 0600 would then be unreadable for it. Hand
-        # the file to that user rather than to everybody: it carries the reply
-        # token, and whoever reads the token can answer in KWin's place (a
-        # fabricated window list, geometry, ids), plus the window titles and
-        # search patterns of the command itself. Not root: KWin runs as us
+        # KWin reads the file as the session user; wdotool may be root (the sudo path), and mkstemp's 0600 would
+        # then be unreadable for it. Hand the file to that user rather than to everybody: it carries the reply
+        # token, and whoever reads the token can answer in KWin's place (a fabricated window list, geometry,
+        # ids), plus the window titles and search patterns of the command itself. Not root: KWin runs as us
         # then, and 0600 is already right.
         if os.geteuid() == 0:
             owner = None
@@ -308,9 +295,8 @@ class KwinBackend(WindowBackend):
             (sid,) = self._call(SCRIPTING_PATH, SCRIPTING_IFACE, "loadScript", "ss", (path, name))
             sid = int(sid)
             if sid < 0:
-                # -1: a script with that pluginName is already loaded. Never
-                # run a script id we did not get -- that would drive somebody
-                # else's script (the bug this backend used to have).
+                # -1: a script with that pluginName is already loaded. Never run a script id we did not get --
+                # that would drive somebody else's script (the bug this backend used to have).
                 raise CmdError("kwin backend: KWin already has a script named "
                                "%s loaded (loadScript returned %d)"
                                % (name, sid))
@@ -343,11 +329,10 @@ class KwinBackend(WindowBackend):
     def _kwin_unique_name(self):
         """KWin's unique bus name (`:1.42`), or None when it cannot be asked.
 
-        The reply token is a shared secret written into a file KWin has to be
-        able to read, so it is not on its own proof of who is answering. The
-        bus knows: the sender of a genuine Result is whoever owns
-        org.kde.KWin. Cached -- one GetNameOwner per backend, and a name
-        cannot change owner without KWin having died."""
+        The reply token is a shared secret written into a file KWin has to be able to read, so it is not on its
+        own proof of who is answering. The bus knows: the sender of a genuine Result is whoever owns
+        org.kde.KWin. Cached -- one GetNameOwner per backend, and a name cannot change owner without KWin having
+        died."""
         if self._kwin_name is _UNSET:
             self._kwin_name = None
             try:
@@ -357,18 +342,16 @@ class KwinBackend(WindowBackend):
         return self._kwin_name
 
     def _from_kwin(self, m) -> bool:
-        """Was this message sent by KWin? Unknown counts as yes: a bus that
-        cannot resolve the name (or does not stamp senders) leaves us exactly
-        where we were before, and the token still has to match."""
+        """Was this message sent by KWin? Unknown counts as yes: a bus that cannot resolve the name (or does not
+        stamp senders) leaves us exactly where we were before, and the token still has to match."""
         owner = self._kwin_unique_name()
         return owner is None or m.sender is None or m.sender == owner
 
     def _collect(self, bus: Bus, token: str, deadline: float) -> str:
         """The script's Result payload, already queued behind run()'s reply.
 
-        Anything else that reached our name is answered and dropped: a
-        payload carrying another token belongs to a call that timed out
-        earlier (or to another wdotool), never to this one."""
+        Anything else that reached our name is answered and dropped: a payload carrying another token belongs to
+        a call that timed out earlier (or to another wdotool), never to this one."""
         while True:
             remain = deadline - time.monotonic()
             if remain <= 0:
@@ -412,20 +395,16 @@ class KwinBackend(WindowBackend):
         return data
 
     def _fix_x_props(self, data: "list[dict]"):
-        """Take the WM_CLASS pair, and a caption KWin could not read, from
-        the X server for the XWayland windows in the list.
+        """Take the WM_CLASS pair, and a caption KWin could not read, from the X server for the XWayland windows
+        in the list.
 
-        KWin 5.27 lower-cases `resourceClass`, so an xterm came out as
-        "xterm"/"xterm" where X (and xdotool, and wmctrl) say "xterm"/
-        "XTerm". And KWin leaves the caption empty for a client whose WM_NAME
-        is COMPOUND_TEXT with no _NET_WM_NAME beside it, where the X tools
-        print the title.
+        KWin 5.27 lower-cases `resourceClass`, so an xterm came out as "xterm"/"xterm" where X (and xdotool, and
+        wmctrl) say "xterm"/"XTerm". And KWin leaves the caption empty for a client whose WM_NAME is
+        COMPOUND_TEXT with no _NET_WM_NAME beside it, where the X tools print the title.
 
-        Only 5.27 reaches this: KWin 6 has no windowId property, so its ids
-        come from the X server in the first place and _match_xids has read
-        both already. Nothing is opened unless Xwayland is running --
-        connecting would start it -- and one failure turns the correction off
-        for the rest of the process."""
+        Only 5.27 reaches this: KWin 6 has no windowId property, so its ids come from the X server in the first
+        place and _match_xids has read both already. Nothing is opened unless Xwayland is running -- connecting
+        would start it -- and one failure turns the correction off for the rest of the process."""
         want = [d for d in data if d.get("xid")]
         if not want:
             return
@@ -582,20 +561,15 @@ class KwinBackend(WindowBackend):
             if (action in (0, 1) and applied is not None
                     and out.get("settled", True)
                     and bool(applied) != bool(action)):
-                # Accepted and ignored: KWin refuses a state that a window
-                # rule or the client's own size hints forbid (5.27 will not
-                # fullscreen a window whose hints cannot fill the screen).
-                # The X tools succeed silently here; warn and succeed. The
-                # read-back is the script's *settled* one -- it waited for
-                # the window's change signal, so a Wayland client that had
-                # simply not acked the configure yet is not reported here
-                # (`settled: false` means it could not be checked at all).
+                # Accepted and ignored: KWin refuses a state that a window rule or the client's own size hints
+                # forbid (5.27 will not fullscreen a window whose hints cannot fill the screen). The X tools
+                # succeed silently here; warn and succeed. The read-back is the script's *settled* one -- it
+                # waited for the window's change signal, so a Wayland client that had simply not acked the
+                # configure yet is not reported here (`settled: false` means it could not be checked at all).
                 if state == "SHADED" and not out.get("xid"):
-                    # KWin shades X11 windows only: the `shade` property
-                    # exists on every window on 5.27 and writing it to a
-                    # native one is accepted and ignored. Blaming a window
-                    # rule sent people looking through kcmshell5 for a rule
-                    # that was never there.
+                    # KWin shades X11 windows only: the `shade` property exists on every window on 5.27 and
+                    # writing it to a native one is accepted and ignored. Blaming a window rule sent people
+                    # looking through kcmshell5 for a rule that was never there.
                     return ("windowstate SHADED: KWin can only shade X11 "
                             "windows; window %d is a native Wayland window"
                             % wid)
@@ -615,21 +589,19 @@ class KwinBackend(WindowBackend):
         return None
 
     def unsupported_states(self) -> "set[str]":
-        """_NET_WM_STATE names KWin has no setter for at all, so wwmctl knows
-        to reach an XWayland window through the X server instead -- where
-        KWin, a full EWMH window manager for the X plane, honours the
-        ClientMessage. The dynamic "accepted and ignored" case is not in
-        here; set_state reports that one per call."""
+        """_NET_WM_STATE names KWin has no setter for at all, so wwmctl knows to reach an XWayland window
+        through the X server instead -- where KWin, a full EWMH window manager for the X plane, honours the
+        ClientMessage. The dynamic "accepted and ignored" case is not in here; set_state reports that one per
+        call."""
         return set(_GAP_REASONS)
 
     def pointer(self) -> "tuple[int, int] | None":
         """The compositor's real pointer (B6), from workspace.cursorPos.
 
-        Without this, `getmouselocation` fell back to the input daemon's
-        model of the last position it injected: it needed /dev/uinput open
-        for what is a pure query, it answered "0 0" after a daemon restart,
-        and it knew nothing about a physical mouse. GNOME has had this since
-        B6; KWin exports the same thing and it was simply never asked."""
+        Without this, `getmouselocation` fell back to the input daemon's model of the last position it injected:
+        it needed /dev/uinput open for what is a pure query, it answered "0 0" after a daemon restart, and it
+        knew nothing about a physical mouse. GNOME has had this since B6; KWin exports the same thing and it was
+        simply never asked."""
         try:
             d = self._script("cursor")
         except CmdError:
@@ -653,9 +625,9 @@ class KwinBackend(WindowBackend):
         return int(self._call(KWIN_PATH, KWIN_IFACE, "currentDesktop")[0]) - 1
 
     def set_desktop(self, n: int):
-        # KWin answers false both for "no such desktop" and for "you are
-        # already there" (VirtualDesktopManager::setCurrent returns false when
-        # the desktop does not change): only the first one is an error.
+        # KWin answers false both for "no such desktop" and for "you are already there"
+        # (VirtualDesktopManager::setCurrent returns false when the desktop does not change): only the first one
+        # is an error.
         (ok,) = self._call(KWIN_PATH, KWIN_IFACE, "setCurrentDesktop", "i", (int(n) + 1,))
         if not ok and self.get_desktop() != n:
             raise CmdError("desktop %d does not exist" % n)
@@ -671,12 +643,11 @@ class KwinBackend(WindowBackend):
         if n < 1:
             raise CmdError("set_num_desktops: %d is not a workspace count" % n)
         rows = self._desktops()
-        # Both D-Bus slots are void and KWin silently refuses past its own
-        # limits -- VirtualDesktopManager::createVirtualDesktop() returns
-        # nullptr at maximum() desktops (20 on 5.27, 25 on 6) and nothing is
-        # removed below one. The count itself is the only progress report,
-        # so stop the moment a call changes nothing: without that this is an
-        # endless loop hammering the compositor with D-Bus calls.
+        # Both D-Bus slots are void and KWin silently refuses past its own limits --
+        # VirtualDesktopManager::createVirtualDesktop() returns nullptr at maximum() desktops (20 on 5.27, 25 on
+        # 6) and nothing is removed below one. The count itself is the only progress report, so stop the moment
+        # a call changes nothing: without that this is an endless loop hammering the compositor with D-Bus
+        # calls.
         while len(rows) != n:
             before = len(rows)
             if before < n:
@@ -694,15 +665,13 @@ class KwinBackend(WindowBackend):
                 raise err
 
     def select_window(self) -> int:
-        """xdotool selectwindow: KWin's own interactive picker. The reply is
-        delayed until the user clicks a window (or cancels).
+        """xdotool selectwindow: KWin's own interactive picker. The reply is delayed until the user clicks a
+        window (or cancels).
 
-        KWin has ONE reply slot for queryWindowInfo: a second picker started
-        while the first is up takes the click, and the first call is never
-        answered at all. With timeout=None that was an unkillable wait --
-        no click, no cancel key and no error would end it. The deadline is
-        long enough not to interrupt a person deciding (and is overridable
-        with WDOTOOL_SELECT_TIMEOUT for a script that wants a short one)."""
+        KWin has ONE reply slot for queryWindowInfo: a second picker started while the first is up takes the
+        click, and the first call is never answered at all. With timeout=None that was an unkillable wait -- no
+        click, no cancel key and no error would end it. The deadline is long enough not to interrupt a person
+        deciding (and is overridable with WDOTOOL_SELECT_TIMEOUT for a script that wants a short one)."""
         try:
             (info,) = self.bus.call(KWIN_NAME, KWIN_PATH, KWIN_IFACE,
                                     "queryWindowInfo",
@@ -765,9 +734,8 @@ class KwinBackend(WindowBackend):
         return out
 
     def x_info(self) -> tuple[str, str] | None:
-        """(DISPLAY, XAUTHORITY) of the session's Xwayland. KWin publishes
-        neither over D-Bus, so this is the session scan -- qualified by the
-        uid that owns the bus socket, which is what makes it right under
+        """(DISPLAY, XAUTHORITY) of the session's Xwayland. KWin publishes neither over D-Bus, so this is the
+        session scan -- qualified by the uid that owns the bus socket, which is what makes it right under
         sudo."""
         uid = None
         try:
@@ -781,11 +749,10 @@ class KwinBackend(WindowBackend):
         return display, xauth
 
     def events(self, timeout: float | None = None, workspaces: bool = False):
-        """(id, change) in sway's vocabulary, from a script that stays loaded
-        for as long as the iteration runs: KWin exports no window signals on
-        D-Bus, but a script may connect to workspace's and every window's
-        Qt signals and callDBus each one out. Its own connection, so queued
-        events never pile up behind the command connection."""
+        """(id, change) in sway's vocabulary, from a script that stays loaded for as long as the iteration runs:
+        KWin exports no window signals on D-Bus, but a script may connect to workspace's and every window's Qt
+        signals and callDBus each one out. Its own connection, so queued events never pile up behind the command
+        connection."""
         bus = Bus(self.bus.address)
         bus.serve_calls = True
         plugin = None
@@ -844,9 +811,8 @@ class KwinBackend(WindowBackend):
         return out
 
     def _screen_info(self, soft: bool = False) -> dict:
-        """Virtual screen size and per-desktop work areas -- one script,
-        cached for the process. `soft`: an unreachable KWin degrades to
-        zeroes instead of failing the command."""
+        """Virtual screen size and per-desktop work areas -- one script, cached for the process. `soft`: an
+        unreachable KWin degrades to zeroes instead of failing the command."""
         if self._screen is None:
             try:
                 s = self._script("screen")
@@ -905,9 +871,8 @@ class KwinBackend(WindowBackend):
 
     @staticmethod
     def _x_clients(x) -> "list[dict]":
-        """The X clients, in _NET_CLIENT_LIST order -- which _match_xids
-        reads as an order and not just a set (a window that has just died
-        drops out, and that leaves the order of the rest alone)."""
+        """The X clients, in _NET_CLIENT_LIST order -- which _match_xids reads as an order and not just a set (a
+        window that has just died drops out, and that leaves the order of the rest alone)."""
         out = []
         for xid in x.client_list():
             try:
@@ -924,9 +889,8 @@ class KwinBackend(WindowBackend):
 # ---------------------------------------------------------------- module bits
 
 def _select_timeout() -> float:
-    """How long select_window() waits for the picker's answer, in seconds.
-    Two minutes by default -- a person choosing a window is slow, a picker
-    whose click another process stole never answers at all."""
+    """How long select_window() waits for the picker's answer, in seconds. Two minutes by default -- a person
+    choosing a window is slow, a picker whose click another process stole never answers at all."""
     raw = os.environ.get("WDOTOOL_SELECT_TIMEOUT", "").strip()
     try:
         val = float(raw)
@@ -938,28 +902,23 @@ def _select_timeout() -> float:
 def _plugin_name(seq: int, tag: str = "") -> str:
     """The pluginName one script is loaded under.
 
-    Random, not just pid+counter: KWin holds a pluginName for as long as the
-    script object lives, `unloadScript` is the only way to give it back and
-    there is no way to enumerate what is loaded, so a wdotool killed between
-    loadScript and unloadScript leaks its names until the session ends. With
-    the pid alone the next process to be handed that pid would then fail on
-    its first command and keep failing (pids are recycled within minutes);
-    with the random part a leaked name harms nobody, which is what lets
-    "loadScript returned -1" stay a hard error."""
+    Random, not just pid+counter: KWin holds a pluginName for as long as the script object lives, `unloadScript`
+    is the only way to give it back and there is no way to enumerate what is loaded, so a wdotool killed between
+    loadScript and unloadScript leaks its names until the session ends. With the pid alone the next process to
+    be handed that pid would then fail on its first command and keep failing (pids are recycled within minutes);
+    with the random part a leaked name harms nobody, which is what lets "loadScript returned -1" stay a hard
+    error."""
     return "wdotool-%d-%d%s-%s" % (os.getpid(), seq, "-" + tag if tag else "", os.urandom(4).hex())
 
 
 @contextlib.contextmanager
 def _script_lock():
-    """An advisory lock over the whole load->run window, shared by every
-    wdotool with the same runtime dir.
+    """An advisory lock over the whole load->run window, shared by every wdotool with the same runtime dir.
 
-    KWin reuses a script id as soon as a lower-numbered script is unloaded
-    (see _load_run), and two of our own processes racing was the way to see
-    it: with this held, one wdotool's unload can never land between another's
-    load and its run. Best effort -- no runtime dir, a read-only one or a
-    lock we cannot take is not a reason to refuse the command, because the
-    id check in _load_run_locked is what makes it correct."""
+    KWin reuses a script id as soon as a lower-numbered script is unloaded (see _load_run), and two of our own
+    processes racing was the way to see it: with this held, one wdotool's unload can never land between
+    another's load and its run. Best effort -- no runtime dir, a read-only one or a lock we cannot take is not a
+    reason to refuse the command, because the id check in _load_run_locked is what makes it correct."""
     try:
         rt = session.runtime_dir()
     except CmdError:
@@ -984,9 +943,8 @@ def _script_lock():
 
 
 def _own(bus: Bus, name: str) -> str:
-    """Own a bus name for the script's callDBus to answer to, and return the
-    destination to put in the script. A second wdotool on the same session
-    (or a wedged one still holding the name) gets a name of its own rather
+    """Own a bus name for the script's callDBus to answer to, and return the destination to put in the script. A
+    second wdotool on the same session (or a wedged one still holding the name) gets a name of its own rather
     than the other process's payloads."""
     for candidate in (name, "%s.p%d" % (name, os.getpid())):
         try:
@@ -1050,22 +1008,19 @@ def _norm_uuid(u: str) -> str:
     return u.strip().strip("{}").lower()
 
 
-# Native window ids are 0x40000000 | 30 bits of the uuid. 32-bit clean
-# because everything downstream of us is X-shaped and truncates there --
-# `wxprop -id` (dsimple.c parses into a 32-bit XID), the synthesized
-# _NET_CLIENT_LIST, wmctrl's 0x%08lx -- and biased into a range no Xwayland
-# client ever gets (X ids are (client << 21) | serial), so a native id can
-# never be mistaken for the X id of an XWayland window in the same listing.
+# Native window ids are 0x40000000 | 30 bits of the uuid. 32-bit clean because everything downstream of us is
+# X-shaped and truncates there -- `wxprop -id` (dsimple.c parses into a 32-bit XID), the synthesized
+# _NET_CLIENT_LIST, wmctrl's 0x%08lx -- and biased into a range no Xwayland client ever gets (X ids are (client
+# << 21) | serial), so a native id can never be mistaken for the X id of an XWayland window in the same listing.
 _ID_BASE = 0x40000000
 _ID_MASK = 0x3FFFFFFF
 
 
 def _wid(u: str, salt: int = 0) -> int:
-    """KWin's uuid -> the id wdotool prints, and KwinBackend._uuids maps
-    back. KWin's own handle is the uuid and nothing else; ids have to be
-    minted here (there is no numeric window id anywhere in the scripting
-    API), so this is 30 bits of the uuid in a range of our own. `salt`
-    re-mints the same uuid into a different id, for the rare collision."""
+    """KWin's uuid -> the id wdotool prints, and KwinBackend._uuids maps back. KWin's own handle is the uuid and
+    nothing else; ids have to be minted here (there is no numeric window id anywhere in the scripting API), so
+    this is 30 bits of the uuid in a range of our own. `salt` re-mints the same uuid into a different id, for
+    the rare collision."""
     hexd = "".join(c for c in _norm_uuid(u) if c in "0123456789abcdef")
     if not hexd:
         return 0
@@ -1076,11 +1031,10 @@ def _wid(u: str, salt: int = 0) -> int:
 def _id_map(rows: "list[dict]") -> "dict[int, str]":
     """{printed id: uuid} for one window list, stamping each row's `_id`.
 
-    30 bits is 1e-6-ish odds of two live windows colliding in a session; a
-    plain dict comprehension would then drop one of them and leave it with
-    no id at all (unlistable and unaddressable). Whoever comes second in
-    stacking order is re-minted instead, so every window in the list has an
-    id of its own; the id is stable while the pair is."""
+    30 bits is 1e-6-ish odds of two live windows colliding in a session; a plain dict comprehension would then
+    drop one of them and leave it with no id at all (unlistable and unaddressable). Whoever comes second in
+    stacking order is re-minted instead, so every window in the list has an id of its own; the id is stable
+    while the pair is."""
     out: "dict[int, str]" = {}
     for d in rows:
         salt = 0
@@ -1094,15 +1048,12 @@ def _id_map(rows: "list[dict]") -> "dict[int, str]":
 
 
 def _simplified(s: str) -> str:
-    """QString::simplified(): every run of whitespace becomes one space and
-    the ends are trimmed.
+    """QString::simplified(): every run of whitespace becomes one space and the ends are trimmed.
 
-    KWin stores an X11 window's caption that way -- X11Window::readName()
-    ends in `.simplified()` -- while the X server hands back the raw
-    _NET_WM_NAME the client set. Comparing the two as they come makes any
-    title with a doubled, leading or trailing space compare *unequal to its
-    own window* and equal to nothing, which does not merely lose the title
-    as a signal: it points it at the other window of the pair."""
+    KWin stores an X11 window's caption that way -- X11Window::readName() ends in `.simplified()` -- while the X
+    server hands back the raw _NET_WM_NAME the client set. Comparing the two as they come makes any title with a
+    doubled, leading or trailing space compare *unequal to its own window* and equal to nothing, which does not
+    merely lose the title as a signal: it points it at the other window of the pair."""
     return " ".join((s or "").split())
 
 
@@ -1163,9 +1114,8 @@ def _match_xids(raw: "list[dict]", clients: "list[dict]") -> "dict[str, int]":
                     + abs(w - int(d.get("w", 0))) + abs(h - int(d.get("h", 0))))
             same_title = _simplified(c["name"]) == _simplified(d.get("t"))
             cand.append((0 if same_title else 1, dist, ci, d))
-    # Dense positions over what is in play. `ix` is the script's index into
-    # workspace.windowList(); a list without it (an older script, or 5.27,
-    # which never reaches here) leaves every position 0 and the key inert.
+    # Dense positions over what is in play. `ix` is the script's index into workspace.windowList(); a list
+    # without it (an older script, or 5.27, which never reaches here) leaves every position 0 and the key inert.
     have_ix = bool(cand) and all("ix" in d for _t, _d, _c, d in cand)
     krank: "dict[str, int]" = {}
     if have_ix:

@@ -1,26 +1,18 @@
-"""The arandr-shaped GTK 3 editor.  Widgets only (no cairo — stock Ubuntu
-ships python3-gi + gir1.2-gtk-3.0 but not python3-gi-cairo): the canvas is a
-Gtk.Fixed inside a scrolled window, every output is a CSS-coloured
-Gtk.EventBox with a label, dragged with plain button/motion events and
-snapped on drop.
+"""The arandr-shaped GTK 3 editor.  Widgets only (no cairo — stock Ubuntu ships python3-gi + gir1.2-gtk-3.0 but
+not python3-gi-cairo): the canvas is a Gtk.Fixed inside a scrolled window, every output is a CSS-coloured
+Gtk.EventBox with a label, dragged with plain button/motion events and snapped on drop.
 
-Apply runs the backend on a worker thread (a slow or hung compositor must
-not freeze the window); the result comes back through GLib.idle_add.  A
-failed Apply keeps the edited layout (arandr raises before re-reading).
+Apply runs the backend on a worker thread (a slow or hung compositor must not freeze the window); the result
+comes back through GLib.idle_add.  A failed Apply keeps the edited layout (arandr raises before re-reading).
 
-Test hooks (env): ``WARANDR_TEST_LAYOUT_DUMP=FILE`` appends one JSON line
-per redraw / menu popup / status-bar change with the coordinates of the
-boxes, toolbar buttons and menu items, so xdotool/wdotool can drive the
-editor deterministically — root-window pixels on X11 (``"coords": "root"``),
-toplevel-relative pixels on Wayland (``"coords": "window"``; the compositor
-tells nobody where a toplevel is).  A layout dump waits until GTK has
-allocated the boxes at the size and place the redraw asked for (the frame
-clock lags an idle callback while the compositor reconfigures outputs);
-popup-menu items are, on Wayland, *modelled* from what GTK asked the
-compositor for (at the pointer, right of the parent item, below the menubar
-item) because GDK cannot read a popup's position back there.
-``WARANDR_TEST_SAVE_AS=FILE`` makes Save As write there without the file
-chooser.
+Test hooks (env): ``WARANDR_TEST_LAYOUT_DUMP=FILE`` appends one JSON line per redraw / menu popup / status-bar
+change with the coordinates of the boxes, toolbar buttons and menu items, so xdotool/wdotool can drive the
+editor deterministically — root-window pixels on X11 (``"coords": "root"``), toplevel-relative pixels on Wayland
+(``"coords": "window"``; the compositor tells nobody where a toplevel is).  A layout dump waits until GTK has
+allocated the boxes at the size and place the redraw asked for (the frame clock lags an idle callback while the
+compositor reconfigures outputs); popup-menu items are, on Wayland, *modelled* from what GTK asked the
+compositor for (at the pointer, right of the parent item, below the menubar item) because GDK cannot read a
+popup's position back there. ``WARANDR_TEST_SAVE_AS=FILE`` makes Save As write there without the file chooser.
 """
 
 import json
@@ -81,9 +73,8 @@ def _is_wayland():
 
 
 def _root_origin(widget):
-    """[x, y, w, h] of a widget: root-window pixels on X11; on Wayland the
-    toplevel's origin reads as 0,0, so toplevel-relative pixels (the
-    toplevel surface includes the CSD shadow when it is not maximized)."""
+    """[x, y, w, h] of a widget: root-window pixels on X11; on Wayland the toplevel's origin reads as 0,0, so
+    toplevel-relative pixels (the toplevel surface includes the CSD shadow when it is not maximized)."""
     top = widget.get_toplevel()
     win = top.get_window() if top else None
     if win is None:
@@ -139,10 +130,9 @@ class OutputBox(Gtk.EventBox):
         self._drag = None
         self.info = self.name
 
-    # Gtk.Fixed hands children their *natural* size, which for a label is
-    # the full text: report the box size as both minimum and natural so the
-    # box is exactly the scaled output and the text is clipped/ellipsized
-    # inside it instead of stretching the box.
+    # Gtk.Fixed hands children their *natural* size, which for a label is the full text: report the box size as
+    # both minimum and natural so the box is exactly the scaled output and the text is clipped/ellipsized inside
+    # it instead of stretching the box.
     def do_get_preferred_width(self):
         return (self._pw, self._pw)
 
@@ -311,12 +301,10 @@ class Application:
         self.scroller.add(self.canvas_bg)
         vbox.pack_start(self.scroller, True, True, 0)
 
-        # the always-visible backend indicator, right of the one status line
-        # (a Gtk.Statusbar is a Gtk.Box): `backend: mutter (Wayland)`, with
-        # the whole of `--print-backend --verbose` in its tooltip.  It is
-        # also the shortest way to change the backend: an indicator that
-        # shows a setting should open it, so the label sits in an event box
-        # that pops up the very same Layout ▸ Backend menu.
+        # the always-visible backend indicator, right of the one status line (a Gtk.Statusbar is a Gtk.Box):
+        # `backend: mutter (Wayland)`, with the whole of `--print-backend --verbose` in its tooltip.  It is also
+        # the shortest way to change the backend: an indicator that shows a setting should open it, so the label
+        # sits in an event box that pops up the very same Layout ▸ Backend menu.
         self.backend_label = Gtk.Label()
         self.backend_button = Gtk.EventBox()
         self.backend_button.add(self.backend_label)
@@ -327,10 +315,9 @@ class Application:
         self.backend_button.connect("enter-notify-event", self._indicator_cursor, True)
         self.backend_button.connect("leave-notify-event", self._indicator_cursor, False)
         self.status = Gtk.Statusbar()
-        # one line, three sources by priority: a transient message (rejected
-        # drop, saved file; gone after a few seconds or at the next redraw),
-        # else the hovered output's description, else the command Apply
-        # would run
+        # one line, three sources by priority: a transient message (rejected drop, saved file; gone after a few
+        # seconds or at the next redraw), else the hovered output's description, else the command Apply would
+        # run
         self.status_ctx = self.status.get_context_id("status")
         self._command = self._message = self._hover = None
         self._message_serial = 0
@@ -344,9 +331,8 @@ class Application:
         self.window.show_all()
         self.window.connect("configure-event", lambda *_: self._schedule_dump())
 
-        # Both of the startup reads are off the main loop; identify follows
-        # the layout read (it patches the layout it finds) and is kicked off
-        # from there, so the window is up and answering either way.
+        # Both of the startup reads are off the main loop; identify follows the layout read (it patches the
+        # layout it finds) and is kicked off from there, so the window is up and answering either way.
         if filename:
             self.load_file(filename)
         else:
@@ -411,26 +397,23 @@ class Application:
         return bar
 
     def _indicator_press(self, _widget, event):
-        """A click anywhere on the indicator opens Layout ▸ Backend, at the
-        pointer.  The menu object is the menubar's own, so the radio state,
-        the insensitive entries and their reasons are shared — there is one
+        """A click anywhere on the indicator opens Layout ▸ Backend, at the pointer.  The menu object is the
+        menubar's own, so the radio state, the insensitive entries and their reasons are shared — there is one
         backend menu, reachable from two places."""
         menu = getattr(self, "backend_menu_item", None)
         submenu = menu.get_submenu() if menu is not None else None
         if submenu is None:            # menubar not built yet: nothing to open
             return False
         submenu.show_all()
-        # Where the popup went, for the position model: GDK cannot read a
-        # popup's position back on Wayland, so a menu popped at the pointer
-        # is recorded as pointer + (1, 1) -- what _popup_menu does for the
-        # canvas menus.  Without it the indicator's popup modelled nothing at
-        # all, and a Wayland driver had no coordinates to click.
+        # Where the popup went, for the position model: GDK cannot read a popup's position back on Wayland, so a
+        # menu popped at the pointer is recorded as pointer + (1, 1) -- what _popup_menu does for the canvas
+        # menus.  Without it the indicator's popup modelled nothing at all, and a Wayland driver had no
+        # coordinates to click.
         submenu._anchor = (int(event.x_root) + 1, int(event.y_root) + 1)
         if not getattr(submenu, "_anchor_cleared_on_close", False):
             submenu._anchor_cleared_on_close = True
-            # this is the menubar's own Backend menu as well: its next drop
-            # from Layout ▸ Backend is modelled from the item, not from
-            # wherever the pointer was the last time it was opened here
+            # this is the menubar's own Backend menu as well: its next drop from Layout ▸ Backend is modelled
+            # from the item, not from wherever the pointer was the last time it was opened here
             submenu.connect("deactivate", self._clear_anchor)
         submenu.popup_at_pointer(event)
         return True
@@ -451,13 +434,11 @@ class Application:
         return False
 
     def _build_backend_menu(self):
-        """Layout ▸ Backend: which tool talks to the screen.  It sits with
-        Apply and Script Properties because it governs both — arandr has no
-        such menu, and View is about how the canvas is drawn, not about who
-        answers.  Radios: Automatic, X11 and each of wxrandr's Wayland
-        backends; the ones this session cannot reach are insensitive and
-        carry the reason in their tooltip (GTK 3 does not pop a tooltip over
-        an insensitive item, so the same table is in Script Properties)."""
+        """Layout ▸ Backend: which tool talks to the screen.  It sits with Apply and Script Properties because
+        it governs both — arandr has no such menu, and View is about how the canvas is drawn, not about who
+        answers.  Radios: Automatic, X11 and each of wxrandr's Wayland backends; the ones this session cannot
+        reach are insensitive and carry the reason in their tooltip (GTK 3 does not pop a tooltip over an
+        insensitive item, so the same table is in Script Properties)."""
         menu = Gtk.Menu()
         self._track_menu(menu, "backend")
         group = None
@@ -501,9 +482,8 @@ class Application:
     # -- backend --------------------------------------------------------------
 
     def _sync_backend_menu(self):
-        """The radios follow the live backend; availability follows the last
-        `wxrandr --backends` (nothing is greyed before it has answered, and
-        the current choice is never greyed out from under the user)."""
+        """The radios follow the live backend; availability follows the last `wxrandr --backends` (nothing is
+        greyed before it has answered, and the current choice is never greyed out from under the user)."""
         want = self.backend.forced or "auto"
         self._syncing = True
         try:
@@ -546,9 +526,8 @@ class Application:
             self._identify_async()
 
     def _identify_async(self):
-        """`--print-backend --verbose` (which backend is this, really?) and
-        `--backends` (what else could it be?) run off the main loop: the
-        window is already up, and a wedged compositor must not hold it."""
+        """`--print-backend --verbose` (which backend is this, really?) and `--backends` (what else could it
+        be?) run off the main loop: the window is already up, and a wedged compositor must not hold it."""
         backend = self.backend
 
         def work():
@@ -556,9 +535,8 @@ class Application:
                 backend.identify()
                 info = randr.probe_backends(backend.env)
             except Exception:
-                # the indicator keeps whatever it says now; a thread
-                # that dies here would print a traceback on a stderr
-                # nobody reads and leave the window none the wiser
+                # the indicator keeps whatever it says now; a thread that dies here would print a traceback on a
+                # stderr nobody reads and leave the window none the wiser
                 return
             GLib.idle_add(self._identified, backend, info)
         threading.Thread(target=work, name="warandr-backend", daemon=True).start()
@@ -576,14 +554,11 @@ class Application:
     def _read_async(self, read, done, status):
         """Run a blocking backend read off the main loop.
 
-        Every read warandr does is an `xrandr --query` — on Wayland a
-        `wxrandr --query` against a compositor that may be busy
-        reconfiguring outputs, or wedged — and the backend allows one up to
-        30 s.  Run on the main loop that is 30 s in which the window does
-        not redraw, resize, scroll or close, on startup as much as on
-        Ctrl+N, Ctrl+O or a backend switch.  Same shape as Apply: the work
-        on a thread, the result back through idle_add, the toolbar greyed
-        meanwhile, and a result that a newer read has already superseded
+        Every read warandr does is an `xrandr --query` — on Wayland a `wxrandr --query` against a compositor
+        that may be busy reconfiguring outputs, or wedged — and the backend allows one up to 30 s.  Run on the
+        main loop that is 30 s in which the window does not redraw, resize, scroll or close, on startup as much
+        as on Ctrl+N, Ctrl+O or a backend switch.  Same shape as Apply: the work on a thread, the result back
+        through idle_add, the toolbar greyed meanwhile, and a result that a newer read has already superseded
         dropped.
         """
         self._read_serial += 1
@@ -602,13 +577,10 @@ class Application:
             try:
                 result, error = read(), None
             except Exception as e:
-                # every exception, not the three that were expected: an
-                # error this thread does not catch never reaches
-                # finish(), so _set_busy(False) never runs and Apply,
-                # Open and New stay dead for the rest of the session --
-                # with the traceback on a stderr a desktop launcher
-                # throws away.  A UnicodeDecodeError from a layout
-                # script that is not UTF-8 did exactly that.
+                # every exception, not the three that were expected: an error this thread does not catch never
+                # reaches finish(), so _set_busy(False) never runs and Apply, Open and New stay dead for the
+                # rest of the session -- with the traceback on a stderr a desktop launcher throws away.  A
+                # UnicodeDecodeError from a layout script that is not UTF-8 did exactly that.
                 result, error = None, e
             GLib.idle_add(finish, result, error)
 
@@ -622,11 +594,9 @@ class Application:
         Gtk.main_quit()
 
     def set_backend(self, name):
-        """Switch the tool that talks to the screen: re-read the layout
-        through it, redraw, and from then on Apply, the command in the
-        status bar and a saved script are that backend's.  One that cannot
-        be reached keeps the previous choice — the window is never left
-        empty — and says why in an Apply-shaped dialog."""
+        """Switch the tool that talks to the screen: re-read the layout through it, redraw, and from then on
+        Apply, the command in the status bar and a saved script are that backend's.  One that cannot be reached
+        keeps the previous choice — the window is never left empty — and says why in an Apply-shaped dialog."""
         if self._busy:
             return False
         previous = self.backend
@@ -701,9 +671,8 @@ class Application:
         return self.layout.command_line(self.backend.run_word)
 
     def overlap_message(self, name):
-        """What a drop that landed `name` on top of another output means on
-        the backend in use — the status bar's one sentence at the moment of
-        the drop.  None when this output overlaps nothing (an exact overlap
+        """What a drop that landed `name` on top of another output means on the backend in use — the status
+        bar's one sentence at the moment of the drop.  None when this output overlaps nothing (an exact overlap
         is a clone, not this)."""
         others = [b if a == name else a for a, b in self.layout.overlaps() if name in (a, b)]
         if not others:
@@ -778,14 +747,11 @@ class Application:
         self._schedule_dump()
 
     def _restack(self):
-        """Put the smaller box on top, and report whether any box had no
-        window yet.  A Gtk.Fixed gives the click to the child window created
-        last — the last output in server order — and an overlap may now put
-        one box wholly inside another: without this, an output dropped
-        inside a bigger one that happens to come later would be covered by
-        it, unclickable, with no way to drag it back out.  Ordering by drawn
-        area cannot hide anything, because a box that covers another is at
-        least as big as it."""
+        """Put the smaller box on top, and report whether any box had no window yet.  A Gtk.Fixed gives the
+        click to the child window created last — the last output in server order — and an overlap may now put
+        one box wholly inside another: without this, an output dropped inside a bigger one that happens to come
+        later would be covered by it, unclickable, with no way to drag it back out.  Ordering by drawn area
+        cannot hide anything, because a box that covers another is at least as big as it."""
         pending = False
         for b in sorted(self.boxes.values(), key=lambda b: b._pw * b._ph, reverse=True):
             w = b.get_window()
@@ -807,11 +773,10 @@ class Application:
             GLib.idle_add(self._dump_layout, self._dump_serial, 0, priority=GLib.PRIORITY_LOW)
 
     def _layout_settled(self):
-        """True once GTK has allocated every box at the size and place the
-        last redraw asked for.  The frame clock's layout phase can lag an
-        idle callback — on Wayland it waits for the compositor's frame
-        callback, which stalls while Mutter reconfigures outputs right after
-        an Apply — and a dump taken before it would report the old boxes."""
+        """True once GTK has allocated every box at the size and place the last redraw asked for.  The frame
+        clock's layout phase can lag an idle callback — on Wayland it waits for the compositor's frame callback,
+        which stalls while Mutter reconfigures outputs right after an Apply — and a dump taken before it would
+        report the old boxes."""
         for b in self.boxes.values():
             a = b.get_allocation()
             rel = b.translate_coordinates(self.canvas, 0, 0)
@@ -864,16 +829,13 @@ class Application:
         return False
 
     def _menu_origin(self, menu):
-        """Top-left of a popup menu's allocation, from what GTK asked the
-        compositor for (GDK cannot read a popup's position back on
-        Wayland): a menu popped at the pointer sits at pointer + (1, 1)
-        (gtk_menu_popup_at_pointer anchors south-east of a 1x1 rect); a
-        submenu hangs at its parent item's north-east corner, shifted by the
-        menu's horizontal-offset/vertical-offset style and its top padding
-        so the first item lines up with the parent item; a menubar item's
-        menu drops from the item's south-west corner.  Unconstrained
-        placement is assumed (the compositor may flip or slide a popup
-        near a screen edge)."""
+        """Top-left of a popup menu's allocation, from what GTK asked the compositor for (GDK cannot read a
+        popup's position back on Wayland): a menu popped at the pointer sits at pointer + (1, 1)
+        (gtk_menu_popup_at_pointer anchors south-east of a 1x1 rect); a submenu hangs at its parent item's
+        north-east corner, shifted by the menu's horizontal-offset/vertical-offset style and its top padding so
+        the first item lines up with the parent item; a menubar item's menu drops from the item's south-west
+        corner.  Unconstrained placement is assumed (the compositor may flip or slide a popup near a screen
+        edge)."""
         anchor = getattr(menu, "_anchor", None)
         if anchor is not None:
             return anchor
@@ -905,9 +867,8 @@ class Application:
         return _root_origin(w)
 
     def _dump_menu(self, menu, name):
-        """Items of a popup: `items` is what a driver clicks (GDK's root
-        coordinates on X11, the model on Wayland), `modelled` always the
-        model — the X11 GUI test checks the two agree."""
+        """Items of a popup: `items` is what a driver clicks (GDK's root coordinates on X11, the model on
+        Wayland), `modelled` always the model — the X11 GUI test checks the two agree."""
         if not DUMP:
             return False
         items, modelled, sensitive, tips, active = {}, {}, {}, {}, {}
@@ -973,14 +934,12 @@ class Application:
     # -- menus ----------------------------------------------------------------
 
     def _populate_outputs_menu(self):
-        """Rebuild the menubar's Outputs drop-down -- but never while it is
-        open.  set_submenu() destroys the menu it replaces, and destroying a
-        menu that is mapped destroys the window holding the pointer and
-        keyboard grab: X keeps that grab, so every other client on the
-        session is frozen until warandr exits.  A redraw can arrive at any
-        moment with the menu up (an Apply finishing on the worker thread
-        calls set_layout -> redraw from _applied), so a rebuild that comes
-        then is deferred to the menu's own deactivate."""
+        """Rebuild the menubar's Outputs drop-down -- but never while it is open.  set_submenu() destroys the
+        menu it replaces, and destroying a menu that is mapped destroys the window holding the pointer and
+        keyboard grab: X keeps that grab, so every other client on the session is frozen until warandr exits.  A
+        redraw can arrive at any moment with the menu up (an Apply finishing on the worker thread calls
+        set_layout -> redraw from _applied), so a rebuild that comes then is deferred to the menu's own
+        deactivate."""
         open_menu = self.outputs_menu_item.get_submenu()
         if open_menu is not None and open_menu.get_mapped():
             if not getattr(open_menu, "_repopulate", False):
@@ -1022,9 +981,8 @@ class Application:
         self._popup_menu(self.output_menu(name), ev)
 
     def _popup_menu(self, menu, ev):
-        """Pop `menu` up and own it only while it is open: the previous
-        popup is released here, and this one on its deactivate (from idle,
-        after the chosen item's handler ran)."""
+        """Pop `menu` up and own it only while it is open: the previous popup is released here, and this one on
+        its deactivate (from idle, after the chosen item's handler ran)."""
         menu.show_all()
         menu.connect("deactivate", lambda m: GLib.idle_add(self._release_popup, m))
         self._popup = menu
@@ -1049,20 +1007,17 @@ class Application:
         self.redraw()
 
     def output_menu(self, name):
-        """arandr's per-output menu (Active, Primary, Resolution,
-        Orientation) followed, after a separator, by Refresh rate,
-        Reflection, Mirror of and — Wayland only — Scale."""
+        """arandr's per-output menu (Active, Primary, Resolution, Orientation) followed, after a separator, by
+        Refresh rate, Reflection, Mirror of and — Wayland only — Scale."""
         lay = self.layout
         o = lay.get(name)
         menu = Gtk.Menu()
         self._track_menu(menu, "output:" + name)
 
         def live():
-            """The layout as it is when the item is *used*.  The menu is
-            built from the one that is current now, but an Apply landing
-            while it is open replaces self.layout wholesale, and a setter
-            still holding the old object would edit a layout nothing draws
-            and nothing will apply."""
+            """The layout as it is when the item is *used*.  The menu is built from the one that is current now,
+            but an Apply landing while it is open replaces self.layout wholesale, and a setter still holding the
+            old object would edit a layout nothing draws and nothing will apply."""
             return self.layout
 
         active = Gtk.CheckMenuItem.new_with_mnemonic("_Active")
@@ -1136,9 +1091,8 @@ class Application:
         self.reload()
 
     def load_file(self, filename):
-        # loading a script also reads the screen behind it (to know which
-        # outputs and modes the script is talking about), so this blocks for
-        # as long as a plain reload does
+        # loading a script also reads the screen behind it (to know which outputs and modes the script is
+        # talking about), so this blocks for as long as a plain reload does
         if self._busy:
             return
         self._read_async(lambda: cli.load_layout(self.backend, filename),
@@ -1181,11 +1135,9 @@ class Application:
     def _confirm_sh_overwrite(self, filename):
         """The overwrite prompt the file chooser cannot give.
 
-        The chooser confirms replacing the name it was handed; write_script
-        appends `.sh` to it afterwards.  So typing `desk` replaced desk.sh
-        with no prompt at all -- silent data loss over exactly the scripts
-        warandr exists to write.  (arandr 0.1.11 does the same thing; that is
-        not a reason to keep it.)"""
+        The chooser confirms replacing the name it was handed; write_script appends `.sh` to it afterwards.  So
+        typing `desk` replaced desk.sh with no prompt at all -- silent data loss over exactly the scripts
+        warandr exists to write.  (arandr 0.1.11 does the same thing; that is not a reason to keep it.)"""
         if filename.endswith(".sh") or not os.path.exists(filename + ".sh"):
             return True                  # the chooser already asked, or new
         return _msg(self.window, Gtk.MessageType.QUESTION,
@@ -1238,9 +1190,8 @@ class Application:
         layout = self.layout
 
         def work():
-            # `except Exception`, for the same reason as the reader
-            # thread above: whatever this one fails to catch leaves the
-            # toolbar greyed for good.
+            # `except Exception`, for the same reason as the reader thread above: whatever this one fails to
+            # catch leaves the toolbar greyed for good.
             try:
                 rc, out, err = self.backend.apply(layout)
             except Exception as e:

@@ -1,15 +1,13 @@
 """US-QWERTY character/keysym -> evdev keycode tables and keysequence parsing.
 
-A resolved key is (evdev_keycode, shifted). "shifted" means the key needs
-Shift held to produce the requested symbol on a US layout.
+A resolved key is (evdev_keycode, shifted). "shifted" means the key needs Shift held to produce the requested
+symbol on a US layout.
 
-Every resolver here takes an optional `layout`: a `xkbmap.ReverseMap` for the
-compositor's *active* layout (B13). When it is None -- the US bypass, and
-every case where the keymap could not be read -- this file is the whole
-answer, exactly as it was. When it is given, a keysym that the active layout
-binds somewhere resolves to that key and its modifier mask instead; keys that
-are the same on every layout (Return, the function keys, the keypad, the
-modifiers themselves) keep their fixed keycodes.
+Every resolver here takes an optional `layout`: a `xkbmap.ReverseMap` for the compositor's *active* layout
+(B13). When it is None -- the US bypass, and every case where the keymap could not be read -- this file is the
+whole answer, exactly as it was. When it is given, a keysym that the active layout binds somewhere resolves to
+that key and its modifier mask instead; keys that are the same on every layout (Return, the function keys, the
+keypad, the modifiers themselves) keep their fixed keycodes.
 """
 
 from wdotool.keysyms import KEYSYM_TO_UNICODE, NAME_TO_KEYSYM
@@ -156,12 +154,10 @@ KEYSYM_KEYS["F12"] = (88, False)
 for _n in range(13, 25):
     KEYSYM_KEYS[f"F{_n}"] = (170 + _n, False)  # KEY_F13=183 .. KEY_F24=194
 
-# XF86 multimedia keysyms -> evdev KEY_* codes, hand-curated (they have no
-# unicode, so the fallback can never reach them). Codes follow XF86keysym.h's
-# "Use:" annotations and xkeyboard-config's evdev keycode->keysym mapping, so
-# injecting the code makes the compositor's XKB map report the same XF86
-# keysym that was requested. Newer names defined as _EVDEVK(code) resolve
-# automatically in _keysym_value_to_key and need no entry here.
+# XF86 multimedia keysyms -> evdev KEY_* codes, hand-curated (they have no unicode, so the fallback can never
+# reach them). Codes follow XF86keysym.h's "Use:" annotations and xkeyboard-config's evdev keycode->keysym
+# mapping, so injecting the code makes the compositor's XKB map report the same XF86 keysym that was requested.
+# Newer names defined as _EVDEVK(code) resolve automatically in _keysym_value_to_key and need no entry here.
 for _name, _code in {
     "XF86AudioMute": 113,           # KEY_MUTE
     "XF86AudioLowerVolume": 114,    # KEY_VOLUMEDOWN
@@ -288,11 +284,9 @@ def _keysym_value_to_key(ks: int, layout=None) -> tuple[int, bool] | None:
         else:
             return None
     if not 0 <= cp <= 0x10FFFF:
-        # The Unicode keysym space (0x01000000 | codepoint) is 24 bits wide
-        # and Unicode is 21: `wdotool key 0x01ffffff` is a syntactically
-        # valid keysym naming no character, and chr() raises ValueError on
-        # it. Unreachable, like any other keysym this layout cannot type --
-        # not a traceback.
+        # The Unicode keysym space (0x01000000 | codepoint) is 24 bits wide and Unicode is 21:
+        # `wdotool key 0x01ffffff` is a syntactically valid keysym naming no character, and chr() raises
+        # ValueError on it. Unreachable, like any other keysym this layout cannot type -- not a traceback.
         return None
     return CHAR_TO_KEY.get(chr(cp))
 
@@ -300,9 +294,8 @@ def _keysym_value_to_key(ks: int, layout=None) -> tuple[int, bool] | None:
 def keysym_to_key(name: str, layout=None) -> tuple[int, bool] | None:
     """Resolve one keysym name (no aliases) to (keycode, shifted).
 
-    KEYSYM_KEYS wins over the active layout on purpose: Return, F5, KP_7 and
-    the modifier keys sit on the same physical key in every layout, and their
-    keycode must not depend on a keymap we just read."""
+    KEYSYM_KEYS wins over the active layout on purpose: Return, F5, KP_7 and the modifier keys sit on the same
+    physical key in every layout, and their keycode must not depend on a keymap we just read."""
     hit = KEYSYM_KEYS.get(name)
     if hit:
         return hit
@@ -319,8 +312,8 @@ def keysym_to_key(name: str, layout=None) -> tuple[int, bool] | None:
 def resolve_token(tok: str, layout=None) -> tuple[int, bool] | None | str:
     """Resolve one '+'-separated keysequence token.
 
-    Returns (keycode, shifted), or a warning string (token skipped), matching
-    xdotool: unknown names warn and are ignored; digits are X keycodes.
+    Returns (keycode, shifted), or a warning string (token skipped), matching xdotool: unknown names warn and
+    are ignored; digits are X keycodes.
     """
     lname = layout_name(layout)
     name = ALIASES.get(tok.lower(), tok)

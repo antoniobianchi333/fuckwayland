@@ -2,7 +2,7 @@
 """Run the repo's wire-level KwinOutputServer as a standalone server, so the real
 wxrandr CLI (a separate process, a real Session) can be pointed at it.
 
-    kwin_server.py <tree> [one|two|three]
+    fake_kwin_server.py <tree> [one|two|three]
 """
 import os
 import sys

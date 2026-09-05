@@ -105,13 +105,11 @@ def cmd_sleep(ctx, args):
     try:
         time.sleep(secs)
     except OverflowError:
-        # `sleep 1e300`: finite, positive, and still far outside time_t.
-        # The C code hands it to usleep(), whose useconds_t cannot hold
-        # it either, and the real xdotool returns at once with status 0
-        # (measured against 3.20160805.1: 1e300, inf and nan all take
-        # 0.00 s).  A value that *does* fit is still slept, which is the
-        # deliberate divergence already in this line: `sleep 3600` means
-        # an hour here and wraps in usleep's 32-bit argument there.
+        # `sleep 1e300`: finite, positive, and still far outside time_t. The C code hands it to usleep(), whose
+        # useconds_t cannot hold it either, and the real xdotool returns at once with status 0 (measured against
+        # 3.20160805.1: 1e300, inf and nan all take 0.00 s).  A value that *does* fit is still slept, which is
+        # the deliberate divergence already in this line: `sleep 3600` means an hour here and wraps in usleep's
+        # 32-bit argument there.
         pass
     return nopts + 1
 
@@ -131,9 +129,9 @@ def cmd_getdisplaygeometry(ctx, args):
             shell = True
     w, h, guessed = ctx.daemon().geometry_status()
     if guessed:
-        # B5: printing a made-up 1920x1080 with rc 0 when no compositor could
-        # be reached made `getdisplaygeometry` useless as a session probe --
-        # it was the one command that "succeeded" with no session at all.
+        # B5: printing a made-up 1920x1080 with rc 0 when no compositor could be reached made
+        # `getdisplaygeometry` useless as a session probe -- it was the one command that "succeeded" with no
+        # session at all.
         raise NoSessionError(
             "wdotool: no Wayland session found: cannot query the output "
             "layout (no compositor reachable); not guessing a display size"
