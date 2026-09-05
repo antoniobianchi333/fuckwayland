@@ -67,8 +67,7 @@ class Snapshot:
 
     __slots__ = ("text", "group", "source", "group_known", "mods_seen")
 
-    def __init__(self, text: str, group: int, source: str, group_known: bool,
-                 mods_seen: bool = False):
+    def __init__(self, text: str, group: int, source: str, group_known: bool, mods_seen: bool = False):
         self.text = text
         self.group = group          # 1-based, as in the keymap's name[N]
         self.source = source        # for diagnostics
@@ -362,8 +361,7 @@ def strip_comments(text: str) -> str:
     """
     if "//" not in text and "/*" not in text:
         return text  # the common case: not one byte copied
-    return _COMMENT_RE.sub(
-        lambda m: m.group(0) if m.group(0)[:1] == '"' else " ", text)
+    return _COMMENT_RE.sub(lambda m: m.group(0) if m.group(0)[:1] == '"' else " ", text)
 
 
 def group_name(text: str, n: int) -> str:
@@ -725,8 +723,7 @@ class ReverseMap:
         return self.keysyms.get(ks) if ks is not None else None
 
     def modifier_keycodes(self, mask: int) -> list:
-        return [self.mod_keys[b] for b in MOD_BITS
-                if mask & b and self.mod_keys.get(b)]
+        return [self.mod_keys[b] for b in MOD_BITS if mask & b and self.mod_keys.get(b)]
 
     # -- building ---------------------------------------------------------
 
@@ -1085,8 +1082,7 @@ def diagnostic_main(argv) -> int:
               f"{len(km.types)} types")
         for g in km.groups:
             mark = " <- active" + ("" if snap.group_known else " (assumed)")
-            print(f"group {g.index}:      {g.name!r}"
-                  + (mark if g.index == snap.group else ""))
+            print(f"group {g.index}:      {g.name!r}" + (mark if g.index == snap.group else ""))
         if mode == "us":
             print("us bypass:     yes -- WDOTOOL_LAYOUT=us asks for it")
         elif bypass:
@@ -1105,8 +1101,7 @@ def diagnostic_main(argv) -> int:
                 sys.stderr.write("wdotool: %s\n" % e)
                 return 1
             names = {MOD_SHIFT: "shift", MOD_LEVEL3: "level3", MOD_LEVEL5: "level5"}
-            mods = ", ".join(f"{names[b]}=key {rmap.mod_keys[b]}"
-                             for b in MOD_BITS if rmap.mod_keys.get(b))
+            mods = ", ".join(f"{names[b]}=key {rmap.mod_keys[b]}" for b in MOD_BITS if rmap.mod_keys.get(b))
             print(f"level shifts:  {mods}")
             print(f"reachable:     {len(rmap.chars)} characters, "
                   f"{len(rmap.dead)} dead keys")

@@ -51,9 +51,7 @@ def cmd_exec(ctx, args):
     if arity > 0 and terminator is not None:
         raise CmdError("Don't use both --terminator and --args.")
     if len(rest) < arity:
-        raise CmdError(
-            "You said '--args %d' but only gave %d arguments." % (arity, len(rest))
-        )
+        raise CmdError("You said '--args %d' but only gave %d arguments." % (arity, len(rest)))
 
     command: list[str] = []
     command_count = 0
@@ -121,9 +119,7 @@ def cmd_sleep(ctx, args):
 def cmd_getdisplaygeometry(ctx, args):
     cmd = getattr(ctx, "cmd_name", "getdisplaygeometry")
     usage = "Usage: %s\n" % cmd
-    parsed = _opts(
-        cmd, args, "h", [("help", False), ("screen", True), ("shell", False)], usage
-    )
+    parsed = _opts(cmd, args, "h", [("help", False), ("screen", True), ("shell", False)], usage)
     if parsed is None:
         return len(args)
     opts, nopts = parsed

@@ -81,8 +81,7 @@ _MOD_TAGS = {
     0xFE11: "level5",
     0xFFE5: "caps",
 }
-_TAG_MASK = {"shift": xkbmap.MOD_SHIFT, "level3": xkbmap.MOD_LEVEL3,
-             "level5": xkbmap.MOD_LEVEL5}
+_TAG_MASK = {"shift": xkbmap.MOD_SHIFT, "level3": xkbmap.MOD_LEVEL3, "level5": xkbmap.MOD_LEVEL5}
 _TAG_ORDER = ("ctrl", "alt", "super", "shift", "level3", "level5", "caps")
 # The tags that pick a level (and so change the character) versus the ones
 # that only decorate a key sequence.
@@ -142,8 +141,7 @@ class Layout:
     makes, US bypass and all -- so what explain prints is what `type` sends.
     """
 
-    def __init__(self, name, source, group, ngroups, group_known, rmap,
-                 km=None, note=None):
+    def __init__(self, name, source, group, ngroups, group_known, rmap, km=None, note=None):
         self.name = name
         self.source = source
         self.group = group
@@ -186,13 +184,11 @@ class Layout:
         for ch, (code, shifted) in keymap.CHAR_TO_KEY.items():
             ks = NAME_TO_KEYSYM.get(ch) or (ord(ch) if ord(ch) < 0x100 else None)
             if ks is not None:
-                self.fwd.setdefault(code, {}).setdefault(
-                    xkbmap.MOD_SHIFT if shifted else 0, ks)
+                self.fwd.setdefault(code, {}).setdefault(xkbmap.MOD_SHIFT if shifted else 0, ks)
         for name, (code, shifted) in keymap.KEYSYM_KEYS.items():
             ks = NAME_TO_KEYSYM.get(name)
             if ks is not None:
-                self.fwd.setdefault(code, {}).setdefault(
-                    xkbmap.MOD_SHIFT if shifted else 0, ks)
+                self.fwd.setdefault(code, {}).setdefault(xkbmap.MOD_SHIFT if shifted else 0, ks)
 
     @classmethod
     def load(cls, keymap=None, group=None):
@@ -223,10 +219,8 @@ class Layout:
                 rmap = xkbmap.reverse(km, snap.group)
             except xkbmap.XkbError as e:
                 note = "the keymap could not be reversed (%s)" % e
-        name = (rmap.name if rmap is not None
-                else xkbmap.group_name(snap.text, snap.group))
-        return cls(name, snap.source, snap.group, len(km.groups),
-                   snap.group_known, rmap, km, note)
+        name = (rmap.name if rmap is not None else xkbmap.group_name(snap.text, snap.group))
+        return cls(name, snap.source, snap.group, len(km.groups), snap.group_known, rmap, km, note)
 
     @classmethod
     def fixed(cls, why):
@@ -298,8 +292,7 @@ class Layout:
                          (xkbmap.MOD_LEVEL5, "level5")):
             code = self.mod_key(bit)
             bits.append("%s = %s" % (tag, self.where(code) if code else "none"))
-        lines.append("level keys: " + "   ".join(bits)
-                     + "   (what wdotool presses)")
+        lines.append("level keys: " + "   ".join(bits) + "   (what wdotool presses)")
         if self.note:
             lines.append("note: " + self.note)
         return lines
@@ -386,8 +379,7 @@ class Watcher:
         the run never closes -- no summary is printed again for the rest of
         the session -- and every later line reports a modifier that nobody is
         holding any more, which is a reproduction that does not reproduce."""
-        return [line for code in self.holding(path)
-                for line in self.key_event(t, code, 0, path)]
+        return [line for code in self.holding(path) for line in self.key_event(t, code, 0, path)]
 
     def finish(self):
         """Flush a run that is still open (a key held when watching stops)."""
@@ -475,15 +467,13 @@ class Watcher:
             why = "a modifier was pressed after the key"
         if why is None:
             return self._chord(downs, mains)
-        seq = " ".join(("keydown %s" if e[0] == "down" else "keyup %s") % kc(e[1])
-                       for e in self.run)
+        seq = " ".join(("keydown %s" if e[0] == "down" else "keyup %s") % kc(e[1]) for e in self.run)
         names = []
         for e in self.run:
             name = keysym_name(self.layout.keysym(e[1], 0)) or kc(e[1])
             names.append(("keydown %s" if e[0] == "down" else "keyup %s") % name)
         self.dead = None
-        return [_summary_line("= sequence", "wdotool " + seq,
-                              "wdotool " + " ".join(names), why)]
+        return [_summary_line("= sequence", "wdotool " + seq, "wdotool " + " ".join(names), why)]
 
     def _chord(self, downs, mains):
         codes = [self.run[i][1] for i in downs]
@@ -671,8 +661,7 @@ class Devices:
             if not data:
                 continue
             for off in range(0, len(data) - _EV_SIZE + 1, _EV_SIZE):
-                sec, usec, etype, code, value = struct.unpack(
-                    _EV_FMT, data[off:off + _EV_SIZE])
+                sec, usec, etype, code, value = struct.unpack(_EV_FMT, data[off:off + _EV_SIZE])
                 out.append((info[0], sec + usec / 1e6, etype, code, value))
         # One round drains each device in fd order, so two keyboards come out
         # of it in blocks: the time column would run backwards and a key held

@@ -98,8 +98,7 @@ def _mode_field(val, what: str, valid):
         raise RuntimeError(f"invalid {what}: {val!r} (expected a string)")
     mode = val.strip().lower()
     if mode not in valid:
-        raise RuntimeError(
-            f"invalid {what}: {val!r} (valid: " + ", ".join(valid) + ")")
+        raise RuntimeError(f"invalid {what}: {val!r} (valid: " + ", ".join(valid) + ")")
     return mode
 
 
@@ -155,8 +154,7 @@ def _fallback_dir() -> str:
         st = os.lstat(d)
     except OSError as e:
         raise CmdError(f"cannot stat {d}: {e}") from None
-    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid()
-            or st.st_mode & 0o077):
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077):
         raise CmdError(
             f"{d} is not a private directory owned by uid {os.getuid()}; "
             "refusing to put the wdotool socket there")
@@ -421,8 +419,7 @@ def _escape_transient_scope():
 def clean_env(env=None) -> dict:
     """The environment a spawned daemon keeps (B10)."""
     src = os.environ if env is None else env
-    out = {k: v for k, v in src.items()
-           if k in _KEEP_ENV or k.startswith("WDOTOOL_")}
+    out = {k: v for k, v in src.items() if k in _KEEP_ENV or k.startswith("WDOTOOL_")}
     if not out.get("PATH"):
         out["PATH"] = _DEFAULT_PATH
     return out
@@ -1123,8 +1120,7 @@ class _Daemon:
         self.px, self.py = x, y
         self.pos_known = True
 
-    _REL_ENV = {"abs": True, "absolute": True, "warp": True,
-                "rel": False, "relative": False}
+    _REL_ENV = {"abs": True, "absolute": True, "warp": True, "rel": False, "relative": False}
 
     def _rel_absolute(self, virtual: bool = False) -> bool:
         """Should a relative move be emitted as an absolute warp? (B1)
@@ -1149,8 +1145,7 @@ class _Daemon:
         here, and relative motion has the property a warp cannot have: it
         needs no position model, so it is right even on the first command of
         a daemon that has never been told where the cursor is."""
-        forced = self._REL_ENV.get(
-            os.environ.get("WDOTOOL_REL_MODE", "").strip().lower())
+        forced = self._REL_ENV.get(os.environ.get("WDOTOOL_REL_MODE", "").strip().lower())
         if forced is not None:
             return forced
         if virtual:
@@ -1332,8 +1327,7 @@ class _Daemon:
             snap = xkbmap.fetch(mods_wait=self._xkb_mods_wait)
         except xkbmap.XkbError as e:
             self._xkb_backoff = now + 5.0
-            self._xkb_fell_back(f"cannot read the compositor's keymap ({e})",
-                                "read", warnings)
+            self._xkb_fell_back(f"cannot read the compositor's keymap ({e})", "read", warnings)
             return None
         except Exception as e:  # a bug in the new code must not break typing
             self._xkb_backoff = now + 60.0
@@ -1346,8 +1340,7 @@ class _Daemon:
             # on for ever on the commonest GNOME session there is, whose two
             # groups are the same `us` twice -- +87 ms on every command, B5.)
             self._xkb_mods_wait = 0.0
-        key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(),
-               snap.group)
+        key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(), snap.group)
         if self._layout_cache is not None and self._layout_cache[0] == key:
             self._xkb_warn_degraded(warnings)
             return self._layout_cache[1]
@@ -1361,12 +1354,10 @@ class _Daemon:
                 rmap = xkbmap.build(snap.text, snap.group)
         except xkbmap.XkbError as e:
             rmap = None
-            self._xkb_fell_back(f"cannot use the compositor's keymap ({e})",
-                                "build", warnings)
+            self._xkb_fell_back(f"cannot use the compositor's keymap ({e})", "build", warnings)
         except Exception as e:
             rmap = None
-            self._xkb_fell_back(f"keymap conversion failed ({e!r})",
-                                "build", warnings)
+            self._xkb_fell_back(f"keymap conversion failed ({e!r})", "build", warnings)
         try:
             if not snap.group_known and (bypassed or rmap is not None):
                 # Which layout is active was a guess. Say so on the bypass
@@ -1486,8 +1477,7 @@ class _Daemon:
                 out.add(os.path.join(keystate.INPUT_DIR, name))
         return out
 
-    def _clear_mods(self, warnings=None, session=None, dev=None,
-                    vkbd_path=False) -> set:
+    def _clear_mods(self, warnings=None, session=None, dev=None, vkbd_path=False) -> set:
         """Release the modifier keys; return the ones to press back afterwards.
 
         That set is what *this daemon* holds. A modifier on another keyboard
@@ -1558,8 +1548,7 @@ class _Daemon:
         held = self._foreign_mods()
         if not held:
             return       # nothing held, or nothing readable: nothing to say
-        msg = FOREIGN_MODS_WARNING % ", ".join(
-            _MOD_LABELS[c] for c in keymap.MODIFIER_KEYCODES if c in held)
+        msg = FOREIGN_MODS_WARNING % ", ".join(_MOD_LABELS[c] for c in keymap.MODIFIER_KEYCODES if c in held)
         if not self._keystate_logged:
             self._keystate_logged = True
             print(msg, file=sys.stderr, flush=True)
@@ -1571,8 +1560,7 @@ class _Daemon:
             warnings.append(msg)
 
     @contextlib.contextmanager
-    def _mods_cleared(self, on, warnings, session, dev=None, vkbd_path=False,
-                      mode=None):
+    def _mods_cleared(self, on, warnings, session, dev=None, vkbd_path=False, mode=None):
         """clear -> inject -> restore without letting go of the injection
         lock. The ops that carry `clearmods` themselves (`type`, `key`) do it
         inline; this is for the ones handle() wraps. Doing it as three
@@ -1740,8 +1728,7 @@ class _Daemon:
                     # the base letter, which is how a French keyboard types "ô".
                     seq = layout.lookup_char(ch)
                 if not seq:
-                    warnings.append(
-                        f"Can't type character '{ch}' (not on the {lname} layout). Skipping.")
+                    warnings.append(f"Can't type character '{ch}' (not on the {lname} layout). Skipping.")
                     continue
                 for code, mask in seq:
                     mods = [m for m in self._mod_keycodes(mask, layout)
@@ -1848,8 +1835,7 @@ class _Daemon:
                 # B6: never answer "0,0" for a daemon that has no pointer.
                 if not self.pos_known:
                     self._no_pointer_yet()
-                return {"ok": True, "x": self.px, "y": self.py,
-                        "known": self.pos_known}
+                return {"ok": True, "x": self.px, "y": self.py, "known": self.pos_known}
             elif op == "geometry":
                 gx, gy, w, h = self.geometry(warnings)
                 return {"ok": True, "x": gx, "y": gy, "w": w, "h": h,
@@ -1919,18 +1905,15 @@ def daemon_main() -> int:
     # O_NOFOLLOW and a message rather than a traceback: the lock file lives
     # beside the socket, and a socket directory can be somebody else's.
     try:
-        lock_fd = os.open(path + ".lock",
-                          os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        lock_fd = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     except OSError as e:
-        print(f"wdotool daemon: cannot open {path}.lock: {e}",
-              file=sys.stderr, flush=True)
+        print(f"wdotool daemon: cannot open {path}.lock: {e}", file=sys.stderr, flush=True)
         return 1
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         os.close(lock_fd)
-        print(f"wdotool daemon already running/starting on {path}",
-              file=sys.stderr, flush=True)
+        print(f"wdotool daemon already running/starting on {path}", file=sys.stderr, flush=True)
         return 0
 
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -1957,8 +1940,7 @@ def daemon_main() -> int:
     try:
         srv.bind(path)
     except OSError as e:
-        print(f"wdotool daemon: cannot bind {path}: {e}",
-              file=sys.stderr, flush=True)
+        print(f"wdotool daemon: cannot bind {path}: {e}", file=sys.stderr, flush=True)
         return 1
     finally:
         os.umask(old_umask)
@@ -2010,8 +1992,7 @@ class DaemonClient:
         """uid at the other end of a connected AF_UNIX socket, or None when
         the kernel will not say (never on Linux)."""
         try:
-            data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                   struct.calcsize("3i"))
+            data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
             return struct.unpack("3i", data)[1]
         except (OSError, AttributeError, struct.error):
             return None
@@ -2065,8 +2046,7 @@ class DaemonClient:
                 parent = ""
             if parent:
                 menv["PYTHONPATH"] = parent
-            plan.append((sys.executable,
-                         [sys.executable, "-m", "wdotool", "__daemon"], menv))
+            plan.append((sys.executable, [sys.executable, "-m", "wdotool", "__daemon"], menv))
         return plan
 
     @staticmethod
@@ -2200,18 +2180,13 @@ class DaemonClient:
     # leaves the request byte-identical to what an older client sent.
     def mousemove_abs(self, x: int, y: int, clearmods: bool = False,
                       vkbd_mode: str | None = None):
-        self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods,
-                  **self._modes(None, vkbd_mode))
+        self._rpc(op="mousemove_abs", x=x, y=y, clearmods=clearmods, **self._modes(None, vkbd_mode))
 
-    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False,
-                      vkbd_mode: str | None = None):
-        self._rpc(op="mousemove_rel", dx=dx, dy=dy, clearmods=clearmods,
-                  **self._modes(None, vkbd_mode))
+    def mousemove_rel(self, dx: int, dy: int, clearmods: bool = False, vkbd_mode: str | None = None):
+        self._rpc(op="mousemove_rel", dx=dx, dy=dy, clearmods=clearmods, **self._modes(None, vkbd_mode))
 
-    def button(self, btn: int, down: bool, clearmods: bool = False,
-               vkbd_mode: str | None = None):
-        self._rpc(op="button", btn=btn, down=down, clearmods=clearmods,
-                  **self._modes(None, vkbd_mode))
+    def button(self, btn: int, down: bool, clearmods: bool = False, vkbd_mode: str | None = None):
+        self._rpc(op="button", btn=btn, down=down, clearmods=clearmods, **self._modes(None, vkbd_mode))
 
     def click(self, btn: int, repeat: int, delay_ms: int,
               clearmods: bool = False, vkbd_mode: str | None = None):

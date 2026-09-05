@@ -185,8 +185,7 @@ def _key_common(ctx, args, default_name, direction):
                         raise
                     for _ in range(passes):
                         print(e, file=sys.stderr)
-                        print("Failure converting key sequence '%s' to keycodes"
-                              % seq, file=sys.stderr)
+                        print("Failure converting key sequence '%s' to keycodes" % seq, file=sys.stderr)
                     print(f"xdo_send_keysequence_window reported an error for string '{seq}'",
                           file=sys.stderr)
                     failed += passes
@@ -323,8 +322,7 @@ def cmd_type(ctx, args):
         if wid is not None:
             _activate_settle(ctx, wid)
         for piece in data:
-            daemon.type_text(piece, delay, clearmods=clearmods,
-                             **_mode_kw(ctx))
+            daemon.type_text(piece, delay, clearmods=clearmods, **_mode_kw(ctx))
     return i + consumed
 
 
@@ -362,8 +360,7 @@ def cmd_click(ctx, args):
     delay = _strtonum(opts.get("delay", 100))
     repeat = _atoi(opts.get("repeat", 1))
     if "repeat" in opts and repeat <= 0:
-        raise CmdError(f"Invalid repeat value '{opts['repeat']}' (must be >= 1)\n"
-                       + usage.rstrip("\n"))
+        raise CmdError(f"Invalid repeat value '{opts['repeat']}' (must be >= 1)\n" + usage.rstrip("\n"))
     if i >= len(args):
         raise CmdError(usage.rstrip("\n") + "\nYou specified the wrong number of args.")
     button = _atoi(args[i])
@@ -372,8 +369,7 @@ def cmd_click(ctx, args):
     for wid in _target_windows(ctx, window_arg):
         if wid is not None:
             _activate_settle(ctx, wid)
-        daemon.click(button, repeat, delay, clearmods=clearmods,
-                     **_vkbd_kw(ctx))
+        daemon.click(button, repeat, delay, clearmods=clearmods, **_vkbd_kw(ctx))
     return i + 1
 
 
@@ -401,8 +397,7 @@ def _mouse_updown(ctx, args, default_name, down, noargs_msg):
     for wid in _target_windows(ctx, opts.get("window")):
         if wid is not None:
             _activate_settle(ctx, wid)
-        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")),
-                      **_vkbd_kw(ctx))
+        daemon.button(button, down, clearmods=bool(opts.get("clearmodifiers")), **_vkbd_kw(ctx))
     return i + 1
 
 
@@ -424,8 +419,7 @@ _USAGE_MOUSEMOVE = """Usage: %s [options] <x> <y>
 
 def _polar_to_xy(angle, distance, origin_x, origin_y):
     radians = ((360 - angle) + 90) * math.pi / 180
-    return (int(origin_x + math.cos(radians) * distance),
-            int(origin_y + -math.sin(radians) * distance))
+    return (int(origin_x + math.cos(radians) * distance), int(origin_y + -math.sin(radians) * distance))
 
 
 def cmd_mousemove(ctx, args):
@@ -476,8 +470,7 @@ def cmd_mousemove(ctx, args):
         elif wid is not None:
             win = ctx.backend().find(wid)
             tx, ty = win.x + x, win.y + y
-        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")),
-                             **_vkbd_kw(ctx))
+        daemon.mousemove_abs(tx, ty, clearmods=bool(opts.get("clearmodifiers")), **_vkbd_kw(ctx))
         # --sync: our injected position is authoritative, nothing to wait for
     return i + consumed
 
@@ -524,8 +517,7 @@ def cmd_mousemove_relative(ctx, args):
     # nothing can answer it (sway, no /dev/uinput), the delta still moves the
     # cursor the compositor is holding.
     _pointer_opt(ctx)
-    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")),
-                               **_vkbd_kw(ctx))
+    ctx.daemon().mousemove_rel(x, y, clearmods=bool(opts.get("clearmodifiers")), **_vkbd_kw(ctx))
     return i + 2
 
 
@@ -601,8 +593,7 @@ edge-or-corner can be any of:
 The action is any valid xdotool command (chains OK here)
 """
 
-_EDGES = {"left", "top-left", "top", "top-right", "right",
-          "bottom-right", "bottom", "bottom-left"}
+_EDGES = {"left", "top-left", "top", "top-right", "right", "bottom-right", "bottom", "bottom-left"}
 
 
 def cmd_behave_screen_edge(ctx, args):

@@ -55,29 +55,21 @@ def _long_opt(cmd, args, i, tok, body, longopts, opts):
     the next argv index, or None if nothing matches. Raises GetoptError for
     ambiguity and argument errors."""
     name, eq, val = body.partition("=")
-    matches = [lo for lo in longopts if lo[0] == name] or [
-        lo for lo in longopts if lo[0].startswith(name)
-    ]
+    matches = [lo for lo in longopts if lo[0] == name] or [lo for lo in longopts if lo[0].startswith(name)]
     if not matches:
         return None
     if len(matches) > 1:
         poss = "".join(" '--%s'" % m[0] for m in matches)
-        raise GetoptError(
-            "%s: option '%s' is ambiguous; possibilities:%s" % (cmd, tok, poss), opts
-        )
+        raise GetoptError("%s: option '%s' is ambiguous; possibilities:%s" % (cmd, tok, poss), opts)
     cname, takes = matches[0]
     if eq:
         if not takes:
-            raise GetoptError(
-                "%s: option '--%s' doesn't allow an argument" % (cmd, cname), opts
-            )
+            raise GetoptError("%s: option '--%s' doesn't allow an argument" % (cmd, cname), opts)
         opts.append((cname, val))
         return i + 1
     if takes:
         if i + 1 >= len(args):
-            raise GetoptError(
-                "%s: option '--%s' requires an argument" % (cmd, cname), opts
-            )
+            raise GetoptError("%s: option '--%s' requires an argument" % (cmd, cname), opts)
         opts.append((cname, args[i + 1]))
         return i + 2
     opts.append((cname, None))
@@ -96,9 +88,7 @@ def _short_opts(cmd, args, i, body, shortopts, opts):
                 opts.append((c, body[j + 1 :]))
                 return i + 1
             if i + 1 >= len(args):
-                raise GetoptError(
-                    "%s: option requires an argument -- '%c'" % (cmd, c), opts
-                )
+                raise GetoptError("%s: option requires an argument -- '%c'" % (cmd, c), opts)
             opts.append((c, args[i + 1]))
             return i + 2
         opts.append((c, None))
@@ -203,8 +193,7 @@ def run_chain(ctx: Context, prog: str, tokens: list[str]) -> int:
     return ret
 
 
-def _opts(cmd, args, shortopts, longopts, usage, shortmap=None,
-          invalid_usage=False):
+def _opts(cmd, args, shortopts, longopts, usage, shortmap=None, invalid_usage=False):
     """Leading-option parse via getopt_long_only, the way every command wants
     it. Returns (opts, nopts) with short chars canonicalized through shortmap,
     or None after printing usage for --help (caller returns len(args)). Bad
@@ -291,10 +280,7 @@ def _script_line_tokens(line: str, argv: list[str], prog: str) -> list[str]:
             else:
                 token = os.environ.get(name)
                 if token is None:
-                    sys.stderr.write(
-                        "%s: error: environment variable $%s is not set.\n"
-                        % (prog, name)
-                    )
+                    sys.stderr.write("%s: error: environment variable $%s is not set.\n" % (prog, name))
                     raise _ScriptError()
         else:
             token = raw
@@ -472,9 +458,7 @@ def _main(argv: list[str] | None = None) -> int:
     # the command line. Any option either exits or errors; like the C code,
     # the chain then starts at argv[1] regardless.
     try:
-        opts, _ = getopt_long_only(
-            prog, argv[1:], "hv", [("help", False), ("version", False)]
-        )
+        opts, _ = getopt_long_only(prog, argv[1:], "hv", [("help", False), ("version", False)])
     except GetoptError as e:
         opts = e.opts
         for name, _v in opts:

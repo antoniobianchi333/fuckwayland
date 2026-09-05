@@ -155,9 +155,7 @@ def cmd_search(ctx, args):
         pattern = rest[0]
         consumed += 1
         if not (want_name or want_class or want_classname or want_role):
-            sys.stderr.write(
-                "Defaulting to search window name, class, classname, and role\n"
-            )
+            sys.stderr.write("Defaulting to search window name, class, classname, and role\n")
             want_name = want_class = want_classname = want_role = True
 
     rx = None
@@ -412,8 +410,7 @@ def _wait_until(pred, what, interval=0.03, timeout=None):
     deadline = None if limit <= 0 else time.monotonic() + limit
     while not pred():
         if deadline is not None and time.monotonic() >= deadline:
-            raise CmdError("wdotool: gave up waiting for %s after %gs"
-                           % (what, limit))
+            raise CmdError("wdotool: gave up waiting for %s after %gs" % (what, limit))
         time.sleep(interval)
 
 
@@ -429,8 +426,7 @@ def _is_mapped(ctx, wid) -> bool:
     return b.find(wid).visible
 
 
-def _simple_action(ctx, args, cmdname, usage_body, act, sync_pred=None,
-                   has_sync=False, sync_what="%d"):
+def _simple_action(ctx, args, cmdname, usage_body, act, sync_pred=None, has_sync=False, sync_what="%d"):
     """Shared skeleton for [options] [window=%1] action commands."""
     usage = usage_body
     longopts = [("help", False)] + ([("sync", False)] if has_sync else [])
@@ -479,15 +475,13 @@ def cmd_windowfocus(ctx, args):
 def cmd_windowraise(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowraise")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, cmd, usage,
-                          lambda c, wid: c.backend().raise_(wid))
+    return _simple_action(ctx, args, cmd, usage, lambda c, wid: c.backend().raise_(wid))
 
 
 def cmd_windowlower(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowlower")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, cmd, usage,
-                          lambda c, wid: c.backend().lower(wid))
+    return _simple_action(ctx, args, cmd, usage, lambda c, wid: c.backend().lower(wid))
 
 
 def cmd_windowmap(ctx, args):
@@ -538,8 +532,7 @@ def cmd_windowminimize(ctx, args):
 def cmd_windowclose(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowclose")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, cmd, usage,
-                          lambda c, wid: c.backend().close(wid))
+    return _simple_action(ctx, args, cmd, usage, lambda c, wid: c.backend().close(wid))
 
 
 def cmd_windowquit(ctx, args):
@@ -553,8 +546,7 @@ def cmd_windowquit(ctx, args):
 def cmd_windowkill(ctx, args):
     cmd = getattr(ctx, "cmd_name", "windowkill")
     usage = "Usage: %s [window=%%1]\n%s" % (cmd, _SEE_STACK)
-    return _simple_action(ctx, args, cmd, usage,
-                          lambda c, wid: c.backend().kill(wid))
+    return _simple_action(ctx, args, cmd, usage, lambda c, wid: c.backend().kill(wid))
 
 
 def cmd_windowreparent(ctx, args):
@@ -646,8 +638,7 @@ def cmd_windowmove(ctx, args):
             ctx.backend().move_window(wid, tx, ty)
         except CmdError as e:
             sys.stderr.write("%s\n" % e)
-            msg = ("xdo_move_window reported an error while moving window %d"
-                   % wid)
+            msg = ("xdo_move_window reported an error while moving window %d" % wid)
             sys.stderr.write("%s\n" % msg)
             if not isinstance(e, SoftCmdError):
                 # A stale window id, a KWin script that failed, a compositor
@@ -659,10 +650,7 @@ def cmd_windowmove(ctx, args):
         if opsync:
             def moved():
                 w2 = ctx.backend().find(wid)
-                return not (
-                    ox == w2.x and oy == w2.y
-                    and abs(x - w2.x) > 10 and abs(y - w2.y) > 50
-                )
+                return not (ox == w2.x and oy == w2.y and abs(x - w2.x) > 10 and abs(y - w2.y) > 50)
             _wait_until(moved, "window %d to move" % wid)
     return nopts + used + 2
 
@@ -820,9 +808,7 @@ def cmd_windowstate(ctx, args):
         except CmdError as e:
             has_error = True
             sys.stderr.write("%s\n" % e)
-            sys.stderr.write(
-                "xdo_window_property reported an error on window %d\n" % wid
-            )
+            sys.stderr.write("xdo_window_property reported an error on window %d\n" % wid)
     if has_error:
         raise ChainAbort(1)
     return nopts + used
@@ -886,8 +872,7 @@ def cmd_behave(ctx, args):
         return len(args)
     _o, nopts = parsed
     if len(args) - nopts < 3:
-        raise CmdError("Invalid number of arguments (minimum is 3)\n"
-                       + usage.rstrip("\n"))
+        raise CmdError("Invalid number of arguments (minimum is 3)\n" + usage.rstrip("\n"))
     raise CmdError(
         "behave is not supported on Wayland: compositors do not expose "
         "per-window enter/leave/focus event taps to clients"
