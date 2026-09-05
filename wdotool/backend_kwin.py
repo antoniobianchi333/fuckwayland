@@ -73,7 +73,7 @@ import tempfile
 import time
 
 from wdotool import kwin_js, session
-from wdotool.backend import (View, Window, WindowBackend, Workspace, warn as _warn)
+from wdotool.backend import View, Window, WindowBackend, Workspace, warn as _warn
 from wdotool.ctx import CmdError, NoSessionError
 from wdotool.dbus_mini import (ERR, METHOD_CALL, NAME_FLAG_DO_NOT_QUEUE,
                                NO_REPLY_EXPECTED, Bus, DBusError, no_bus_text)
@@ -92,9 +92,9 @@ EVENTS_NAME = "org.fuckwayland.KWin.Events"
 OBJECT_PATH = "/org/fuckwayland/KWin"
 IFACE = "org.fuckwayland.KWin1"
 
-CALL_TIMEOUT = 10.0      # plain KWin D-Bus calls answer in milliseconds
-SCRIPT_TIMEOUT = 10.0    # load + run + the script's own reply
-SETTLE_MS = 1000         # how long the script waits for a state to land
+CALL_TIMEOUT = 10.0             # plain KWin D-Bus calls answer in milliseconds
+SCRIPT_TIMEOUT = 10.0           # load + run + the script's own reply
+SETTLE_MS = 1000                # how long the script waits for a state to land
 HEADER = "/* wdotool-kwin 1 "   # first line of every generated script
 
 # KWin's NET::WindowType (netwm_def.h) -> the Mutter window-type names the
@@ -146,7 +146,7 @@ class KwinBackend(WindowBackend):
         self.dest = _own(self.bus, BUS_NAME)
         self.script_timeout = SCRIPT_TIMEOUT
         self._seq = 0
-        self._kwin_name = _UNSET   # KWin's unique bus name, resolved once
+        self._kwin_name = _UNSET           # KWin's unique bus name, resolved once
         self._path_shape = ""              # "scripting" (6) / "root" (5.27)
         self._uuids: dict[int, str] = {}   # printed id -> KWin internalId
         self._screen = None                # cached screen size + work areas
@@ -322,7 +322,7 @@ class KwinBackend(WindowBackend):
             for objpath in ("%s/Script%d" % (SCRIPTING_PATH, sid), "/%d" % sid):
                 try:
                     self._call(objpath, SCRIPT_IFACE, "run", timeout=max(0.1, deadline - time.monotonic()))
-                    self._path_shape = ("scripting" if objpath.startswith(SCRIPTING_PATH + "/") else "root")
+                    self._path_shape = "scripting" if objpath.startswith(SCRIPTING_PATH + "/") else "root"
                     return name
                 except CmdError as e:
                     last = e
@@ -911,7 +911,7 @@ class KwinBackend(WindowBackend):
         for xid in x.client_list():
             try:
                 inst, cls = x.get_wm_class(xid)
-                name = (x.get_prop_string(xid, "_NET_WM_NAME") or x.get_prop_string(xid, "WM_NAME"))
+                name = x.get_prop_string(xid, "_NET_WM_NAME") or x.get_prop_string(xid, "WM_NAME")
                 geo = x.get_geometry(xid)
                 pid = x.get_pid(xid)
             except Exception:  # a window that just died

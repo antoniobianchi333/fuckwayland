@@ -80,7 +80,7 @@ def runtime_dir() -> str:
         st = os.lstat(d)
     except OSError as e:
         raise CmdError(f"cannot stat {d}: {e}") from None
-    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077):
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
         raise CmdError(
             f"{d} is not a private directory owned by uid {os.getuid()}; "
             "refusing to put the wdotool socket there")

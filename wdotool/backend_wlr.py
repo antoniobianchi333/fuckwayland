@@ -63,7 +63,7 @@ class WlrBackend(WindowBackend):
                 "zwlr_foreign_toplevel_management_unstable_v1"
             )
         self.tops: dict[int, _Toplevel] = {}  # handle oid -> record
-        self.order: list[int] = []  # handle oids, arrival order
+        self.order: list[int] = []            # handle oids, arrival order
         self.mgr_ver = min(g[1], 3)
         self.mgr = self.c.bind(g[0], "zwlr_foreign_toplevel_manager_v1", self.mgr_ver)
         self.c.on(self.mgr, self._on_mgr)
