@@ -29,7 +29,8 @@ import getopt
 import os
 import sys
 
-from wdotool import backend, passthrough, stdio
+from fwcommon import passthrough
+from wdotool import backend, stdio
 from wdotool.ctx import CmdError
 
 from wwmctl import core

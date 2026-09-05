@@ -45,9 +45,10 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The six tools this repo ships, i.e. everything that runs on a user's
-# machine as one of our commands.
-PACKAGES = ("wdotool", "wwmctl", "wxprop", "wxrandr", "warandr", "wmirror")
+# Everything that runs on a user's machine as one of our commands: the six
+# tools, and the package they all share.
+PACKAGES = ("fwcommon", "wdotool", "wwmctl", "wxprop", "wxrandr", "warandr",
+            "wmirror")
 
 # The other half of what a user installs: the GNOME Shell extension and the
 # script that installs it and the udev rule. The extension runs inside
@@ -106,7 +107,7 @@ def _report(hits):
 class NoPortalNoPolkit(unittest.TestCase):
     """See the module docstring: this is the README's guarantee as a test."""
 
-    def test_the_six_packages_are_all_there(self):
+    def test_every_package_is_all_there(self):
         """A rename must not turn the scan below into a no-op."""
         for pkg in PACKAGES:
             self.assertTrue(os.path.isdir(os.path.join(REPO, pkg)),

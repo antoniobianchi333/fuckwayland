@@ -184,11 +184,11 @@ def _read_xauth(path: str):
 def _session_xauthority() -> str | None:
     """The graphical session's cookie file when the environment names none:
     Mutter's $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.* (KWin's xauth_*), found
-    by wdotool.session even from `ssh root@` with an empty environment.
+    by fwcommon.session even from `ssh root@` with an empty environment.
     Mutter starts Xwayland with -auth, so the cookie is mandatory there --
     the cookie-less same-uid pass only works on wlroots."""
     try:
-        from wdotool import session
+        from fwcommon import session
         return session.find_xauthority()
     except Exception:
         return None

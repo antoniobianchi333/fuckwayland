@@ -137,7 +137,7 @@ class BackendOnAnX11SessionTest(unittest.TestCase):
     the X root has the real one."""
 
     def setUp(self):
-        from wdotool import passthrough
+        from fwcommon import passthrough
         passthrough.reset_cache()
         self.addCleanup(passthrough.reset_cache)
 

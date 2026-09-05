@@ -1,1 +1,4 @@
-VERSION = "warandr 0.1.0"
+from fwcommon import VERSION as _RELEASE
+
+#: what `--version` and the GTK about box print
+VERSION = "warandr " + _RELEASE

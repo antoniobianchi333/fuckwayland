@@ -159,8 +159,8 @@ def _pinned_group(forced=None):
 
 def _fetch_wayland(timeout: float, mods_wait: float):
     """(keymap text, active group or None, modifiers event seen?)."""
-    from wdotool import session
-    from wdotool.wayland_mini import WlConn
+    from fwcommon import session
+    from fwcommon.wayland_mini import WlConn
 
     hit = session.find_wayland_socket()
     if hit is None:

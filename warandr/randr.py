@@ -22,7 +22,7 @@ Selection (first match wins):
 5. ``xrandr``.
 
 warandr never hands its process over to the real tool (no ``execve``, see
-``wdotool.passthrough``): it *chooses* which one to run and runs it as a
+``fwcommon.passthrough``): it *chooses* which one to run and runs it as a
 child, which is what makes the choice switchable while the window is open.
 """
 
@@ -33,7 +33,7 @@ import shutil
 import subprocess
 import sys
 
-from wdotool import passthrough
+from fwcommon import passthrough
 
 from . import xrandr_parse
 from .model import Layout

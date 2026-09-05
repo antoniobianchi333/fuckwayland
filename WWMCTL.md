@@ -186,7 +186,7 @@ untouched) and the generic `list()` fallback.
 * **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge
   reports (`XInfo`: gnome-shell's own environment, else Mutter's
   `$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` cookie found by
-  `wdotool.session`), passed to `x11_mini.X11Conn(display, xauthority=)`.
+  `fwcommon.session`), passed to `x11_mini.X11Conn(display, xauthority=)`.
   Mutter starts Xwayland with `-auth`, so the cookie is mandatory — the
   cookie-less same-uid pass that works on wlroots is refused there — and
   this is what makes `ssh root@box` with an empty environment, `sudo`, and

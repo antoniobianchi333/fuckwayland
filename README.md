@@ -22,12 +22,12 @@ In the box:
 ## Install the package
 
 Ubuntu 24.04 and 26.04, one file and one command. Take
-`fuckwayland_0.2.0_all.deb` from the
+`fuckwayland_0.3.0_all.deb` from the
 [releases page](https://github.com/antoniobianchi333/fuckwayland/releases), or
 build it from a clone with `sh scripts/build-deb.sh`.
 
 ```sh
-sudo apt install ./fuckwayland_0.2.0_all.deb
+sudo apt install ./fuckwayland_0.3.0_all.deb
 ```
 
 That is the six tools in `/usr/bin`, the GNOME Shell bridge extension where
@@ -744,9 +744,9 @@ $ wxrandr --version
 xrandr program version       1.5.4
 Server reports RandR version 1.6
 $ warandr --version
-warandr 0.1.0
+warandr 0.3.0
 $ wmirror --version
-wmirror 0.2.0
+wmirror 0.3.0
 ```
 
 On a **Wayland** session (GNOME, KDE, sway) the version strings are ours, and

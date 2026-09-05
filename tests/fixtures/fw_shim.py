@@ -6,7 +6,7 @@ names) somewhere on PATH: the tool is picked from ``basename(argv[0])``, so
 the tree looks exactly like the real install (`/usr/local/bin/xdotool` ->
 fuckwayland, `/usr/bin/xdotool` -> the distribution's).
 
-``$FW_SHIM_SEAMS`` (JSON) overrides ``wdotool.passthrough``'s discovery
+``$FW_SHIM_SEAMS`` (JSON) overrides ``fwcommon.passthrough``'s discovery
 directories in this process, which is how a subprocess test describes a whole
 session with a temporary directory (the module constants are the seams; a
 child process cannot be monkeypatched).
@@ -31,7 +31,7 @@ MODULES = {
 def main():
     seams = os.environ.get("FW_SHIM_SEAMS")
     if seams:
-        from wdotool import passthrough
+        from fwcommon import passthrough
         for k, v in json.loads(seams).items():
             setattr(passthrough, k, v)
         passthrough.reset_cache()

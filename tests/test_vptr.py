@@ -2,7 +2,7 @@
 
 Everything here runs against a **real Wayland socket** served by a fake
 compositor that speaks the wire format (`FakeCompositor` below): the client is
-`wdotool/wayland_mini.py` unmodified, and every assertion is about the bytes
+`fwcommon/wayland_mini.py` unmodified, and every assertion is about the bytes
 the compositor received. A mock of our own client would have proved only that
 we can call our own methods.
 

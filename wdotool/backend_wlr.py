@@ -6,10 +6,10 @@ one wdotool process."""
 
 import struct
 
-from wdotool import session
+from fwcommon import session
+from fwcommon.wayland_mini import WlConn
 from wdotool.backend import Window, WindowBackend
 from wdotool.ctx import CmdError
-from wdotool.wayland_mini import WlConn
 
 BASE_ID = 1000000
 

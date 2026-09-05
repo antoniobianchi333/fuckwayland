@@ -8,7 +8,8 @@ import io
 import os
 import sys
 
-from wdotool import backend, commands, passthrough, stdio
+from fwcommon import passthrough
+from wdotool import backend, commands, stdio
 from wdotool.cnum import atoi as _atoi
 from wdotool.ctx import CmdError, Context
 

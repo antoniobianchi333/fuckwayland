@@ -12,7 +12,7 @@
       packages = forAll (pkgs: rec {
         wdotool = pkgs.python3Packages.buildPythonApplication {
           pname = "fuckwayland";
-          version = "0.1.0";
+          version = "0.3.0";
           src = ./.;
           pyproject = true;
           build-system = [ pkgs.python3Packages.setuptools ];
@@ -56,7 +56,7 @@
 
           # No --prefix PATH here, deliberately: warandr and the clones look
           # up the real xrandr/xdotool/wmctrl/xprop on the *user's* PATH (see
-          # wdotool/passthrough.py), and a store xrandr baked into the wrapper
+          # fwcommon/passthrough.py), and a store xrandr baked into the wrapper
           # would change which binary the handover finds.
           postInstall = ''
             ln -s $out/bin/wdotool $out/bin/xdotool

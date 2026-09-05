@@ -1,4 +1,4 @@
-fuckwayland (0.2.0) unstable; urgency=medium
+fuckwayland (0.3.0) unstable; urgency=medium
 
   * Initial packaging: the six tools in /usr/bin, the GNOME Shell bridge
     extension, the /dev/uinput udev rule and the warandr desktop entry, in one

@@ -1,5 +1,5 @@
 """wxrandr KDE backend: kde_output_device_v2 + kde_output_management_v2 over
-wdotool.wayland_mini.
+fwcommon.wayland_mini.
 
 KWin has no zwlr_output_management and no D-Bus display API (org.kde.KWin
 exposes activeOutputName() and nothing else; Plasma 5.27's org.kde.KScreen can
@@ -183,7 +183,7 @@ import math
 import struct
 import time
 
-from wdotool import session as wsession
+from fwcommon import session as wsession
 from wxrandr import core
 from wxrandr.core import Fatal, Mode, OutputState, warn
 # Plasma 5.27's logical-size rule is Mutter's layout-mode-1 rule (transform
@@ -420,7 +420,7 @@ def probe(sock_path: str | None = None):
     way out, so a non-KDE session is left with none). Never raises: this runs
     during backend auto-detection."""
     try:
-        from wdotool.wayland_mini import WlConn
+        from fwcommon.wayland_mini import WlConn
         if sock_path is None:
             hit = wsession.find_wayland_socket()
             if hit is None:
@@ -448,7 +448,7 @@ class KwinOutputs:
     name = "kwin"
 
     def __init__(self, conn=None, socket_path: str | None = None):
-        from wdotool.wayland_mini import WlConn
+        from fwcommon.wayland_mini import WlConn
         self._own_conn = conn is None
         if conn is None:
             if socket_path is None:

@@ -97,8 +97,10 @@ MARKER = b"fuckwayland"
 #: user told to install a package they already have.
 STAMP = MARKER + b"-clone:"
 #: the other shape we ship: a generated console script (`pip install .`),
-#: recognised by the import of one of our packages, not by a substring
-_OUR_MODULES = tuple(n.encode() for n in OUR_NAMES)
+#: recognised by the import of one of our packages, not by a substring.
+#: `fwcommon` is on this list and not in OUR_NAMES: no executable is ever
+#: called that, but a script of ours may import it and nothing else.
+_OUR_MODULES = tuple(n.encode() for n in OUR_NAMES + ("fwcommon",))
 _HEAD_BYTES = 4096
 
 _NEVER = ("never", "no", "off", "0", "false", "disable", "disabled")
@@ -527,7 +529,7 @@ def find_xauthority(e=None, uid=None):
             if os.path.exists(c):
                 return c
     try:
-        from wdotool import session
+        from fwcommon import session
         return session.find_xauthority(uid)
     except Exception:
         return None

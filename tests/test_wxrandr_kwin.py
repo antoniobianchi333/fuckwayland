@@ -30,8 +30,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wdotool import session as wsession                        # noqa: E402
-from wdotool.wayland_mini import Cursor                        # noqa: E402
+from fwcommon import session as wsession                       # noqa: E402
+from fwcommon.wayland_mini import Cursor                       # noqa: E402
 from wxrandr import cli, core, kwin, mutter                    # noqa: E402
 from wxrandr.core import Mode, State                           # noqa: E402
 
@@ -758,7 +758,7 @@ class Helpers(unittest.TestCase):
         self.assertEqual(kwin.from_fixed(332 / 256.0), 1.3)
 
     def test_untouched_shared_fixed_point_marshalling(self):
-        from wdotool import wayland_mini
+        from fwcommon import wayland_mini
         self.assertEqual(wayland_mini._marshal([("f", 1.3)]),
                          struct.pack("<i", 332))
 

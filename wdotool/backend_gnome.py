@@ -48,10 +48,10 @@ import re
 import struct
 import time
 
-from wdotool import session
+from fwcommon import session
+from fwcommon.dbus_mini import ERR, Bus, DBusError, no_bus_text
 from wdotool.backend import View, Window, WindowBackend, Workspace, warn
 from wdotool.ctx import CmdError, NoSessionError
-from wdotool.dbus_mini import ERR, Bus, DBusError, no_bus_text
 
 BUS_NAME = "org.fuckwayland.Bridge"
 OBJECT_PATH = "/org/fuckwayland/Bridge"

@@ -16,7 +16,7 @@ message with "the compositor does not offer wlr-foreign-toplevel"."""
 
 import os
 
-from wdotool import session
+from fwcommon import session
 from wdotool.backend import program
 from wdotool.ctx import CmdError, NoSessionError
 
@@ -69,7 +69,7 @@ def session_bus():
     if _probed:
         return _bus
     _probed = True
-    from wdotool.dbus_mini import Bus, DBusError
+    from fwcommon.dbus_mini import Bus, DBusError
     try:
         _bus = Bus()
         _names = _bus.list_names()

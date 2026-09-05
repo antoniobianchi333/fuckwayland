@@ -7,7 +7,7 @@ the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
 
 ## Planes / backends
 
-- **sway/i3-compatible (flagship)**: query from `GET_OUTPUTS` (+ `wdotool.wayland_mini`
+- **sway/i3-compatible (flagship)**: query from `GET_OUTPUTS` (+ `fwcommon.wayland_mini`
   wl_output for physical mm sizes); mutate via `output ...` IPC commands
   (mode/--custom, position, transform, scale, enable/disable, dpms).
 - **Generic wlroots**: `zwlr_output_management_unstable_v1` over `wayland_mini`
@@ -41,7 +41,7 @@ the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
   headless session. A typo'd `--output NAME --brightness` prints only the bare
   not-found warning and exits 0, like real xrandr (no holder is spawned).
 - **GNOME / Mutter**: `org.gnome.Mutter.DisplayConfig` on the session bus over the
-  pure-stdlib `wdotool.dbus_mini` — see "Mutter backend" below. Stock Ubuntu 24.04
+  pure-stdlib `fwcommon.dbus_mini` — see "Mutter backend" below. Stock Ubuntu 24.04
   (GNOME 46) and 26.04 (GNOME 50), no extension, no root.
 - **KDE Plasma / KWin**: the plasma-wayland-protocols pair `kde_output_device_v2`
   (read) + `kde_output_management_v2` (write) over `wayland_mini` — see "KWin

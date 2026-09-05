@@ -48,8 +48,8 @@ upload is the one that table was written for.
 
 import os
 
+from fwcommon.wayland_mini import now_ms as _now_ms, roundtrip
 from wdotool.us_keymap import TEXT as US_KEYMAP
-from wdotool.wayland_mini import now_ms as _now_ms, roundtrip
 
 MANAGER = "zwp_virtual_keyboard_manager_v1"
 # The only version there is (sway 1.11 advertises v1). We bind
@@ -165,8 +165,8 @@ class VirtualKeyboard:
              timeout: float = 2.0) -> "VirtualKeyboard":
         """Connect, create the keyboard, upload the keymap. Raises VkbdError
         for every failure, including "this compositor does not have it"."""
-        from wdotool import session
-        from wdotool.wayland_mini import WlConn
+        from fwcommon import session
+        from fwcommon.wayland_mini import WlConn
 
         if socket_path is None:
             hit = session.find_wayland_socket()

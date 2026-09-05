@@ -34,7 +34,7 @@ on stock Ubuntu. Root is acceptable and expected (for `/dev/uinput`). No kernel 
   like xdotool.
 - **Running under sudo / as root over ssh**: session sockets (`$XDG_RUNTIME_DIR`,
   `WAYLAND_DISPLAY`, `SWAYSOCK`, user D-Bus) are discovered by scanning `/run/user/*`
-  — implemented in `wdotool/session.py`. Candidate runtime dirs are anchored on the
+  — implemented in `fwcommon/session.py`. Candidate runtime dirs are anchored on the
   graphical session: a dir holding a `wayland-*` socket sorts first (so `ssh root@`
   with its own empty `/run/user/0` still finds the user's bus), then `SUDO_UID` /
   `PKEXEC_UID`, then real users. The X plane (Xwayland) is found by
@@ -66,7 +66,7 @@ images the merged root was byte-identical to the real `xprop`, because every
 window on an X11 session is an X window; what it removes is the synthesized
 root the same code produces when the compositor's view carries no X id.
 
-`wdotool/passthrough.py` is shared and **frozen after landing** (like
+`fwcommon/passthrough.py` is shared and **frozen after landing** (like
 `session.py` and `dbus_mini.py`): wire-level fixes allowed, API changes need a
 note. Pure stdlib, no imports from the rest of the tree except `session.py`.
 
@@ -1011,7 +1011,7 @@ started (`>&-`) leaves `sys.stdout` None, and the work still gets done.
   Exact output formats for search/getwindowgeometry/getmouselocation (+ `--shell`
   variants): copy from the manpage and `cmd_*.c`.
 
-## dbus_mini (shared — `wdotool/dbus_mini.py`)
+## dbus_mini (shared — `fwcommon/dbus_mini.py`)
 
 Pure-stdlib D-Bus client for the session bus and any `unix:` address (QEMU's
 `-display dbus` bus). No gdbus/busctl spawns, no glib, signals included. Shared like
@@ -1059,7 +1059,7 @@ Pure-stdlib D-Bus client for the session bus and any `unix:` address (QEMU's
   error name (NoServer for a missing socket, AuthFailed for REJECTED, AccessDenied "needs
   root" when not root); a child still silent `timeout + 5` s in is SIGKILLed and reaped
   (NoServer). Verified on Ubuntu 24.04 dbus-daemon 1.14.10: user → direct, `sudo` → fork.
-- **CLI**: `python3 -m wdotool.dbus_mini [--address A] [--as-uid N|owner] --names |
+- **CLI**: `python3 -m fwcommon.dbus_mini [--address A] [--as-uid N|owner] --names |
   --has-owner NAME | --call DEST PATH IFACE MEMBER [SIG JSON-args] | --get DEST PATH
   IFACE PROP | --get-all DEST PATH IFACE | --introspect DEST PATH | --monitor [RULE…]
   [--seconds N]`. Output is JSON (variants unwrapped, `ay` as int lists). Exit 0, 1
