@@ -4,4 +4,11 @@ result
 result-*
 *.qcow2
 *.img
+
+# Build outputs that are rebuilt from the source next to them and are not
+# worth a diff: the six single-file zipapps from scripts/build-pyz.sh, and the
+# .changes/.buildinfo that dpkg-buildpackage writes beside the package, which
+# are a record of the machine that ran the build rather than anything anyone
+# installs.  The .deb itself is NOT here: scripts/build-deb.sh writes it to
+# release/, which is committed.
 dist/

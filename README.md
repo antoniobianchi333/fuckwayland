@@ -35,14 +35,17 @@ In the box:
 
 ## Install
 
-On a default Ubuntu 24.04 or 26.04 desktop, one file and one command. Take
-`fuckwayland_0.3.0_all.deb` from the
-[releases page](https://github.com/antoniobianchi333/fuckwayland/releases), or build
-it from a clone with `sh scripts/build-deb.sh`.
+On a default Ubuntu 24.04 or 26.04 desktop, one file and one command. The built
+package is in the clone, at
+[`release/fuckwayland_0.3.0_all.deb`](release/fuckwayland_0.3.0_all.deb), and on the
+[releases page](https://github.com/antoniobianchi333/fuckwayland/releases). From the
+top of a clone:
 
 ```sh
-sudo apt install ./fuckwayland_0.3.0_all.deb
+sudo apt install ./release/fuckwayland_0.3.0_all.deb
 ```
+
+`sh scripts/build-deb.sh` rebuilds that same file in place from the source beside it.
 
 That is the six tools in `/usr/bin`, the GNOME Shell bridge extension where
 `gnome-shell` looks for it, the udev rule that opens `/dev/uinput` to whoever is at
