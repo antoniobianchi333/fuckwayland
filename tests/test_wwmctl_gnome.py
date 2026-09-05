@@ -22,8 +22,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-from test_backend_gnome import (CALC, DESKTOP, EDITOR, XTERM, XTERM_XID,  # noqa: E402
-                                MockBridge, _Base)
+from test_backend_gnome import (CALC, DESKTOP, EDITOR, WORK_AREA,     # noqa: E402
+                                XTERM, XTERM_XID, MockBridge, _Base)
 from wdotool import backend_detect, session  # noqa: E402
 from wdotool.backend_gnome import IFACE, OBJECT_PATH, GnomeBackend  # noqa: E402
 from wwmctl import cli, core  # noqa: E402
@@ -168,6 +168,10 @@ class GnomeCliBase(_Base):
         finally:
             for p in patches:
                 p.stop()
+        # One run of the tool is one process: by the time the next one
+        # starts, the clients have answered the configures this one caused.
+        # Two calls inside a single run do not get that (MockBridge.settle).
+        self.bridge.settle()
         return rc, out.getvalue(), err.getvalue()
 
 
@@ -729,10 +733,134 @@ class ActionTests(GnomeCliBase):
                                x11=None)
         self.assertEqual((rc, err), (0, ""))
         self.assertEqual(self.calls("SetState"), [
-            (CALC, "FULLSCREEN", "add"), (CALC, "MAXIMIZED_VERT", "toggle"),
-            (CALC, "MAXIMIZED_HORZ", "toggle"), (CALC, "HIDDEN", "remove")])
+            (CALC, "FULLSCREEN", "add"), (CALC, "MAXIMIZED", "toggle"),
+            (CALC, "HIDDEN", "remove")])
         d = self.bridge.find(CALC)
         self.assertTrue(d["fullscreen"] and d["maximized_v"] and d["maximized_h"])
+
+    def test_b_the_maximize_pair_is_one_request(self):
+        """wwmctl-4: `-b remove,maximized_vert,maximized_horz` -- wmctrl's
+        documented way to unmaximize -- must reach Mutter as ONE call with
+        both direction bits, and give the window back the rectangle it had.
+        Live on GNOME 46 and 50 the two single-axis calls left a 200,150
+        900x600 window at 200,32 900x1048; see core._state_steps."""
+        d = self.bridge.find(CALC)
+        start = (d["x"], d["y"], d["width"], d["height"])
+        rc, _o, err = self.wm(["-r", "Calculator", "-b",
+                               "add,maximized_vert,maximized_horz"], x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual((d["x"], d["y"], d["width"], d["height"]), WORK_AREA)
+        rc, _o, err = self.wm(["-r", "Calculator", "-b",
+                               "remove,maximized_vert,maximized_horz"],
+                              x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual((d["x"], d["y"], d["width"], d["height"]), start)
+        self.assertEqual((d["maximized_h"], d["maximized_v"]), (False, False))
+        self.assertEqual(self.calls("SetState"),
+                         [(CALC, "MAXIMIZED", "add"),
+                          (CALC, "MAXIMIZED", "remove")])
+
+    def test_b_two_single_axis_calls_are_what_corrupted_the_rect(self):
+        """Why it is folded, kept as the fake's account of Mutter: with no
+        client round trip in between, the second call still reads the
+        maximized frame rect and carries half of it into its target -- and
+        that rectangle then becomes the restore size, which is why nothing
+        short of an explicit resize got the window back afterwards."""
+        d = self.bridge.find(CALC)
+        start = (d["x"], d["y"], d["width"], d["height"])
+        self.bridge.m_SetState(None, CALC, "MAXIMIZED", "add")
+        self.bridge.settle()
+        self.bridge.m_SetState(None, CALC, "MAXIMIZED_VERT", "remove")
+        self.bridge.m_SetState(None, CALC, "MAXIMIZED_HORZ", "remove")
+        self.assertEqual((d["maximized_h"], d["maximized_v"]), (False, False))
+        self.assertEqual((d["x"], d["y"], d["width"], d["height"]),
+                         (start[0], WORK_AREA[1], start[2], WORK_AREA[3]))
+        self.assertEqual(self.bridge.saved[CALC][3], WORK_AREA[3])
+
+    def test_b_only_the_two_maximize_axes_together_are_folded(self):
+        """The neighbours of the fold: one axis, an axis with something
+        else, and the same axis twice all stay one request per property."""
+        for arg, sent in (
+                ("add,maximized_vert",
+                 [(CALC, "MAXIMIZED_VERT", "add")]),
+                ("remove,maximized_horz",
+                 [(CALC, "MAXIMIZED_HORZ", "remove")]),
+                ("add,maximized_vert,fullscreen",
+                 [(CALC, "MAXIMIZED_VERT", "add"), (CALC, "FULLSCREEN", "add")]),
+                ("add,maximized_horz,maximized_horz",
+                 [(CALC, "MAXIMIZED_HORZ", "add")] * 2)):
+            self.bridge.calls = []
+            rc, _o, err = self.wm(["-r", "Calculator", "-b", arg], x11=None)
+            self.assertEqual((rc, err), (0, ""), arg)
+            self.assertEqual(self.calls("SetState"), sent, arg)
+
+    def test_b_a_backend_without_a_pair_name_still_sends_two(self):
+        """KWin and sway settle each axis before they answer, so there is
+        nothing to fold there and the two calls stay two calls."""
+        with mock.patch.object(type(self.backend), "maximize_pair_state",
+                               lambda self: None):
+            rc, _o, err = self.wm(["-r", "Calculator", "-b",
+                                   "remove,maximized_vert,maximized_horz"],
+                                  x11=None)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.calls("SetState"),
+                         [(CALC, "MAXIMIZED_VERT", "remove"),
+                          (CALC, "MAXIMIZED_HORZ", "remove")])
+
+    def test_b_single_axis_and_one_axis_of_a_pair_keep_the_rectangle(self):
+        """The neighbours that were already right stay right: one axis up
+        and down again, and removing the pair when only one axis was set."""
+        d = self.bridge.find(CALC)
+        start = (d["x"], d["y"], d["width"], d["height"])
+        for axis in ("maximized_vert", "maximized_horz"):
+            self.wm(["-r", "Calculator", "-b", "add," + axis], x11=None)
+            self.assertNotEqual((d["x"], d["y"], d["width"], d["height"]),
+                                start, axis)
+            self.wm(["-r", "Calculator", "-b", "remove," + axis], x11=None)
+            self.assertEqual((d["x"], d["y"], d["width"], d["height"]),
+                             start, axis)
+            self.wm(["-r", "Calculator", "-b", "add," + axis], x11=None)
+            self.wm(["-r", "Calculator", "-b",
+                     "remove,maximized_vert,maximized_horz"], x11=None)
+            self.assertEqual((d["x"], d["y"], d["width"], d["height"]),
+                             start, axis)
+            self.assertEqual((d["maximized_h"], d["maximized_v"]),
+                             (False, False), axis)
+
+    def test_b_toggle_of_the_pair_follows_the_horizontal_flag(self):
+        """A pair that is half set has to go one way or the other. Mutter
+        decides that on the horizontal flag when it reads two atoms out of
+        one _NET_WM_STATE message -- which is the message real wmctrl sends
+        -- so the pair never lands maximized on the other axis alone."""
+        d = self.bridge.find(CALC)
+        pair = ["-b", "toggle,maximized_vert,maximized_horz"]
+        self.wm(["-r", "Calculator", "-b", "add,maximized_horz"], x11=None)
+        self.wm(["-r", "Calculator"] + pair, x11=None)
+        self.assertEqual((d["maximized_h"], d["maximized_v"]), (False, False))
+        self.wm(["-r", "Calculator", "-b", "add,maximized_vert"], x11=None)
+        self.wm(["-r", "Calculator"] + pair, x11=None)
+        self.assertEqual((d["maximized_h"], d["maximized_v"]), (True, True))
+
+    def test_b_the_pair_falls_back_to_both_atoms_on_x(self):
+        """A bridge that will not do the pair (anything that answers "not
+        applied") leaves an XWayland window with the two atoms real wmctrl
+        sends, not one invented _NET_WM_STATE_MAXIMIZED."""
+        orig = self.bridge.m_SetState
+
+        def refuse(m, wid, state, action):
+            if state == "MAXIMIZED":
+                return "b", (False,)
+            return orig(m, wid, state, action)
+
+        self.bridge.m_SetState = refuse
+        x = FakeX11()
+        rc, _o, err = self.wm(["-r", "test@vm", "-b",
+                               "remove,maximized_vert,maximized_horz"], x11=x)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual([(c[3][0], c[3][1]) for c in x.calls
+                          if c[0] == "client_message"],
+                         [(0, x.atom("_NET_WM_STATE_MAXIMIZED_VERT")),
+                          (0, x.atom("_NET_WM_STATE_MAXIMIZED_HORZ"))])
 
     def test_b_gaps_warn_and_succeed(self):
         rc, _o, err = self.wm(["-r", "Calculator", "-b", "add,shaded,below"],

@@ -35,7 +35,12 @@ const IFACE_NAME = 'org.fuckwayland.Bridge1';
 // 2: SelectWindow picks the window under the pointer on the next button
 // press (v1 waited for a focus change). An installed v1 has to be replaced --
 // see gnome/README.md -- and the client says so instead of hanging.
-const VERSION = 2;
+// 3: SetState of MAXIMIZED under `toggle` follows the horizontal flag, as
+// Mutter reads the two atoms of one _NET_WM_STATE message (v1/v2 asked for
+// "both axes are already set"). Nothing gates on it: MAXIMIZED itself is as
+// old as the bridge, and add/remove of the pair -- the corrupted restore
+// size -- are fixed against an installed v2 too.
+const VERSION = 3;
 
 const ERR_NOT_FOUND = `${IFACE_NAME}.NotFound`;
 const ERR_UNSUPPORTED = `${IFACE_NAME}.Unsupported`;
@@ -1205,7 +1210,26 @@ export default class FuckwaylandBridge extends Extension {
             const [h, v] = maximizedFlags(w);
             const horz = S !== 'MAXIMIZED_VERT';
             const vert = S !== 'MAXIMIZED_HORZ';
-            const cur = S === 'MAXIMIZED_HORZ' ? h : S === 'MAXIMIZED_VERT' ? v : (h && v);
+            // MAXIMIZED is the pair in ONE call, and a client that wants
+            // both axes has to send it rather than the two axis names in a
+            // row. Mutter unmaximizes to the window's *current* frame rect
+            // and takes only the axis it is unmaximizing from the saved
+            // rectangle (meta_window_set_unmaximize_flags, window.c), so a
+            // second single-axis call that arrives before the Wayland
+            // client has answered the first configure carries the still
+            // maximized half into its target -- and once both flags are
+            // clear Mutter saves that rectangle as the restore size
+            // (maybe_save_rect). Measured on GNOME 46 and 50; see
+            // wwmctl.core._state_steps.
+            //
+            // Which way a *toggle* of the pair goes is Mutter's own rule
+            // for the two atoms of one _NET_WM_STATE message: the
+            // horizontal flag decides (window-x11.c, `max = action ==
+            // _NET_WM_STATE_ADD || (action == _NET_WM_STATE_TOGGLE &&
+            // !...is_maximized_horizontally (...))`). Before bridge v3
+            // this said `h && v`, which disagreed with wmctrl on X for a
+            // window maximized on one axis only.
+            const cur = S === 'MAXIMIZED_VERT' ? v : h;
             setMaximized(w, horz, vert, want(cur));
             return true;
         }

@@ -471,6 +471,14 @@ class GnomeBackend(WindowBackend):
         raise CmdError("windowstate %s is not supported by the gnome backend (%s)"
                        % (state, _GAP_REASONS.get(state, "Mutter has no API for it")))
 
+    def maximize_pair_state(self) -> str:
+        """"MAXIMIZED": the bridge's name for both axes at once, which
+        reaches Mutter as one set_maximize_flags()/set_unmaximize_flags()
+        call carrying both direction bits. Two single-axis calls do not add
+        up to it (they corrupt the saved rectangle); every bridge version
+        has accepted the name."""
+        return "MAXIMIZED"
+
     def unsupported_states(self) -> "set[str]":
         """_NET_WM_STATE names the bridge answers "not applied" to: Mutter
         exports no Wayland setter for them, so they are cosmetic no-ops

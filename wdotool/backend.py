@@ -34,6 +34,40 @@ def program() -> str:
     return _PROGRAM
 
 
+# the two _NET_WM_STATE names a window manager may take as one operation
+_MAXIMIZE_AXES = frozenset(("MAXIMIZED_VERT", "MAXIMIZED_HORZ"))
+
+
+def state_steps(backend, names):
+    """The _NET_WM_STATE names of one request, grouped into the set_state()
+    calls that express it: [(state to send, the names it stands for)], in
+    the order given. Two maximize axes standing next to each other become
+    one call wherever the backend names the pair
+    (WindowBackend.maximize_pair_state -- GNOME does, KWin and sway do
+    not); everything else stays one call per name. `backend` may be None
+    (no session): nothing is grouped then, and the caller's own fallback
+    path decides what to do.
+
+    Every command that can be handed both axes at once has to group them
+    here: `wwmctl -b remove,maximized_vert,maximized_horz`, and `wdotool
+    windowstate --remove MAXIMIZED_VERT --remove MAXIMIZED_HORZ` once it
+    honours more than the last option. Sending the axes one after the
+    other corrupts a Mutter window's saved rectangle -- see
+    maximize_pair_state()."""
+    names = [n.upper() for n in names]
+    pair = getattr(backend, "maximize_pair_state", None)
+    both = pair() if pair else None
+    out, i = [], 0
+    while i < len(names):
+        if both and set(names[i:i + 2]) == _MAXIMIZE_AXES:
+            out.append((both, names[i:i + 2]))
+            i += 2
+        else:
+            out.append((names[i], [names[i]]))
+            i += 1
+    return out
+
+
 def warn(msg: str) -> None:
     """One warning line on stderr, in the running tool's name."""
     sys.stderr.write("%s: %s\n" % (_PROGRAM, msg))
@@ -185,6 +219,28 @@ class WindowBackend:
         EWMH ClientMessage, which reaches an XWayland window through the X
         server the compositor's own API just refused."""
         self._unsupported("windowstate")
+
+    def maximize_pair_state(self) -> "str | None":
+        """The one state name that sets or clears BOTH maximize axes in a
+        single set_state() call, for a backend where doing the two axes one
+        after the other is not the same thing; None where sending one axis
+        at a time is correct (KWin and sway settle each axis before they
+        answer, so there is nothing to fold).
+
+        GNOME's is "MAXIMIZED". Mutter unmaximizes to the window's *current*
+        frame rect and takes only the axis it is unmaximizing from the saved
+        rectangle, so a second single-axis call that arrives before the
+        Wayland client has answered the first configure carries the still
+        maximized half into its target -- and once both flags are clear
+        Mutter saves that rectangle as the restore size. Mutter's own EWMH
+        handler never splits the pair: it folds both atoms of one
+        ClientMessage into a single call.
+
+        Any command that can be asked for both axes at once has to fold them
+        the way wwmctl.core._state_steps does -- `wdotool windowstate --add
+        MAXIMIZED_VERT --add MAXIMIZED_HORZ` included, once it honours more
+        than the last option."""
+        return None
 
     def set_num_desktops(self, n: int):
         """Ask the compositor for exactly n workspaces (set_num_desktops).

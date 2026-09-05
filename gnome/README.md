@@ -83,6 +83,7 @@ policy changed them. Upgrading an already-loaded extension still needs a
 re-login (the ESM module cache is per process).
 
 **The extension changed in this release** (`extension.js`, `metadata.json`):
+`SetState` folds both maximize axes into one Mutter call (bridge v3, below);
 `SelectWindow` is a new implementation — a stage grab resolved by a button
 press — and it refuses, rather than grabs, when another picker is running or
 the shell is already modal. Reinstall and log back in; nothing else in the
@@ -95,6 +96,15 @@ change in v1), so an installed v1 has to be replaced: re-run
 files over a loaded extension does not reload it. `--check` prints the
 running bridge's version; `wdotool selectwindow` refuses to run against a v1
 bridge and says this, rather than hanging on the focused window.
+
+**Bridge v3 changed what `SetState` does with the maximize pair.** `MAXIMIZED`
+under `toggle` now follows the horizontal flag, the way Mutter itself reads
+the two atoms of one `_NET_WM_STATE` message; v1 and v2 asked for "both axes
+are already set". Nothing gates on the version — `MAXIMIZED` is accepted by
+every bridge that has shipped, and `add`/`remove` of the pair (the corrupted
+restore size described under `SetState`) are fixed against a v2 bridge too —
+so a stale bridge only differs on the toggle. Reinstall and log back in to get
+the whole fix.
 
 Debugging: `journalctl --user -f -o cat _COMM=gnome-shell | grep -i
 fuckwayland`. Enable/disable, bus-name changes and unexpected (`.Failed`)
@@ -158,7 +168,7 @@ gdbus call --session --dest org.fuckwayland.Bridge --object-path /org/fuckwaylan
 | `Move` | `(t, i x, i y)` | `move_frame(true, x, y)`; frame coordinates, logical pixels |
 | `Resize` | `(t, i w, i h)` | `move_resize_frame` keeping the frame's top-left |
 | `MoveResize` | `(t, i, i, i, i)` | |
-| `SetState` | `(t, s state, s action) → b` | `state` ∈ `FULLSCREEN MAXIMIZED_HORZ MAXIMIZED_VERT MAXIMIZED HIDDEN ABOVE BELOW STICKY DEMANDS_ATTENTION SHADED SKIP_TASKBAR SKIP_PAGER MODAL`, `action` ∈ `add remove toggle`. `MAXIMIZED_HORZ`/`_VERT` are real per-axis operations on every release. Returns `false` (and does nothing) for what Mutter cannot set: `SHADED`, `SKIP_*`, `MODAL`, `BELOW`. Unknown ids still raise `NotFound`. |
+| `SetState` | `(t, s state, s action) → b` | `state` ∈ `FULLSCREEN MAXIMIZED_HORZ MAXIMIZED_VERT MAXIMIZED HIDDEN ABOVE BELOW STICKY DEMANDS_ATTENTION SHADED SKIP_TASKBAR SKIP_PAGER MODAL`, `action` ∈ `add remove toggle`. `MAXIMIZED_HORZ`/`_VERT` are real per-axis operations on every release. **`MAXIMIZED` is not a shorthand for sending the two axis names in a row: it is the only correct way to ask for both.** Mutter unmaximizes to the window's current frame rect and takes only the axis it is unmaximizing from the saved rectangle, so a second single-axis call that beats the client's commit keeps the maximized half and is then saved as the restore size — measured on 46 and 50, `-b remove,maximized_vert,maximized_horz` left a 200,150 900x600 window at 200,32 900x1048. `toggle` of the pair follows the horizontal flag (**v3**; v1/v2 used "both are set"), which is Mutter's own rule for two atoms in one `_NET_WM_STATE` message. Returns `false` (and does nothing) for what Mutter cannot set: `SHADED`, `SKIP_*`, `MODAL`, `BELOW`. Unknown ids still raise `NotFound`. |
 | `MoveToWorkspace` | `(t, i index)` | `change_workspace_by_index`; `index < 0` = stick to all workspaces (EWMH 0xFFFFFFFF); `NotFound` for a missing workspace |
 | `SelectWindow` | `(u timeout_ms) → t` | **v2**: takes a stage grab and resolves with the window under the pointer at the next button press (`xdotool selectwindow`, including the window that already has focus); `0` when the press landed on no window. Escape, the deadline, a caller that disconnected and a disabled extension all come back as `Cancelled`. `timeout_ms = 0` means "as long as the user takes" and is still capped at 30 seconds, as is any larger value — a grab is never held indefinitely, and a finished selection leaves behind a quiet period as long as the grab it held, so a caller cannot re-arm in a loop (`Unsupported` until it passes). Set your D-Bus call timeout above it (the clients use none). v1 resolved on the next *focus change* instead. |
 
@@ -211,7 +221,7 @@ stable_sequence    get_stable_sequence() (creation counter)
 
 ### Misc, signals, errors
 
-* `GetVersion() → u` and read-only property `Version` (`u`), both `1`.
+* `GetVersion() → u` and read-only property `Version` (`u`), both `3`.
   (GJS resolves method and property names on the same object, so the method
   could not also be called `Version`.)
 * Signal `WindowEvent(t id, s change)` with sway's vocabulary: `new`, `close`,
@@ -228,7 +238,7 @@ Ubuntu 24.04.4 / GNOME Shell 46.0 (gnome-shell 46.0-0ubuntu6~24.04.14, gjs
 1.80.2, Xwayland 23.2.6), fresh autologin session, xterm + gnome-text-editor +
 gnome-calculator: user install → "log out and back in" → after the reboot
 `--check` shows state 1 / name owned / version 1 (the bridge version then;
-it is 2 since the picker rewrite) and the journal only has
+the picker rewrite made it 2 and the maximize pair 3) and the journal only has
 `enabled`/`acquired` lines (no JS ERROR). Through `wdotool`: `search`
 (name/class/classname/pid/desktop/onlyvisible), `getactivewindow`,
 `getwindow{name,classname,pid,geometry}`, `windowactivate --sync` (switches
@@ -338,6 +348,21 @@ disable` with a grab held, two SIGKILLs of the client mid-pick, twelve rapid
 pick/cancel cycles, and a timeout racing a click — after every one of them an
 injected click and `type` reached the application. `wwmctl -a :SELECT:` and
 `wxprop` click-select now print *click* the target window, and complete.
+
+Bridge v3's maximize pair was measured on the **default desktop installs** of
+both releases (26.04 / GNOME Shell 50 and 24.04 / GNOME Shell 46), gnome-text
+-editor, screenshots of every end state. Before: a window at 200,150 900x600,
+maximized on both axes and then unmaximized with `wwmctl -b remove,
+maximized_vert,maximized_horz`, came back 200,32 900x1048 — the right width at
+the full height — and stayed there: a second `remove` did nothing, a `toggle`
+of `maximized_vert` set the flag back on without moving anything, and `-e` put
+the size but not the position back. Reversing the two properties moved the
+damage to the other axis (67,150 1853x600). After: 200,150 900x600 on both
+releases, byte for byte the rectangle it started from, for `remove` and for
+`toggle` alike. Unchanged either way, and re-measured: one axis up and down
+again, `remove` of the pair when only one axis was set, and the two axes as
+two separate `wdotool windowstate` commands (two processes, so the client has
+answered in between — which is why that route never showed the bug).
 
 Not exercised live yet: `ConfirmDisplayChange` (no display change was
 triggered) and the Looking-Glass probes of §6 of the checklist.

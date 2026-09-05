@@ -230,7 +230,20 @@ untouched) and the generic `list()` fallback.
   index), `-b (add|remove|toggle),P1[,P2]` `SetState` per property —
   `fullscreen`, `maximized_vert`/`maximized_horz` (real per-axis
   maximization on every GNOME release), `hidden` (minimize), `above`,
-  `sticky`, `demands_attention` are applied by Mutter. Five have no
+  `sticky`, `demands_attention` are applied by Mutter. **Both maximize
+  axes in one `-b` are sent as one request** (the bridge's `MAXIMIZED`),
+  because on Mutter two single-axis calls are not the same thing: it
+  unmaximizes to the window's *current* frame rect and takes only the axis
+  it is unmaximizing from the saved rectangle, so the second call — issued
+  before the Wayland client has answered the first configure — carries the
+  still maximized half into its target, and once both flags are clear that
+  rectangle becomes the restore size. `-b remove,maximized_vert,
+  maximized_horz`, wmctrl's documented way to unmaximize, left a 200,150
+  900x600 window at 200,32 900x1048 on GNOME 46 and 50, and reversing the
+  two only moved the damage to the other axis. Mutter's own EWMH handler
+  folds the two atoms of one ClientMessage exactly the same way, down to
+  deciding a `toggle` of the pair on the horizontal flag. KWin needs none
+  of this: it settles each state before it answers (see below). Five have no
   Wayland setter at all — `below`, `skip_taskbar`, `skip_pager`, `shaded`,
   `modal` — and for an **XWayland** window those go to the X plane
   instead, as the `_NET_WM_STATE` ClientMessage real wmctrl sends: Mutter
