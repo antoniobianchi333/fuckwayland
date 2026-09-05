@@ -1,7 +1,8 @@
 # Reproducers for the KDE + sway stress pass
 
-Run these on the *host*: `sh deploy-to-vm.sh <repo> <vm>` builds the five
-zipapps and installs them on a `vmctl` guest, then
+Run these on the *host*: `sh deploy-to-vm.sh <repo> <vm>` builds the zipapps and
+installs the five these scripts use on a `vmctl` guest (`wmirror` has no reproducer
+here), then
 `vmctl user <vm> -- sh /tmp/<script>.sh` runs one as the desktop user
 (`vmctl ssh <vm> -- sh ...` runs it as root). The two `kde-outreg-*` scripts
 are the exception: they need no guest at all. What they exercise — how Plasma

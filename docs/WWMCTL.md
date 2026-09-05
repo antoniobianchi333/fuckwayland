@@ -3,7 +3,8 @@
 Drop-in `wmctrl` clone for Wayland, handling **both** native Wayland apps and legacy X
 apps (XWayland) as first-class citizens. Lives in this repo beside wdotool and reuses
 its machinery. Pure-stdlib Python, same rules as the rest of the tree
-(Technical.md): nix-only toolchain, no home-dir installs, byte-parity output.
+([Technical.md](Technical.md)): no third-party dependency, byte-parity output against
+the installed original.
 
 ## The dual-plane trick
 
@@ -52,21 +53,31 @@ module docstring is the API.
 the legacy `WM_NAME`/`WM_ICON_NAME` is *deleted* rather than written as a lossy
 `STRING`, exactly as wmctrl's `window_set_title` does),
 `-i`, `-F`, `-v`, `-m`, `-k on|off|toggle`, `-o X,Y`,
-`-n N`, `-h`. Selection default: case-insensitive substring on title. Exact printf formats,
-column widths, error strings, and exit codes come from the real wmctrl source + the
-reference dumps (workflow stage 1 produces both; sandbox devshell has the real
-`wmctrl` binary). Desktop semantics map exactly like wdotool's desktop commands
-(sway workspaces, 0-based). `-k`/`-o`/`-n`: warn+succeed style where Wayland can't
-(match wdotool's philosophy; document).
+`-n N`, `-h`. Selection default: case-insensitive substring on title. Exact printf
+formats, column widths, error strings and exit codes come from the real wmctrl source
+and from reference dumps of the real binary, which the devshell and every golden image
+carry.
+Desktop semantics map exactly like wdotool's desktop commands (sway workspaces,
+0-based). `-k`/`-o`/`-n` are warn+succeed where Wayland cannot do the thing, the same
+rule wdotool's cosmetic commands follow.
+
+**One deliberate deviation from the oracle, in the listing.** The machine column is
+right-aligned to the *longest* `WM_CLIENT_MACHINE` in the whole list; wmctrl 1.07's
+`main.c` sizes it from the *last* row it printed instead. Our `-l` is in stacking
+order, so with wmctrl's rule the column would re-flow every time a window was raised.
+The `-r <WIN> -L` row keeps wmctrl's own single-window behaviour (`display_window`'s
+`max_client_machine_len == 0` branch), where nothing is padded at all.
 
 **Two oracle generations.** Ubuntu 24.04 ships wmctrl 1.07; Ubuntu 25.04+ and
 Debian 13+ ship 1.07+git20240228, which adds `-j` (print the current desktop,
 `printf("%-2d\n")`), `-S` (list in stacking order), `-Y <WIN>` (iconify), `-r
 <WIN> -y <MVARG>` (move/resize, then activate), the undocumented `-z <WIN>`
-(lower) and `-E <WIN>` (print the title), and `-k toggle`. Both generations
-answer `1.07` to `-V`. wwmctl implements the **union** on every flavor — being a
-drop-in that rejects `wmctrl -j` on one distro is worse than accepting it on
-both — so `-S` is accepted and does nothing (our `-l` is already stacking order,
+(lower) and `-E <WIN>` (print the title), and `-k toggle`; the Debian and Ubuntu
+patches add two more on top of that, `-r <WIN> -M <PATH>` (an XPM file becomes the
+window's `_NET_WM_ICON`, X plane only) and `-r <WIN> -L` (the window's own `-l` row).
+Both generations answer `1.07` to `-V`. wwmctl implements the **union** on every
+flavor — being a drop-in that rejects `wmctrl -j` on one distro is worse than accepting
+it on both — so `-S` is accepted and does nothing (our `-l` is already stacking order,
 see below) and `-k toggle` is accepted everywhere. `-k`'s argument *error* is the one
 place the extension is not advertised: it stays wmctrl's own `The argument to the -k
 option must be either "on" or "off"`, because that string is parity-checked against

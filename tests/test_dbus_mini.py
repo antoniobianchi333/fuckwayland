@@ -51,8 +51,8 @@ SCALES = [1.0, 1.25, 1.5, 1.75, 2.0]
 
 
 def get_current_state_fixture(wrap=True):
-    """A 2-monitor GNOME 46 GetCurrentState reply shaped like the one in
-    notes/gnome-interfaces.md §1.3 (built-in panel + rotated 4K Dell).
+    """A 2-monitor GNOME 46 GetCurrentState reply, captured off a real session
+    (built-in panel + rotated 4K Dell).
     wrap=True yields Variant-wrapped a{sv} values (the write-side shape and
     what wrap_variants=True reads); wrap=False the plain-value read shape."""
     def V(sig, value):

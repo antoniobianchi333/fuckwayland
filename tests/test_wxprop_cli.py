@@ -179,8 +179,9 @@ class BackendOnAnX11SessionTest(unittest.TestCase):
 class VersionHelpGrammarTest(CliTestBase):
     # The 1.2.8 RELEASE binary handles -grammar/-help/-version in the option
     # loop (NOT a pre-scan): single dash only, in argv order, after the
-    # display would be opened. All assertions below verified against the
-    # oracle (see xprop-notes.md's correction of the master-source notes).
+    # display would be opened. All assertions below were verified against the
+    # real xprop 1.2.8 binary, which is the only authority here: the release
+    # source and the option loop it actually runs disagree about the order.
     def test_help_goes_to_stderr_exit_0(self):
         code, out, err = self.run_cli("-help")
         self.assertEqual((code, out), (0, b""))

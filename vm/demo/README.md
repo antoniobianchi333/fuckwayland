@@ -67,7 +67,7 @@ bridge extension is loaded:
 
 ```sh
 sh scripts/build-deb.sh
-vm/vmctl scp demo dist/fuckwayland_0.3.0_all.deb demo:/home/test/
+vm/vmctl scp demo release/fuckwayland_0.3.0_all.deb demo:/home/test/
 vm/vmctl ssh demo -- 'chown test:test /home/test/fuckwayland_0.3.0_all.deb'
 
 # take 1, on a machine without the tools

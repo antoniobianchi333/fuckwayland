@@ -547,32 +547,45 @@ runs when you press it rather than when something guesses you wanted it:
 
 ## Command surface (byte-parity target: xrandr 1.5.x)
 
-- Query: bare `wxrandr` / `-q` / `--query` (Screen line with minimum/current/maximum,
-  per-output `NAME connected/disconnected [primary] WxH+X+Y (normal left inverted
-  right x axis y axis) MMmm x MMmm` + mode table with per-rate columns, `*` current
-  `+` preferred), `--verbose` (adds transform matrix, gamma/brightness, properties-ish
-  block — match what's derivable, omit EDID), `--current`, `--listmonitors` /
-  `--listactivemonitors` (RandR 1.5 monitor format from the output layout),
-  `--listproviders` (one synthesized provider per GPU? print a single provider line
-  for the compositor — document).
-- Mutation (the fun): `--output NAME` with `--mode WxH`, `--rate R`, `--auto`,
-  `--preferred`, `--off`, `--pos XxY`, **`--left-of/--right-of/--above/--below/--same-as
-  OTHER`** (relative placement incl. mirroring via same-as; resolve against the
-  target's *pending* geometry so chains like `--output B --right-of A --output C
-  --right-of B` in ONE invocation work), `--rotate normal|left|right|inverted`
-  (geometry WxH swap semantics identical to xrandr), `--reflect normal|x|y|xy`
-  (sway transform "flipped-*" mapping), `--scale SxS`/`--scale-from WxH` (sway takes
-  one float; use the x factor, warn if x≠y), `--primary` (persisted in a small state
-  file keyed by compositor socket so listings show it consistently — no Wayland
-  concept exists; document), `--brightness B`, `--gamma R:G:B`, `--dpi`, `--fb`,
-  `--dryrun` (parse+resolve+print what would change, mutate nothing), `--newmode
-  <name> <modeline>` / `--addmode OUT NAME` / `--delmode/--rmmode` (modeline store in
-  the state file; pixel-clock+timings → WxH@refresh; applied via sway
-  `mode --custom`), `--setmonitor` (warn+succeed; no virtual-monitor regions on sway).
-- Multiple `--output` stanzas in one invocation = one atomic layout change (compute
-  the whole target layout first, then apply; on the wlr backend literally atomic).
-- Errors byte-styled like xrandr ("cannot find output", "cannot find mode") with its
-  exit codes.
+`wxrandr --help` prints xrandr's own option list verbatim, and everything in it is
+accepted. What each group does here:
+
+- **Query**: bare `wxrandr`, `-q` and `--query` print the Screen line with
+  minimum/current/maximum, then per output `NAME connected/disconnected [primary]
+  WxH+X+Y (normal left inverted right x axis y axis) MMmm x MMmm` and the mode table
+  with per rate columns, `*` current and `+` preferred. `--verbose` adds the transform
+  matrix and the gamma and brightness lines, and omits EDID, which no compositor hands
+  a client. `--current`, `--listmonitors` and `--listactivemonitors` render the RandR
+  1.5 monitor format out of the output layout. `--listproviders` prints one synthesized
+  provider for the compositor, capability `0xb` (Source Output, Sink Output, Sink
+  Offload) with the output count on both sides: an invention, because Wayland has no
+  GPU provider object, and one line is what a script parsing `xrandr --listproviders`
+  expects to find.
+- **Mutation**: `--output NAME` with `--mode WxH`, `--rate R`, `--auto`, `--preferred`,
+  `--off`, `--pos XxY`, **`--left-of` / `--right-of` / `--above` / `--below` /
+  `--same-as OTHER`** (relative placement, mirroring through `--same-as`, resolved
+  against the target's *pending* geometry, so a chain like `--output B --right-of A
+  --output C --right-of B` lands in one invocation), `--rotate
+  normal|left|right|inverted` with xrandr's own WxH swap, `--reflect normal|x|y|xy`
+  mapped onto the compositor's flipped transforms, `--scale SxS` and `--scale-from
+  WxH` (Wayland scales both axes by one factor: an anisotropic request warns, names
+  both numbers and uses the x factor), `--primary`, `--brightness B`, `--gamma R:G:B`,
+  `--dpi`, `--fb`, `--dryrun` (resolve and print what would change, mutate nothing),
+  and `--newmode` / `--addmode` / `--delmode` / `--rmmode`, whose modelines are kept in
+  the state file and turned into WxH@refresh for the backend.
+- **`--primary` has no Wayland equivalent**, so it is kept in a small state file keyed
+  by the compositor socket and shown consistently in every listing. What each backend
+  does with it on a *disabled* output differs, and *Known limitations* below says how.
+- **The warn and ignore set**: `--setmonitor`, `--setprovideroutputsource`,
+  `--setprovideroffloadsink`, `--panning`, `--transform` and `--set` warn on stderr,
+  change nothing and exit 0, because failing them would break a script the tool
+  otherwise runs unchanged.
+- **Multiple `--output` stanzas in one invocation are one layout change**: the whole
+  target layout is computed first and then submitted, as one `ApplyMonitorsConfig` on
+  Mutter, one configuration on KWin, one atomic call on wlr, and two IPC batches on
+  sway (see *Known limitations*).
+- Errors are byte styled like xrandr's (`cannot find output`, `cannot find mode`) and
+  carry its exit codes.
 
 ## Known limitations
 
@@ -611,7 +624,7 @@ Measured, understood, and left as they are. Each says why.
   scripts that the tool otherwise runs unchanged, which is the whole point of the
   warn-and-ignore set.
 
-## Crazy-config requirements (torture will check these)
+## Crazy-config requirements (what the torture tests check)
 
 Headless sway grows outputs on demand (`swaymsg create_output`, `output X unplug`) —
 build and verify for real: 3–4 output layouts; L-shaped and staircase arrangements;
