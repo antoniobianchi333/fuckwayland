@@ -5,6 +5,7 @@ Window ids are sway node ids; commands address nodes with [con_id=N].
 Desktops are workspaces: xdotool desktop N == workspace number N+1."""
 
 import json
+import select
 import socket
 import struct
 
@@ -19,6 +20,7 @@ SUBSCRIBE = 2
 GET_OUTPUTS = 3
 GET_TREE = 4
 _EVENT_BIT = 0x80000000
+EVENT_WORKSPACE = _EVENT_BIT | 0
 EVENT_WINDOW = _EVENT_BIT | 3
 
 SCRATCHPAD_WS = "__i3_scratch"
@@ -326,6 +328,43 @@ class SwayBackend(WindowBackend):
     def num_desktops(self) -> int:
         return len(self._msg(GET_WORKSPACES))
 
+    def events(self, timeout: float | None = None, workspaces: bool = False):
+        """(id, change) for every sway window event, in sway's own
+        vocabulary (new, close, focus, title, fullscreen_mode, move,
+        floating, urgent), on a connection of its own: a subscription and
+        the command socket cannot share one, since every reply we wait for
+        would arrive behind an unbounded queue of events.
+
+        With `workspaces` the workspace stream is folded in as
+        (0, "workspace") -- no view has node id 0 -- the way the GNOME and
+        KWin backends fold theirs, so a root-level watcher (wxprop -root
+        -spy) needs one stream only. Stops after `timeout` seconds of
+        silence; None waits for ever, which is what both callers do."""
+        s = self._connect()
+        try:
+            self._send(s, SUBSCRIBE,
+                       b'["window","workspace"]' if workspaces
+                       else b'["window"]')
+            t, reply = self._recv(s)
+            if t & _EVENT_BIT or not (isinstance(reply, dict)
+                                      and reply.get("success")):
+                raise CmdError("sway backend: subscribe to window events failed")
+            while True:
+                if timeout is not None and not select.select([s], (), (),
+                                                             timeout)[0]:
+                    return
+                t, data = self._recv(s)
+                if not isinstance(data, dict):
+                    continue
+                if t == EVENT_WINDOW:
+                    wid = (data.get("container") or {}).get("id")
+                    if wid is not None:
+                        yield int(wid), str(data.get("change") or "")
+                elif workspaces and t == EVENT_WORKSPACE:
+                    yield 0, "workspace"
+        finally:
+            s.close()
+
     select_window_hint = "focus the target window to select it"
 
     def select_window(self) -> int:
@@ -338,18 +377,10 @@ class SwayBackend(WindowBackend):
         that already has focus therefore does not end this wait -- focus it
         from another window, or use another selector. Fixing it properly
         needs a sway-side feature, not a client-side workaround."""
-        s = self._connect()
-        try:
-            self._send(s, SUBSCRIBE, b'["window"]')
-            t, reply = self._recv(s)
-            if t & _EVENT_BIT or not reply.get("success"):
-                raise CmdError("sway backend: subscribe to window events failed")
-            while True:
-                t, data = self._recv(s)
-                if t == EVENT_WINDOW and data.get("change") == "focus":
-                    return data["container"]["id"]
-        finally:
-            s.close()
+        for wid, change in self.events():
+            if change == "focus":
+                return wid
+        raise CmdError("sway backend: the window event stream ended")
 
     def display_size(self) -> tuple[int, int]:
         boxes = []

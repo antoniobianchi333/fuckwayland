@@ -10,8 +10,9 @@ Two planes, per WXPROP.md:
   built from compositor data, printed through the exact same fmt.py
   machinery so `wxprop -id N WM_CLASS`-style script parsing just works.
   -set/-remove on a native window is a clean one-line error (there is no
-  property store to write to); -spy subscribes to sway window IPC events
-  and reprints the synthesized property that changed.
+  property store to write to); -spy rides the compositor's own event
+  stream (backend.events()) and reprints the synthesized property that
+  changed.
 
 Window ids: an id that matches a compositor node resolves through the
 node (an XWayland node redirects to its real X window id); anything else
@@ -48,12 +49,6 @@ except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
 
 # PropertyChangeMask | StructureNotifyMask
 SPY_EVENT_MASK = 0x420000
-
-_I3_MAGIC = b"i3-ipc"
-_I3_SUBSCRIBE = 2
-_I3_EVENT_BIT = 0x80000000
-_I3_EVENT_WINDOW = _I3_EVENT_BIT | 3
-_I3_EVENT_WORKSPACE = _I3_EVENT_BIT | 0
 
 # -- Xlib's default error report (what xprop shows on e.g. BadWindow) -------
 
@@ -1109,33 +1104,6 @@ def spy_x(formatter, target: XTarget, specs):
         raise
 
 
-def _sway_ipc_events(backend, payload: bytes):
-    """Subscribe on a fresh IPC socket; yield (event_type, data) forever.
-    Reuses the sway backend's framing helpers (the documented-contract
-    reuse pattern wwmctl established for _nodes)."""
-    connect = getattr(backend, "_connect", None)
-    send = getattr(backend, "_send", None)
-    recv = getattr(backend, "_recv", None)
-    if not (connect and send and recv):
-        raise FatalError("-spy on a native window needs the sway backend")
-    s = connect()
-    try:
-        send(s, _I3_SUBSCRIBE, payload)
-        t, reply = recv(s)
-        if (t & _I3_EVENT_BIT) or not (isinstance(reply, dict)
-                                       and reply.get("success")):
-            raise FatalError("sway IPC event subscription failed")
-        while True:
-            t, data = recv(s)
-            if t & _I3_EVENT_BIT and isinstance(data, dict):
-                yield t, data
-    finally:
-        try:
-            s.close()
-        except OSError:
-            pass
-
-
 # which synthesized properties a sway window event touches, in the order
 # the X plane would emit them (WM_NAME before _NET_WM_NAME, like xterm)
 _NATIVE_EVENT_PROPS = {
@@ -1159,6 +1127,16 @@ _VIEW_EVENT_PROPS = {
     "move": (),
     "focus": (),
     "new": (),
+}
+
+# root-level, sway: no stacking list (the tree is not a stacking order)
+# and no desktop names (workspaces are numbered), so two atoms fewer than
+# the bridge's table below
+_SWAY_ROOT_EVENT_PROPS = {
+    "new": (b"_NET_CLIENT_LIST",),
+    "close": (b"_NET_CLIENT_LIST", b"_NET_ACTIVE_WINDOW"),
+    "focus": (b"_NET_ACTIVE_WINDOW",),
+    "workspace": (b"_NET_CURRENT_DESKTOP", b"_NET_NUMBER_OF_DESKTOPS"),
 }
 
 # root-level: what a bridge event changes among the synthesized root props
@@ -1204,86 +1182,56 @@ def _show_names(formatter, target, names, specs) -> bytes:
     return bytes(out)
 
 
-def _native_event_source(backend, root: bool):
-    """(kind, iterator): "sway" yields raw i3 (type, data) frames, "hook"
-    yields (id, change) from backend.events(). FatalError when neither
-    exists."""
-    if all(getattr(backend, n, None) for n in ("_connect", "_send", "_recv")):
-        payload = b'["window","workspace"]' if root else b'["window"]'
-        return "sway", _sway_ipc_events(backend, payload)
+def _native_events(backend, workspaces: bool):
+    """backend.events(): (id, change) forever, in the backend's own change
+    vocabulary. FatalError when the backend has no event stream (the
+    WindowBackend default only raises)."""
     hook = _events_hook(backend)
     if hook is None:
         raise FatalError("-spy on a native window needs the sway backend, "
                          "the GNOME bridge or KWin")
     try:
-        it = hook(None, workspaces=True) if root else hook(None)
+        return hook(None, workspaces=workspaces)
     except TypeError:  # a hook without the workspaces flag
-        it = hook(None)
-    return "hook", it
+        return hook(None)
+
+
+def _is_sway(backend) -> bool:
+    """Which change vocabulary the events carry. The two tables above are
+    deliberately not merged: the same word means different things to sway
+    and to the bridge."""
+    return getattr(backend, "name", "") == "sway"
 
 
 def spy_native_view(formatter, target: NativeViewTarget, specs):
     backend = target.sess.backend()
-    kind, events = _native_event_source(backend, root=False)
-    if kind == "hook":
-        for wid, change in events:
-            if wid != target.node_id:
-                continue
-            if change == "close":
-                return 0
-            names = _VIEW_EVENT_PROPS.get(change)
-            if not names:
-                continue
-            if not target.refresh():
-                return 0  # gone between the event and the re-read
-            out = _show_names(formatter, target, names, specs)
-            if out:
-                _write_flush(out)
-        return 0
-    for t, data in events:
-        if t != _I3_EVENT_WINDOW:
+    table = _NATIVE_EVENT_PROPS if _is_sway(backend) else _VIEW_EVENT_PROPS
+    for wid, change in _native_events(backend, workspaces=False):
+        if wid != target.node_id:
             continue
-        container = data.get("container") or {}
-        if container.get("id") != target.node_id:
-            continue
-        change = data.get("change")
         if change == "close":
             return 0
-        names = _NATIVE_EVENT_PROPS.get(change)
-        if names is None or not names:
+        names = table.get(change)
+        if not names:
             continue
-        if change == "move":
-            target.refresh()  # workspace only lives in the tree
-        else:
-            target.node = container
+        if not target.refresh():
+            return 0  # gone between the event and the re-read
         out = _show_names(formatter, target, names, specs)
         if out:
             _write_flush(out)
+    return 0
 
 
 def spy_native_root(formatter, target: NativeRootTarget, specs):
     backend = target.sess.backend()
-    kind, events = _native_event_source(backend, root=True)
-    if kind == "hook":
-        for _wid, change in events:
-            names = _ROOT_EVENT_PROPS.get(change, ())
-            out = _show_names(formatter, target, names, specs)
-            if out:
-                _write_flush(out)
-        return 0
-    for t, data in events:
-        if t == _I3_EVENT_WINDOW:
-            change = data.get("change")
-            names = {"new": (b"_NET_CLIENT_LIST",),
-                     "close": (b"_NET_CLIENT_LIST", b"_NET_ACTIVE_WINDOW"),
-                     "focus": (b"_NET_ACTIVE_WINDOW",)}.get(change, ())
-        elif t == _I3_EVENT_WORKSPACE:
-            names = (b"_NET_CURRENT_DESKTOP", b"_NET_NUMBER_OF_DESKTOPS")
-        else:
-            continue
+    table = (_SWAY_ROOT_EVENT_PROPS if _is_sway(backend)
+             else _ROOT_EVENT_PROPS)
+    for _wid, change in _native_events(backend, workspaces=True):
+        names = table.get(change, ())
         out = _show_names(formatter, target, names, specs)
         if out:
             _write_flush(out)
+    return 0
 
 
 def spy_merged_root(formatter, target: MergedRootTarget, specs):
