@@ -1,16 +1,15 @@
 # Six tools that should not exist
 
-There is a four-line script on a lot of machines. Find the terminal, raise it,
-type the command, press Return. It has worked since 2007, which is when `xdotool`
-was first released. Then the session underneath it becomes a Wayland session, and the
-script prints nothing, because `xdotool` no longer does anything at all, and it does
-not say so.
+There is a four-line script on a lot of machines. Find the terminal, raise it, type
+the command, press Return. It has worked since 2007, which is when `xdotool` shipped.
+Then the session underneath it becomes a Wayland session, and the script prints
+nothing, because `xdotool` no longer does anything at all, and it does not say so.
 
 Go looking and the first thing you find is that this is already well known. Jordan
 Sissel, who wrote xdotool, knows it better than anyone. His post
 [xdotool and exploring Wayland fragmentation](https://www.semicomplete.com/blog/xdotool-and-exploring-wayland-fragmentation/)
-is the one everybody links to, and it is discouraging precisely because it is not a
-rant. It is the maintainer of the tool doing an honest survey and finding nothing:
+is the one everybody links to, and it hurts precisely because it is not a rant. It is
+the maintainer of the tool doing an honest survey and finding nothing:
 
 > Wayland comes along and eliminates *everything* xdotool can do.
 
@@ -25,8 +24,8 @@ there. `wlrctl` for wlroots. libei and the portal, which ask the user for permis
 with a dialog. A separate implementation per compositor, and no way to write one tool
 that runs everywhere, which is precisely what xdotool was for.
 
-Read the KDE forums and you get the same answer, this time from the people who
-maintain the compositor. Somebody wants to
+Read the KDE forums and you get the same answer, this time from the developers
+themselves. Somebody wants to
 [move the mouse to another screen](https://discuss.kde.org/t/move-mouse-to-screen/28971)
 with a footswitch and is told, correctly, that Wayland's pointer API has no absolute
 positioning. Somebody else asks
@@ -44,7 +43,7 @@ worse.
 
 I wrote them anyway.
 
-The result is six commands. Four are drop-in clones with byte parity against the
+Six commands came out of it. Four are drop-in clones with byte parity against the
 originals, one is a clone of arandr's GUI, and one has no original at all.
 
 ```
@@ -140,7 +139,7 @@ each of those cost me a day.
 workspaces, and with dynamic workspaces Mutter always keeps one trailing empty
 workspace so you have somewhere to drag a window to. `get_n_workspaces()` counts it.
 So `wmctrl -d` on a fresh GNOME session lists two workspaces when the user can see
-one, and `wdotool set_num_desktops 4` is simply refused, because with dynamic
+one, and `wdotool set_num_desktops 4` is refused outright, because with dynamic
 workspaces the count is not a thing you set. Both behaviours are correct and both
 look like bugs. I report the count Mutter reports and refuse the setter with the
 reason, which is the only honest pair.
@@ -243,7 +242,7 @@ maximize and then immediately read the state back, you get "not maximized", beca
 the client has not answered yet. Send the horizontal one immediately after and you are
 now racing your own first request.
 
-I found this on GNOME and from the opposite direction, removing the two states rather
+I found this on GNOME, from the opposite direction: removing the two states rather
 than adding them. There it was worse than a wrong reading.
 `wwmctl -b remove,maximized_vert,maximized_horz` removed only the horizontal half and
 **corrupted the saved restore rectangle** doing it, so the window came back the wrong
@@ -253,7 +252,7 @@ single `set_unmaximize_flags()`.
 
 The general fix is to stop reading state immediately. On KDE the injected script now
 waits for the window's own change signal, with a timer as a fallback, and answers from
-whichever arrives first, so a fullscreen on a native window no longer warns about a
+whichever comes first, so a fullscreen on a native window no longer warns about a
 state KWin had already applied. On GNOME the pair became one call. And the wait means
 the **next** command sees a settled window, which is what makes a two-axis maximize
 end with both axes on.
@@ -273,7 +272,7 @@ but the managed X11 windows dropped.
 
 Then I wrote the adversarial case, which is `repro/kde-xid-twins.py`: one X client,
 two top level windows, same pid, same class, same title, same rectangle. Nothing but
-the order of the two lists can distinguish them. `WM_WINDOW_ROLE` records which
+the order of the two lists can tell them apart. `WM_WINDOW_ROLE` records which
 window is which, because KWin exposes the role to scripts and the matcher never looks
 at it, so the match can be checked without changing it.
 
