@@ -204,13 +204,16 @@ Four things in those lines are not obvious:
   options; [all of them work](#other-ways-to-install), and a venv is the one
   that changes nothing outside its own directory.
 * **Why `python3-venv` and not `python3-pip`.** A stock Ubuntu desktop has
-  neither pip nor venv nor pipx (checked against the 26.04 installer's own package
-  set — `vm/reference/resolute-gnome-iso-packages.txt` is a default install), so
+  neither pip nor venv nor pipx (checked against both installers' own package
+  sets — `vm/reference/resolute-gnome-iso-packages.txt` and
+  `vm/reference/noble-gnome-iso-packages.txt` are default installs), so
   `pip install` is `pip: not found` before
   PEP 668 gets a word in. `python3-venv` is all you need — the venv brings its
-  own pip along. (Run bare, `python3 -m venv` names the *versioned* package in
-  its error, `python3.12-venv` on 24.04 and `python3.14-venv` on 26.04;
-  `python3-venv` pulls the right one on both.)
+  own pip along. (Ask for a directory without it installed and the error names
+  the *versioned* package, `python3.12-venv` on 24.04 and `python3.14-venv` on
+  26.04; `python3-venv` pulls the right one on both. Run with no arguments at
+  all it only prints argparse's `the following arguments are required:
+  ENV_DIR`.)
 * **Why `--system-site-packages`.** `warandr` is the one tool with a
   dependency: the Python GTK 3 bindings, which are the apt packages
   `python3-gi` and `gir1.2-gtk-3.0` rather than something pip should build.
@@ -227,9 +230,15 @@ Four things in those lines are not obvious:
   `warandr.desktop`. Those are used from the clone, so keep it where it is and
   let the editable install point at it.
 
-`pip install -e .` fetches setuptools, so it wants network. On a desktop image,
-which ships `python3-setuptools`, a `--system-site-packages` venv can use that
-copy instead: `~/.venvs/fuckwayland/bin/pip install --no-build-isolation -e .`
+`pip install -e .` fetches setuptools, so it wants network. **On 26.04** a
+`--system-site-packages` venv can use the system copy instead, because a default
+install ships `python3-setuptools` 78:
+`~/.venvs/fuckwayland/bin/pip install --no-build-isolation -e .` **On 24.04 that
+shortcut does not work** and the ordinary line above is the one to use: a default
+24.04 desktop has no `python3-setuptools` at all (`ModuleNotFoundError: No module
+named 'setuptools'`), and where it is installed it is setuptools 68, which still
+needs the separate `wheel` package (`error: invalid command 'bdist_wheel'`). Both
+measured on 24.04 default and cloud images; see `vm/README.md`.
 
 Optional, for the GUI: an application-menu entry for `warandr`. Its `Exec=` is
 the bare name, so this wants `warandr` on the session's `PATH` — which the
@@ -625,6 +634,7 @@ session: wayland
 chosen by: detection
 compositor: Mutter
 protocol: org.gnome.Mutter.DisplayConfig (D-Bus)
+available: yes
 $ wwmctl -l
 0x8d58a7dd  0 box Screen Layout Editor
 $ wdotool key a          # types an 'a' into the focused window
@@ -677,29 +687,38 @@ Those nine images are an Ubuntu **cloud** image plus a desktop metapackage, whic
 to a desktop install but measurably not one: the closest of them, `resolute-gnome`, carries
 226 packages a real Ubuntu 26.04 desktop installation does not have and is missing 55 it
 does, on a different kernel, from a different install source (8 snaps against the default
-install's 13). So the rig also has **`resolute-gnome-iso`**: Ubuntu 26.04 installed from
-`ubuntu-26.04.1-desktop-amd64.iso` by the Ubuntu installer, every question left alone, with
-the first-run experience, screen lock and automatic updates still switched on — one package
-added to the default set (`openssh-server`, the only way into a VM) and nothing removed.
-The cells below are still the measurement on the nine; the default install is what they get
-re-measured on. How it is built and every deviation from stock: `vm/README.md`.
+install's 13); `noble-gnome` is 240 / 55 away from a real 24.04 one. So the rig also has a
+default install of **each supported LTS** — **`resolute-gnome-iso`** and
+**`noble-gnome-iso`**: Ubuntu 26.04 and 24.04 installed from
+`ubuntu-26.04.1-desktop-amd64.iso` and `ubuntu-24.04.4-desktop-amd64.iso` by the Ubuntu
+installer, every question left alone, with the first-run experience, screen lock and
+automatic updates still switched on — one package added to the default set
+(`openssh-server`, the only way into a VM) and nothing removed. The cells below are still
+the measurement on the nine; the default installs are what they get re-measured on. How they
+are built and every deviation from stock: `vm/README.md`.
 
-**What that image says about this guide.** The install above was then run on it *verbatim*,
-as a reader would: `sudo apt install git python3-venv`, clone, venv, `pip install -e .`, the
-`/usr/local/bin` symlinks, `gnome/install-bridge.sh`, one logout, `--udev`. Every command
-worked as written and nothing had to be adapted — the stock facts the guide leans on hold on
-a real default install (no pip, no venv, no pipx, no `git`, no `curl`; `python3-setuptools`,
+**What those images say about this guide.** The install above was then run on both of them
+*verbatim*, as a reader would: `sudo apt install git python3-venv`, clone, venv, `pip install
+-e .`, the `/usr/local/bin` symlinks, `gnome/install-bridge.sh`, one logout, `--udev`. Every
+command worked as written on both, and the stock facts the guide leans on hold on a real
+default install of either release (no pip, no venv, no pipx, no `git`, no `curl`;
 `python3-gi`, `gir1.2-gtk-3.0`, `acl`, `x11-utils` and `x11-xserver-utils` all present, so
-`warandr`'s GUI comes up with nothing extra installed). All five tools then behaved
-**identically to the cloud-image `resolute-gnome`**, as the desktop user and as root over
-ssh with an empty environment. Two things about a default install are worth knowing before
-you trust a script on one, and neither is visible on the cloud-image flavors, which switch
-both off:
+`warandr`'s GUI comes up with nothing extra installed). All six tools then behaved
+**identically to the matching cloud-image flavor** — `resolute-gnome`, `noble-gnome` — as the
+desktop user and as root over ssh with an empty environment. The 24.04 run corrected two
+sentences of this guide, both about the *optional* `--no-build-isolation` line and the bare
+`python3 -m venv` error, and they are corrected above. Two things about a default install are
+worth knowing before you trust a script on one, and neither is visible on the cloud-image
+flavors, which switch both off:
 
-* **it locks itself.** `idle-delay 300` and `lock-enabled true` are the defaults, and GNOME
-  Shell disables extensions behind the lock screen — so five idle minutes turn every window
-  command into `gnome backend: the fuckwayland bridge is unavailable while the screen is
-  locked`, rc 1 (rc 2 for `wdotool`). `wxrandr`, `warandr` and input injection keep working.
+* **it locks itself.** `idle-delay 300` and `lock-enabled true` are the defaults on 24.04 and
+  26.04 alike, and GNOME Shell disables extensions behind the lock screen — so five idle
+  minutes turn every window command into `gnome backend: the fuckwayland bridge is unavailable
+  while the screen is locked`, rc 1 (rc 2 for `wdotool`). It also switches the outputs off, so
+  a screenshot taken then is black. `wxrandr`, `warandr` and input injection keep working —
+  and injecting the password is a way back in. Five minutes is less than the guide above
+  takes: on the 24.04 default install `sudo apt install git python3-venv` alone ran for 3½
+  minutes and the session was locked by the time the bridge was installed.
 * **it has no `xdotool` and no `wmctrl`**, so the [X11](#x11) hand-over has nothing to hand
   to until you `sudo apt install xdotool wmctrl`. On a Wayland session nothing hands over,
   so this only bites on an X11 session or under `FUCKWAYLAND_PASSTHROUGH=always`.
@@ -1789,12 +1808,12 @@ real Ubuntu 26.04 VM before it shipped. Vibe-check the code yourself — it can 
 ## Testing
 
 Developed against real desktops, not against a model of them. `vm/` is the rig:
-`vmctl` builds and runs eight golden images — GNOME, KDE Plasma, Xfce and sway on
-Ubuntu 24.04 and 26.04, plus one Ubuntu 26.04 desktop **installed from the release
-ISO by the Ubuntu installer** — each with up to four virtual monitors that can be
-plugged, resized and unplugged from outside the guest, and every head
-screenshotted. `vm/selftest.sh <flavor>` is its own check; `vm/README.md`
-documents the whole thing, including what the five tools do on each flavor.
+`vmctl` builds and runs twelve golden images — GNOME, KDE Plasma, Xfce and sway on
+Ubuntu 24.04, 26.04 and 26.10, plus one Ubuntu 26.04 and one Ubuntu 24.04 desktop
+**installed from the release ISOs by the Ubuntu installer** — each with up to four
+virtual monitors that can be plugged, resized and unplugged from outside the guest,
+and every head screenshotted. `vm/selftest.sh <flavor>` is its own check;
+`vm/README.md` documents the whole thing, including what the tools do on each flavor.
 
 The original sway rig (`mkvm.sh`, `run.sh`, `compositor.sh`) is still there and
 still works. `tests/` holds the suite: unit tests, wire-level fake compositors
