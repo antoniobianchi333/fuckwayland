@@ -39,8 +39,7 @@ from wxprop.fmt import FatalError
 
 try:  # the X error classes for narrow catches in the -name DFS, the X
     # error text for -id on a dead window, and this machine's name
-    from wdotool.x11_mini import (X11Error, X_ERROR_TEXT, XUnavailable,
-                                  hostname)
+    from wdotool.x11_mini import (X11Error, X_ERROR_TEXT, XUnavailable, hostname)
 except Exception:  # pragma: no cover - x11_mini is pure stdlib, always imports
     X_ERROR_TEXT = {}
 
@@ -81,8 +80,7 @@ def x_error_report(err) -> str:
     elif err.code == 5:
         lines.append("  AtomID (in failed request):  0x%x" % err.bad_value)
     elif err.code in _X_RESOURCE_ERRORS:
-        lines.append("  Resource id in failed request:  0x%x"
-                     % err.bad_value)
+        lines.append("  Resource id in failed request:  0x%x" % err.bad_value)
     lines.append("  Serial number of failed request:  %d" % seq)
     lines.append("  Current serial number in output stream:  %d" % seq)
     return "\n".join(lines) + "\n"
@@ -195,8 +193,7 @@ def _node_from_view(v) -> dict:
     }
     if not xid and not node["app_id"] and (v.instance or v.cls):
         # a native window without an app id but with a WM_CLASS pair
-        node["window_properties"] = {"instance": v.instance, "class": v.cls,
-                                     "title": w.title}
+        node["window_properties"] = {"instance": v.instance, "class": v.cls, "title": w.title}
     return node
 
 
@@ -448,15 +445,11 @@ def _p_utf8(s: str):
 
 
 def _p_cardinal(vals):
-    return ("CARDINAL", 32,
-            struct.pack("<%dI" % len(vals),
-                        *[v & 0xFFFFFFFF for v in vals]))
+    return ("CARDINAL", 32, struct.pack("<%dI" % len(vals), *[v & 0xFFFFFFFF for v in vals]))
 
 
 def _p_window(vals):
-    return ("WINDOW", 32,
-            struct.pack("<%dI" % len(vals),
-                        *[v & 0xFFFFFFFF for v in vals]))
+    return ("WINDOW", 32, struct.pack("<%dI" % len(vals), *[v & 0xFFFFFFFF for v in vals]))
 
 
 def _p_atoms(atoms: NativeAtoms, names):
@@ -475,8 +468,7 @@ class XTarget:
         self.win = win
 
     def intern(self, name: bytes, create: bool) -> bool:
-        return bool(self.conn.atom(name.decode("latin-1"),
-                                   only_if_exists=not create))
+        return bool(self.conn.atom(name.decode("latin-1"), only_if_exists=not create))
 
     def fetch(self, name: bytes):
         r = self.conn.read_property(self.win, name.decode("latin-1"))
@@ -501,8 +493,7 @@ class XTarget:
         return self.conn.delete_property(self.win, name.decode("latin-1"))
 
     def set_prop(self, name: bytes, type_name: str, size: int, data: bytes):
-        self.conn.change_property(self.win, name.decode("latin-1"),
-                                  type_name, size, data)
+        self.conn.change_property(self.win, name.decode("latin-1"), type_name, size, data)
 
 
 class NativeTarget:
@@ -585,15 +576,13 @@ class NativeViewTarget(NativeTarget):
         props[b"_NET_WM_STATE"] = _p_atoms(self.atoms, states)
         wtype = "_NET_WM_WINDOW_TYPE_NORMAL"
         if rich:
-            wtype = _WINDOW_TYPES.get(node.get("window_type") or "NORMAL",
-                                      wtype)
+            wtype = _WINDOW_TYPES.get(node.get("window_type") or "NORMAL", wtype)
         props[b"_NET_WM_WINDOW_TYPE"] = _p_atoms(self.atoms, [wtype])
         transient = node.get("transient_for") or 0
         if transient:
             props[b"WM_TRANSIENT_FOR"] = _p_window([transient])
         desktop = getattr(win, "desktop", -1)
-        props[b"_NET_WM_DESKTOP"] = _p_cardinal(
-            [desktop if desktop >= 0 else 0xFFFFFFFF])
+        props[b"_NET_WM_DESKTOP"] = _p_cardinal([desktop if desktop >= 0 else 0xFFFFFFFF])
         pid = node.get("pid") or getattr(win, "pid", 0)
         if pid:
             props[b"_NET_WM_PID"] = _p_cardinal([pid])
@@ -607,8 +596,7 @@ class NativeViewTarget(NativeTarget):
             # WM_CLASS is STRING by ICCCM whatever the app id looks like,
             # so this pair is not routed through _p_string's UTF8_STRING
             # escape hatch -- an X twin's WM_CLASS is STRING too.
-            data = (_latin1(instance or "") + b"\0" +
-                    _latin1(cls or "") + b"\0")
+            data = (_latin1(instance or "") + b"\0" + _latin1(cls or "") + b"\0")
             props[b"WM_CLASS"] = ("STRING", 8, data)
         title = node.get("name")
         if title is None:
@@ -622,8 +610,7 @@ class NativeViewTarget(NativeTarget):
             # native one that answers "is this window minimized?" the same
             # way keeps a script working across the two planes.
             state = 1 if node.get("visible", True) else 3
-            props[b"WM_STATE"] = ("WM_STATE", 32, struct.pack("<II",
-                                                              state, 0))
+            props[b"WM_STATE"] = ("WM_STATE", 32, struct.pack("<II", state, 0))
         return props
 
 
@@ -808,8 +795,7 @@ class FontTarget:
         return True
 
     def intern(self, name: bytes, create: bool) -> bool:
-        return bool(self.conn.atom(name.decode("latin-1"),
-                                   only_if_exists=not create))
+        return bool(self.conn.atom(name.decode("latin-1"), only_if_exists=not create))
 
     def fetch(self, name: bytes):
         atom = self.conn.atom(name.decode("latin-1"), only_if_exists=True)
@@ -862,8 +848,7 @@ class MissingWindowTarget:
 
     def _fatal(self):
         if self.hint:
-            raise FatalError("cannot look up window id # 0x%x: %s"
-                             % (self.wid, self.hint))
+            raise FatalError("cannot look up window id # 0x%x: %s" % (self.wid, self.hint))
         raise FatalError("window id # 0x%x does not exists!" % self.wid)
 
     def intern(self, name, create=False):
@@ -928,8 +913,7 @@ def resolve_root(sess: Session):
         return XTarget(x, x.root())
     if sess.backend() is None:
         if sess.backend_error:
-            raise FatalError("cannot examine the root window: %s"
-                             % sess.backend_error)
+            raise FatalError("cannot examine the root window: %s" % sess.backend_error)
         raise FatalError("cannot examine the root window: no X server and "
                          "no compositor backend")
     return NativeRootTarget(sess, NativeAtoms())
@@ -1016,8 +1000,7 @@ def select_target(sess: Session, prog: str):
 # -- Show_Prop ---------------------------------------------------------------
 
 
-def show_prop(formatter, target, out: bytearray, fmt_b, dfmt_b,
-              prop_b: bytes):
+def show_prop(formatter, target, out: bytearray, fmt_b, dfmt_b, prop_b: bytes):
     out += prop_b
     if not target.intern(prop_b, create=False):
         out += b":  no such atom on any window.\n"
@@ -1027,8 +1010,7 @@ def show_prop(formatter, target, out: bytearray, fmt_b, dfmt_b,
         out += b":  not found.\n"
         return
     type_name, size, wire = r
-    formatter.render_property(out, prop_b, type_name, size, wire,
-                              fmt_b, dfmt_b)
+    formatter.render_property(out, prop_b, type_name, size, wire, fmt_b, dfmt_b)
 
 
 def show_all_props(formatter, target, out: bytearray):
@@ -1202,8 +1184,7 @@ def spy_native_view(formatter, target: NativeViewTarget, specs):
 
 def spy_native_root(formatter, target: NativeRootTarget, specs):
     backend = target.sess.backend()
-    table = (_SWAY_ROOT_EVENT_PROPS if _is_sway(backend)
-             else _ROOT_EVENT_PROPS)
+    table = (_SWAY_ROOT_EVENT_PROPS if _is_sway(backend) else _ROOT_EVENT_PROPS)
     for _wid, change in _native_events(backend, workspaces=True):
         names = table.get(change, ())
         out = _show_names(formatter, target, names, specs)

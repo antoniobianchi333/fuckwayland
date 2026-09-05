@@ -156,8 +156,7 @@ def _term_width() -> int:
         if sys.stdin.isatty():
             import fcntl
             import termios
-            buf = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ,
-                              b"\0" * 8)
+            buf = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, b"\0" * 8)
             rows, cols = struct.unpack("HH", buf[:4])
             if cols:
                 return cols
@@ -380,8 +379,7 @@ def _parse_int_list(value: str):
     return vals
 
 
-def _set_property(formatter, target, prog: str, utf8_locale: bool,
-                  name_s: str, value_s: str):
+def _set_property(formatter, target, prog: str, utf8_locale: bool, name_s: str, value_s: str):
     name_b = os.fsencode(name_s)
     target.intern(name_b, create=True)  # Parse_Atom(propname, False)
     f, _d = formatter.lookup_formats(name_b, None, None)
@@ -410,12 +408,10 @@ def _set_property(formatter, target, prog: str, utf8_locale: bool,
             target.set_prop(name_b, "STRING", 8, raw)
     elif char in (0x63, 0x78):  # c x -> CARDINAL
         vals = _parse_int_list(value_s)
-        target.set_prop(name_b, "CARDINAL", size, _pack_ints(vals, size)
-                        if size in (8, 16, 32) else b"")
+        target.set_prop(name_b, "CARDINAL", size, _pack_ints(vals, size) if size in (8, 16, 32) else b"")
     elif char == 0x69:  # i -> INTEGER
         vals = _parse_int_list(value_s)
-        target.set_prop(name_b, "INTEGER", size, _pack_ints(vals, size)
-                        if size in (8, 16, 32) else b"")
+        target.set_prop(name_b, "INTEGER", size, _pack_ints(vals, size) if size in (8, 16, 32) else b"")
     elif char == 0x62:  # b -> INTEGER True/False
         if value_s == "True":
             v = 1
@@ -498,8 +494,7 @@ def _main(prog: str, args) -> int:
     display, args = _extract_display(args)
     sess = core.Session(display)
     if display is not None and sess.x11() is None:
-        sys.stderr.write("%s:  unable to open display '%s'\n"
-                         % (prog, display))
+        sys.stderr.write("%s:  unable to open display '%s'\n" % (prog, display))
         return 1
 
     # 2. window selection args
@@ -607,16 +602,14 @@ def _main(prog: str, args) -> int:
                 dformat = os.fsencode(args[i])
                 i += 1
             pending_interns.append(name)
-            formatter.add_mapping(os.fsencode(name), os.fsencode(f_arg),
-                                  dformat)
+            formatter.add_mapping(os.fsencode(name), os.fsencode(f_arg), dformat)
             continue
         sys.stderr.write("%s: unrecognized argument %s\n\n" % (prog, a))
         raise UsageError(None)
     specs_args = args[i:]
 
     if (removes or sets) and specs_args:
-        sys.stderr.write("%s: unrecognized argument %s\n\n"
-                         % (prog, specs_args[0]))
+        sys.stderr.write("%s: unrecognized argument %s\n\n" % (prog, specs_args[0]))
         raise UsageError(None)
 
     # 4. resolve the target window (or the font, which replaces it)
@@ -647,8 +640,7 @@ def _main(prog: str, args) -> int:
                              "(it has no X property store)" % what)
         for name in removes:
             if not target.remove_prop(os.fsencode(name)):
-                sys.stderr.write('%s:  no such property "%s"\n'
-                                 % (prog, name))
+                sys.stderr.write('%s:  no such property "%s"\n' % (prog, name))
         for name, value in sets:
             _set_property(formatter, target, prog, utf8_locale, name, value)
         return 0
