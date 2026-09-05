@@ -15,6 +15,7 @@ a machine with no Plasma 6.7 on it.
 | `kde-1-probe-kwin-id-reuse.sh` | KWin hands out a script id a live script still owns (gdbus only, no wdotool) | any KDE |
 | `kde-1-script-id-race.sh` | the same, through concurrent wdotool commands | any KDE |
 | `kde-5-pointer-no-uinput.sh` | `getmouselocation` needed /dev/uinput for a pure query | any KDE |
+| `kde-6-pointer-3head.py` | claim 1, measured: every corner and centre of every output of a three-head layout, asked for with `mousemove` and read back from KWin's own `workspace.cursorPos`. Exact everywhere but an output's top-left *pixel*, which a 1x1 KWin screen edge pushes back one pixel (and, with the stock Plasma 6 config, opens the Overview). Needs python3-dbus and PyGObject in the guest | `resolute-kde`, `noble-kde` |
 | `kde-tools-3-argv0-oracle.sh` | what the real wmctrl/xprop print as their program name | any |
 | `kde-xid-twins.py` | one X11 client, N windows sharing a pid, a class, a title and a rectangle: the tie the Plasma 6 xid matcher used to settle by coin flip. `WM_WINDOW_ROLE` carries the truth (KWin exposes it, the matcher ignores it), so `wwmctl -l` can be graded against it | `resolute-kde` |
 | `kdex11-1-sddm-x-cookie.sh` | Plasma on X11: SDDM keeps the X cookie in `/tmp/xauth_*`, so from a root shell the handover found no cookie at all (run as **root**) | `noble-kde-x11` |
