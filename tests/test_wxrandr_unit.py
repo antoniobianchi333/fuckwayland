@@ -744,11 +744,11 @@ class Rendering(unittest.TestCase):
         self.assertIn("\tBrightness: 1.0", lines)
 
     def test_verbose_gamma_reports_live_holder(self):
-        from wxrandr import gamma as g
+        from wdotool import procs
         st = mk_state()
         o = mk_output("H", 1280, 720)
         pid = os.getpid()
-        st.gamma()["H"] = {"pid": pid, "start": g._proc_starttime(pid),
+        st.gamma()["H"] = {"pid": pid, "start": procs.proc_starttime(pid),
                            "brightness": 0.5, "gamma": [1.0, 1.0, 1.0]}
         lines = core.render_verbose_block(o, st, 0)
         self.assertIn("\tBrightness: 0.50", lines)

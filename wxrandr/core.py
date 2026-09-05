@@ -40,6 +40,7 @@ import struct
 import sys
 import time
 
+from wdotool import procs
 from wdotool import session
 
 PROGRAM_VERSION = "1.5.4"
@@ -1417,8 +1418,7 @@ def render_verbose_block(o: OutputState, state: State, crtc_index) -> list:
     # restored the neutral ramp, so stale 0.50 would be a lie.
     pid = g.get("pid")
     if pid is not None:
-        from wxrandr import gamma as _gammamod
-        if _gammamod._proc_starttime(pid) != g.get("start"):
+        if procs.proc_starttime(pid) != g.get("start"):
             gam, bright = [1.0, 1.0, 1.0], 1.0
     lines = [
         "\tIdentifier: 0x%x" % o.ident,

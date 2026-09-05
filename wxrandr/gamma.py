@@ -12,7 +12,9 @@ Ramp math is xrandr's set_gamma() (xrandr.c:1419):
 with the linear shortcut when gamma == 1 and brightness == 1.
 
 Holder liveness is tracked in the wxrandr state file as (pid, starttime) —
-starttime from /proc/pid/stat guards against pid reuse."""
+starttime from /proc/pid/stat guards against pid reuse. The detaching, the
+status pipe and the /proc identity checks are wdotool.procs, which is where
+that protocol lives for the whole tree."""
 
 import os
 import signal
@@ -20,7 +22,18 @@ import struct
 import sys
 import time
 
+from wdotool import procs
+
 MANAGER = "zwlr_gamma_control_manager_v1"
+
+#: A holder whose starttime was never captured (a '?' record) is identified
+#: by name instead: it is a fork of the running command, and dist/wxrandr is
+#: a zipapp under `env python3`. Loose, but it is only ever reached for a
+#: record that would otherwise strand a holder holding the gamma control.
+HOLDER_COMM = ("python",)
+
+#: How long a `--brightness` blocks waiting for the holder's verdict.
+HOLDER_SECONDS = 10.0
 
 
 def compute_ramp(size: int, brightness: float, gamma_rgb) -> bytes:
@@ -42,79 +55,19 @@ def compute_ramp(size: int, brightness: float, gamma_rgb) -> bytes:
     return bytes(out)
 
 
-def _proc_starttime(pid: int) -> str | None:
-    try:
-        with open("/proc/%d/stat" % pid, "rb") as f:
-            data = f.read()
-        # field 22, counting from 1; comm (field 2) may contain spaces —
-        # everything after the closing paren is space-separated.
-        after = data[data.rindex(b")") + 2:].split()
-        return after[19].decode()  # 22 - 2 (pid, comm)
-    except (OSError, ValueError, IndexError):
-        return None
-
-
-def _looks_like_holder(pid: int) -> bool:
-    """Best-effort identity check for a holder whose starttime we never
-    captured (a '?' record): the process must still exist and run a Python
-    interpreter (dist/wxrandr is a zipapp under `env python3`), which loosely
-    guards against pid reuse before we kill by pid alone."""
-    try:
-        with open("/proc/%d/comm" % pid) as f:
-            comm = f.read().strip()
-    except OSError:
-        return False
-    return "python" in comm.lower()
-
-
 def stop_holder(state, output: str) -> bool:
-    """Kill the recorded holder for `output` (verifying starttime so a
-    recycled pid is never killed). Returns True if one was running."""
+    """Kill the recorded holder for `output` (verifying ownership and
+    starttime, so neither a recycled pid nor somebody else's process is ever
+    signalled). Returns True if one was running."""
     rec = state.gamma().pop(output, None)
     if not rec or not rec.get("pid"):
         return False
-    pid = rec["pid"]
-    # Defence in depth behind the state file's ownership check: a holder we
-    # started runs as us, so a pid owned by anybody else is not our holder --
-    # never send it a signal, whatever the record claims. (Under sudo "us" is
-    # root, and the holder root forked is root too.)
-    try:
-        if os.stat("/proc/%d" % pid).st_uid != os.geteuid():
-            return False
-    except OSError:
-        return False
     start = rec.get("start")
-    if start == "?":
-        # starttime was unavailable when the record was written: fall back to
-        # kill-by-pid with a name check rather than never matching (which used
-        # to strand the holder holding the gamma control forever).
-        if not _looks_like_holder(pid):
-            return False
-    elif _proc_starttime(pid) != start:
+    # a record with no starttime field at all is not a '?': it says nothing
+    # that can be checked, and has never been something we signal
+    if start is None or not procs.alive(rec["pid"], start, HOLDER_COMM):
         return False
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return False
-    if _wait_gone(pid, start):
-        return True
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        return True
-    _wait_gone(pid, start)  # confirm the SIGKILL took (bounded), not fire-and-forget
-    return True
-
-
-def _wait_gone(pid: int, start, tries: int = 50) -> bool:
-    """Poll (bounded) until `pid` is gone / recycled. With a real starttime we
-    detect recycle too; for a '?' record we can only watch for disappearance."""
-    for _ in range(tries):
-        cur = _proc_starttime(pid)
-        if cur is None or (start != "?" and cur != start):
-            return True
-        time.sleep(0.02)
-    return False
+    return procs.kill_bounded(rec["pid"], start)
 
 
 def set_output_gamma(state, output: str, brightness: float, gamma_rgb,
@@ -139,56 +92,30 @@ def set_output_gamma(state, output: str, brightness: float, gamma_rgb,
 
 def _spawn_holder(state, output: str, brightness: float, gamma_rgb,
                   wayland_socket: str | None) -> str | None:
-    r, w = os.pipe()
-    pid = os.fork()
-    if pid == 0:  # child: detach, grandchild holds the gamma control
-        try:
-            os.close(r)
-            os.setsid()
-            if os.fork():
-                os._exit(0)
-            devnull = os.open(os.devnull, os.O_RDWR)
-            os.dup2(devnull, 0)
-            os.dup2(devnull, 1)
-            os.dup2(devnull, 2)
-            os.close(devnull)
-            holder_main(output, brightness, gamma_rgb, status_fd=w,
-                        wayland_socket=wayland_socket)
-        finally:
-            os._exit(0)
-    os.close(w)
-    os.waitpid(pid, 0)
-    import select
-    deadline = time.monotonic() + 10.0
-    buf = b""
-    hpid = None
-    hstart = None
-    status = None
-    while status is None and time.monotonic() < deadline:
-        ready, _, _ = select.select([r], [], [], 0.2)
-        if not ready:
-            continue
-        chunk = os.read(r, 4096)
-        if not chunk:
-            break
-        buf += chunk
-        while b"\n" in buf:
-            line, buf = buf.split(b"\n", 1)
-            line = line.decode(errors="replace").strip()
-            if line.startswith("pid "):
-                # the grandchild reports its identity BEFORE acquiring the
-                # control, so even a later failure/timeout leaves a record a
-                # future wxrandr can stop — no unstoppable orphan.
-                parts = line.split()
-                if len(parts) == 3:
-                    hpid, hstart = int(parts[1]), parts[2]
-                    state.gamma()[output] = {
-                        "pid": hpid, "start": hstart,
-                        "brightness": brightness, "gamma": list(gamma_rgb)}
-            else:
-                status = line
-                break
-    os.close(r)
+    named = {}
+
+    def record():
+        state.gamma()[output] = dict(named, brightness=brightness,
+                                     gamma=list(gamma_rgb))
+
+    def on_line(line: str) -> bool:
+        if not line.startswith("pid "):
+            return False
+        # the grandchild reports its identity BEFORE acquiring the control,
+        # and this runs the moment the line arrives, so even a later
+        # failure/timeout leaves a record a future wxrandr can stop — no
+        # unstoppable orphan.
+        parts = line.split()
+        if len(parts) == 3:
+            named.update(pid=int(parts[1]), start=parts[2])
+            record()
+        return True
+
+    def child(status_fd):
+        holder_main(output, brightness, gamma_rgb, status_fd=status_fd,
+                    wayland_socket=wayland_socket)
+
+    status = procs.spawn_detached(child, HOLDER_SECONDS, on_line)
     if status == "ok":
         return None                       # early record already stands
     if status is not None:                # explicit failure: holder is exiting
@@ -198,10 +125,8 @@ def _spawn_holder(state, output: str, brightness: float, gamma_rgb,
         return "gamma holder did not report status"
     # no terminal status within the deadline: the grandchild may still be
     # alive holding the control — keep the early record so it stays stoppable.
-    if hpid is not None:
-        state.gamma()[output] = {
-            "pid": hpid, "start": hstart,
-            "brightness": brightness, "gamma": list(gamma_rgb)}
+    if named:
+        record()
     return "gamma holder did not report status"
 
 
@@ -213,13 +138,7 @@ def holder_main(output: str, brightness: float, gamma_rgb,
     Exits when the compositor closes the connection or on SIGTERM."""
 
     def emit(msg: str, close: bool = False):
-        if status_fd is not None:
-            try:
-                os.write(status_fd, (msg + "\n").encode())
-                if close:
-                    os.close(status_fd)
-            except OSError:
-                pass
+        procs.emit(status_fd, msg, close)
 
     def report(msg: str):  # terminal status (closes the pipe)
         emit(msg, close=True)
@@ -227,7 +146,8 @@ def holder_main(output: str, brightness: float, gamma_rgb,
     # tell the parent who we are before touching the control, so a failure or
     # timeout past this point still leaves a stoppable record (finding: no
     # unstoppable orphan holder)
-    emit("pid %d %s" % (os.getpid(), _proc_starttime(os.getpid()) or "?"))
+    emit("pid %d %s" % (os.getpid(),
+                        procs.proc_starttime(os.getpid()) or "?"))
 
     try:
         from wdotool import session
