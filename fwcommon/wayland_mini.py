@@ -1,6 +1,7 @@
 """Minimal pure-stdlib Wayland wire-protocol client. Shared by daemon.py (output
-geometry) and backend_wlr.py (foreign-toplevel). Owner: shared — coordinate via
-DESIGN.md before changing the API; fixes for wire-level bugs are fair game.
+geometry), backend_wlr.py (foreign-toplevel), vkbd.py/vptr.py, wxrandr's wlr and KWin
+backends and wxrandr/gamma.py. Technical.md section 3 describes what it is for; fixes for
+wire-level bugs are fair game, and an API change reaches six callers.
 
 Usage sketch:
 

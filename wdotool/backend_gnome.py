@@ -81,7 +81,7 @@ AUTOLOAD_WAIT = 3.0     # after a successful Eval(loadExtension)
 # xdotool action -> bridge SetState action word
 _ACTIONS = {0: "remove", 1: "add", 2: "toggle"}
 # _NET_WM_STATE atoms Mutter has no setter for and that change nothing a script can observe through these tools:
-# warn + succeed (DESIGN.md cosmetic rule). SHADED is not one of them: shading is a visible operation a script
+# warn + succeed (WDOTOOL.md cosmetic rule). SHADED is not one of them: shading is a visible operation a script
 # may rely on, and Mutter does not implement it at all -- a real capability gap, like BELOW. Everything else the
 # bridge cannot apply is a gap too.
 _COSMETIC_STATES = {"SKIP_TASKBAR", "SKIP_PAGER", "MODAL"}

@@ -3,7 +3,7 @@
 Drop-in `arandr` clone that works on **Wayland** (through `wxrandr`) and on
 **X11** (through `xrandr`). Same window, same menus, same `~/.screenlayout/*.sh`
 files — arandr's layout scripts load here and ours load in arandr. House rules
-per DESIGN.md, with one exception spelled out below.
+per Technical.md, with one exception spelled out below.
 
 ## Toolkit rule (the exception)
 

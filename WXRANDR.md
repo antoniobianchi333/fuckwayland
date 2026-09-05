@@ -3,7 +3,7 @@
 Drop-in `xrandr` clone for Wayland with **first-class multimonitor**: query and
 reshape real multi-output layouts — relative positioning, mirroring, rotation,
 reflection, per-output scale, custom modes, monitors — the crazy configurations are
-the point, not an afterthought. House rules per DESIGN.md/WWMCTL.md.
+the point, not an afterthought. House rules per Technical.md.
 
 ## Planes / backends
 

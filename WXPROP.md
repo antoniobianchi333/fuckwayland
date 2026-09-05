@@ -3,8 +3,8 @@
 Drop-in `xprop` clone for Wayland: works on **XWayland windows** (real X properties,
 byte-parity with real xprop) and **native Wayland windows** (a synthesized property
 set printed in xprop's exact formats, so `xprop -id N WM_CLASS`-style script parsing
-just works). Same house rules as DESIGN.md/WWMCTL.md: pure-stdlib Python, nix-only
-toolchain, byte-parity oracles, agents never commit.
+just works). Same house rules as the rest of the tree (Technical.md): pure-stdlib Python,
+nix-only toolchain, byte-parity oracles.
 
 ## Planes
 

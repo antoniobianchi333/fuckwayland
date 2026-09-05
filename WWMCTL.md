@@ -2,8 +2,8 @@
 
 Drop-in `wmctrl` clone for Wayland, handling **both** native Wayland apps and legacy X
 apps (XWayland) as first-class citizens. Lives in this repo beside wdotool and reuses
-its machinery. Pure-stdlib Python, same rules as DESIGN.md (nix-only toolchain, no
-home-dir installs, byte-parity output, no commits by agents).
+its machinery. Pure-stdlib Python, same rules as the rest of the tree
+(Technical.md): nix-only toolchain, no home-dir installs, byte-parity output.
 
 ## The dual-plane trick
 
