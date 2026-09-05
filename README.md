@@ -893,7 +893,10 @@ rather than half-working.
 
 All 48 xdotool commands are implemented, with output byte-compatible against
 xdotool 4.20260303.1 (including `--help` text, error strings, and several verbatim
-C bugs, e.g. `windowmove`'s percent-y quirk). That is our own code, i.e. every
+C bugs, e.g. `windowmove`'s percent-y quirk, and `windowstate` applying only the
+last `--add`/`--remove`/`--toggle` on the line — `--add MAXIMIZED_VERT --add
+MAXIMIZED_HORZ` maximizes horizontally only, exactly as upstream does). That is
+our own code, i.e. every
 Wayland session; on an X11 session we hand over, so what you get there is the
 command set of the `xdotool` that is installed — see **(b)** under
 [Desktop support](#desktop-support).

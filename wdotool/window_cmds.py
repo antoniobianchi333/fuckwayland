@@ -782,6 +782,13 @@ def cmd_windowstate(ctx, args):
     if parsed is None:
         return len(args)
     opts, nopts = parsed
+    # The last --add/--remove/--toggle on the line wins, and that is parity,
+    # not an oversight: xdotool's own cmd_windowstate.c keeps a single
+    # action/arg_property pair and its getopt_long_only switch overwrites both
+    # in every arm, so `--add MAXIMIZED_VERT --add MAXIMIZED_HORZ` maximizes
+    # horizontally only there too (read from 4.20260303.1, the release this
+    # tree claims parity against). Applying each option would be a nicer
+    # command and a different one; README says so under Compatibility.
     action = None
     prop = None
     for name, val in opts:
