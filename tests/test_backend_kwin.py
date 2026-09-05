@@ -1200,6 +1200,9 @@ class BackendTests(_Base):
     def test_workspaces_degrade_when_the_script_fails(self):
         b = self.backend(silent=True)
         b._screen = None
+        # what is being measured is the degradation, not the wait: the real
+        # SCRIPT_TIMEOUT is 10s and this test paid all of it
+        b.script_timeout = 0.3
         ws = b.workspaces()          # the work-area script answers nothing
         self.assertEqual([w.index for w in ws], [0, 1])
         self.assertEqual(ws[0].work_area, (0, 0, 0, 0))
@@ -1262,7 +1265,7 @@ class BackendTests(_Base):
             session.find_x_display, session.find_xauthority = orig
 
     def test_events(self):
-        it = self.b.events(timeout=3.0, workspaces=True)
+        it = self.b.events(timeout=1.0, workspaces=True)
 
         def push():
             # KWin's script engine calls out over KWin's own bus connection,
@@ -1288,7 +1291,7 @@ class BackendTests(_Base):
         so it is not proof of who is answering. Only the owner of
         org.kde.KWin is: a same-uid process that read the token out of /tmp
         must not be able to feed window facts to a (possibly root) wdotool."""
-        it = self.b.events(timeout=3.0, workspaces=True)
+        it = self.b.events(timeout=1.0, workspaces=True)
         spoofer = Bus(self.mock.address)
         self.addCleanup(spoofer.close)
 
