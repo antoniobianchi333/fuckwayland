@@ -572,14 +572,45 @@ bottom of the screen lands on the monitor that is now below it.*
 
 On top of arandr's menu (Active, Primary, Resolution, Orientation) every output also
 gets Refresh rate, Reflection, Mirror of, and, on Wayland only, Scale (1, 1.25, 1.5,
-1.75, 2 and 3, the compositor's HiDPI factor). **Overlapping outputs are allowed
-wherever the desktop allows them**, measured: X11, KWin and sway or wlroots all take the geometry *and*
-show the same pixels in the shared region, while GNOME's Mutter refuses any layout
-that is not edge adjacent and warandr reports that refusal in Mutter's name, not its
-own. The status bar says which of the four you are getting at the moment of the drop,
-and the saved script keeps it in its comment header. The layout is kept anchored at
-0,0, Apply runs off the main loop, and a failed Apply keeps your edits. The canvas is
+1.75, 2 and 3, the compositor's HiDPI factor). The layout is kept anchored at 0,0,
+Apply runs off the main loop, and a failed Apply keeps your edits. The canvas is
 plain widgets, so the GTK 3 bindings are the whole dependency, not even cairo.
+
+#### What your desktop will not let warandr do
+
+warandr sends what you drew. Where a layout is refused, the compositor refused it,
+and the window says so in that compositor's own words rather than ours. The rules
+differ, and **GNOME is much the strictest**, which matters because it is what a stock
+Ubuntu desktop runs.
+
+| | GNOME (Mutter) | KDE (KWin) | sway and wlroots | X11 |
+|---|---|---|---|---|
+| Monitors that **overlap** | refused | allowed | allowed | allowed |
+| A **gap** between monitors | refused | allowed | allowed | allowed |
+| **Mirroring** two monitors | only at the same mode, rotation and scale | any shapes, KWin scales the copy | same shape only, the smaller one crops | allowed |
+| The layout **after a reboot** | gone unless you asked to keep it | always kept | gone | gone |
+
+On GNOME every layout must be exactly edge adjacent. Mutter checks adjacency before
+anything else, so an overlap and a gap come back with the same sentence, *Logical
+monitors not adjacent*, and nothing is half applied. It is not a permission problem
+and it is not something these tools could route around: GNOME's own Settings panel
+gets the same answer. The status bar tells you at the moment of the drop, before you
+press Apply.
+
+Mirroring does work on GNOME, but only between monitors that can take an identical
+mode, rotation and scale, because Mutter mirrors by making one logical monitor out of
+several panels rather than by putting two monitors in the same place. Two monitors of
+different resolutions are refused by name, saying which two differ and how. KWin is
+the one desktop that will scale a mirrored copy onto a differently shaped panel. On
+wlroots the copy crops instead, which is the gap [`wmirror`](#wmirror) fills.
+
+One more GNOME habit worth knowing: an Apply that switches a monitor on or off makes
+the desktop move keyboard focus off the window, so click it again before the next
+Ctrl+S. And a monitor plugged in while the window is open shows up after New
+(Ctrl+N), as in arandr.
+
+The measurements behind all of this, per compositor and per version, are in
+[docs/WARANDR.md](docs/WARANDR.md).
 
 Which backend it is talking to is in the window at all times. The status bar's right
 hand corner says `backend: mutter (Wayland)` or `backend: xrandr (X11)`, with the
