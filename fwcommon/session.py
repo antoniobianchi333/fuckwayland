@@ -1,7 +1,7 @@
 """Discovery of the graphical session's sockets, tolerant of running under sudo
 (where XDG_RUNTIME_DIR etc. point at root's empty runtime dir or are unset).
 Every tool here starts by asking this module which session it is aimed at, so a
-change reaches all six: Technical.md section 2 is the contract.
+change reaches all six: docs/Technical.md section 2 is the contract.
 
 Four cases that were each broken on a stock GNOME box, and are each a rule now:
 

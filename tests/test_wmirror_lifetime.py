@@ -508,7 +508,7 @@ class HelperEnvironment(Base):
 class SpawnDetached(unittest.TestCase):
     """procs.spawn_detached() on its own, under an interrupt.
 
-    WMIRROR.md promises an interrupted start stays stoppable, and that rests
+    docs/WMIRROR.md promises an interrupted start stays stoppable, and that rests
     on two things this pins directly rather than through a supervisor: every
     line reaches `on_line` as it arrives (so the record naming the child is
     already written when the Ctrl-C lands), and the read end of the status

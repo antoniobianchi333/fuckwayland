@@ -4,7 +4,7 @@ everything XWayland mirrors faithfully (Screen line, per-output header
 geometry/rotation words, monitor listings — the mode TABLES differ by design:
 XWayland fabricates a CVT list, wxrandr prints compositor truth).
 
-The non-negotiables from WXRANDR.md all live here: a 4-output session,
+The non-negotiables from docs/WXRANDR.md all live here: a 4-output session,
 L-shape + staircase, mixed scales 1/1.5/2, portrait+landscape, a mirrored
 pair, a --newmode custom mode on a created output, disabling the middle of a
 row (holes are legal), one atomic multi-stanza call — and after EVERY layout
@@ -13,7 +13,7 @@ bounding box and `wwmctl -d` geometry tracks.
 
 KNOWN WDOTOOL BUG (flagged loudly, not papered over): the wdotool daemon
 caches its layout bbox forever (daemon.py _Daemon.geometry: `if self.geom:
-return self.geom`), while WXRANDR.md expects a re-read per request. A daemon
+return self.geom`), while docs/WXRANDR.md expects a re-read per request. A daemon
 that outlives a layout change serves STALE geometry. The invariant here is
 therefore checked against a freshly spawned daemon (the old one is killed
 first), and test_90_daemon_rereads_geometry_per_request asserts the DESIRED
@@ -569,7 +569,7 @@ class WxrandrLiveTest(unittest.TestCase):
         self.assertEqual(err, "")
 
     def test_90_daemon_rereads_geometry_per_request(self):
-        """Per WXRANDR.md: the daemon re-reads geometry per request, so a
+        """Per docs/WXRANDR.md: the daemon re-reads geometry per request, so a
         layout change is visible to an already-running daemon immediately."""
         geom1 = self.getdisplaygeometry(fresh=True)  # daemon now caching
         rc, _o, err = self.wx("--output", self.n3, "--pos",

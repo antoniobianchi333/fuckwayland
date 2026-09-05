@@ -524,7 +524,7 @@ on backend/parse/file errors.
   the hotplug bullet below). The shortcut script is how a layout comes back,
   as with arandr, and it is the same answer on the other three desktops:
   what each of them does on its own, and how to bind the script there, is
-  under "Keeping a layout" in README.md.
+  [WXRANDR.md § Keeping a layout](WXRANDR.md#keeping-a-layout).
 - **Mutter allows no gaps**: a layout leaving a hole between monitors
   (`--pos 5000x0`) is refused by Mutter itself; the dialog shows its text
   (`XRandR failed: xrandr: Logical monitors not adjacent`), the screen is

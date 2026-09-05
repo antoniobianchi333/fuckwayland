@@ -25,7 +25,7 @@ class SoftCmdError(errors.CmdError):
 class NoSessionError(errors.CmdError):
     """No Wayland session / window-management backend could be found at all (B5). Distinct from "the session is
     fine but nothing matched", which stays rc 1, so a script can tell "not logged in yet / no bridge" from "no
-    such window" -- see SESSION READINESS in README.md."""
+    such window" -- see "Session readiness and exit codes" in docs/WDOTOOL.md."""
 
     exit_code = 2
 

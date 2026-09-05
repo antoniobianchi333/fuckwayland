@@ -56,7 +56,7 @@ Titles are `captionNormal` on 6 and `caption` with KWin's " <2>" duplicate-
 title suffix stripped on 5.27 (which has no captionNormal property), so the
 same window is named the same on both, and the same as X names it.
 
-Capability gaps, all documented in WDOTOOL.md: Plasma 6 removed window shading
+Capability gaps, all documented in docs/WDOTOOL.md: Plasma 6 removed window shading
 (SHADED is a gap there, works on 5.27), neither release has a per-window
 lower -- lowering a window that is not active falls back to keep-below -- and
 KWin caps the number of virtual desktops (20 on 5.27, 25 on 6), which

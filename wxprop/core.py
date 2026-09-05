@@ -1,6 +1,6 @@
 """Plane resolution, property assembly, -spy loops.
 
-Two planes, per WXPROP.md:
+Two planes, per docs/WXPROP.md:
 
 - X windows (XWayland): everything through wdotool.x11_mini against the real
   X server — GetProperty/ListProperties for reads, ChangeProperty/
@@ -18,7 +18,7 @@ Window ids: an id that matches a compositor node resolves through the
 node (an XWayland node redirects to its real X window id); anything else
 goes to the X server when one is reachable, exactly like xprop would.
 
-GNOME (the bridge backend, WXPROP.md "GNOME"): the compositor list comes
+GNOME (the bridge backend, docs/WXPROP.md "GNOME"): the compositor list comes
 from backend.views() (X ids of XWayland windows, WM_CLASS pairs, states,
 window types), the X plane is opened with the DISPLAY/XAUTHORITY the bridge
 reports (Mutter's Xwayland needs its cookie) and only when Xwayland is
@@ -597,7 +597,7 @@ class NativeViewTarget(NativeTarget):
 
 class NativeRootTarget(NativeTarget):
     """-root without an X server: a minimal EWMH-ish root property set synthesized from the compositor
-    (documented in WXPROP.md's terms: the _NET_SUPPORTING_WM_CHECK-ish set). _NET_SUPPORTING_WM_CHECK is 0x0 —
+    (documented in docs/WXPROP.md's terms: the _NET_SUPPORTING_WM_CHECK-ish set). _NET_SUPPORTING_WM_CHECK is 0x0 —
     there is no WM check window to point at."""
 
     node_id = None

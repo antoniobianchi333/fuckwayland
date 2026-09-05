@@ -285,7 +285,7 @@ and the layout then survives a hotplug and a reboot; otherwise the previous layo
 comes back after 20 s and nothing is written (verified on GNOME 46 and 50: nothing is
 written before the confirmation, and there is no D-Bus call to confirm from outside
 the shell). What every desktop does with an applied layout, and how to get one back
-from a key, is under "Keeping a layout" in README.md.
+from a key, is [Keeping a layout](#keeping-a-layout) below.
 `--dryrun` additionally submits the exact configuration with method 0 (verify
 only) and prints `mutter verify: ok` on stderr (stdout stays xrandr's own dryrun
 lines), or Mutter's rejection as the fatal a real run would give.

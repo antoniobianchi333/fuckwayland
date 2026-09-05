@@ -8,7 +8,7 @@ tool *is*.
 
 Read [Technical.md](Technical.md) for what wdotool shares with the other five tools:
 session discovery, the X11 handover, the two wire clients, the environment table and
-the test map. Read [gnome/README.md](gnome/README.md) for the bridge extension's own
+the test map. Read [gnome/README.md](../gnome/README.md) for the bridge extension's own
 interface.
 
 ## Architecture
@@ -70,8 +70,8 @@ Wayland forces a few honest approximations:
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
 scratchpad on sway. GNOME has a longer list of honest differences (shell grabs, the
 lock screen, `selectwindow`): see **Known limitations on GNOME** in
-[gnome/README.md](gnome/README.md). The per-desktop cells are the support matrix in
-the [README](README.md#desktop-support).
+[gnome/README.md](../gnome/README.md). The per-desktop cells are the support matrix in
+the [README](../README.md#desktop-support).
 
 ## Keyboard layouts
 
@@ -1071,3 +1071,27 @@ Daemon notes:
   `--pid`, `--all/--any`, `--limit N`, `--onlyvisible`, `--sync`. Writes `ctx.stack`.
   Exact output formats for search/getwindowgeometry/getmouselocation (+ `--shell`
   variants): copy from the manpage and `cmd_*.c`.
+### What differs from X on KDE Plasma
+
+The bullets above are the mechanism. This is the same story as a script writer meets
+it, one row per command, measured on Plasma 5.27 and 6.6.
+
+| | |
+|---|---|
+| `windowraise` on 5.27 | KWin 5.27 has no per-window raise. The window is activated instead (which focuses it), and says so on stderr. Plasma 6 raises properly |
+| `windowlower` | neither release has a per-window lower: the active window is lowered for real, any other is marked keep-below, with a warning |
+| `windowstate SHADED` | works on 5.27, **for X11 windows only**, because KWin shades nothing else, and says so. Plasma 6 removed window shading, so it is a clean "not supported" there |
+| `windowstate MAXIMIZED_*` on 5.27 | KWin 5.27 exposes no `maximizeMode` to scripts, so a window is read as maximized when its frame fills the maximize area to within one size increment (at least 32px per axis). A merely large window therefore reads as maximized, and `--remove MAXIMIZED_*` cannot clear that reading |
+| `set_num_desktops` | KWin caps virtual desktops (20 on 5.27, 25 on 6) and keeps at least one. Asking for more is capped at that with a warning, not an error |
+| window ids | KWin's only window handle is a UUID, so the printed ids are minted from it (30 bits of it, `0x40000000` to `0x7FFFFFFF`, out of the range Xwayland gives its clients). They are stable while the window lives, and an X id is not accepted in their place. On sway either, where the ids are sway node ids |
+| `wwmctl -l -G` positions | on Plasma 6.6 (and sway) `wmctrl` doubles the frame offset under a non-reparenting WM and ours are the real ones. KWin 5.27's xwm *does* reparent, so both agree there |
+| a state KWin ignores | KWin accepts a state a window rule or the client's size hints forbid and does nothing with it. `wwmctl` then sends the EWMH `_NET_WM_STATE` ClientMessage instead, which reaches an XWayland window through KWin's X-plane window manager, and checks that one landed too. `wdotool` has no second route and says what happened |
+| `selectwindow` | KWin has one reply slot for its window picker, so a second picker started while the first is up takes the click. The first call then waits until `WDOTOOL_SELECT_TIMEOUT` (2 minutes) and says so |
+| XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list: pid and `WM_CLASS` filter, title and geometry score. Where those tie, two windows of one application in the same place under the same title, the order of the two lists decides, and that is exact rather than a guess: `_NET_CLIENT_LIST` is KWin's own window list with everything but the managed X11 windows dropped. A client that publishes neither `_NET_WM_PID` nor `WM_CLASS`, and a pair that nothing at all separates, keep id 0 rather than being handed one of two ids |
+| `wxprop -root` | `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW` and `_NET_DESKTOP_NAMES` are ours (native windows included), not KWin's stale X copies |
+| `getmouselocation` | answered by KWin (`workspace.cursorPos`), like GNOME's: a mouse moved by hand, or by another process, reads correctly, and the query needs no `/dev/uinput` at all |
+
+A window state that a client applies asynchronously (fullscreen and maximize on a
+Wayland client, applied when it acks the configure) is waited for before the command
+returns, so `windowstate` never reports a state it merely has not seen land yet, and
+the next command sees a settled window.

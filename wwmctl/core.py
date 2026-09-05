@@ -1,7 +1,7 @@
 """Unified window model + wmctrl semantics over the wdotool
 compositor backend, with X11 enrichment for XWayland windows when available.
 
-Dual-plane design per WWMCTL.md:
+Dual-plane design per docs/WWMCTL.md:
 - the window LIST and all ACTIONS come from the compositor backend
   (wdotool.backend_detect.detect(); backend-native ids address windows),
   with -e sent as one move_resize() where the backend offers it,

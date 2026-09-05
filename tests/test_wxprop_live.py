@@ -5,7 +5,7 @@ xterm (X plane, via XWayland) and foot (native Wayland) run side by side.
 The X-plane contract is BYTE parity: for the same window state, wxprop's
 stdout/stderr/exit code must equal real xprop 1.2.8's, and every parity
 test literally runs both binaries and diffs. The native plane is checked
-against the synthesized-property contract in WXPROP.md. -set/-remove are
+against the synthesized-property contract in docs/WXPROP.md. -set/-remove are
 cross-verified (wxprop writes, real xprop reads back, and vice versa),
 and -spy transcripts are compared byte for byte.
 

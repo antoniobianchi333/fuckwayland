@@ -82,7 +82,7 @@ AUTOLOAD_WAIT = 3.0     # after a successful Eval(loadExtension)
 # xdotool action -> bridge SetState action word
 _ACTIONS = {0: "remove", 1: "add", 2: "toggle"}
 # _NET_WM_STATE atoms Mutter has no setter for and that change nothing a script can observe through these tools:
-# warn + succeed (WDOTOOL.md cosmetic rule). SHADED is not one of them: shading is a visible operation a script
+# warn + succeed (docs/WDOTOOL.md cosmetic rule). SHADED is not one of them: shading is a visible operation a script
 # may rely on, and Mutter does not implement it at all -- a real capability gap, like BELOW. Everything else the
 # bridge cannot apply is a gap too.
 _COSMETIC_STATES = {"SKIP_TASKBAR", "SKIP_PAGER", "MODAL"}
@@ -181,8 +181,8 @@ class GnomeBackend(WindowBackend):
             if not (_autoload_wanted() and self._try_autoload()):
                 # Every reason the bridge can be missing (not installed, not enabled, screen locked, greeter,
                 # shell restarting) means the same thing to a script: there is no window backend to talk to yet.
-                # That is rc 2, distinct from "no matching window" (rc 1) -- see B5 / SESSION READINESS in
-                # README.md.
+                # That is rc 2, distinct from "no matching window" (rc 1) -- see B5 and "Session readiness
+                # and exit codes" in docs/WDOTOOL.md.
                 raise NoSessionError(self._missing_bridge_text())
 
     # -- plumbing -----------------------------------------------------------

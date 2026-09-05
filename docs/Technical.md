@@ -7,11 +7,11 @@ backends that are one shape. Read it if you are about to change something and wa
 know where that something lives.
 
 The user-facing documents are elsewhere and this file does not repeat them: the
-[README](README.md) is the install and the per-desktop support, and each tool has a
+[README](../README.md) is the install and the per-desktop support, and each tool has a
 contract of its own — [WDOTOOL.md](WDOTOOL.md), [WWMCTL.md](WWMCTL.md),
 [WXPROP.md](WXPROP.md), [WXRANDR.md](WXRANDR.md), [WARANDR.md](WARANDR.md),
-[WMIRROR.md](WMIRROR.md), plus [gnome/README.md](gnome/README.md) for the bridge
-extension and [vm/README.md](vm/README.md) for the rig.
+[WMIRROR.md](WMIRROR.md), plus [gnome/README.md](../gnome/README.md) for the bridge
+extension and [vm/README.md](../vm/README.md) for the rig.
 
 ## 1. The six tools
 
@@ -740,8 +740,213 @@ type, autologin landed, the heads are there, the compositor is painting,
 `vmctl user` reconstructs an environment in which the desktop's own tools work. It is
 the check you run after building an image and before believing anything measured on
 it. The tools' own behaviour per flavor is the separate table in
-[vm/README.md](vm/README.md), *What the six tools do on each flavor*, and that is what
+[vm/README.md](../vm/README.md), *What the six tools do on each flavor*, and that is what
 the README's support matrix is a summary of.
 
-[vm/SETUP.md](vm/SETUP.md) is how to stand the rig up on a machine of your own, and
+[vm/SETUP.md](../vm/SETUP.md) is how to stand the rig up on a machine of your own, and
 `vm/setup-host.sh` does the mechanical part of it.
+### The no-dialog measurement
+
+The README's [no authorization dialog](../README.md#no-authorization-dialog) is a
+claim about six of these images: GNOME 46 and GNOME 50 (the 26.04 default install off
+the ISO among them) and Plasma 5.27, 6.6 and 6.7, with every command run three ways,
+as root, as a plain user with the udev rule, and as a plain user with neither.
+Watching throughout: the session bus for portal traffic, the system bus for polkit
+`CheckAuthorization` and `BeginAuthentication`, the window list for windows we did not
+open, and both screens compared pixel by pixel around every command. On all six, and
+for the installer and the udev rule as well as the tools: **no prompt, no window we
+did not open, and not one portal call from anything of ours.** The same rig pointed at
+a real portal client and at `pkexec` produced both dialogs on every image, so it does
+see one when there is one. `tests/test_no_portal.py` is the static half of the same
+guarantee, and it runs everywhere.
+## 11. Installing: what each route costs
+
+The [README](../README.md#install) is the guide, and this is what stands behind it:
+what the .deb does that a pip install does not, why each line of the pip route is the
+line it is, and what a venv under `$HOME` costs when somebody else has to run the
+tools. All of it was measured on a default Ubuntu 24.04 and a default 26.04 desktop
+installed from the release ISOs, `noble-gnome-iso` and `resolute-gnome-iso`.
+
+### The .deb
+
+**One** `Architecture: all` package for **both** Ubuntu 24.04 and 26.04. Every module
+here is pure standard library, so it lands in the version independent
+`/usr/lib/python3/dist-packages` and your own `python3` byte compiles it at install
+time, 3.12 on 24.04 and 3.14 on 26.04, from the same file. In the box: the six tools
+in `/usr/bin`, the GNOME bridge extension system wide, the udev rule applied at once
+with no reboot, and the `warandr` menu entry.
+
+It does **not** replace the real `xdotool`, `wmctrl`, `xprop` or `xrandr`. Not one
+path it ships is owned by their packages, so the X11 handover keeps finding them and
+the symlinks over the originals stay the user's choice.
+
+`sudo apt remove fuckwayland` takes the extension, the udev rule and the six commands
+with it, `/dev/uinput` goes back to `root:root 0600`, and the session in progress
+keeps running. `sudo apt purge fuckwayland` drops the last of its bookkeeping.
+
+Alongside a pip install of the same source, the two do not fight. The
+`/usr/local/bin` symlinks the pip route makes keep winning for the six names, because
+`/usr/local/bin` comes first on the Ubuntu `PATH`, and the package owns nothing under
+`/usr/local`. One thing to know if the clone is what you work on: inside a
+`--system-site-packages` venv, an editable install loses to the packaged modules, so
+`import wdotool` finds the packaged copy. `debian/README.Debian` has the detail and
+the one line that gets you back to the clone.
+
+`scripts/build-deb.sh` installs its own build tools from the Ubuntu archive on first
+run, nothing from a PPA:
+
+```
+dpkg-dev debhelper dh-python pybuild-plugin-pyproject python3-all python3-setuptools
+```
+
+Pass `--no-deps` to install them yourself instead. What goes where, and why the
+extension and the rule are handled the way they are, is `debian/README.Debian`.
+
+### Why the pip route reads the way it does
+
+* **Why a virtual environment.** Ubuntu 24.04 and newer mark the system Python as
+  externally managed, so a plain `pip install -e .`, with or without `--user`,
+  refuses with `error: externally-managed-environment` and points at a venv, at pipx,
+  or at `--break-system-packages`. Those are the honest options, all of them work,
+  and a venv is the one that changes nothing outside its own directory.
+* **Why `python3-venv` and not `python3-pip`.** A stock Ubuntu desktop has neither
+  pip nor venv nor pipx, checked against both installers' own package sets, so
+  `pip install` is `pip: not found` before PEP 668 gets a word in. `python3-venv` is
+  all you need, because the venv brings its own pip along. (Ask for a directory
+  without it installed and the error names the *versioned* package, `python3.12-venv`
+  on 24.04 and `python3.14-venv` on 26.04. `python3-venv` pulls the right one on
+  both. Run with no arguments at all it only prints argparse's `the following
+  arguments are required: ENV_DIR`.)
+* **Why `--system-site-packages`.** `warandr` is the one tool with a dependency: the
+  Python GTK 3 bindings, which are the apt packages `python3-gi` and `gir1.2-gtk-3.0`
+  rather than something pip should build. Every GNOME, KDE and Xfce install already
+  has them, but a venv hides system packages unless it is told not to, and then
+  `warandr` exits 1 with this:
+
+  ```
+  warandr: GTK 3 for Python is not available (No module named 'gi') - on Ubuntu/Debian: sudo apt install python3-gi gir1.2-gtk-3.0
+  ```
+
+  The other five tools are stdlib only and never notice.
+* **Why `-e`, and keep the clone.** pip installs the six commands and nothing else.
+  Not `gnome/install-bridge.sh`, not the udev rule, not `warandr.desktop`. Those are
+  used from the clone, so keep it where it is and let the editable install point at
+  it.
+
+`pip install -e .` fetches setuptools, so it wants network. **On 26.04** a
+`--system-site-packages` venv can use the system copy instead, because a default
+install ships `python3-setuptools` 78:
+`~/.venvs/fuckwayland/bin/pip install --no-build-isolation -e .` **On 24.04 that
+shortcut does not work** and the ordinary line is the one to use: a default 24.04
+desktop has no `python3-setuptools` at all (`ModuleNotFoundError: No module named
+'setuptools'`), and where it is installed it is setuptools 68, which still needs the
+separate `wheel` package (`error: invalid command 'bdist_wheel'`). Both measured on
+24.04 default and cloud images, see [vm/README.md](../vm/README.md).
+
+### A venv under `$HOME`, and other accounts
+
+Ubuntu home directories are `0750`, so a venv under one is readable by its owner and
+root only. Symlinks in `/usr/local/bin` that point into it break for *other* users,
+and the message they get does not say why: `sudo` reports `unable to execute
+/usr/local/bin/wdotool: Permission denied` on 24.04 and `sudo:
+'/usr/local/bin/wdotool': command not found` on 26.04. For a machine wide drop-in use
+one venv under `/opt`, and note the missing `-e` there: an editable install keeps
+reading the source tree at run time and hits the same wall, while from a readable
+copy it does not. A symlink left behind after the venv is deleted just says `No such
+file or directory`, so remove the links when you remove the install.
+
+### What the default installs said about the guide
+
+The install guide was run on both ISO installs *verbatim*, as a reader would:
+`sudo apt install git python3-venv`, clone, venv, `pip install -e .`, the
+`/usr/local/bin` symlinks, `gnome/install-bridge.sh`, one logout, `--udev`. Every
+command worked as written on both, and the stock facts the guide leans on hold on a
+real default install of either release (no pip, no venv, no pipx, no `git`, no
+`curl`, while `python3-gi`, `gir1.2-gtk-3.0`, `acl`, `x11-utils` and
+`x11-xserver-utils` are all present, so `warandr`'s GUI comes up with nothing extra
+installed). All six tools then behaved **identically to the matching cloud image
+flavor**, as the desktop user and as root over ssh with an empty environment. The
+24.04 run corrected two sentences of the guide, both about the *optional*
+`--no-build-isolation` line and the bare `python3 -m venv` error.
+
+Two things about a default install are worth knowing before trusting a script on one,
+and neither is visible on the cloud image flavors, which switch both off:
+
+* **it locks itself.** `idle-delay 300` and `lock-enabled true` are the defaults on
+  24.04 and 26.04 alike, and GNOME Shell disables extensions behind the lock screen,
+  so five idle minutes turn every window command into `gnome backend: the fuckwayland
+  bridge is unavailable while the screen is locked`, rc 1 (rc 2 for `wdotool`). It
+  also switches the outputs off, so a screenshot taken then is black. `wxrandr`,
+  `warandr` and input injection keep working, and injecting the password is a way
+  back in. Five minutes is less than the guide itself takes: on the 24.04 default
+  install `sudo apt install git python3-venv` alone ran for three and a half minutes
+  and the session was locked by the time the bridge was installed.
+* **it has no `xdotool` and no `wmctrl`**, so the X11 handover has nothing to hand to
+  until `sudo apt install xdotool wmctrl`. On a Wayland session nothing hands over,
+  so this only bites on an X11 session or under `FUCKWAYLAND_PASSTHROUGH=always`.
+
+## 12. The threat model in full
+
+The [README](../README.md#threat-model) states this in short. Here it is with the
+mechanics, because "granted once and standing" is the design and not an accident.
+
+**What installing the pieces grants, and to whom.**
+
+* **The GNOME bridge extension** grants **every process that can reach your session
+  bus**, including a sandboxed app allowed to talk to `org.gnome.Shell`, because the
+  object answers there too, the ability to list every window with its title, class,
+  pid, geometry and workspace (stock GNOME withholds that:
+  `org.gnome.Shell.Introspect` is sender-allowlisted), to move, resize, restack,
+  close and **SIGKILL** any window, to learn `DISPLAY` and the path of Mutter's
+  Xwayland cookie, to take the shell's modal input grab for the length of one window
+  pick, and to confirm a pending display-configuration change. There is no partial
+  mode and no caller check. The bridge never evaluates code and never injects input.
+  Flatpak and Snap apps without session bus access cannot reach it.
+* **The udev rule** grants `/dev/uinput`, which is the ability to type as you, to the
+  user of the **active seat session**, through a logind ACL, and to nobody else: no
+  group, no standing channel. The grant is checked at `open()`, so the daemon
+  re-checks it before every injection and destroys its devices when the seat moves to
+  another session, and a user who switches away therefore stops being able to type
+  into the session they left. That is about the *kernel* device, which is global to
+  the machine. On wlroots the Wayland route still works while the seat is elsewhere,
+  because it reaches only the compositor whose socket it connected to, which is your
+  own.
+* **`zwp_virtual_keyboard_v1` and `zwlr_virtual_pointer_v1` on wlroots grant nothing
+  that was not already granted**, and that is the note. sway advertises both
+  protocols to **every client of your Wayland socket** and restricts them to none:
+  any of them could already upload a keymap and type as you, or move your cursor and
+  click, with or without us. wdotool installs nothing to use them and asks nobody for
+  permission. It is the compositor's grant, to everything that can open your
+  compositor's socket, which is the same-uid boundary below. Two consequences worth
+  spelling out: on sway, injecting input needs neither root nor the udev rule at all,
+  and the lock-screen note applies to these routes as much as to the kernel one.
+  Mutter and KWin implement neither, so nothing changes there.
+* **KDE needs nothing installed**, which is itself the note: any client of a Plasma
+  session bus can already load a script into KWin, with or without us.
+* **Running as root** (`sudo wdotool`) is the alternative to the udev rule. Then the
+  tools find the graphical session by scanning `/run/user/*` and logind, and talk to
+  that user's compositor as root.
+
+**What is never asked at run time.** Nothing here uses the desktop portal, so GNOME's
+and KDE's *Remote Desktop* consent dialog never appears, and nothing here uses
+PolicyKit, so no polkit agent window does either. That is a deliberate choice, and
+this section is its cost: with no per-use prompt, everything is granted once and
+standing, by the bullets above, whether that is the udev rule, the bridge extension
+or `sudo`. The only prompt any of it can raise is GNOME's *Keep these display
+settings?*, on an explicit `wxrandr --persistent`.
+
+**What is deliberately not defended against.** Anyone who can already run code as
+you: they can type through the daemon, read the same files and talk to the same
+buses, and a same-uid boundary is not one we can enforce, so we do not pretend to. A
+hostile compositor (you are already inside it). The lock screen: injected keystrokes
+reach it, because the kernel does not know they are injected. Scripts you saved and
+run later (`warandr`'s layout scripts are shell scripts, so read one before running
+it, as with any script). And nothing here is a sandbox: the tools do not confine what
+a command they hand over to, `xdotool` on X11, then does.
+
+**What is defended against**, and stays that way: another local user. The daemon
+socket, its lock and the wxrandr state file are private to their owner and validated
+before they are believed, the daemon refuses to talk to a socket somebody else is
+listening on, a state file that is not ours is ignored rather than obeyed, the
+real-tool search never looks in the current directory, and a root run with no session
+never hands a planted X server another user's cookie.
