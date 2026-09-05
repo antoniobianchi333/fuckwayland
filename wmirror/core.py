@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import time
 
-from wdotool import session
+from fwcommon import session
 from wdotool.ctx import CmdError
 from wxrandr import core as wxcore
 
@@ -165,7 +165,7 @@ def missing_helper_lines() -> list:
 
 def no_session_lines() -> list:
     """What to say when there is no Wayland session to mirror on."""
-    from wdotool import passthrough
+    from fwcommon import passthrough
     # respect_override=False: FUCKWAYLAND_PASSTHROUGH says what to do about
     # handing over to an X11 original, and wmirror has no original to hand
     # over to (warandr/randr.py reasons the same way).
@@ -178,7 +178,7 @@ def no_session_lines() -> list:
 
 def open_conn(wayland_socket=None):
     """A WlConn to the compositor, or Refusal naming what is missing."""
-    from wdotool.wayland_mini import WlConn
+    from fwcommon.wayland_mini import WlConn
     if wayland_socket is None:
         hit = session.find_wayland_socket()
         if hit is None:

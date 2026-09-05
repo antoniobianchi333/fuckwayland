@@ -136,7 +136,7 @@ def socket_path() -> str:
     user can see rather than a socket quietly moved somewhere else."""
     if os.geteuid() == 0:
         return "/run/wdotool.sock"
-    from wdotool import session
+    from fwcommon import session
 
     rd = os.environ.get("XDG_RUNTIME_DIR")
     return os.path.join(rd or session.runtime_dir(), "wdotool.sock")
@@ -155,8 +155,8 @@ def _bbox_of(boxes) -> tuple[int, int, int, int]:
 def _wayland_bbox() -> tuple[int, int, int, int]:
     """Bounding box (min_x, min_y, w, h) of all outputs, queried over the
     Wayland wire. Prefers zxdg_output_manager_v1 logical size/position."""
-    from wdotool import session
-    from wdotool.wayland_mini import WlConn
+    from fwcommon import session
+    from fwcommon.wayland_mini import WlConn
 
     hit = session.find_wayland_socket()
     if hit is None:
@@ -1118,7 +1118,7 @@ class _Daemon:
         if virtual:
             return False
         if self._rel_abs is None:
-            from wdotool import session
+            from fwcommon import session
             self._rel_abs = not bool(session.find_sway_socket())
         return self._rel_abs
 

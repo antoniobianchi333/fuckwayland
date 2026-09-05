@@ -1,1 +1,5 @@
-VERSION = "wmirror 0.2.0"   # new in 0.2: the one tool here that clones nothing
+from fwcommon import VERSION as _RELEASE
+
+#: what `--version` prints. The one tool here that clones nothing, so
+#: the number is ours and there is no oracle to match.
+VERSION = "wmirror " + _RELEASE

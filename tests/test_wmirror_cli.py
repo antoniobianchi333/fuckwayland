@@ -19,8 +19,8 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wdotool import passthrough                                  # noqa: E402
-from wdotool import session                                      # noqa: E402
+from fwcommon import passthrough                                 # noqa: E402
+from fwcommon import session                                     # noqa: E402
 from wmirror import cli, core                                    # noqa: E402
 from wmirror import supervise                                    # noqa: E402
 from wxrandr import core as wxcore                               # noqa: E402
@@ -374,7 +374,7 @@ class Detection(Base):
         self.assertIn("portal", joined)
 
     def test_an_x11_session_is_told_it_is_one(self):
-        from wdotool import passthrough
+        from fwcommon import passthrough
         passthrough.reset_cache()
         self.addCleanup(passthrough.reset_cache)
         with mock.patch.object(passthrough, "session_kind",
@@ -387,7 +387,7 @@ class Detection(Base):
         """FUCKWAYLAND_PASSTHROUGH is about handing over to an X11 original,
         and wmirror has none -- it must not turn an X11 box into a Wayland
         one here (the reasoning warandr's randr.choose() uses)."""
-        from wdotool import passthrough
+        from fwcommon import passthrough
         passthrough.reset_cache()
         self.addCleanup(passthrough.reset_cache)
         with mock.patch.object(passthrough, "session_kind") as sk:
@@ -598,7 +598,8 @@ class Separation(Base):
         """The feature is one new command. If a backend, the daemon or the
         GUI had to learn a new word for it, it went in the wrong place."""
         offenders = []
-        for pkg in ("wdotool", "wxrandr", "warandr", "wwmctl", "wxprop"):
+        for pkg in ("fwcommon", "wdotool", "wxrandr", "warandr", "wwmctl",
+                    "wxprop"):
             base = os.path.join(ROOT, pkg)
             for name in sorted(os.listdir(base)):
                 if not name.endswith(".py"):

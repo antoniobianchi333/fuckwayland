@@ -2,7 +2,7 @@
 
 Everything here runs against a **real Wayland socket** served by a fake
 compositor that speaks the wire format (`FakeCompositor` below): our client is
-`wdotool/wayland_mini.py` unmodified, the keymap really travels as an fd over
+`fwcommon/wayland_mini.py` unmodified, the keymap really travels as an fd over
 SCM_RIGHTS, and every assertion is about the bytes the compositor received. A
 mock of our own client would have proved only that we can call our own
 methods.

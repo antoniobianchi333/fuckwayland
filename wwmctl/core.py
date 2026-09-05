@@ -32,7 +32,8 @@ import struct
 import sys
 import time
 
-from wdotool import backend_detect, session
+from fwcommon import session
+from wdotool import backend_detect
 from wdotool.backend import state_steps as _backend_state_steps
 from wdotool.backend import warn as _warn
 from wdotool.cnum import atoi as _atoi

@@ -129,7 +129,7 @@ typed hooks — `views()`, `workspaces()`, `x_info()`, `events()`,
 * **The X plane** is opened with the `DISPLAY`/`XAUTHORITY` the bridge
   reports (`x_info()`: gnome-shell's own, else Mutter's
   `$XDG_RUNTIME_DIR/.mutter-Xwaylandauth.*` cookie found by
-  `wdotool.session`), which is what makes `ssh root@`, `sudo` and a GNOME
+  `fwcommon.session`), which is what makes `ssh root@`, `sudo` and a GNOME
   custom-shortcut process all work; `-display` still wins and then uses
   `$XAUTHORITY`/the session cookie. Mutter spawns Xwayland **on demand**,
   so wxprop connects only when an XWayland window is listed or an

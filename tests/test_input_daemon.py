@@ -12,7 +12,8 @@ import time
 import unittest
 from unittest import mock
 
-from wdotool import daemon, keymap, keystate, session, uinput
+from fwcommon import session
+from wdotool import daemon, keymap, keystate, uinput
 from wdotool.ctx import CmdError
 
 # The suite never hands a tool over to the real X11 one: see

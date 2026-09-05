@@ -875,7 +875,7 @@ shell started is `/usr/bin/xdotool`. Output is the original's, byte for byte —
 since this branch. **SDDM keeps the X cookie in `/tmp/xauth_<random>`**, which is neither
 `~/.Xauthority` (it does not exist on this image) nor anything in a runtime directory, so
 the cookie search came back empty and every handover died with `Authorization required,
-but no authorization protocol specified`. `wdotool/session.py` now reads it out of the
+but no authorization protocol specified`. `fwcommon/session.py` now reads it out of the
 session's own leader (`startplasma-x11`, `kwin_x11`, `plasmashell`, ... — uid-qualified
 `/proc/<pid>/environ`, the same trick that already found gnome-shell's), so
 `repair_x_env()` from a root shell yields `{'DISPLAY': ':0', 'XAUTHORITY':

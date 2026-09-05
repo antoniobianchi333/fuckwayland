@@ -145,8 +145,8 @@ def holder_main(output: str, brightness: float, gamma_rgb,
     emit("pid %d %s" % (os.getpid(), procs.proc_starttime(os.getpid()) or "?"))
 
     try:
-        from wdotool import session
-        from wdotool.wayland_mini import WlConn
+        from fwcommon import session
+        from fwcommon.wayland_mini import WlConn
         if wayland_socket is None:
             hit = session.find_wayland_socket()
             if hit is None:

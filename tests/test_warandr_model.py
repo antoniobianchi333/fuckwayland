@@ -1419,8 +1419,8 @@ class BuildScript(unittest.TestCase):
     def test_pyz(self):
         import shutil
         with tempfile.TemporaryDirectory(prefix="warandr-build-") as tmp:
-            for d in ("wdotool", "wwmctl", "wxprop", "wxrandr", "warandr",
-                      "wmirror", "scripts"):
+            for d in ("fwcommon", "wdotool", "wwmctl", "wxprop", "wxrandr",
+                      "warandr", "wmirror", "scripts"):
                 shutil.copytree(os.path.join(ROOT, d), os.path.join(tmp, d),
                                 ignore=shutil.ignore_patterns("__pycache__"))
             p = subprocess.run(["sh", os.path.join(tmp, "scripts",
@@ -1436,7 +1436,7 @@ class BuildScript(unittest.TestCase):
             env.pop("PYTHONPATH", None)
             p = subprocess.run([sys.executable, pyz, "--version"],
                                capture_output=True, text=True, timeout=60)
-            self.assertEqual((p.returncode, p.stdout), (0, "warandr 0.1.0\n"))
+            self.assertEqual((p.returncode, p.stdout), (0, "warandr 0.3.0\n"))
             p = subprocess.run([sys.executable, pyz, "--command"], env=env,
                                capture_output=True, text=True, timeout=60)
             self.assertEqual((p.returncode, p.stdout.strip()),

@@ -327,7 +327,7 @@ def _open_watch(wayland_socket):
     if not wayland_socket:
         return None
     try:
-        from wdotool.wayland_mini import WlConn
+        from fwcommon.wayland_mini import WlConn
         conn = WlConn(wayland_socket)
         return wxcore.WlrOutputs(conn=conn)
     except Exception:

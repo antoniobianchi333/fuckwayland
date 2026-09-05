@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for wdotool.passthrough: session detection, finding the real
+"""Unit tests for fwcommon.passthrough: session detection, finding the real
 tool, the argv conventions of the four main()s, help/version, environment
 repair — and the guard that keeps this very test suite from exec'ing itself
 away on an X11 development box.
@@ -27,8 +27,8 @@ from unittest import mock
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+from fwcommon import passthrough                  # noqa: E402
 from wdotool import cli as wdotool_cli            # noqa: E402
-from wdotool import passthrough                   # noqa: E402
 from wwmctl import cli as wwmctl_cli              # noqa: E402
 from wxprop import cli as wxprop_cli              # noqa: E402
 from wxrandr import cli as wxrandr_cli            # noqa: E402
@@ -797,7 +797,7 @@ class EnvRepair(Base):
         # with a target uid it is that user's dir and nobody else's (the
         # last-resort session.find_xauthority() reads the real box, so it is
         # stubbed out here rather than left to the machine the tests run on)
-        with mock.patch("wdotool.session.find_xauthority", lambda *a, **k: None):
+        with mock.patch("fwcommon.session.find_xauthority", lambda *a, **k: None):
             self.assertIsNone(passthrough.find_xauthority({}, 126))
 
     def test_dead_xauthority_is_dropped_not_forwarded(self):

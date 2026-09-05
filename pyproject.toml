@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fuckwayland"
-version = "0.2.0"
+version = "0.3.0"
 description = "The X11 power tools (xdotool, wmctrl, xprop, xrandr) as drop-in clones for Wayland"
 requires-python = ">=3.10"
 
@@ -17,7 +17,8 @@ warandr = "warandr.cli:main"
 wmirror = "wmirror.cli:main"
 
 [tool.setuptools]
-packages = ["wdotool", "wwmctl", "wxprop", "wxrandr", "warandr", "wmirror"]
+packages = ["fwcommon", "wdotool", "wwmctl", "wxprop", "wxrandr",
+            "warandr", "wmirror"]
 
 # Lint only: no `ruff format` and no other formatter. Measured at 120 columns,
 # `ruff format` rewrites 45 of 59 files, makes the tree 520 lines LONGER and

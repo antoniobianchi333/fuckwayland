@@ -2,7 +2,7 @@
 """Session discovery under sudo / `ssh root@box`: which X socket and which
 Wayland socket the two finders answer with.
 
-`wdotool/session.py` and `wdotool/passthrough.py` answer different questions
+`fwcommon/session.py` and `fwcommon/passthrough.py` answer different questions
 (who the compositor is, versus what to hand the original tool) and each has
 its own copy of the search. This file pins the two rules they must agree on,
 both over temporary trees so the answers do not depend on the box the suite
@@ -27,8 +27,8 @@ from unittest import mock
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-from wdotool import passthrough                   # noqa: E402
-from wdotool import session                       # noqa: E402
+from fwcommon import passthrough                  # noqa: E402
+from fwcommon import session                      # noqa: E402
 from wxrandr import cli as wxrandr_cli            # noqa: E402
 
 # The suite never hands a tool over to the real X11 one: see

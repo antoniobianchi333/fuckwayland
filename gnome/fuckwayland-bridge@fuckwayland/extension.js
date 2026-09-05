@@ -616,7 +616,7 @@ const METHODS = {
         // environment right after login (':0' and
         // $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.XXXXXX). If DISPLAY ever
         // comes back empty the client falls back to /tmp/.X11-unix scanning
-        // (wdotool.session.find_x_display); the XAUTHORITY fallback below
+        // (fwcommon.session.find_x_display); the XAUTHORITY fallback below
         // scans the runtime dir for Mutter's cookie file.
         const display = GLib.getenv('DISPLAY') || '';
         const xauth = GLib.getenv('XAUTHORITY') || findXauthority();

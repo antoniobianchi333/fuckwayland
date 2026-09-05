@@ -929,7 +929,7 @@ class Bus:
     def __init__(self, addr: str | None = None, as_uid: int | None = None,
                  timeout: float = 10.0, want_fds: bool = True):
         if addr is None:
-            from wdotool import session
+            from fwcommon import session
             hit = session.find_user_bus()
             if not hit:
                 raise DBusError(ERR + "NoServer", "no session D-Bus found "
@@ -1312,7 +1312,7 @@ def _jsonable(v):
 
 def _usage(out):
     out.write(
-        "usage: python3 -m wdotool.dbus_mini [--address ADDR] [--as-uid UID|owner] CMD\n"
+        "usage: python3 -m fwcommon.dbus_mini [--address ADDR] [--as-uid UID|owner] CMD\n"
         "  --names                                   ListNames\n"
         "  --has-owner NAME                          NameHasOwner\n"
         "  --call DEST PATH IFACE MEMBER [SIG JSON]  method call, args as a JSON list\n"
@@ -1375,7 +1375,7 @@ def _run(argv=None) -> int:
     try:
         if as_uid == "owner":
             if addr is None:
-                from wdotool import session
+                from fwcommon import session
                 hit = session.find_user_bus()
                 if not hit:
                     raise DBusError(ERR + "NoServer", "no session D-Bus found")

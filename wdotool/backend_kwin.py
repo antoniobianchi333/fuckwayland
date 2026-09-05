@@ -72,11 +72,12 @@ import struct
 import tempfile
 import time
 
-from wdotool import kwin_js, session
+from fwcommon import session
+from fwcommon.dbus_mini import (ERR, METHOD_CALL, NAME_FLAG_DO_NOT_QUEUE,
+                                NO_REPLY_EXPECTED, Bus, DBusError, no_bus_text)
+from wdotool import kwin_js
 from wdotool.backend import View, Window, WindowBackend, Workspace, warn as _warn
 from wdotool.ctx import CmdError, NoSessionError
-from wdotool.dbus_mini import (ERR, METHOD_CALL, NAME_FLAG_DO_NOT_QUEUE,
-                               NO_REPLY_EXPECTED, Bus, DBusError, no_bus_text)
 
 KWIN_NAME = "org.kde.KWin"
 KWIN_PATH = "/KWin"

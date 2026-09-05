@@ -1,7 +1,7 @@
 """Suite-wide safety guard: no test process ever hands itself over to the
 real X11 tools.
 
-`wdotool.passthrough` replaces this process with `/usr/bin/xdotool` (and
+`fwcommon.passthrough` replaces this process with `/usr/bin/xdotool` (and
 friends) when it decides the session is X11 — which is exactly right for an
 installed clone and exactly wrong inside a test runner: ~17 tests call
 `cli.main([...])` in-process, and `tests/test_cli_parity.py` shells a shim

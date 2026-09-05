@@ -1,4 +1,4 @@
-"""wxrandr GNOME backend: org.gnome.Mutter.DisplayConfig over wdotool.dbus_mini.
+"""wxrandr GNOME backend: org.gnome.Mutter.DisplayConfig over fwcommon.dbus_mini.
 
 Mutter (gnome-shell's compositor) has no zwlr_output_management; its display
 API is the session-bus object /org/gnome/Mutter/DisplayConfig, callable by
@@ -61,8 +61,8 @@ Mapping to the wxrandr model (core.OutputState / core.Target):
 
 import struct
 
-from wdotool import session as wsession
-from wdotool.dbus_mini import Bus, DBusError, Variant
+from fwcommon import session as wsession
+from fwcommon.dbus_mini import Bus, DBusError, Variant
 from wxrandr import core
 from wxrandr.core import Fatal, Mode, OutputState, round_half_away, warn  # noqa: F401
 
@@ -263,7 +263,7 @@ def wl_output_info(sock_path: str | None = None) -> dict:
     shows; reading it keeps the header/--listmonitors mm byte-identical.
     Never raises: {} when there is no reachable Wayland socket."""
     try:
-        from wdotool.wayland_mini import WlConn
+        from fwcommon.wayland_mini import WlConn
         if sock_path is None:
             hit = wsession.find_wayland_socket()
             if hit is None:

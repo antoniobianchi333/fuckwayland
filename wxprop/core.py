@@ -130,7 +130,8 @@ def _detect_backend():
     `FUCKWAYLAND_PASSTHROUGH=never` still says "our own code whatever the
     session" and still detects, so the Wayland paths stay reachable from an
     X11 development box (and the whole test suite)."""
-    from wdotool import backend_detect, passthrough
+    from fwcommon import passthrough
+    from wdotool import backend_detect
     if passthrough.session_kind("xprop") == "x11":
         return None
     return backend_detect.detect()
@@ -155,7 +156,7 @@ def _progname() -> str:
 
 def _xwayland_running() -> bool:
     try:
-        from wdotool import session
+        from fwcommon import session
         return session.xwayland_running()
     except Exception:
         return False

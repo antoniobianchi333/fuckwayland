@@ -9,7 +9,7 @@ import select
 import socket
 import struct
 
-from wdotool import session
+from fwcommon import session
 from wdotool.backend import Window, WindowBackend, Workspace, warn
 from wdotool.ctx import CmdError, SoftCmdError
 

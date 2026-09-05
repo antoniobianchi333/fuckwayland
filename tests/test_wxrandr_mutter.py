@@ -26,9 +26,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
+from fwcommon import dbus_mini, session as wsession             # noqa: E402
+from fwcommon.dbus_mini import Bus, Message, Variant            # noqa: E402
 import test_dbus_mini as tdm                                    # noqa: E402
-from wdotool import dbus_mini, session as wsession              # noqa: E402
-from wdotool.dbus_mini import Bus, Message, Variant             # noqa: E402
 from wxrandr import cli, core, mutter                           # noqa: E402
 from wxrandr.core import Mode, Stanza, State                    # noqa: E402
 

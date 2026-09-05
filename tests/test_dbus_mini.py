@@ -28,9 +28,9 @@ from collections import deque
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from wdotool import dbus_mini                                  # noqa: E402
-from wdotool.dbus_mini import (Bus, DBusError, Message, Variant,   # noqa: E402
-                               marshal, split_signature, unmarshal)
+from fwcommon import dbus_mini                                 # noqa: E402
+from fwcommon.dbus_mini import (Bus, DBusError, Message, Variant,   # noqa: E402
+                                marshal, split_signature, unmarshal)
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.

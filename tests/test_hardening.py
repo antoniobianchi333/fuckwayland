@@ -470,7 +470,7 @@ class TestKeycodeRegistration(unittest.TestCase):
 
 class TestWaylandMalformed(unittest.TestCase):
     def test_short_size_raises(self):
-        from wdotool.wayland_mini import WlConn
+        from fwcommon.wayland_mini import WlConn
 
         a, b = socket.socketpair()
         self.addCleanup(a.close)
@@ -483,7 +483,7 @@ class TestWaylandMalformed(unittest.TestCase):
             conn._dispatch_some()
 
     def _conn(self):
-        from wdotool.wayland_mini import WlConn
+        from fwcommon.wayland_mini import WlConn
 
         a, b = socket.socketpair()
         self.addCleanup(a.close)

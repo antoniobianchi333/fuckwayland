@@ -27,12 +27,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
+from fwcommon.dbus_mini import Bus  # noqa: E402
 from test_backend_gnome import (CALC, DESKTOP, EDITOR, XTERM, XTERM_XID,  # noqa: E402
                                 MockBridge, _Base)
 from test_wxprop_cli import _CapStdout  # noqa: E402
 from wdotool import backend_detect  # noqa: E402
 from wdotool.backend_gnome import IFACE, OBJECT_PATH, GnomeBackend  # noqa: E402
-from wdotool.dbus_mini import Bus  # noqa: E402
 from wdotool.x11_mini import X11Error  # noqa: E402
 from wxprop import cli, core  # noqa: E402
 

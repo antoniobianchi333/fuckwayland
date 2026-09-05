@@ -7,7 +7,7 @@ SCRATCH/reference/xrandr*-notes.md). wxrandr talks to the compositor directly:
 - flagship backend: sway/i3 IPC (GET_OUTPUTS for state, `output ...` commands
   for mutation, all mutations batched into single RUN_COMMAND messages),
 - generic wlroots backend: zwlr_output_management_unstable_v1 over
-  wdotool.wayland_mini — one atomic configuration apply, which is exactly
+  fwcommon.wayland_mini — one atomic configuration apply, which is exactly
   xrandr's model (select with WXRANDR_BACKEND=sway|wlr; default sway when an
   IPC socket exists, else wlr),
 - physical sizes / preferred-mode flags come from the zwlr head events on
@@ -41,7 +41,8 @@ import struct
 import sys
 import time
 
-from wdotool import procs, session
+from fwcommon import session
+from wdotool import procs
 from wdotool.ctx import CmdError
 
 PROGRAM_VERSION = "1.5.4"
@@ -586,7 +587,7 @@ class WlrOutputs:
     name = "wlroots"
 
     def __init__(self, conn=None):
-        from wdotool.wayland_mini import WlConn
+        from fwcommon.wayland_mini import WlConn
         self.conn = conn
         self._own_conn = conn is None
         if self.conn is None:
