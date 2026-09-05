@@ -19,7 +19,7 @@ import os
 import re
 import sys
 
-from wdotool import passthrough
+from wdotool import passthrough, stdio
 from wxrandr import core
 from wxrandr.core import ArgErr, Fatal, Stanza
 
@@ -1431,29 +1431,8 @@ def _run_session(sess: Session, opts: Opts) -> int:
     return 0
 
 
-def _flush_stdout() -> bool:
-    """Push what we printed out, and say whether it got there.
-
-    A stdout that has gone (the reader closed a full pipe, `>&-`) has to be
-    CLOSED here as well as reported: the interpreter flushes it again on the
-    way out, and a failure there turns whatever we returned into exit 120 --
-    a code no xrandr ever produces, from a message nobody printed."""
-    try:
-        sys.stdout.flush()
-        return True
-    except BrokenPipeError:
-        pass                      # the reader left: xrandr says nothing
-    except (OSError, ValueError, AttributeError) as e:
-        # AttributeError: `>&-` leaves sys.stdout None
-        sys.stderr.write("xrandr: %s\n" % e)
-    try:
-        sys.stdout.close()
-    except (OSError, ValueError, AttributeError):
-        pass
-    return False
-
-
 def main(argv=None) -> int:
+    stdio.repair_std()          # fd 1 or 2 closed before Python started
     # X11 session: the X server's RandR is authoritative, hand over -- but
     # the handover happens before any parsing, so it has to look ahead for
     # `--backend`: one of our own backends must run our own code whatever the
@@ -1481,8 +1460,13 @@ def main(argv=None) -> int:
             return rc
     if argv is None:
         argv = sys.argv[1:]
+    quiet = False
     try:
         code = _run(list(argv))
+    except SystemExit as e:
+        # `-help`/`--help` and `Can't open display` leave through here
+        stdio.exit_after_flush("xrandr", e)
+        raise                   # unreachable; the line above raises
     except ArgErr as e:
         sys.stderr.write("xrandr: %s" % e.args[0])
         sys.stderr.write("Try 'xrandr --help' for more information.\n")
@@ -1499,5 +1483,9 @@ def main(argv=None) -> int:
         # struct pack, a lost compositor connection mid-apply, malformed IPC —
         # all become one-line xrandr: fatals, like the real thing.
         sys.stderr.write("xrandr: %s\n" % e)
+        # An OSError here is a write to stdout that failed (a full disk,
+        # a quota, `>/dev/full`): the flush below is about to fail with
+        # the same errno, and the originals print one line, not two.
+        quiet = isinstance(e, OSError)
         code = 1
-    return code if _flush_stdout() else (code or 1)
+    return code if stdio.flush_stdout("xrandr", quiet) else (code or 1)

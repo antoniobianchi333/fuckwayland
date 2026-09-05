@@ -3,6 +3,7 @@
 import contextlib
 import io
 import os
+import sys
 import tempfile
 import unittest
 
@@ -22,6 +23,17 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 # type through it, and every keycode assertion here would be wrong.
 os.environ.setdefault("WDOTOOL_LAYOUT", "us")
 
+
+
+class _Stdin:
+    """A stand-in for sys.stdin holding bytes: a text layer over a real
+    buffer, exactly the shape `type --file -` reads through."""
+
+    def __init__(self, data: bytes):
+        self.buffer = io.BytesIO(data)
+
+    def read(self):
+        return self.buffer.read().decode()      # strict, like the real one
 
 
 def _cm(clearmods):
@@ -309,6 +321,44 @@ class TestType(unittest.TestCase):
         n = input_cmds.cmd_type(ctx, ["--file", path])
         self.assertEqual(n, 2)
         self.assertEqual(ctx._daemon.calls, [("type", "line1\nline2\n", 12)])
+
+    def test_file_dash_reads_stdin(self):
+        ctx = make_ctx()
+        old, sys.stdin = sys.stdin, _Stdin(b"line1\nline2\n")
+        try:
+            n = input_cmds.cmd_type(ctx, ["--file", "-"])
+        finally:
+            sys.stdin = old
+        self.assertEqual(n, 2)
+        self.assertEqual(ctx._daemon.calls,
+                         [("type", "line1\nline2\n", 12)])
+
+    def test_file_dash_with_bytes_that_are_not_utf8(self):
+        """`printf 'caf\\xe9' | wdotool type --file -` ended in a
+        UnicodeDecodeError traceback: sys.stdin decodes strictly under a
+        UTF-8 locale.  `--file PATH` beside it has always replaced
+        undecodable bytes, and typing U+FFFD is what the user asked for
+        far more than a traceback is."""
+        ctx = make_ctx()
+        old, sys.stdin = sys.stdin, _Stdin(b"caf\xe9 \xff\n")
+        try:
+            input_cmds.cmd_type(ctx, ["--file", "-"])
+        finally:
+            sys.stdin = old
+        self.assertEqual(ctx._daemon.calls,
+                         [("type", "caf\ufffd \ufffd\n", 12)])
+
+    def test_file_dash_with_no_stdin_at_all(self):
+        """`wdotool type --file - <&-`: fd 0 closed before the
+        interpreter started leaves sys.stdin None, where the C fread()
+        just reads nothing."""
+        ctx = make_ctx()
+        old, sys.stdin = sys.stdin, None
+        try:
+            input_cmds.cmd_type(ctx, ["--file", "-"])
+        finally:
+            sys.stdin = old
+        self.assertEqual(ctx._daemon.calls, [("type", "", 12)])
 
     def test_missing_file(self):
         ctx = make_ctx()

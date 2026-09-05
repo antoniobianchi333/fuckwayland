@@ -44,8 +44,14 @@ SHIM = os.path.join(FIXTURES, "fw_shim.py")
 FAKE = os.path.join(FIXTURES, "fake_real_tool.py")
 
 
-class ExecCalled(Exception):
-    """Raised by the stubbed os.execve instead of replacing this process."""
+class ExecCalled(BaseException):
+    """Raised by the stubbed os.execve instead of replacing this process.
+
+    BaseException, not Exception: `execve` does not return, so the six
+    `main()`s wrap the handover in the same "never print a traceback"
+    guard as everything else, and an Exception here would be caught by it
+    and reported as a one-line failure instead of standing for a process
+    that has been replaced."""
 
     def __init__(self, path, argv, env):
         super().__init__(path)

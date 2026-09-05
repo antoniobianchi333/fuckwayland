@@ -9,7 +9,7 @@ import os
 import re
 import sys
 
-from wdotool import commands, passthrough
+from wdotool import commands, passthrough, stdio
 from wdotool.ctx import CmdError, Context
 
 # What `version`/-v prints. Must match the real xdotool byte-for-byte so
@@ -316,7 +316,7 @@ def script_main(argv: list[str], prog: str,
     return result if result else ctx.exit_code
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     entry = argv is None
     argv = list(sys.argv) if argv is None else list(argv)
 
@@ -424,9 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     if rc is not None:
         return rc
 
-    prog = os.path.basename(argv[0]) if argv and argv[0] else "wdotool"
-    if prog == "__main__.py":
-        prog = "wdotool"
+    prog = _prog_name(argv)
 
     # Script mode: argv[1] is "-" or an existing file, and not a command name.
     if (
@@ -481,3 +479,49 @@ def main(argv: list[str] | None = None) -> int:
     ctx.vkbd_mode = vkbd_mode
     ret = run_chain(ctx, prog, argv[1:])
     return ret if ret else ctx.exit_code
+
+
+def _prog_name(argv) -> str:
+    """What this process is called, for a diagnostic of our own:
+    argv[0]'s basename, and "wdotool" where that is the module
+    runner's `__main__.py`."""
+    argv = sys.argv if argv is None else argv
+    prog = os.path.basename(argv[0]) if argv and argv[0] else "wdotool"
+    return "wdotool" if prog == "__main__.py" else prog
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`_main()` plus the plumbing a C program gets from libc for free.
+
+    xdotool never prints a traceback and never exits 120.  Ctrl-C during
+    `wdotool sleep 5`, a reader leaving `wdotool search . | head -1`, a
+    stdout that cannot take what we print (`>/dev/full`) and one that was
+    closed before we started (`>&-`) are ordinary exits here, and the
+    last thing that happens is the flush that says whether the output
+    arrived (wdotool/stdio.py)."""
+    stdio.repair_std()
+    prog = _prog_name(argv)
+    quiet = False
+    try:
+        code = _main(argv)
+    except SystemExit as e:
+        stdio.exit_after_flush(prog, e)
+        raise                       # unreachable; the line above raises
+    except KeyboardInterrupt:
+        code = 130                  # 128 + SIGINT, what the shell reports
+    except BrokenPipeError:
+        code = 1
+    except CmdError as e:
+        sys.stderr.write("%s\n" % e)
+        code = getattr(e, "exit_code", 1) or 1
+    except Exception as e:
+        # one line, never a traceback: an out-of-range `sleep`, a
+        # compositor that drops the connection mid-command, a keymap
+        # that will not parse.
+        sys.stderr.write("%s: %s\n" % (prog, e))
+        # An OSError here is a write to stdout that failed (a full disk,
+        # a quota, `>/dev/full`): the flush below is about to fail with
+        # the same errno, and the originals print one line, not two.
+        quiet = isinstance(e, OSError)
+        code = 1
+    return code if stdio.flush_stdout(prog, quiet) else (code or 1)

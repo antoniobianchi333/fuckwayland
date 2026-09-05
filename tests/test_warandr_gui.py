@@ -838,6 +838,23 @@ class GuiProbe(XvfbCase):
                          "Cannot read the screen configuration:\n"
                          "stub: cannot open display")
         self.assertTrue(res["reload_fail_keeps_layout"], res)
+        # a layout script that is not UTF-8: the dialog says what is
+        # wrong and the window is usable afterwards (the reader thread
+        # used to die on the UnicodeDecodeError before it could clear
+        # the busy flag, so Apply, Open and New became silent no-ops)
+        self.assertTrue(res["latin1_finished"], res)
+        self.assertTrue(res["latin1_dialog"].startswith("Cannot load "),
+                        res)
+        self.assertIn("Not a text file: ", res["latin1_dialog"])
+        self.assertTrue(res["latin1_apply_live"], res)
+        self.assertTrue(res["latin1_keeps_layout"], res)
+        self.assertTrue(res["latin1_reload_after"], res)
+        # the same for the Apply thread, which caught RandrError alone
+        self.assertTrue(res["apply_boom_finished"], res)
+        self.assertTrue(res["apply_boom_dialog"].startswith(
+            "XRandR failed:"), res)
+        self.assertIn("Permission denied", res["apply_boom_dialog"])
+        self.assertTrue(res["apply_boom_apply_live"], res)
         # a menu that was open when an Apply landed edits the layout that
         # replaced the one it was built from, not the discarded one
         self.assertTrue(res["stale_menu_is_not_live"], res)

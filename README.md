@@ -1355,6 +1355,11 @@ desktop without guessing:
 | 0 | the command did what it says |
 | 1 | the session is up and the command failed — no matching window, no active window, a wait that timed out |
 | 2 | **no Wayland session found**: no compositor, no session bus, GNOME Shell absent, the screen locked, the greeter, or the bridge extension not running |
+| 130 | interrupted (Ctrl-C) |
+
+All six tools share one more rule: if what they printed never reached its
+reader — a full disk, `>/dev/full` — the status is 1 and one line says so;
+a reader that closed a pipe (`| head -1`) is silent, like the originals.
 
 ```sh
 # wait for a usable desktop, then act

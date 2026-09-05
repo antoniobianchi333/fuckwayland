@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Bug 3: what the six tools do when their standard output is not there.
+
+Every one of them printed something no original ever prints:
+
+- `wdotool help >/dev/full` and `warandr --version >/dev/full` exited **120**
+  with an "Exception ignored in: <_io.TextIOWrapper name='<stdout>'>" block,
+  from the interpreter's own flush of the standard files, after main() had
+  already returned 0 -- output lost, status success;
+- `wwmctl --help >/dev/full` tracebacked (its guard covered BrokenPipeError
+  and KeyboardInterrupt, not the ENOSPC of a write that cannot land);
+- `wxprop -grammar >/dev/full` swallowed the error whole and exited 0;
+- `wxrandr --help`, `wmirror --help` and `warandr --version` never reached
+  their own guard at all, because argparse (and wxrandr's own `-help`) leave
+  main() through SystemExit;
+- `wdotool help >&-` (fd 1 closed before the interpreter starts, so
+  `sys.stdout` is None) tracebacked with an AttributeError;
+- Ctrl-C during `wdotool sleep 5` printed a KeyboardInterrupt traceback.
+
+What they do now is in wdotool/stdio.py: repair a missing stdout at the top
+of main(), and flush -- and, on failure, CLOSE -- at the bottom of it, one
+line to stderr, silence for a reader that left, and never a traceback.
+"""
+
+import io
+import os
+import signal
+import subprocess
+import sys
+import time
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from wdotool import stdio
+
+# The suite never hands a tool over to the real X11 one (tests/conftest.py);
+# this line covers `python3 tests/<file>.py` and reaches every child below.
+os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: module, argv that prints to stdout without needing a session, and the name
+#: that tool's diagnostics carry (wxrandr answers as `xrandr`: byte parity).
+TOOLS = [
+    ("wdotool", ["help"], "wdotool"),
+    ("wwmctl", ["--help"], "wwmctl"),
+    ("wxprop", ["-grammar"], "wxprop"),
+    ("wxrandr", ["--help"], "xrandr"),
+    ("warandr", ["--version"], "warandr"),
+    ("wmirror", ["--help"], "wmirror"),
+]
+
+
+def child_env():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = ROOT
+    env["FUCKWAYLAND_PASSTHROUGH"] = "never"
+    for var in ("DISPLAY", "WAYLAND_DISPLAY"):
+        env.pop(var, None)
+    return env
+
+
+class NoTracebackEver(unittest.TestCase):
+    def check(self, tool, err, rc):
+        self.assertNotIn("Traceback", err, "%s: %s" % (tool, err))
+        self.assertNotIn("Exception ignored", err, "%s: %s" % (tool, err))
+        self.assertNotEqual(rc, 120, "%s exited 120 (the exit-time flush)"
+                            % tool)
+
+
+class FullStdout(NoTracebackEver):
+    """`tool >/dev/full`: nothing printed reached the reader, so the status
+    has to say so -- once, on stderr, in the tool's own name."""
+
+    def setUp(self):
+        if not os.path.exists("/dev/full"):
+            self.skipTest("no /dev/full")
+
+    def run_tool(self, mod, argv):
+        with open("/dev/full", "w") as out:
+            p = subprocess.run([sys.executable, "-m", mod] + argv,
+                               stdout=out, stderr=subprocess.PIPE,
+                               env=child_env(), text=True, timeout=60)
+        return p.returncode, p.stderr
+
+    def test_every_tool_fails_with_one_line(self):
+        for mod, argv, prog in TOOLS:
+            with self.subTest(tool=mod):
+                rc, err = self.run_tool(mod, argv)
+                self.check(mod, err, rc)
+                self.assertEqual(rc, 1, "%s -> %d\n%s" % (mod, rc, err))
+                lines = err.strip().split("\n")
+                self.assertEqual(len(lines), 1, err)
+                self.assertTrue(lines[0].startswith(prog + ": "), err)
+                self.assertIn("No space left on device", err)
+
+
+class ClosedStdout(NoTracebackEver):
+    """`tool >&-`: fd 1 was closed before the interpreter started, so
+    `sys.stdout` is None and the first print() is an AttributeError.  The C
+    originals write into a closed descriptor, fail quietly and get on with
+    the job; so do we."""
+
+    def run_tool(self, mod, argv):
+        p = subprocess.run([sys.executable, "-m", mod] + argv,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, env=child_env(),
+                           text=True, timeout=60,
+                           preexec_fn=lambda: os.close(1))
+        return p.returncode, p.stderr
+
+    def test_every_tool_survives_a_closed_fd_1(self):
+        for mod, argv, _prog in TOOLS:
+            with self.subTest(tool=mod):
+                rc, err = self.run_tool(mod, argv)
+                self.check(mod, err, rc)
+                self.assertEqual((rc, err), (0, ""), mod)
+
+
+class BrokenPipe(NoTracebackEver):
+    """`tool | head -1`: the reader leaves.  The originals die of SIGPIPE
+    without a word; we exit 1 without a word (and without the interpreter's
+    "Exception ignored" epilogue, which is what closing stdout buys)."""
+
+    def run_tool(self, mod, argv):
+        # a pipe whose read end is already gone: every write is EPIPE, with
+        # none of the timing luck of a real `| head -1`
+        r, w = os.pipe()
+        os.close(r)
+        try:
+            p = subprocess.run([sys.executable, "-m", mod] + argv, stdout=w,
+                               stderr=subprocess.PIPE, env=child_env(),
+                               text=True, timeout=60)
+        finally:
+            os.close(w)
+        return p.returncode, p.stderr
+
+    def test_every_tool_exits_quietly(self):
+        for mod, argv, _prog in TOOLS:
+            with self.subTest(tool=mod):
+                rc, err = self.run_tool(mod, argv)
+                self.check(mod, err, rc)
+                self.assertEqual((rc, err), (1, ""), mod)
+
+
+class ControlC(NoTracebackEver):
+    """Ctrl-C in the middle of a command: 130 (128 + SIGINT), silently."""
+
+    def test_wdotool_sleep(self):
+        p = subprocess.Popen([sys.executable, "-m", "wdotool", "sleep", "5"],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             env=child_env(), text=True)
+        deadline = time.time() + 10
+        while time.time() < deadline:            # let it reach the sleep
+            time.sleep(0.2)
+            if p.poll() is None:
+                break
+        p.send_signal(signal.SIGINT)
+        out, err = p.communicate(timeout=30)
+        self.check("wdotool", err, p.returncode)
+        self.assertEqual((p.returncode, out, err), (130, "", ""))
+
+
+class _Failing(io.StringIO):
+    def __init__(self, exc):
+        super().__init__()
+        self.exc = exc
+        self.closed_by = 0
+
+    def flush(self):
+        raise self.exc
+
+    def close(self):
+        self.closed_by += 1
+        super().close()
+
+
+class StdioUnit(unittest.TestCase):
+    def setUp(self):
+        self.out, self.err = sys.stdout, sys.stderr
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        sys.stdout, sys.stderr = self.out, self.err
+
+    def test_a_healthy_stdout_is_flushed_and_left_open(self):
+        sys.stdout = io.StringIO()
+        sys.stdout.write("hi")
+        self.assertTrue(stdio.flush_stdout("t"))
+        self.assertFalse(sys.stdout.closed)
+
+    def test_a_broken_pipe_is_silent_and_closes(self):
+        sys.stdout = _Failing(BrokenPipeError(32, "Broken pipe"))
+        sys.stderr = io.StringIO()
+        self.assertFalse(stdio.flush_stdout("t"))
+        self.assertEqual(sys.stderr.getvalue(), "")
+        self.assertTrue(sys.stdout.closed)
+
+    def test_a_full_stdout_says_so_once_and_closes(self):
+        sys.stdout = _Failing(OSError(28, "No space left on device"))
+        sys.stderr = io.StringIO()
+        self.assertFalse(stdio.flush_stdout("wmirror"))
+        self.assertEqual(sys.stderr.getvalue(),
+                         "wmirror: [Errno 28] No space left on device\n")
+        self.assertTrue(sys.stdout.closed)
+
+    def test_quiet_leaves_the_talking_to_the_caller(self):
+        sys.stdout = _Failing(OSError(28, "No space left on device"))
+        sys.stderr = io.StringIO()
+        self.assertFalse(stdio.flush_stdout("wmirror", quiet=True))
+        self.assertEqual(sys.stderr.getvalue(), "")
+
+    def test_a_none_stdout_is_repaired(self):
+        sys.stdout = sys.stderr = None
+        stdio.repair_std()
+        opened = [sys.stdout, sys.stderr]
+        try:
+            self.assertTrue(all(f is not None for f in opened))
+            print("into the void")                    # must not raise
+            self.assertTrue(stdio.flush_stdout("t"))
+        finally:
+            for f in opened:
+                if f is not None:
+                    f.close()
+
+    def test_repair_leaves_a_working_stdout_alone(self):
+        sys.stdout = mine = io.StringIO()
+        stdio.repair_std()
+        self.assertIs(sys.stdout, mine)
+
+    def test_exit_after_flush_reraises_what_it_was_given(self):
+        sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+        exc = SystemExit(2)
+        with self.assertRaises(SystemExit) as cm:
+            stdio.exit_after_flush("t", exc)
+        self.assertIs(cm.exception, exc)
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_a_lost_stdout_turns_a_successful_exit_into_a_failure(self):
+        sys.stdout = _Failing(OSError(28, "No space left on device"))
+        sys.stderr = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            stdio.exit_after_flush("t", SystemExit(0))
+        self.assertEqual(cm.exception.code, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -11,6 +11,9 @@ import argparse
 import os
 import stat
 import sys
+import tempfile
+
+from wdotool import stdio
 
 from . import VERSION, randr
 from .model import LayoutError
@@ -53,11 +56,32 @@ def _parser():
     return p
 
 
+def read_script(path):
+    """A layout script as text, or a LayoutError saying why not.
+
+    Scripts are read as UTF-8 and written back byte for byte, so a file
+    that is not text at all -- an image the file chooser was pointed at,
+    a layout somebody saved in latin-1 -- has to be refused rather than
+    mangled.  `errors="replace"` is not the fix: it turns every
+    undecodable byte into U+FFFD, and Save would then write that back
+    over the user's own file (the round trip is pinned byte for byte in
+    tests/test_warandr_model.py).
+
+    Refusing is also what keeps the GUI alive: the reader thread used to
+    die on the UnicodeDecodeError before it could hand anything back, so
+    the window stayed busy and Apply, Open and New became silent
+    no-ops."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError as e:
+        raise LayoutError("Not a text file: %s" % e) from None
+
+
 def load_layout(backend, savedfile):
     layout = backend.snapshot()
     if savedfile:
-        with open(savedfile) as f:
-            layout.load_script(f.read())
+        layout.load_script(read_script(savedfile))
     return layout
 
 
@@ -87,15 +111,56 @@ def script_notes(layout, backend):
 
 
 def write_script(layout, path, word=None, notes=None):
+    """Write the layout as a script -- all of it, or none of it.
+
+    `open(path, "w")` truncates first, so a disk that filled up or a
+    quota that ran out halfway through left a *runnable* half-layout
+    where a working one had been: the file warandr exists to keep, now
+    naming three outputs out of four.  A sibling temporary renamed over
+    the target cannot do that -- a reader sees the old file or the new
+    one, and a failure leaves the old one exactly as it was.
+
+    Details that matter:
+
+    * `realpath` first, and the rename goes to *that*: `~/.screenlayout/
+      desk.sh` is often a symlink into a dotfiles repo, and os.replace
+      replaces the name it is given -- it would leave a regular file
+      where the link was and never touch the file the user keeps.
+    * `fchmod` on the descriptor, because mkstemp makes 0600 and
+      arandr's scripts are 0700, and doing it before the rename means
+      the file is never briefly visible with the wrong mode.
+    * the temporary is removed on any failure, and `e.filename` is set
+      to the name the user typed: "Cannot save: [Errno 28] No space left
+      on device: '/tmp/.desk.sh.7f3x'" names a file they never asked
+      for and cannot find.
+
+    The one thing this gives up: writing needs permission on the
+    *directory*, not just on the file.  A read-only directory holding a
+    writable script used to save and now refuses -- which is the usual
+    price of an atomic save, and cheap next to a truncated layout."""
     if not path.endswith(".sh"):
         path += ".sh"
-    with open(path, "w") as f:
-        f.write(layout.to_script(word, notes))
-    os.chmod(path, stat.S_IRWXU)
+    text = layout.to_script(word, notes)
+    real = os.path.realpath(path)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real) or ".",
+                               prefix=".%s."
+                               % os.path.basename(real)[:64])
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), stat.S_IRWXU)
+            f.write(text)
+        os.replace(tmp, real)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        e.filename = path
+        raise
     return path
 
 
-def main(argv=None):
+def _main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     args = _parser().parse_args(argv)
@@ -138,3 +203,34 @@ def main(argv=None):
         sys.stderr.write(GTK_HINT % e)
         return 1
     return gui.run(backend, args.savedfile, args.randr_display)
+
+
+def main(argv=None):
+    """`_main()` with the guard every one of these tools needs.
+
+    `--version`/`--help` leave argparse through SystemExit, which used to
+    walk straight past `main()` with the text still buffered: the
+    interpreter's own exit-time flush then failed on a full or closed
+    stdout and turned exit 0 into exit 120, with an "Exception ignored"
+    block nobody can act on.  Everything else -- Ctrl-C on the way to the
+    window, a reader that left, an unexpected error out of GTK -- becomes
+    one `warandr: ...` line (wdotool/stdio.py)."""
+    stdio.repair_std()
+    quiet = False
+    try:
+        code = _main(argv)
+    except SystemExit as e:
+        stdio.exit_after_flush("warandr", e)
+        raise                       # unreachable; the line above raises
+    except KeyboardInterrupt:
+        code = 130
+    except BrokenPipeError:
+        code = 1
+    except Exception as e:
+        sys.stderr.write("warandr: %s\n" % e)
+        # An OSError here is a write to stdout that failed (a full disk,
+        # a quota, `>/dev/full`): the flush below is about to fail with
+        # the same errno, and the originals print one line, not two.
+        quiet = isinstance(e, OSError)
+        code = 1
+    return code if stdio.flush_stdout("warandr", quiet) else (code or 1)

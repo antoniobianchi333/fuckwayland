@@ -848,6 +848,18 @@ bus, GNOME Shell absent, the screen locked, the greeter, the bridge extension
 not running. `cli.run_chain` returns `exit_code`. That is the whole
 difference between "not logged in yet" and "no such window" for a script.
 
+Ctrl-C is 130 (128 + SIGINT). Whatever the command decided, the *last* thing
+every one of the six `main()`s does is `stdio.flush_stdout(prog)`
+(`wdotool/stdio.py`): output that never reached its reader makes the status 1,
+however well the command itself went. A reader that closed a pipe is silent —
+the originals die of `SIGPIPE` without a word — and everything else (a full
+disk, a quota, `>/dev/full`) is one `prog: message` line on stderr. No tool
+prints a traceback and none exits 120, which is the interpreter's own "the
+exit-time flush of stdout failed": `flush_stdout` closes the stream it could
+not flush, and a closed one is not flushed again. `repair_std()` at the top of
+`main()` is the other half — an fd 1 or 2 closed before the interpreter
+started (`>&-`) leaves `sys.stdout` None, and the work still gets done.
+
 ## Backend notes (C)
 
 - **sway**: raw i3-ipc over `SWAYSOCK` ("i3-ipc" magic + u32 len + u32 type + JSON).

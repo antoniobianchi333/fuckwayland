@@ -14,7 +14,7 @@ import argparse
 import shlex
 import sys
 
-from wdotool import session
+from wdotool import session, stdio
 
 from . import VERSION, core, supervise
 
@@ -297,25 +297,34 @@ def _run(args, p) -> int:
 def main(argv=None) -> int:
     """wmirror never hands over to an X11 original: it has none. (warandr is
     the other tool in this box with no original; see passthrough.py.)"""
-    p = parser()
-    args = p.parse_args(sys.argv[1:] if argv is None else list(argv))
+    stdio.repair_std()      # fd 1 or 2 closed before Python started
+    quiet = False
     try:
+        p = parser()
+        args = p.parse_args(sys.argv[1:] if argv is None else list(argv))
         code = _run(args, p)
+    except SystemExit as e:
+        # argparse's --help/--version and its usage errors: they used to
+        # leave main() with the help text still buffered, so a full or
+        # closed stdout became exit 120 out of the interpreter's own
+        # exit-time flush.
+        stdio.exit_after_flush("wmirror", e)
+        raise               # unreachable; the line above raises
     except core.Refusal as e:
         _err(e.lines)
         code = 1
     except KeyboardInterrupt:
-        return 130
+        code = 130
     except BrokenPipeError:
-        return 1
+        code = 1
     except Exception as e:
         # never a traceback: a compositor that drops the connection
         # mid-query, an unreadable state file, a helper that vanishes
         # between the check and the signal -- one line, exit 1.
         _err(["%s" % e])
+        # An OSError here is a write to stdout that failed (a full disk,
+        # a quota, `>/dev/full`): the flush below is about to fail with
+        # the same errno, and the originals print one line, not two.
+        quiet = isinstance(e, OSError)
         code = 1
-    try:
-        sys.stdout.flush()
-    except (BrokenPipeError, OSError, ValueError):
-        return code or 1
-    return code
+    return code if stdio.flush_stdout("wmirror", quiet) else (code or 1)

@@ -110,6 +110,17 @@ for word in ("nan", "NaN", "inf", "-inf", "infinity", "1e400"):
     assert (rc, out, err) == (0, "", ""), (word, rc, out, err)
     assert time.monotonic() - t0 < 1, word
 
+# ...and a value that is finite, positive and still nowhere near time_t:
+# `sleep 1e300` walked straight through the isfinite() guard into
+# "OverflowError: timestamp out of range for platform time_t".  The
+# oracle hands it to usleep(), whose argument cannot hold it either, and
+# returns 0 at once (measured against xdotool 3.20160805.1: 0.00 s).
+for word in ("1e300", "1e19", "1e100", "1.5e300", "0x1p1024"):
+    t0 = time.monotonic()
+    rc, out, err = run(["sleep", "--", word])
+    assert (rc, out, err) == (0, "", ""), (word, rc, out, err)
+    assert time.monotonic() - t0 < 1, word
+
 # chain: sleep consumes exactly one positional
 rc, out, err = run(["sleep", "0", "version"])
 assert rc == 0 and out == "xdotool version %s\n" % cli.XDO_VERSION, out
