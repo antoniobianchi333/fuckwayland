@@ -992,9 +992,12 @@ def _script_lock():
     load and its run. Best effort -- no runtime dir, a read-only one or a
     lock we cannot take is not a reason to refuse the command, because the
     id check in _load_run_locked is what makes it correct."""
-    rt = os.environ.get("XDG_RUNTIME_DIR") or ""
+    try:
+        rt = session.runtime_dir()
+    except CmdError:
+        rt = ""
     fd = None
-    if rt and os.path.isdir(rt):
+    if rt:
         try:
             fd = os.open(os.path.join(rt, "wdotool-kwin-script.lock"),
                          os.O_WRONLY | os.O_CREAT, 0o600)

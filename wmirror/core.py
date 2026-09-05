@@ -28,6 +28,7 @@ import subprocess
 import time
 
 from wdotool import session
+from wdotool.ctx import CmdError
 from wxrandr import core as wxcore
 
 HELPER = "wl-mirror"
@@ -417,13 +418,15 @@ def _rect_wh(rect) -> tuple:
 # -- state --------------------------------------------------------------------
 
 def state_path() -> str:
-    """wmirror's own file, next to wxrandr's and shaped the same way. It is
-    a separate file on purpose: these records are ours, not the layout
-    cache's, and wxrandr must not have to know about them."""
-    rd = os.environ.get("XDG_RUNTIME_DIR")
-    if rd and os.path.isdir(rd):
-        return os.path.join(rd, "wmirror-state.json")
-    return "/tmp/wmirror-state-%d.json" % os.getuid()
+    """This tool's own file, in session.runtime_dir(), next to wxrandr's and
+    shaped the same way. It is a separate file on purpose: these records are
+    ours, not the layout cache's, and the layout cache must not have to know
+    about them. A runtime dir we cannot have degrades to the 0.2 name in
+    shared /tmp rather than failing the command."""
+    try:
+        return os.path.join(session.runtime_dir(), "wmirror-state.json")
+    except CmdError:
+        return "/tmp/wmirror-state-%d.json" % os.getuid()
 
 
 #: How long a command waits for another wmirror to finish before going
