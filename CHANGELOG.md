@@ -7,7 +7,7 @@ form.
 ## Version 0.3
 
 A subtraction release. Nothing here is a new tool: the same six do the same things,
-with a thousand lines less code behind them, one package shape instead of two, and a
+with 602 production lines fewer behind them, one package shape instead of two, and a
 documentation set that no longer disagrees with itself.
 
 - **`fwcommon/`, a package for what every tool shares.** Session discovery, the X11
@@ -40,7 +40,13 @@ documentation set that no longer disagrees with itself.
   diagnostic about the lost output cannot land either — tracebacking in all six and
   exiting 120 in five, with apport filing crash reports for two of them. Every last
   word a tool writes now goes through `fwcommon/stdio.py`'s `warn()`, which closes
-  stderr when it cannot write to it.
+  stderr when it cannot write to it. The same run found one more, in a diagnostic
+  rather than in a tool: `gnome/install-bridge.sh --check` looked for the udev rule
+  under `/etc` only, so on a machine installed from the package, which ships it in
+  `/usr/lib/udev/rules.d` where a package belongs, it printed `udev rule: no` two
+  lines above `uinput usable by test: yes (logind ACL)` — the check the README's
+  troubleshooting table sends people to, contradicting itself. It now names whichever
+  copy is on disk, `/etc` first, and says when the one it found came from the package.
 - **One package for Ubuntu 24.04 and 26.04**, `Architecture: all`, built by
   `scripts/build-deb.sh` into `release/` and committed there, so a clone is already
   installable. It carries the six tools, the GNOME bridge extension, the udev rule and

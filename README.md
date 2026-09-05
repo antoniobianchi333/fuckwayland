@@ -784,16 +784,22 @@ The long form of each release, with the measurements behind it, is
 <!-- release-notes: 0.3 -->
 ### 0.3
 
-A subtraction release: the same six tools, a thousand lines less code behind them, and
-a documentation set that agrees with itself. What every tool shares moved into one
-package, `fwcommon`, which is what let the three display tools stop carrying `wdotool`
-and shrank their single file builds by well over half. Six copies of C's `atoi`, three
-getopt wrappers, one hit-test written three times, two transform tables and two detach
-protocols became one each. Nine bugs went, all of them in error paths. The tools ship
-as one `Architecture: all` **.deb** for both Ubuntu LTS releases, built into `release/`
-and committed there. The **no authorization dialog** claim stopped being an argument
-and became a measurement on six images. And the rig grew a second default install,
-Ubuntu 24.04 off the desktop ISO beside the 26.04 one.
+A subtraction release: the same six tools, 602 production lines fewer behind them,
+and a documentation set that agrees with the code. What every tool shares moved into
+one package, `fwcommon`, which is what let the three display tools stop carrying
+`wdotool` and took about 60% of the bytes off their single file builds. Six copies of
+C's `atoi`, three getopt wrappers, one hit-test written three times, two transform
+tables and two detach protocols became one each. Nine bugs went, all of them in error
+paths, and running this README on the finished desktops found two more: a diagnostic
+that could not be printed turning into exit 120, and the udev rule reported missing
+on a machine the package had installed it on. The tools ship as one
+`Architecture: all` **.deb** for both Ubuntu LTS releases, built into `release/` and
+committed there, and the **no authorization dialog** claim stopped being an argument
+and became a measurement on six images. The suite shares its fakes instead of keeping
+seven of them, and stands at **2262 tests**. The eight documents moved into `docs/`,
+and everything about installing into one section near the top. And both default
+installs are the real thing now: Ubuntu 24.04 and 26.04 exactly as their own desktop
+installers leave them, which is where all of this was proved.
 
 <!-- release-notes: 0.2 -->
 ### 0.2
