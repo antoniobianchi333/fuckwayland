@@ -1,6 +1,6 @@
 """Input-injection daemon + client.
 
-The daemon owns the uinput devices (device creation costs ~500ms of compositor hotplug latency — paid once),
+The daemon owns the uinput devices (device creation costs ~600ms of compositor hotplug latency — paid once),
 tracks the injected pointer position, and serves one JSON object per line on a unix socket. `{"ok":true,...}` or
 `{"ok":false,"error":"..."}`; a response may carry `"warnings":[...]` which the client prints to its stderr.
 

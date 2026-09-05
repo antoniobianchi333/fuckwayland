@@ -478,12 +478,13 @@ command that restores the pre-apply snapshot, which is the only undo there is; a
 apply KWin refused says neither (nothing was saved, and that command would *change*
 the live layout). Because it is the only undo, it spells every property out —
 `--mode/--rate/--pos/--rotate/--reflect/--scale`, plus `--primary`, defaults
-included — so replaying it through `wxrandr` really is the inverse (verified live,
-and again after a reboot: layout, scale, rotation and primary all come back). Through
-`wxrandr`, or a symlink of it: the line begins with the word `xrandr`, and where the
-real xrandr is installed — as it is on a stock Plasma image — pasting it verbatim
-runs that one against XWayland instead, which fails with a `BadMatch` on
-`RRSetScreenSize` and leaves the layout untouched. The one thing it cannot express is
+included — so replaying it really is the inverse (verified live, and again after a
+reboot: layout, scale, rotation and primary all come back). **The line begins with
+the word `wxrandr`**, always, whatever name this process was invoked under
+(`kwin._undo_word()`): on a stock Plasma image `/usr/bin/xrandr` exists, so a line
+beginning `xrandr` would be pasted straight into the real one, which answers a
+`BadMatch` on `RRSetScreenSize` and changes nothing. The saved layout scripts name
+the bare command word for exactly the same reason. The one thing it cannot express is
 KDE's full output *order*: xrandr has no syntax for it, and libkscreen permutes the
 non-primary ranks the same way. `--dryrun` runs the plan client-side only (mode
 resolution, the last-output refusal) and touches nothing — not even the state
@@ -499,6 +500,51 @@ changesets, the one-shot rule, the invalidation retry with and without a reason
 string, failure with and without one, the restore command replayed as an inverse,
 the last-output refusal, the no-output refusal, a compositor that hangs up
 mid-apply and the query bytes.
+
+## Keeping a layout
+
+Nothing in this repo restores a layout on its own. There is no daemon, no service and
+no autostart entry: `wxrandr` and `warandr` change the screen when you run them and
+then exit, and nothing here watches for a monitor being plugged in. (The only
+resident process the toolbox ever leaves behind is `wdotool`'s input daemon, which
+owns input devices and has nothing to do with outputs.) What becomes of a layout
+after that is the desktop's business, and the four desktops do not agree.
+
+Measured on GNOME 50 (Mutter), Plasma 6 (KWin), sway 1.11 (wlroots) and Xfce 4.20 on
+X11, on three heads with one of them rotated:
+
+| | a head unplugged and plugged back in | reboot | where the desktop keeps a layout |
+|---|---|---|---|
+| **GNOME** (Mutter) | comes back in full: Mutter lays the *remaining* monitors out in a row while the set is short, and puts the layout back when the original set returns | lost, unless a `--persistent` apply was confirmed | `~/.config/monitors.xml`, written by GNOME Settings or a confirmed `--persistent` and by nothing else; a fresh install has none |
+| **KDE Plasma** (KWin) | comes back in full | **kept** | `~/.config/kwinoutputconfig.json`, written by every apply KWin takes |
+| **sway** (wlroots) | comes back in full, every output | lost | nothing on disk; only `~/.config/sway/config` makes a layout stick |
+| **Xfce** (X11) | **lost**: the head comes back at the end of a plain row, unrotated, and `primary` is cleared | lost, `primary` with it | nothing; `displays.xml` is byte-identical after an apply |
+
+Restarting the compositor is a third event, and it splits the same way: `swaymsg
+reload` puts sway's outputs back in its own enumeration order, while `xfwm4
+--replace` changes nothing, because on X11 the layout belongs to the X server and not
+to the window manager. Xfce's forgetting at hotplug is `xfsettingsd`'s doing — it is
+what re-enables the returning head, in a row, and it clears `primary` when it starts.
+
+**KDE saves whether you want it to or not.** KWin has no temporary mode: every apply
+it takes lands in `~/.config/kwinoutputconfig.json` in the same second, the file is
+there before you run anything, and `--persistent` is accepted but means nothing.
+Every such apply also prints, once, the command that puts the previous layout back
+(see the KWin backend section above for exactly what that line is). To clear what KDE
+remembers, delete that file with the session stopped — deleting it from inside the
+session achieves nothing, because KWin writes it out again on the way out.
+
+**On GNOME an apply is temporary, like xrandr's**, and writes nothing. `wxrandr
+--persistent` applies the layout and lets gnome-shell ask *Keep these display
+settings?* for 20 seconds: ignored, the layout reverts and nothing is written;
+confirmed, `monitors.xml` appears at once and the layout then survives both a hotplug
+and a reboot. The dialog and the switch are GNOME's alone: on KDE `--persistent` is
+accepted and changes nothing, and on sway and X11 nothing is written either way.
+
+The way to get a layout back on any of the four is to save it as a script and put
+that script on a key. That is arandr's habit, it reads the same everywhere, and it
+runs when you press it rather than when something guesses you wanted it:
+[WARANDR.md § A layout script on a key](WARANDR.md#a-layout-script-on-a-key).
 
 ## Command surface (byte-parity target: xrandr 1.5.x)
 
@@ -577,23 +623,3 @@ atomic call. Cross-tool invariant: after every layout change, `wdotool
 getdisplaygeometry` and absolute `mousemove` must stay correct (the daemon re-reads
 geometry per request — verify, and flag if caching breaks this), and `wwmctl -d`'s
 WA geometry must track.
-
-## Files
-
-- `wxrandr/__init__.py`, `__main__.py` — skeleton (done).
-- `wxrandr/cli.py` — xrandr's option parser (long-only options with one dash
-  accepted? xrandr uses `--opt` strictly; check source), usage/--help byte-parity.
-- `wxrandr/core.py` — layout model (Output: name, connected, enabled, mode list,
-  current/preferred, pos, transform, reflect, scale, phys mm), pending-layout
-  resolver for relative placement, sway apply + wlr atomic apply, state file
-  (primary + custom modes) at `$XDG_RUNTIME_DIR/wxrandr-state.json` or /tmp per-uid
-  fallback.
-- `wxrandr/gamma.py` — brightness/gamma ramps + holder process.
-- `tests/test_wxrandr*.py` — unit (format table, relative-placement resolver,
-  modeline math) + live multimonitor scenarios per above.
-
-## Parity references
-
-Prep drops in SCRATCH/reference/: xrandr manpage, cloned source
-(gitlab.freedesktop.org/xorg/app/xrandr), oracle dumps of real xrandr under rootless
-XWayland (limited but format-true), error-path transcripts. Devshell has real xrandr.

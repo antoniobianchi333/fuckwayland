@@ -1,17 +1,23 @@
-"""OWNER: wxrandr builder. Layout model + pending-layout resolver + sway/wlr
-apply backends + state file + query rendering.
+"""Layout model + pending-layout resolver + the two wlroots apply backends +
+state file + query rendering. The shared half of wxrandr: `mutter.py` and
+`kwin.py` are the other two backends and are built on what is here.
 
-Byte-parity target: xrandr 1.5.4 (SCRATCH/xrandr-src; oracle captures in
-SCRATCH/reference/xrandr*-notes.md). wxrandr talks to the compositor directly:
+Byte-parity target: xrandr 1.5.4. wxrandr talks to the compositor directly, over
+four backends that are one object shape (snapshot/predicted_dims/verify/apply/
+close/name), of which two live in this file:
 
-- flagship backend: sway/i3 IPC (GET_OUTPUTS for state, `output ...` commands
-  for mutation, all mutations batched into single RUN_COMMAND messages),
-- generic wlroots backend: zwlr_output_management_unstable_v1 over
-  fwcommon.wayland_mini — one atomic configuration apply, which is exactly
-  xrandr's model (select with WXRANDR_BACKEND=sway|wlr; default sway when an
-  IPC socket exists, else wlr),
+- sway/i3 IPC (GET_OUTPUTS for state, `output ...` commands for mutation, all
+  mutations batched into single RUN_COMMAND messages),
+- generic wlroots: zwlr_output_management_unstable_v1 over fwcommon.wayland_mini
+  — one atomic configuration apply, which is exactly xrandr's model,
+- and, in their own modules, Mutter's DisplayConfig (`mutter.py`) and KWin's
+  kde_output_management_v2 (`kwin.py`).
+
+`WXRANDR_BACKEND=sway|wlr|mutter|kwin|x11` picks one, `--backend` beats it, and
+detection is the default: sway when an IPC socket exists, else whichever
+protocol or bus name the session advertises.
 - physical sizes / preferred-mode flags come from the zwlr head events on
-  either backend (headless outputs report 0mm x 0mm, like the oracle).
+  either wlroots backend (headless outputs report 0mm x 0mm, like the oracle).
 
 Transform mapping (verified against XWayland's own RandR translation, which is
 the interop ground truth — see tests/test_wxrandr_unit.py):

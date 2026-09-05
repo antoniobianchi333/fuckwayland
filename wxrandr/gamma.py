@@ -1,4 +1,4 @@
-"""OWNER: wxrandr builder. --brightness/--gamma via zwlr_gamma_control_manager_v1.
+"""--brightness/--gamma via zwlr_gamma_control_manager_v1.
 
 The Wayland gamma control dies with its client connection, so a non-identity
 brightness/gamma forks a tiny detached holder process per output (the wdotool

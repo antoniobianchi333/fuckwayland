@@ -105,7 +105,8 @@ class BadArguments(unittest.TestCase):
         rc, _, err = run("--layout", "klingon", "sleep", "0")
         self.assertEqual(rc, 1)
         self.assertIn("invalid argument", err)
-        self.assertIn("us, auto, xkb", err)
+        # every spelling the parser accepts is named, "fixed" included
+        self.assertIn("us, fixed, auto, xkb", err)
 
     def test_missing_value(self):
         rc, _, err = run("--layout")

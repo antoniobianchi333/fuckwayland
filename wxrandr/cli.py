@@ -1,6 +1,6 @@
-"""OWNER: wxrandr builder. xrandr 1.5.4 option parsing + dispatch.
+"""xrandr 1.5.4 option parsing + dispatch.
 
-Byte-parity notes (SCRATCH/reference/xrandr-notes.md + captures):
+Byte-parity notes, against xrandr 1.5.4:
 - strict `--long` options plus short -d -s -r -v -x -y -o -q; `-help` and
   `--help` both work; no other single-dash long forms.
 - parse errors: stderr `xrandr: <msg>` + `Try 'xrandr --help' for more
