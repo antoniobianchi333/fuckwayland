@@ -220,28 +220,73 @@ below. The long form of every closed route is
 ### `--unsafe-gnome-overlap`, the one route through
 
 **Off, and its name is the whole warning.** Nothing else in this CLI begins
-`--unsafe-`, no `xrandr` manual page contains the string, and no environment
-variable, config file or `warandr` button turns it on. It exists because the
-refusal is one function's opinion rather than anything the compositor needs,
-and because on every other desktop the same layout is simply taken.
+`--unsafe-`, no `xrandr` manual page contains the string, no environment
+variable or config file sets it, and `warandr` has no button for it. It exists
+because the refusal above is one function's opinion rather than anything the
+compositor needs, and because every other desktop takes the same layout as
+drawn. It is also the only thing in this repository that can cost you the
+session you are sitting in, and the rest of this section is that sentence in
+detail. A reader who finishes it and decides against the flag has used this
+document correctly.
 
-**It does nothing at all unless GNOME refuses the layout.** With the flag
-typed, an ordinary adjacent layout goes down the same `ApplyMonitorsConfig`
-path it always did and the extension is not so much as asked whether it is
-installed. Only a layout Mutter's own validator would reject — an overlap or a
-gap, and it is the same sentence for both — changes route. That is deliberate:
-the risky code should not be reachable by the configuration almost everybody
-has.
+#### What happens, in the order it happens
 
-**What it then does** is ask `fuckwayland-overlap@fuckwayland`
+**1. Nothing, unless GNOME refuses the layout.** With the flag typed, a layout
+Mutter accepts goes down the same `ApplyMonitorsConfig` path it always did, and
+the extension is not so much as asked whether it is installed. Only a layout
+Mutter's own validator would reject — an overlap or a gap, one sentence for
+both — changes route. The risky code is not reachable by the configuration
+almost everybody has, and that is deliberate.
+
+**2. Refusals that need nothing outside this process.** Before a bus call is
+made:
+
+* `--persistent`, in either argument order. The file that saves to is read back
+  through the very validator this flag exists to get past, and one entry it
+  refuses discards every other saved arrangement at every boot, for ever;
+* any backend but `mutter`. KDE, wlroots and X place the layout as drawn, so
+  there is nothing here for them to buy;
+* a GNOME Shell whose private layout has not been measured — an allowlist of
+  46 and 50, read from the shell's public `ShellVersion` property, because a
+  wrong offset does not raise an error, it writes into the heap;
+* an invocation that changes anything but positions: a mode, a scale, a
+  rotation, the primary, which outputs mirror. The extension writes two words
+  per monitor and can do none of that, so the answer is to make that change the
+  ordinary way first;
+* an extension that is not on the bus, answered with the line that installs it.
+
+**3. The warning**, in full, on stderr, before the call, on every invocation,
+and there is no way to silence it: what moves and to where, that eight bytes
+per monitor are going into `gnome-shell`'s own memory, which checks stand
+between that and a dead session, that nothing is saved, the exact `wxrandr`
+line that undoes it — built from the layout running *now*, and going through
+DisplayConfig, so the way back does not depend on the dangerous half still
+working — and the way back from a session that will not start.
+
+There is **no confirmation prompt**, and that is a decision rather than an
+omission. The flag is the confirmation: it cannot be typed by accident and it
+appears in no `xrandr` manual. A prompt would have to be skippable to keep the
+tool usable from a script and from `warandr`, and a guard with a documented
+bypass protects nobody, while the guards that do the work run whether or not a
+human answered a question. GNOME's own "are you sure" is the *Keep changes?*
+dialog with its 20-second revert, and this path cannot have it, because it does
+not go through the D-Bus method that arms the timer. What is offered instead is
+a printed undo and a printed way back.
+
+**4. The write.** `fuckwayland-overlap@fuckwayland`
 ([gnome/README.md](../gnome/README.md#the-other-extension-fuckwayland-overlap))
-to write two 32-bit words per moved monitor — the `x` and `y` of a
-`MetaLogicalMonitorConfig` — inside the running `gnome-shell`, and then call
-`meta_monitor_manager_apply_monitors_config()`, which does not validate. It
-can do nothing else: not a mode, not a scale, not a rotation, not the primary,
-not which outputs mirror. An invocation that changes any of those is refused
-here, before anything is contacted, and told to make that change the ordinary
-way first.
+loads a type description of its own for symbols libmutter *exports but does not
+publish* — they are in `nm -D` and absent from the introspection data — reads
+the configuration object the session is running, and writes two 32-bit words
+per moved monitor: the `x` and `y` of a `MetaLogicalMonitorConfig`, at an
+offset that is a private implementation detail of one libmutter generation.
+Then it calls `meta_monitor_manager_apply_monitors_config()`, which applies
+what it is given without validating it.
+
+Say that plainly: **this is not an API.** It is one program editing another
+program's memory, using knowledge of a structure layout that nobody promised
+would stay put, in a process whose death takes the desktop with it. It is true
+of the two builds it has been measured on and of nothing else.
 
 ```console
 $ wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
@@ -249,52 +294,170 @@ xrandr: --unsafe-gnome-overlap: GNOME will not place these monitors, so they are
   placed by writing into the running gnome-shell instead of asking it.
   What it does:         move Virtual-2 from +1920+0 to +960+0
   ...
-  To undo:              wxrandr --output Virtual-1 --pos 0x0 --output Virtual-2 --pos 1920x0
+  To undo:              wxrandr --output Virtual-1 --pos 0x0 --output Virtual-2 --pos 1920x0 --output Virtual-3 --pos 3840x0
                         or log out and back in.
 xrandr: GNOME's rule this breaks: logical monitors not adjacent (an overlap counts, and so does a gap)
 mutter's own validator on the result: refused: Logical monitors not adjacent
 /home/test/.config/monitors.xml: unchanged (absent)
 ```
 
-The whole warning — what it moves, what it risks, that nothing is saved, the
-undo line, and the way back from a session that will not start — is printed to
-stderr before the call, on every invocation, and cannot be silenced. There is
-**no confirmation prompt**, and that is a decision rather than an omission: the
-flag is the confirmation, a prompt would have to be skippable to keep the tool
-usable from a script and from `warandr`, and a guard with a documented bypass
-protects nobody. The guards that do the work are not questions (below).
+The `mutter's own validator` line is not decoration. The verifier is run on the
+mutated configuration as a **positive control**, and it has to *refuse* it: if
+Mutter's own validator accepts what was built, the write did not land on the
+field that validator reads, and nothing is applied. The line under it is the
+saved configuration file's digest, compared before and after the call.
 
-**It can never write `~/.config/monitors.xml`**, which matters more here than
-anywhere else in this tree, because that file is read back through the same
-validator and one entry it refuses discards the whole file at every boot for
-ever. Four things hold that: `--persistent` and this flag refuse each other;
-the extension's type description does not name
-`meta_monitor_config_manager_save_current` or any other writer, so the symbol
-is not callable from it at all; the apply method is the constant
-`METHOD_TEMPORARY`; and the extension takes the file's SHA-256 before and after
-its work and hands both back, so the tool reports rather than assumes.
-Measured on both releases: with a saved file present, its digest is identical
-across an overlapping apply, and a later `--persistent` of a *valid* layout,
-confirmed at the dialog, writes that valid layout — the overlap is gone from
-memory by then, and was never on disk.
+#### Every guard, and what it catches
 
-**`--dryrun --unsafe-gnome-overlap`** prints the same warning and runs every
-guard inside the extension against the running libmutter, writing nothing:
+The tool's three refusals above are the cheap half. The rest run inside the
+extension, **on every call and never once at install** — a distribution upgrade
+can replace libmutter under a running session — and every one of them has been
+made to fire on purpose, on both releases, by installing a deliberately wrong
+type description over the shipped one:
+
+| guard | what it catches | what it did when made to fire |
+|---|---|---|
+| `shell-version` | a build nobody has measured: shell major ∈ {46, 50}, exactly one libmutter mapped and of the matching generation, the `Meta` typelib version agreeing | with the table edited to claim libmutter 19 for GNOME 50: `refused (libmutter): GNOME Shell 50.1 should carry libmutter-19, this process has [18]` |
+| `typelib` | the structure is not the shape we describe: our own record's size, read back from *our own* typelib through `GIRepository` so there is no constant to go stale, against `GObject.type_query(MetaMonitorsConfig).instance_size` | `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
+| `sentinel` | the tail has moved even though the size has not: a value written through Mutter's own exported `set_switch_config` must reappear at the offset we believe, on a throwaway `create_linear()` object and never on the live one | pins the two offsets that actually differ between mutter 14 and 18 |
+| `pending-dialog` | the one window in which a mutated configuration could reach Mutter's *writer*: `Main.modalCount` must be exactly 0, and anything else, including a count that will not read as a whole number, is a refusal | with *Keep these display settings?* on screen, on both releases: `refused (pending-dialog): something holds a modal grab on the shell …` and the confirmed dialog then saved the layout **GNOME** had applied |
+| `bounded-read` | anything unreadable: the whole configuration is copied out with `g_memdup2`/`g_strndup`, every address range-checked against `/proc/self/maps` first, list walks capped | with `key` and `logical_monitor_configs` swapped, which are the same size: `node[1]: 0x1+24 is not in a readable mapping` — the wild pointer that killed a shell back when pointers were declared as pointers |
+| `public-view` | everything else: count, `x`, `y`, `w`, `h`, scale, primary and connector names against `global.display` and `MetaMonitorManager` | with the list offset shifted by 8: `private read has 0 monitors, Mutter reports 3` |
+
+Two more run after the write and before the apply: the configuration is re-read
+the same bounded way and must differ in **exactly** the two requested words,
+and `meta_verify_monitors_config()` must refuse the result. A refusal at any
+point puts the old bytes back before it returns, because
+`meta_monitors_config_copy` is exported on mutter 18 and not on mutter 14, so
+there is no copy to work on and the live object is mutated in place.
+`layout_mode` is cross-checked against the value DisplayConfig reports
+publicly, which pins the same tail with a public number: on GNOME 46, whose
+default is physical, claiming logical gets `layout_mode reads 2 … DisplayConfig
+says 1`.
+
+**In every one of those deliberate breakages, `gnome-shell` survived.** Five
+wrong descriptions across the two releases, each refused by name, no crash, no
+core dump, and the desktop still running afterwards.
+
+#### The risk that is left
+
+Not softened, because a reader has to be able to decide against this:
+
+* **A wrong write is not a wrong answer, it is a dead compositor.** The guards
+  turn nearly every wrong description into a refusal, and the ones tried were
+  all refused, but *nearly* is the honest word. Five deliberate breakages
+  caught is not a proof that a sixth would be.
+* **The residual case the design cannot close by construction** is two fields
+  of the same size swapped by an upstream change. The size gate passes and the
+  sentinel may pass, and what is left is the bounded reader refusing an address
+  that is not mapped, or the public-view comparison noticing that the numbers
+  are nonsense. Both were measured catching exactly that, on two different
+  swaps, and both are checks rather than certainties.
+* **If `gnome-shell` dies, everything in the session dies with it.** Not the
+  layout: the browser, the editor, the unsaved buffer, the terminal you typed
+  this in. On Wayland the compositor is the session, and there is no restarting
+  it in place.
+* **The allowlist is a claim about two builds this project measured**, stock
+  Ubuntu 24.04 and 26.04. A distribution that backports a Mutter change without
+  moving the shell's major version can make the version gate say yes to a
+  library it has never seen. What stands behind it then is the structure size,
+  the sentinel and the public-view comparison, in that order.
+* **Any modal grab refuses**, not only the dialog that matters, because the
+  dialog cannot be named from an extension on either release (see
+  [Technical.md § 6](Technical.md#why-mutter-refuses-monitors-that-share-area)
+  for what that cost the first cut of this check). If the overview or a menu is
+  open, this refuses and says so, and the answer is to close it.
+
+#### It cannot write `~/.config/monitors.xml`
+
+That matters more here than anywhere else in this tree, because the file is
+read back through the same validator, and one entry it refuses discards the
+whole file at every boot, for ever. Four things hold it:
+
+1. `--persistent` and this flag refuse each other, in either argument order;
+2. the extension's type description does not name
+   `meta_monitor_config_manager_save_current` or any other writer, so the
+   symbol is not callable from it at all — asserted against both the `.gir`
+   sources and the shipped `.typelib` bytes;
+3. the apply method is the constant `METHOD_TEMPORARY`, and `METHOD_PERSISTENT`
+   appears nowhere in the extension under any spelling;
+4. the file's SHA-256 is taken before and after every call and handed back, so
+   the tool *reports* rather than assumes, and shouts if it ever differs.
+
+There is one way an overlap could still have reached that file, and it is the
+reason `pending-dialog` exists. Mutter saves whatever configuration is
+**current** when a pending display change is confirmed, so a *Keep changes?*
+dialog armed by something else — the Settings panel in another window — and
+confirmed while this had moved a monitor would write the overlap to disk. That
+was measured happening, on both releases, at a time when this check could not
+fire. It is now measured refusing, on both releases, with the dialog on screen;
+the confirmed dialog then saved the layout GNOME itself had applied, and the
+next boot read that file back with no complaint in the journal.
+
+Measured with a saved file already present: its digest is identical across an
+overlapping apply, and a later `--persistent` of a *valid* layout, confirmed at
+the dialog, writes that valid layout. The overlap was gone from memory by then,
+and was never on disk.
+
+#### Nothing persists, so nothing has to be undone
+
+The layout is applied with method 1, exactly like an ordinary `wxrandr` run
+without `--persistent`. It does not survive a logout, a reboot, or a
+`gnome-shell` that has died and been logged into again — measured on both
+releases: back to the row, `monitors.xml` untouched, not a line in the journal.
+The undo command is printed before the change and goes through DisplayConfig,
+so it works whether or not the extension is still loaded.
+
+One surprise worth knowing: an overlap **does** survive a monitor unplug and
+replug inside the same session, because Mutter restores the layout from its own
+in-memory store rather than validating it again. It still goes at logout.
+
+#### If a session will not start
+
+It should not come to this. The extension does nothing at login: `enable()`
+exports one D-Bus object and stops, so an enabled extension that is never
+called cannot hurt anything, which was measured over about ten logins on GNOME 50
+and five on GNOME 46: the only journal line either of them ever wrote was
+`fuckwayland-overlap: enabled (idle; it acts only when called)`. The route back
+is printed in the warning anyway:
+
+1. **Log in again.** A `gnome-shell` that dies drops you at the login screen,
+   and nothing was saved, so what comes back is the layout you started with.
+   Measured aside, twice: after a `gnome-shell` killed outright, GNOME came back
+   with `org.gnome.shell disable-user-extensions` set to `true` on its own, so
+   the next session had this extension, and every other, inert.
+2. **If no session will start**, Ctrl+Alt+F3 to a text console, log in, and
+   `gnome-extensions disable fuckwayland-overlap@fuckwayland`, then Ctrl+Alt+F1
+   back. This works from a real text login, which has `XDG_RUNTIME_DIR` set.
+   **It does not always work from a bare shell with no session bus at all**: it
+   prints `dconf-WARNING … failed to commit` and exits **0** having changed
+   nothing, which is a `gnome-extensions` behaviour and not something this
+   project can fix.
+3. **The route that always works** is deleting the directory:
+   `rm -rf ~/.local/share/gnome-shell/extensions/fuckwayland-overlap@fuckwayland`.
+   It is printed in the warning for that reason.
+
+#### `--dryrun`, and unrecognised builds
+
+`--dryrun --unsafe-gnome-overlap` prints the same warning and runs every guard
+inside the extension against the running libmutter, writing nothing:
 
 ```console
-xrandr: overlap check shell-version: GNOME Shell 50.1, libmutter-18
-xrandr: overlap check typelib: FwOverlap18, MetaMonitorsConfig 80 bytes as declared
+xrandr: overlap check shell-version: GNOME Shell 46.0, libmutter-14
+xrandr: overlap check typelib: FwOverlap14, MetaMonitorsConfig 72 bytes as declared
 xrandr: overlap check sentinel: switch_config round-tripped at the declared offset
-xrandr: overlap check pending-dialog: no "Keep changes?" dialog is open
+xrandr: overlap check pending-dialog: nothing holds a modal grab, so GNOME is not asking "Keep changes?"
 xrandr: overlap check bounded-read: 3 logical monitors, every address range-checked
-xrandr: overlap check public-view: identical to Mutter's public view (global.display + MetaMonitorManager.get_monitors)
+xrandr: overlap check public-view: identical to Mutter's public view (global.display + get_monitor_for_connector on the requested names)
 xrandr: dryrun: nothing was written
 ```
 
-**On a build it does not recognise it refuses and says so**, before it reads
-anything: GNOME Shell 46 and 50 are the two releases whose private layout has
-been measured, and anything else — 47, 48, 49, 51, a shell that will not name
-its version — gets
+`sh gnome/install-overlap.sh --check` runs the same probe from the installer,
+and is the honest way to ask whether your GNOME is one of the two this has been
+measured on.
+
+On anything else it refuses before it reads a byte — 47, 48, 49, 51, a shell
+that will not name its version:
 
 ```
 xrandr: --unsafe-gnome-overlap: GNOME Shell 48.3 is not a build this has been
@@ -302,20 +465,32 @@ measured on (46 and 50 are).  Nothing was changed; this layout needs a
 compositor that will place it (KDE, wlroots and X all do).
 ```
 
-The extension's `metadata.json` says `["46", "50"]` too, so `gnome-shell`
-itself will not even load it elsewhere. Why an allowlist and not a "try it and
-see": a wrong offset does not raise an error, it writes into the compositor's
-heap.
+Nothing is contacted and nothing is read. The extension's `metadata.json` says
+`["46", "50"]` as well, so `gnome-shell` will not load it elsewhere, and the
+extension refuses on its own account if it somehow runs there.
 
-**What it costs and how to get back.** Nothing is saved, so a logout undoes
-it, and the tool prints the exact `wxrandr` line that undoes it without one —
-a line that goes through DisplayConfig like any other invocation, so the way
-back does not depend on the dangerous half still working. If `gnome-shell`
-dies you land at the login screen and log in again. If a session will not
-start at all, Ctrl+Alt+F3 to a text console and
-`gnome-extensions disable fuckwayland-overlap@fuckwayland` (or delete the
-directory); the extension does nothing at login, so that case should not
-arise, and the instructions are printed anyway.
+#### What it deliberately does not have
+
+No `warandr` button and no GUI anywhere. No environment variable and no config
+file, so a layout script cannot acquire this by accident. No `Restore` method
+on the extension, because the undo is a plain validated `wxrandr` line that
+does not depend on the dangerous half. No reconfiguration beyond positions. No
+place in the `.deb`, and its own installer and its own enable step. No support
+for GNOME 47 to 49 or 51.
+
+#### What it was measured doing
+
+GNOME 50.1 and 46.0, three virtio heads, stock images built by the Ubuntu
+installer. Monitors at 0, 960 and 2880; both heads' screendumps cropped to the
+960-pixel shared region and dumped as raw RGB have the **same SHA-256**, and
+ImageMagick's `AE` and `RMSE` between them are 0, against a control of 507,079
+differing pixels for the same head's own left and right halves. A window moved
+wholly inside the shared region is drawn byte-identically on both heads. The
+pointer crosses the whole bounding box with no jump, no dead zone and no
+duplication, and a click in the shared region focuses the window drawn there. A
+1024×768 head placed at `+448+156` inside a 1920×1080 one is byte-identical to
+the sub-rectangle of its neighbour, which is a thing mirroring cannot express
+at all.
 
 **What to reach for instead: a mirrored region, which is not an overlap and is
 never called one here.** GNOME will not place two monitors so that they share

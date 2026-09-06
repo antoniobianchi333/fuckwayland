@@ -116,20 +116,30 @@ prints the extension state and any load error.
 ## The other extension: fuckwayland-overlap
 
 `fuckwayland-overlap@fuckwayland` is a **second** extension in this directory, and it
-is not this one. Everything above is the bridge: feature-detected JavaScript against
-public API, six Shell versions, needed by `wdotool`, `wwmctl` and `wxprop`, safe to
-install and forget. The overlap extension is a different kind of thing and is
-deliberately kept apart from it — its own uuid, its own installer
-(`sh gnome/install-overlap.sh`), its own enable step, and **not in the .deb**.
+is not the one above. Everything above is the bridge: feature-detected JavaScript
+against public API, six Shell versions, needed by `wdotool`, `wwmctl` and `wxprop`,
+safe to install and forget. The overlap extension is a different kind of thing and is
+kept apart from it on purpose — its own uuid, its own installer
+(`sh gnome/install-overlap.sh`), its own enable step, and **not in the .deb**. Nobody
+gets this one by accident, and nothing else in fuckwayland needs it.
+
+Why separate, in one line each:
+
+* the bridge calls **public** Shell API and feature-detects everything, so it works on
+  46 through 50 and will probably work on 51. This one ships a **compiled type
+  description of a private structure layout** and works on exactly the two builds it
+  has been measured on;
+* the bridge is a dependency of three tools and is installed by the package. This one
+  is a dependency of nothing, is installed by hand, and is off in the tool as well;
+* the worst a bridge bug can do is answer wrongly. The worst this one can do is kill
+  `gnome-shell`, and on Wayland `gnome-shell` is the session.
 
 It exists for one thing: `wxrandr --unsafe-gnome-overlap`, which places two GNOME
 monitors so that they share screen area — a layout Mutter's configuration API refuses
 on adjacency grounds and nothing else in the compositor needs
 ([docs/Technical.md § 6](../docs/Technical.md#why-mutter-refuses-monitors-that-share-area)).
-To do it, it ships a compiled type description of libmutter's *private*
-`MetaMonitorsConfig` layout and writes two 32-bit words per monitor into the running
-`gnome-shell`. A wrong layout would be a dead compositor, and on Wayland a dead
-compositor is the whole session.
+To do it, it writes two 32-bit words per monitor into the running `gnome-shell` and
+then asks Mutter to apply the result.
 
 ```
 gnome/
@@ -148,18 +158,19 @@ gnome/
 
 The typelibs are checked in because compiling one needs `g-ir-compiler`, which no
 desktop has installed. `python3 gnome/overlap-typelib/gen-gir.py` rebuilds them from
-the `.gir` sources; `--check` is what a CI run uses to notice a `.gir` edited without
-a rebuild.
+the `.gir` sources, and `--check` is what notices a `.gir` edited without a rebuild.
 
 **Three properties, and it is worth nothing without all three:** it does nothing at
 login (`enable()` exports one D-Bus object and stops, so it is safe to leave installed
-and enabled for ever while never being called); every check runs before every write,
-not once at install, because an upgrade can replace libmutter under a running session;
-and no pointer is ever dereferenced by the type system — everything is a number,
-`g_memdup2` of a bounded range, and an address checked against `/proc/self/maps`
-first, so a wrong offset reads garbage that the comparison rejects instead of walking
-into a SIGSEGV. The six checks, and what each one was measured catching, are in
-[docs/Technical.md § 6](../docs/Technical.md#why-mutter-refuses-monitors-that-share-area).
+and enabled for ever while never being called, which is measured over fifteen logins
+across the two releases); every check runs before every write, not once at install,
+because an upgrade can replace libmutter under a running session; and no pointer is
+ever dereferenced by the type system — everything is a number, `g_memdup2` of a
+bounded range, and an address checked against `/proc/self/maps` first, so a wrong
+offset reads garbage that the comparison rejects instead of walking into a SIGSEGV.
+The six checks, and what each was measured catching, are in
+[docs/Technical.md § 6](../docs/Technical.md#why-mutter-refuses-monitors-that-share-area)
+and in [docs/WXRANDR.md](../docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
 
 ```sh
 sh gnome/install-overlap.sh          # then log out and back in once
@@ -168,11 +179,24 @@ sh gnome/install-overlap.sh --uninstall
 ```
 
 `--check` is the honest way to ask whether your GNOME is one of the two this has been
-measured on: it runs every guard against the running libmutter and writes nothing.
+measured on: it runs every guard against the running libmutter and writes nothing. On
+a stock 26.04 it says `FwOverlap18, MetaMonitorsConfig 80 bytes as declared`, and on
+24.04 `FwOverlap14 … 72 bytes`.
+
+To get rid of it from a text console, when there is no desktop to do it from:
+`gnome-extensions disable fuckwayland-overlap@fuckwayland` works from a real login
+(one with `XDG_RUNTIME_DIR`), but in a bare shell with no session bus it prints
+`dconf-WARNING … failed to commit` and exits **0 having changed nothing** — measured,
+and a `gnome-extensions` behaviour rather than something this project can fix. Deleting
+`~/.local/share/gnome-shell/extensions/fuckwayland-overlap@fuckwayland` always works,
+which is why the tool prints that too.
 
 It cannot write `~/.config/monitors.xml`: its type description does not name Mutter's
 writer, the apply method is a constant, and it reports the file's digest from before
-and after every call. What `--unsafe-gnome-overlap` prints, refuses and undoes is
+and after every call. The one route by which an overlap could still have got in there
+was a *Keep changes?* dialog confirmed while this had moved a monitor, and the
+`pending-dialog` guard refuses on any modal grab for exactly that reason. What
+`--unsafe-gnome-overlap` prints, refuses and undoes is
 [docs/WXRANDR.md](../docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
 
 ## Security note
@@ -201,6 +225,20 @@ injects input; input goes through the kernel (`/dev/uinput`), not the shell.
 
 If you do not want any process on the bus to have this power, do not install
 the extension — there is no partial mode.
+
+**The overlap extension is a second grant, and a narrower one.** Installing
+`fuckwayland-overlap` puts `org.fuckwayland.Overlap` on the same session bus, so any
+process that can reach the bus can ask it to move the logical monitors around and, in
+doing so, to run its write. What that caller cannot do bounds the damage: it names
+connectors and positions and nothing else, never an address (every address comes from
+the extension's own bounded read of the live configuration); the request is refused
+unless it is a layout Mutter's validator would reject, so this is not a general
+display-configuration API; it cannot change a mode, a scale, a rotation, the primary
+or which outputs mirror; and it cannot cause `~/.config/monitors.xml` to be written.
+The worst it buys is a session whose monitors are arranged unhelpfully until the next
+logout — plus, if the guards are all wrong on that build, a dead `gnome-shell`, which
+is the risk the whole feature is about. It is a second installer and a second enable
+step precisely so that this grant is a second decision.
 
 ## The interface
 

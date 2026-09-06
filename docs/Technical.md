@@ -793,7 +793,7 @@ green on GNOME 46.0 and 50.1:
 | `shell-version` | a build nobody has measured: shell major ∈ {46, 50}, exactly one libmutter mapped, its generation the matching one, the `Meta` typelib version agreeing | `GNOME Shell 48.3 is not a build this has been measured on` (from the tool, before the extension is asked) |
 | `typelib` | our own record's size, read back from *our own* typelib through `GIRepository` (no constant to go stale), against `GObject.type_query(MetaMonitorsConfig).instance_size`; then every declared symbol probed | a 14-shaped description with mutter 18's tail, installed on 46: `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
 | `sentinel` | the tail has moved: a value written through Mutter's own exported `set_switch_config` must appear at the offset we believe, on a throwaway `create_linear()` object, never on the live one | pins offsets 64 (mutter 14) / 72 (mutter 18), which are what differ between the two |
-| `pending-dialog` | the one window in which a mutated configuration could reach Mutter's writer: confirming a "Keep changes?" makes Mutter save whatever is *current* | refuses while `Main.wm._displayChangeDialog` is up |
+| `pending-dialog` | the one window in which a mutated configuration could reach Mutter's writer: confirming a "Keep changes?" makes Mutter save whatever is *current*, and a saved overlap poisons `monitors.xml` for ever | `Main.modalCount` must be exactly 0. Measured refusing with the dialog on screen on both releases, and measured **not** firing at all in the first cut of this check, which is its own subsection below |
 | `bounded-read` | anything unreadable: the whole configuration read through `g_memdup2`, every address checked against `/proc/self/maps` | `0x…+40 is not in a readable mapping` |
 | `public-view` | everything else: count, x, y, w, h, scale, primary and connector names against `global.display` and `MetaMonitorManager` | the **same-size field swap** — the residual risk the safety work could not otherwise close — read garbage and was refused: `private read has 1 monitors, Mutter reports 3; monitor 0: x reads -41753344, Mutter says 0 …`, **and gnome-shell survived it** |
 
@@ -815,6 +815,87 @@ configuration by name; `monitors.xml` absent before and after, or present with a
 identical digest; the layout gone after a reboot, with no `monitors config` line in
 the journal; and a later confirmed `--persistent` of a valid layout writing that valid
 layout and nothing else.
+
+#### The check that could not fire, and what it cost
+
+Worth its own heading because it is the one thing here that went wrong, and because
+the shape of the mistake outlives this feature. The first cut of `pending-dialog` read
+`Main.wm._displayChangeDialog`. That property **does not exist** on GNOME Shell 46 or
+50: `Object.getOwnPropertyNames(Main.wm)` matching `/dialog|display|confirm/` is empty
+on both, with the dialog on screen and without it, because `windowManager.js` builds a
+`DisplayChangeDialog` inside `_confirmDisplayChange()` and keeps no reference to it.
+The guard therefore returned "nothing is open" every single time, and it did so while
+printing a line saying it had checked.
+
+What that cost, measured on **both** releases: with a valid `--persistent` armed and
+*Keep these display settings?* on screen, an overlap applied through this extension and
+the dialog then confirmed made Mutter save the **overlapping** layout into
+`~/.config/monitors.xml`. At the next boot: `Failed to read monitors config file …
+Logical monitors not adjacent` (50.1) / `… Logical monitors overlap` (46.0), the file
+intact on disk and every arrangement in it inert for ever, with nothing said on any
+screen. That is exactly the catastrophe the warning box below describes.
+
+What it reads now is `Main.modalCount`, which is 0 with nothing modal and 1 while the
+dialog is up (measured, 46.0 and 50.1), and the decision is `modalVerdict()` in
+`rules.js`, where plain `node` can test it. It **fails closed**: a count that is not a
+whole number, or is negative, is a refusal, so a shell that renames the field stops
+the feature instead of silently disarming its most consequential guard. It is coarse
+on purpose — any modal grab refuses, the overview and an open menu included — because
+a dialog this shell will not name cannot be recognised any more precisely, and a
+false refusal costs a retry while a false pass costs the file.
+
+Re-measured with the guard alive, on both releases: the dialog on screen, the overlap
+**refused** by name, and the confirmed dialog then saving the layout GNOME itself had
+applied — a valid one, which the next boot read back with no journal complaint.
+
+The general lesson, and the reason the tests are shaped the way they are: **a guard
+that cannot fire is worse than no guard, because it is believed.** Every check here is
+now either exercised by a test that fails when it stops firing
+(`RulesJS::test_the_pending_dialog_verdict_can_actually_refuse`,
+`ShippedExtension::test_the_pending_dialog_check_reads_a_field_that_exists`) or was
+made to fire live against a deliberately broken description.
+
+#### If a GNOME upgrade breaks this
+
+For whoever finds `--unsafe-gnome-overlap` refusing after an update, in the order to
+check it, and none of it needs a debugger:
+
+1. **`sh gnome/install-overlap.sh --check`.** It runs every guard against the running
+   libmutter and writes nothing. The refusal names the check, and the check names the
+   cause. Everything below is that output read closely.
+2. **`shell-version`** — a new GNOME. The allowlist is `SUPPORTED` in `rules.js`
+   (shell major → libmutter generation) and `SUPPORTED_MAJORS` in
+   `wxrandr/gnome_overlap.py`, and `metadata.json`'s `shell-version`, and the three
+   are held together by a test. Adding a release is not an edit to those lines: it is
+   the measurement in step 5.
+3. **`typelib`** — `MetaMonitorsConfig` changed size. The message says both numbers.
+   The fix is a new `.gir` for the new generation under `gnome/overlap-typelib/`,
+   rebuilt with `python3 gnome/overlap-typelib/gen-gir.py`, whose `--check` proves the
+   checked-in `.typelib` bytes match the `.gir` beside them. Nothing was read before
+   this check refused.
+4. **`sentinel`** — the size is right and the *tail* moved. This is the dangerous
+   shape, the one that would write into somebody else's field, and it is why the
+   sentinel goes through Mutter's own `set_switch_config` on a throwaway
+   `create_linear()` object. Re-derive the offsets from the new
+   `src/backends/meta-monitor-config-manager.h`; `layout_mode` cross-checked against
+   DisplayConfig's public value is the second opinion.
+5. **`public-view`** — the read is nonsense. Do not fix it by adjusting offsets until
+   the numbers agree, which is how a same-size field swap gets shipped. Fix it by
+   deriving the layout from the release's own source, then proving it: apply an
+   overlap on a three-head VM, crop both heads to the shared region, and compare the
+   raw RGB. `vm/vmctl` builds the images; the measurements this feature rests on are
+   in [WXRANDR.md](WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
+6. **`pending-dialog`** — `Main.modalCount` is gone or is not a whole number. Do not
+   make this check pass. It fails closed for a reason, and the reason is the section
+   above.
+7. **`bounded-read`** on a build that passes everything above — either the addresses
+   are not where this description says they are, or the list is being changed under
+   the walk. Neither is fixable by retrying, and a refusal is the right answer to
+   both, which is what it gives.
+
+Nothing about this is a supported interface, so "it broke on the new GNOME" is the
+expected outcome of an upgrade, not a surprise. The feature is designed to *refuse*
+there and say why, and to keep refusing until somebody repeats the measurement.
 
 > **The one warning worth its own line: never hand-edit `monitors.xml` to force an
 > overlap.** Mutter discards the whole file on any error, so one bad entry silently
@@ -931,7 +1012,7 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2430 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2433 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite
