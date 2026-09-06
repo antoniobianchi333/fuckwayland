@@ -87,6 +87,18 @@ export function mutterFault(rects) {
 // It fails closed.  A count that is not a number is a refusal, so a shell that
 // renames the field stops the feature instead of quietly disarming its most
 // consequential guard.
+//
+// It has been measured refusing when nothing was on screen: once, on the first
+// call after a post-update login on GNOME 46, with no dialog, no menu and no
+// overview anywhere (screenshot checked), and the very next call seconds later
+// applied normally.  A grab held for a moment while a session finishes coming
+// up is not the thing this guard is for, but it is indistinguishable from it
+// through `Main.modalCount`, and the cost of the two mistakes is not
+// symmetrical: a false refusal costs one retry, a false pass costs
+// ~/.config/monitors.xml for ever.  So the check was left exactly as strict as
+// it was and the *message* was fixed, because what it said then -- answer the
+// dialog -- named something the user could not see.  It now says the count, and
+// says that a grab nobody can see goes away on its own.
 
 export function modalVerdict(modalCount) {
     if (typeof modalCount !== 'number' || !Number.isInteger(modalCount)) {
@@ -101,13 +113,69 @@ export function modalVerdict(modalCount) {
                'reads a shell it does not understand';
     }
     if (modalCount > 0) {
-        return 'something holds a modal grab on the shell.  If that is GNOME ' +
-               'asking whether to keep a display change, confirming it while ' +
-               'this had moved a monitor is the one way an overlapping layout ' +
-               'could reach ~/.config/monitors.xml and stay there.  Answer it ' +
-               '(or close the overview, or the menu) and run this again';
+        return `something holds a modal grab on the shell (Main.modalCount is ` +
+               `${modalCount}).  If that is GNOME asking whether to keep a ` +
+               'display change, confirming it while this had moved a monitor ' +
+               'is the one way an overlapping layout could reach ' +
+               '~/.config/monitors.xml and stay there.  Nothing was read and ' +
+               'nothing was written.  Answer it -- or close the overview, or ' +
+               'the menu -- and run this again.  If there is nothing on screen ' +
+               'to answer, this is a grab that has not been released yet, ' +
+               'which was measured in the first seconds of a fresh session: ' +
+               'wait a moment and run the same command again';
     }
     return null;
+}
+
+// -- the library this session is actually running -----------------------------
+//
+// Measured, on both releases: `apt upgrade` of libmutter under a live session
+// leaves the session running the library it started with -- same gnome-shell
+// pid, old code mapped -- while the new one is already on disk.  Nothing
+// anywhere noticed, and nothing had to: the checks all run against the *mapped*
+// library, so what they measured is what gets written to.
+//
+// It is still worth saying out loud, for two reasons.  The layout that applies
+// now is the old library's, and the next login runs the new one, where this may
+// refuse.  And the recorded agreement (wxrandr/gnome_overlap.py) names a build:
+// a libmutter swapped under an unchanged GNOME Shell version string is exactly
+// the change `ShellVersion` cannot see, and it happens -- noble carried mutter
+// 46.2 under shell 46.0 for most of its life, and 46.0 -> 46.2 under one
+// unchanged shell version was measured applying here.
+//
+// This is a note, never a refusal.  The library in memory is the one every
+// guard just checked; a new file on disk says nothing about it.
+
+// /proc/self/maps, as the mappings of one libmutter generation.  A pure
+// function of the file's text, and here rather than in extension.js because it
+// is a thing with a right answer that has to be checked against real lines: the
+// path a stable release maps is `libmutter-14.so.0.0.0`, not the soname, and a
+// pattern anchored on `.so.0` silently matches nothing at all -- which is how
+// the first cut of this reported "no build id" on every machine it ran on.
+//
+// [{gen, path, inode, deleted}], first mapping of each path.  Everything it
+// feeds is bookkeeping, so a line it cannot read is simply not in the list.
+
+export function parseMutterMappings(mapsText) {
+    const out = new Map();
+    for (const line of `${mapsText}`.split('\n')) {
+        // address perms offset dev inode pathname
+        const m = line.match(/^[0-9a-f]+-[0-9a-f]+ \S+ \S+ \S+ +(\d+) +(\/\S*libmutter-(\d+)\.so\.0\S*?)( \(deleted\))?$/);
+        if (m && !out.has(m[2]))
+            out.set(m[2], {gen: Number(m[3]), path: m[2], inode: Number(m[1]), deleted: !!m[4]});
+    }
+    return [...out.values()];
+}
+
+export function libmutterNote(ident) {
+    if (!ident || !ident.replaced)
+        return null;
+    return ('libmutter has been replaced on disk since this session started (' +
+            `${ident.path || 'the mapped library'} is no longer the file this ` +
+            'gnome-shell has mapped).  The checks ran against the library ' +
+            'this session is running, which is the one being written to, so ' +
+            'this changes nothing now -- but the next login runs the new one, ' +
+            'and this feature may refuse there');
 }
 
 // -- shapes ------------------------------------------------------------------

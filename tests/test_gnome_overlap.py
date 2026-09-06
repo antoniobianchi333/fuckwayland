@@ -114,6 +114,10 @@ class FakeOverlap:
         self.instance_size = 80          # the field; None: an extension too old to say
         self.declared_size = 80          # what the typelib check's own detail reports
         self.strip_typelib_check = False  # ...an extension too old for either
+        # the build of libmutter the checks ran against, and anything the
+        # extension noticed that decides nothing (see gnome_overlap.notes_text)
+        self.build_id = "0f3a1b2c3d4e5f60718293a4b5c6d7e8f9012345"
+        self.notes = []
 
     def answer(self, member, req):
         self.calls.append((member, req))
@@ -141,6 +145,8 @@ class FakeOverlap:
                        {"name": "public-view", "ok": True,
                         "detail": "identical to Mutter's public view"}],
             "monitors": monitors,
+            "libmutter_build": self.build_id,
+            "notes": list(self.notes),
             "wrote": member == "ApplyOverlap",
         }
         if member == "ApplyOverlap":
@@ -476,6 +482,17 @@ class Messages(unittest.TestCase):
         self.assertIn("CHANGED across this call (abc -> def)", text)
         self.assertIn("should be impossible", text)
 
+    def test_a_note_is_relayed_and_an_empty_one_is_nothing(self):
+        """Notes decide nothing -- they are what the extension noticed and the
+        user could not.  Today there is one: libmutter replaced on disk under a
+        live session, which `apt upgrade` does and which the session cannot
+        otherwise see."""
+        self.assertEqual(gnome_overlap.notes_text({"notes": ["libmutter has been replaced"]}),
+                         "note: libmutter has been replaced\n")
+        self.assertEqual(gnome_overlap.notes_text({}), "")
+        self.assertEqual(gnome_overlap.notes_text({"notes": []}), "")
+        self.assertEqual(gnome_overlap.notes_text({"notes": [None, ""]}), "")
+
 
 # ---------------------------------------------------------------- the CLI
 
@@ -645,6 +662,21 @@ class Applying(Case):
         self.assertEqual(self.ext_calls(), ["ApplyOverlap"])
         self.assertIn("already where this asks for them; nothing was written", err)
         self.assertNotIn("What it risks", err)
+
+    def test_a_note_reaches_the_user_on_an_apply_and_on_a_dryrun(self):
+        """The one thing a session cannot see for itself: libmutter replaced
+        on disk under it, which every `apt upgrade` of GNOME does.  It changes
+        no decision -- the checks ran against the library in memory, which is
+        the one being written to -- so it is a note, and a note is printed."""
+        self.mock.overlap.notes = ["libmutter has been replaced on disk since "
+                                   "this session started"]
+        code, out, err = self.run_cli(FLAG, "--output", "Virtual-2", "--pos", "960x0")
+        self.assertEqual(code, 0, err)
+        self.assertIn("note: libmutter has been replaced on disk", err)
+        code, out, err = self.run_cli("--dryrun", FLAG, "--output", "Virtual-2",
+                                      "--pos", "960x0")
+        self.assertEqual(code, 0, err)
+        self.assertIn("note: libmutter has been replaced on disk", err)
 
     def test_a_saved_file_that_moved_is_shouted_about(self):
         self.mock.overlap.reply = {
@@ -880,6 +912,112 @@ class ShippedExtension(unittest.TestCase):
             self.assertEqual(G.field_info_get_offset(G.struct_info_get_field(lmc, 1)), 4)
 
 
+class TheLibraryIdentity(unittest.TestCase):
+    """Naming the build of libmutter this session runs is bookkeeping, not a
+    guard, and the source has to keep it that way: it reads two files and
+    decides nothing, so nothing in it may refuse."""
+
+    def setUp(self):
+        self.js = open(os.path.join(EXT_DIR, "extension.js"), encoding="utf-8").read()
+
+    def body(self, head):
+        body = self.js[self.js.index(head):]
+        return body[:body.index("\n}\n") + 3]
+
+    def test_reading_the_build_id_can_never_refuse(self):
+        for head in ("function elfBuildId(path) {", "function libmutterIdentity(mapping) {"):
+            body = self.body(head)
+            self.assertNotIn("refuse(", body, head)
+            self.assertIn("return null", body, head)
+
+    def test_it_is_wrapped_where_it_is_called(self):
+        """A guard that cannot fire is worse than no guard; a *note* that can
+        fire is worse than no note, because it would stop an apply that every
+        check had passed."""
+        body = self.js[self.js.index("    version() {"):]
+        body = body[:body.index("\n    }\n") + 6]
+        at = body.index("libmutterIdentity(")
+        self.assertIn("try {", body[:at])
+        self.assertIn("catch", body[at:])
+
+    def test_a_replaced_library_is_a_note_and_not_a_check(self):
+        # the notes go in their own field, and nothing in the checks list
+        self.assertIn("notes: [libmutterNote(this.libmutter)]", self.js)
+        self.assertNotIn("refuse('libmutter-build'", self.js)
+        self.assertNotIn("_pass('libmutter-build'", self.js)
+
+
+class HeaderDerivation(unittest.TestCase):
+    """`gen-gir.py --from-header` against the two releases' own headers.
+
+    This is the answer to a `typelib` or `sentinel` refusal after an upgrade,
+    and it is checked here because a deriver nobody has run on a known answer is
+    not a deriver.  Both fixtures are excerpts of mutter's own
+    src/backends/meta-monitor-config-manager.h, and what comes out of them has
+    to be exactly what is shipped -- which is also an independent confirmation
+    of the shipped offsets: they were measured on a live compositor, and this
+    arrives at the same numbers from upstream source, by arithmetic."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "gen_gir", os.path.join(GIR_DIR, "gen-gir.py"))
+        cls.gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.gen)
+
+    def header(self, name):
+        return open(os.path.join(ROOT, "tests", "fixtures", "mutter", name),
+                    encoding="utf-8").read()
+
+    def test_the_two_headers_derive_the_two_shipped_descriptions(self):
+        for name, gen, size in (("meta-monitors-config-46.h", 14, 72),
+                                ("meta-monitors-config-50.h", 18, 80)):
+            ints, rows, got = self.gen.build_from_header(self.header(name))
+            self.assertEqual(got, size, name)
+            self.assertEqual(ints, self.gen.BUILDS[gen][1], name)
+            at = {f: off for off, _sz, _t, f in rows}
+            self.assertEqual(at["logical_monitor_configs"], 40, name)
+            self.assertEqual(at["disabled_monitor_specs"], 48, name)
+            # the tail is what differs between the two, and it is what the
+            # sentinel pins on a live compositor
+            self.assertEqual(at["switch_config"], 64 if gen == 14 else 72, name)
+
+    def test_the_generations_really_do_differ(self):
+        a = self.gen.build_from_header(self.header("meta-monitors-config-46.h"))
+        b = self.gen.build_from_header(self.header("meta-monitors-config-50.h"))
+        self.assertNotEqual(a[0], b[0])
+        self.assertNotEqual(a[2], b[2])
+
+    def test_a_type_it_does_not_know_is_an_error_and_not_a_guess(self):
+        bad = ("struct _MetaMonitorsConfig {\n  GObject parent;\n"
+               "  MetaSomethingNew thing;\n};\n")
+        with self.assertRaises(SystemExit) as e:
+            self.gen.build_from_header(bad)
+        self.assertIn("MetaSomethingNew", str(e.exception))
+
+    def test_a_moved_head_is_refused_rather_than_renumbered(self):
+        """A release that inserts a field before logical_monitor_configs has
+        broken the description's *shape*, and the honest answer is a human
+        reading the new struct, not a new number from this script."""
+        moved = self.header("meta-monitors-config-46.h").replace(
+            "  GObject parent;", "  GObject parent;\n  gint whatever;")
+        with self.assertRaises(SystemExit) as e:
+            self.gen.build_from_header(moved)
+        self.assertIn("written by hand", str(e.exception))
+
+    def test_it_reads_no_running_compositor(self):
+        """The independence of the description from the build it is checked
+        against is the whole value of the struct-size and sentinel checks.  A
+        deriver that asked the compositor would spend it."""
+        src = open(os.path.join(GIR_DIR, "gen-gir.py"), encoding="utf-8").read()
+        body = src[src.index("def build_from_header"):]
+        for forbidden in ("gi.repository", "type_query", "dbus", "gdbus",
+                          "/proc/", "libmutter-"):
+            self.assertNotIn(forbidden, body[:body.index("def report_header")],
+                             forbidden)
+
+
 # ------------------------------------------------- the rules, run for real
 
 NODE = shutil.which("node") or shutil.which("nodejs")
@@ -1015,6 +1153,57 @@ class RulesJS(unittest.TestCase):
         # the refusal a user will actually see says what is at stake
         self.assertIn("monitors.xml", got["one"])
         self.assertIn("Keep changes?", got["missing"])
+        # ...and what to do about a grab that is not on screen.  Measured once
+        # on a real update: the first call after a post-update login refused
+        # with nothing visible anywhere, and the next call seconds later
+        # applied.  The check was left exactly as strict; the words that sent
+        # the user looking for a dialog that was not there were not.
+        self.assertIn("Main.modalCount is 1", got["one"])
+        self.assertIn("Main.modalCount is 2", got["two"])
+        self.assertIn("nothing on screen", got["one"])
+        self.assertIn("run the same command again", got["one"])
+        self.assertIn("Nothing was read and nothing was written", got["one"])
+
+    def test_the_maps_lines_a_real_release_actually_writes(self):
+        """Real lines, because the first cut of this matched none of them: a
+        stable Ubuntu maps `libmutter-14.so.0.0.0`, and a pattern anchored on
+        the soname reported "no build id" everywhere and looked like a library
+        that would not say."""
+        maps = "\n".join([
+            "7bacc8200000-7bacc8250000 r--p 00000000 fd:02 534233   "
+            "/usr/lib/x86_64-linux-gnu/libmutter-14.so.0.0.0",
+            "7bacc8250000-7bacc8400000 r-xp 00050000 fd:02 534233   "
+            "/usr/lib/x86_64-linux-gnu/libmutter-14.so.0.0.0",
+            "7bacc745d000-7bacc7460000 r--p 00000000 fd:02 536272   "
+            "/usr/lib/x86_64-linux-gnu/mutter-14/libmutter-cogl-pango-14.so.0.0.0",
+            "7bacc7000000-7bacc7100000 r--p 00000000 fd:02 111111   "
+            "/usr/lib/x86_64-linux-gnu/mutter-18/libmutter-18.so.0 (deleted)",
+            "7fff00000000-7fff00021000 rw-p 00000000 00:00 0        [stack]",
+            "",
+        ])
+        script = self.run_js(
+            "console.log(JSON.stringify(R.parseMutterMappings(input)));\n")
+        got = self.call(script, maps)
+        self.assertEqual(got, [
+            {"gen": 14, "path": "/usr/lib/x86_64-linux-gnu/libmutter-14.so.0.0.0",
+             "inode": 534233, "deleted": False},
+            {"gen": 18, "path": "/usr/lib/x86_64-linux-gnu/mutter-18/libmutter-18.so.0",
+             "inode": 111111, "deleted": True},
+        ])
+        # cogl, clutter and the rest of the family are not libmutter
+        self.assertEqual(self.call(script, "\n".join(maps.splitlines()[2:3])), [])
+
+    def test_a_replaced_library_is_a_note_with_no_verdict_in_it(self):
+        script = self.run_js(
+            "console.log(JSON.stringify(input.map(i => R.libmutterNote(i))));\n")
+        got = self.call(script, [None, {}, {"replaced": False, "path": "/x"},
+                                 {"replaced": True, "path": "/lib/libmutter-14.so.0"}])
+        self.assertEqual(got[:3], [None, None, None])
+        self.assertIn("/lib/libmutter-14.so.0", got[3])
+        self.assertIn("this changes nothing now", got[3])
+        # it is news, not a refusal: it asks nothing of anybody now
+        for imperative in ("Answer it", "run this again", "run the same command"):
+            self.assertNotIn(imperative, got[3])
 
     def test_le32_is_little_endian_and_takes_a_negative(self):
         script = self.run_js(
