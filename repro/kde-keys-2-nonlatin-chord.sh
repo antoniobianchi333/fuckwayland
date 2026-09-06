@@ -1,12 +1,16 @@
 #!/bin/sh
 # The same measurement on a layout with no Latin letters on it at all (Greek),
-# and the one thing that came out of it: `type` refuses a character the layout
-# cannot make and says so, while `key` silently falls back to the built-in US
+# and the defect that came out of it: `type` refused a character the layout
+# cannot make and said so, while `key` silently fell back to the built-in US
 # table's *position* for the same character.  On a Greek-only session
-# `wdotool key ctrl+s` therefore presses <AC02> and Kate receives Ctrl+sigma,
-# which is not Save -- with no warning, although `keys explain ctrl+s` calls
-# that same 's' unreachable.  Add `us` as a second layout (what a Greek user
-# really configures) and the fallback is the right key after all.
+# `wdotool key ctrl+s` therefore pressed <AC02>, Kate received Ctrl+sigma,
+# which is not Save, nothing was saved and nothing was said -- although
+# `keys explain ctrl+s` called that same 's' unreachable.
+#
+# FIXED: the layout is the authority for `key` as well now, so the second
+# block below prints the same "not reachable on the Greek layout" warning
+# `type` gives, and Kate's file stays the size it was.  Add `us` as a second
+# layout (what a Greek user really configures) and the chord lands for real.
 #
 #   vmctl user <vm> -- sh /tmp/kde-keys-2-nonlatin-chord.sh
 KW=$(command -v kwriteconfig6 || command -v kwriteconfig5)

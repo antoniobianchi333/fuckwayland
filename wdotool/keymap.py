@@ -288,6 +288,16 @@ def _keysym_value_to_key(ks: int, layout=None) -> tuple[int, bool] | None:
         # `wdotool key 0x01ffffff` is a syntactically valid keysym naming no character, and chr() raises
         # ValueError on it. Unreachable, like any other keysym this layout cannot type -- not a traceback.
         return None
+    if layout is not None and layout.chars:
+        # THE LAYOUT IS THE AUTHORITY, and falling through to the built-in US table here is not a
+        # fallback but a different character: measured on a Greek-only KDE session, `key ctrl+s` pressed
+        # the US S position, which is sigma there, so Kate got Ctrl+sigma, saved nothing and said nothing
+        # (exit 0, empty stderr) -- while `type s` warned and skipped and `keys explain ctrl+s` called
+        # the same s unreachable. The caller turns None into that same "not reachable on the %s layout"
+        # warning, which is what this function's callers were always written to expect.
+        # The character table, not `keysyms`, because a *Unicode* keysym (0x010020ac) names a character
+        # the layout does have under a different keysym name (EuroSign).
+        return layout.chars.get(chr(cp))
     return CHAR_TO_KEY.get(chr(cp))
 
 

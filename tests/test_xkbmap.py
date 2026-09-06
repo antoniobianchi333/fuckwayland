@@ -21,7 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from support import RecorderDev, env
-from wdotool import cli, daemon, xkbmap
+from wdotool import cli, daemon, keymap, xkbmap
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -654,18 +654,43 @@ class TestTypingThroughTheLayout(unittest.TestCase):
                          ["Can't type character 'a' (not on the Greek layout)."
                           " Skipping."])
 
-    def test_a_latin_chord_on_a_greek_layout_takes_the_us_position(self):
-        """A gap, recorded rather than fixed: `type` refuses a character the
-        layout cannot make, but `key` falls back to the built-in US table's
-        *position* for it and says nothing -- `wdotool key ctrl+s` on a
-        Greek-only session presses <AC02> and Kate receives Ctrl+sigma, which
-        is not Save. `keys explain ctrl+s` calls the same 's' unreachable.
-        With `gr, us` configured (what a Greek user really has) the fallback
-        is right and the chord lands."""
+    def test_a_latin_chord_on_a_greek_layout_says_so_instead_of_guessing(self):
+        """`key` used to fall back to the built-in US table's *position* for
+        a character the layout cannot make, and say nothing: measured on a
+        Greek-only Plasma session, `wdotool key ctrl+s` pressed <AC02>, Kate
+        received Ctrl+sigma, nothing was saved, exit 0 and stderr empty --
+        while `type s` warned and skipped and `keys explain ctrl+s` called
+        the same 's' unreachable. The layout is the authority now, so this is
+        the same warning `type` gives, and it is the caller who is told
+        rather than the wrong key that is pressed."""
         d = self.daemon_for("kde_gr")
         warns = d.op_key("ctrl+s", "press", 0, False)
-        self.assertEqual(taps(d.kb), [(29, 1), (31, 1), (29, 0), (31, 0)])
-        self.assertEqual([w for w in warns if "reachable" in w], [])
+        self.assertEqual(taps(d.kb), [(29, 1), (29, 0)])
+        self.assertIn("key 's' is not reachable on the Greek layout."
+                      " Ignoring it.", warns)
+
+    def test_the_same_chord_lands_when_a_latin_layout_is_configured_too(self):
+        """`gr, us` is what a Greek user really has, and pinning the US group
+        makes Ctrl+S the real Save again -- the answer to the warning above,
+        the same one the group notice gives."""
+        d = self.daemon_for("kde_gr")
+        warns = d.op_key("ctrl+z", "press", 0, False)      # not on gr either
+        self.assertEqual(taps(d.kb), [(29, 1), (29, 0)])
+        self.assertIn("not reachable on the Greek layout", warns[-1])
+        us = self.daemon_for("kde_us")
+        us.op_key("ctrl+s", "press", 0, False)
+        self.assertEqual(taps(us.kb), [(29, 1), (31, 1), (29, 0), (31, 0)])
+
+    def test_a_unicode_keysym_still_finds_the_layouts_own_key(self):
+        """The character table is what answers, not the keysym table, so
+        `key 0x010020ac` (the Unicode spelling of EuroSign) finds the euro
+        where the layout really has it -- AltGr+E on German, AltGr+5 on
+        Greek -- rather than being called unreachable."""
+        de, gr = rmap("kde_de"), rmap("kde_gr")
+        self.assertEqual(keymap.resolve_token("0x010020ac", de),
+                         de.lookup_char("\u20ac")[0])
+        self.assertEqual(keymap.resolve_token("0x010020ac", gr),
+                         gr.lookup_char("\u20ac")[0])
 
     def test_a_chord_on_kwins_german_moves_with_the_layout(self):
         """Ctrl+Z is the physical <AB01> on a US board and <AB03> on a German
@@ -1117,12 +1142,39 @@ class TestTheAssumedGroupIsAnnounced(unittest.TestCase):
         for name in ("de", "fr", "de"):
             with env(WDOTOOL_XKB_KEYMAP=os.path.join(KEYMAPS, name + ".xkb"),
                      WDOTOOL_LAYOUT=None, WDOTOOL_XKB_GROUP=None):
-                w = []
-                d._layout(w)
-                d._layout(w)      # same state twice: still one notice
-                said.append([x for x in w if "assuming" in x])
-        self.assertEqual([len(s) for s in said], [1, 1, 1])
-        self.assertIn("French", said[1][0])
+                per_command = []
+                for _ in range(2):        # two commands on the one daemon
+                    w = []
+                    d._layout(w)
+                    per_command.append([x for x in w if "assuming" in x])
+                said.append(per_command)
+        self.assertEqual([[len(c) for c in cmds] for cmds in said],
+                         [[1, 1], [1, 1], [1, 1]])
+        self.assertIn("French", said[1][0][0])
+
+    def test_every_command_is_told_though_the_log_says_it_once(self):
+        """A guess that is wrong is wrong on every command, so every command
+        says so -- the rule _xkb_warn_degraded already followed.
+
+        Measured on Plasma 6.6 with `us, de` configured and German switched
+        on: three identical `wdotool type` runs printed the notice once,
+        because the second and third hit the layout cache and returned before
+        reaching it. A script saw one warning and then typed the wrong
+        characters in silence (repro/kde-keys-1-group-guess.sh). The daemon's
+        own log is still one line per layout state: it is one fact about the
+        session, not news each time."""
+        d = make_daemon()
+        err = io.StringIO()
+        per_command = []
+        with env(WDOTOOL_XKB_KEYMAP=os.path.join(KEYMAPS, "kde_us_de.xkb"),
+                 WDOTOOL_LAYOUT=None, WDOTOOL_XKB_GROUP=None):
+            with contextlib.redirect_stderr(err):
+                for _ in range(3):
+                    warns = d.op_type("z", 0, False)
+                    per_command.append([w for w in warns if "assuming" in w])
+        self.assertEqual([len(c) for c in per_command], [1, 1, 1])
+        self.assertIn("assuming 'English (US)'", per_command[2][0])
+        self.assertEqual(err.getvalue().count("assuming"), 1)
 
     def test_group_name_needs_no_parse(self):
         """The notice runs on the bypass path, so it must not drag the

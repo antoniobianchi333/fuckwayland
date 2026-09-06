@@ -22,7 +22,7 @@ a machine with no Plasma 6.7 on it.
 | `kde5-verify.sh` | SHADED on a native window, the X-plane state fallback, WM_CLASS case, `-l -G` | `noble-kde` |
 | `kde6-before.sh`, `kde6-verify-a.sh`, `kde6-verify-b.sh` | the Plasma 6.6 sweep | `resolute-kde` |
 | `kde-keys-1-group-guess.sh` | typing and chords into a real Kate window under a German layout: right on one configured layout, wrong on `us, de` switched to German, where group 1 is assumed | `resolute-kde`, `noble-kde` |
-| `kde-keys-2-nonlatin-chord.sh` | the same on Greek: `type` warns and skips the Latin it cannot reach, `key ctrl+s` silently presses the US position instead | `resolute-kde`, `noble-kde` |
+| `kde-keys-2-nonlatin-chord.sh` | the same on Greek: `type` warns and skips the Latin it cannot reach, and `key ctrl+s` did the opposite -- it silently pressed the US position, which is sigma there. The defect this found; it now warns the same way, and this is what shows it | `resolute-kde`, `noble-kde` |
 | `kde-outreg-conformance.py` | every wire constant in `wxrandr/kwin.py` against the upstream protocol XML — run it when a new Plasma lands | none (host, needs network) |
 | `kde-outreg-specfake.py` | a Plasma 6.7 compositor generated from that XML: the registry discovery path end to end, and its three failure modes | none (host) |
 | `matrix-1-warandr-empty-env.sh` | `env -i warandr --command` | any |
@@ -86,10 +86,12 @@ head.
 | `scale-summary.py` | one line per config: the worst error each reading showed |
 | `scale-shotcursor.py` | the screendump oracle, for a compositor that composites its own cursor |
 | `scale-wldump.py` | `wl_output` and `zxdg_output_v1` side by side — the two numbers `_wayland_bbox()` chooses between |
-| `scale-1-gnome46-xdg-output-stale.sh` | **the one that fails.** Walks GNOME 46 through turning "Fractional Scaling" on while the monitor is already at 200%, printing the layout box, Mutter's two reports of the same thing and where the cursor really went, at each step |
+| `scale-1-gnome46-xdg-output-stale.sh` | **the Mutter defect.** Walks GNOME 46 through turning "Fractional Scaling" on while the monitor is already at 200%, printing the layout box, Mutter's two reports of the same thing and where the cursor really went, at each step. The advertised layout goes stale, the cursor still lands where it was asked for (Mutter maps absolute motion across the stale rectangle too), and `getdisplaygeometry` is the thing that is then wrong |
 
 Everything agreed to 0 px on 26.04 and on Plasma 6.6, at every scale and on
 both layouts, and on 24.04 in each of its two layout modes taken by itself.
-What does not work is the *change* between 24.04's two modes: see
+The *change* between 24.04's two modes leaves Mutter advertising a layout it
+has stopped drawing; the pointer follows the advertised one and still lands
+where it was asked, and `getdisplaygeometry` is what goes wrong. See
 `tests/test_scale_spaces.py::StaleXdgOutput`, which replays it on the wire.
 The raw readings behind all of it are in `tests/fixtures/scaling/`.
