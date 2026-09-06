@@ -342,7 +342,7 @@ Mutter and KWin reference count key state across the seat's devices. So it clear
 what it holds itself, and it says which foreign modifier is blocking it when it can
 read that, and it is silent with identical behaviour when it cannot.
 
-## 2262 tests, and what 0.3 removed
+## 2614 tests, and what 0.3 removed
 
 The suite is the reason any of the sentences above can be written as facts. It has
 byte parity oracles that run the real `xdotool`, `wmctrl`, `xprop` and `xrandr` and
@@ -350,9 +350,9 @@ diff its output against theirs. It has wire-level fakes: a fake KWin that speaks
 `kde_output_device_v2` over a real unix socket in the real Wayland wire format, a
 fake Mutter on an in-process D-Bus mock, a fake X server, and a **hostile** X server
 that subclasses it and lies. It has live tests against a real headless sway with
-XWayland. And it has twelve VM images, ten built from cloud images and two installed
-from the release ISOs by the actual Ubuntu installer with every question left at its
-default, because "it works on a default Ubuntu desktop" is a claim about an installed
+XWayland. And it has thirteen VM images, eleven built from cloud images and two
+installed from the release ISOs by the actual Ubuntu installer with every question
+left at its default, because "it works on a default Ubuntu desktop" is a claim about an installed
 system and a cloud image plus `ubuntu-desktop` measurably is not one. That distinction
 is not pedantry: running the install guide verbatim on the real 24.04 install
 corrected three sentences of it.
@@ -391,6 +391,62 @@ precisely because a KDE machine has a real `/usr/bin/xrandr` that would answer
 `BadMatch` and change nothing. None of those were bugs. All of them were the
 documentation drifting away from a tree that kept being measured, and that drift is
 the thing a release like this exists to stop.
+
+## What a real desktop found
+
+Everything above was proved on virtual machines that get made, used and thrown away,
+and that turns out to be a particular kind of desktop. A VM never logs out. It never
+sits idle for an afternoon. Nobody configures a second keyboard layout on it and
+switches to it. Nobody upgrades its GNOME underneath it. 0.4 is what happened when
+those things were done on purpose.
+
+The input daemon ran for as long as the machine was up. On a rig that is invisible.
+On a real desktop a logout clears the runtime directory the socket lives in, so the
+daemon is still running, still holding the lock, no client can ever dial it again,
+and every later wdotool command in that boot fails to start one. Once it was looked
+for it was on the rig too: a hundred and sixty one of them alive at the same time,
+about three gigabytes between them, the oldest eighteen hours old, every one of them
+listening on a socket path that had been deleted. It compares its own socket file by
+inode every fifteen seconds now and exits when that file is gone or has been
+replaced, and exits anyway after fifteen minutes with no client, which is an order of
+magnitude past the gap between two commands of one piece of work.
+
+Then a Greek layout. Everything that types had been falling back to the built-in US
+table for anything the active layout could not produce, and for a chord that means
+pressing whichever key is `s` on a US keyboard. On Greek that key is sigma, so
+`key ctrl+s` gave Kate control and sigma, which saved nothing, said nothing and
+exited 0. The layout is the authority now and the chord is refused with a line, which
+is what `type` had always done for a single character. The oracle was a sway binding
+on the US `s` position: with `us` the file appears, with `gr` it does not and there
+is a warning, with `us,gr` it appears again. The same session found the notice that
+says which of several layouts wdotool had to assume. It was printed once and then the
+wrong characters were typed in silence, because the second command hit the layout
+cache and returned before ever reaching the line that prints it. It reaches every
+command now, and the variable it tells you to set is read from the environment of the
+command and carried to the daemon with the text, because the daemon keeps the
+environment it was spawned with and outlives it.
+
+And a saved display configuration. GNOME reads `~/.config/monitors.xml` back through
+the same validator that refuses overlapping monitors, and one entry it does not like
+throws away the whole file, at every boot, with nothing said on any screen. Nothing
+here can put a bad entry in it. What can is a settings change made afterwards: with
+fractional scaling switched off the positions are saved in physical pixels and the
+file records no layout mode, so switching that setting on re-reads them as logical
+pixels, a scaled monitor stops reaching its neighbour, and the file goes. So the
+option that saves a layout reads the file first and says when GNOME has already
+discarded it, says when the layout being saved is one that setting would break, and
+keeps a copy of what it replaced.
+
+The fourth thing is the one I am least comfortable with, and it has a section of its
+own in the README rather than a paragraph here. GNOME will not place two monitors so
+that they share screen area, by a validator every route into Mutter goes through, and
+0.4 has one way through it: a second Shell extension that the package ships and that
+nothing enables, an agreement you record against the exact build of GNOME the checks
+ran on, and eight bytes per monitor written into a private structure of the running
+`gnome-shell`. Six checks refuse any build they do not recognise. Thirteen
+deliberately wrong descriptions of that structure were installed on purpose and every
+one was refused by name, before any write, with the session still running. It is
+still a bet, it is off, and if you are not sure you want it you do not.
 
 None of this is the protocol the survey asked for. A compatibility layer is what you
 write while you wait for one, and it takes the shape of every desktop whose

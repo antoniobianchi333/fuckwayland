@@ -39,13 +39,53 @@ by using the tools on one rather than by reading them.
   enables, and behind an agreement recorded against the build id of the `libmutter` the
   checks ran on rather than against a version string. `warandr` has the same route as
   an option that never asks, for a window started from a hotkey.
+- **A table to add a GNOME to, and one way to force past not being in it.** Everything
+  that differs per GNOME generation, the soname to match, the Meta typelib version,
+  the namespace of the type description, the size `MetaMonitorsConfig` must report and
+  the tail slots the description is built from, is one record in
+  `gnome/fuckwayland-overlap@fuckwayland/generations.json`, with the extension, the
+  installer, the generator and `wxrandr` reading it instead of computing it. That
+  matters because mutter 51 renumbered its library to the GNOME major, so GNOME 51
+  ships `libmutter-51.so.0` where the old arithmetic said `libmutter-19`.
+  `--unsafe-gnome-overlap-unmeasured <major>` is the one thing here that gets past a
+  refusal: it skips the check that the build is in the table and no other, takes the
+  running GNOME's major as its argument so a command line copied from a forum is
+  refused by number, is remembered nowhere, and cannot be reached from `warandr` at
+  all. `--dryrun` is not a rehearsal of it, because the remaining checks run inside
+  `gnome-shell`.
+- **GNOME 51 was measured by following that procedure and nothing else**, on Ubuntu
+  26.10 with `libmutter-51.so.0`: 80 bytes, three tail slots, taken from mutter 51's
+  own header and confirmed against the live GType registry, then an overlap applied on
+  three heads with the shared columns byte identical between them. Doing it found two
+  things the procedure had not said. An extension whose `metadata.json` does not name
+  the running Shell major is never loaded, so on exactly the builds the forcing option
+  exists for the bus name was never taken; the installer now writes the running major
+  into the installed copy. And a type description must name no shared library: a
+  forced run picks its description by struct size on a machine whose `libmutter` is by
+  definition the wrong one, and a description naming a file that is not there made
+  `gjs` abort `gnome-shell` on the first call through it, which took a session on a
+  `--dryrun` that writes nothing. The generated descriptions name none, and one that
+  does is refused by name.
 - **The retest of all of it** found four things wrong and one missing: `--persistent`
   and `--unsafe-gnome-overlap` were handed to the real xrandr on an X11 session, where
   the first refused the whole command over a flag xrandr has never had; the geometry
   query printed a made-up size one line above refusing to guess one; several documents
   disagreed with what the tools do; and the package committed in `release/` was still
   the 0.3 build, so a user who installed the way the README says got none of this. The
-  package is built from this tree.
+  package is built from this tree, and was rebuilt again once the overlap extension
+  had a table to read, which is what `tests/test_release_deb.py` noticed.
+- **2614 tests**, up from 2262, the new ones being the daemon's two ways of ending,
+  the chord the layout cannot produce, the pin carried on the request, the guards
+  around the saved display configuration, and every refusal of the overlap route
+  classified and then re-run with the forcing option to see which of them it changes.
+- **The documents were read against the code again**, which is the check this release
+  exists to keep passing: `scripts/check-docs.py` reads the options out of the source,
+  out of each tool's help and out of every markdown file and reports where the three
+  disagree.
+
+Measured on the same rig, now thirteen images: eleven built from an Ubuntu cloud image
+plus a desktop metapackage, GNOME 51 on 26.10 among them, and two installed by the
+Ubuntu desktop installer itself.
 
 ## Version 0.3
 

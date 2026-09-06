@@ -23,6 +23,17 @@ What is installed where
         the code.
   /usr/share/gnome-shell/extensions/fuckwayland-bridge@fuckwayland/
         the GNOME Shell bridge extension, system-wide.
+  /usr/share/gnome-shell/extensions/fuckwayland-overlap@fuckwayland/
+        the second, separate GNOME Shell extension, the one behind
+        `wxrandr --unsafe-gnome-overlap`.  Shipped so that it is there, and
+        enabled for nobody: no postinst, no autostart helper and no user's
+        dconf touches it, which is deliberate, because it is the only thing
+        in this package that can cost you the session you are sitting in.
+        Turning it on is `gnome-extensions enable
+        fuckwayland-overlap@fuckwayland` and a re-login, by hand, and then
+        `wxrandr --gnome-overlap-allow` before it will do anything.  See
+        Overlapping monitors on GNOME in
+        /usr/share/doc/fuckwayland/README.md.gz.
   /usr/lib/fuckwayland/enable-bridge
   /usr/lib/fuckwayland/enable-bridge.desktop
         the once-per-user helper that enables the extension (see below) and
@@ -36,8 +47,8 @@ What is installed where
   /usr/share/applications/warandr.desktop
         the menu entry for the GUI.
 
-The GNOME extension, and why a re-login is the one manual step
---------------------------------------------------------------
+The bridge extension, and why a re-login is the one manual step
+---------------------------------------------------------------
 
 gnome-shell scans extension directories only when a session starts, and
 whether an extension is enabled is a per-user dconf setting.  dpkg runs as
@@ -60,6 +71,9 @@ neither of those things itself.  What the package does instead:
     an install would leave the user with a stamp, no setting and no extension
     -- and the install's own message promising it had been enabled for them.
     An upgrade keeps the system stamp and so disturbs nobody's choice.
+
+None of the above is about the overlap extension: the helper knows one uuid,
+the bridge's, and the other one stays off until somebody enables it by hand.
 
 So: install, log out, log back in, and the window commands work.  Before that
 relogin wxrandr, warandr and wdotool's input commands already work, and the

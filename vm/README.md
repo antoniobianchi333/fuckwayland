@@ -20,7 +20,7 @@ repo README.
 
 ```console
 $ vm/vmctl build noble-gnome            # ~7 min, once; golden image -> ~/vm-data/golden/
-$ vm/vmctl build resolute-kde           # any of the ten cloud-image flavors (see Flavors below)
+$ vm/vmctl build resolute-kde           # any of the eleven cloud-image flavors (see Flavors below)
 $ vm/build-iso-golden.sh resolute-gnome-iso   # ~14 min: the real installer, off the desktop ISO
 $ vm/build-iso-golden.sh noble-gnome-iso      # ~21 min: the same, off the 24.04 desktop ISO
 $ vm/vmctl start gnome1 --flavor noble-gnome --heads 3
@@ -141,7 +141,7 @@ Thirteen golden images. **Eleven** are four desktops over three Ubuntu releases 
 each LTS, once on Wayland and once on Xorg, and GNOME on 26.10 as well — each an Ubuntu
 *cloud* image plus that desktop's metapackage; the other **two**, `resolute-gnome-iso` and `noble-gnome-iso`, are real Ubuntu
 26.04 and 24.04 desktop **installations**, done by the Ubuntu installer off the release ISOs
-with every question left alone. The ten exist because one script gets four desktops out of
+with every question left alone. The eleven exist because one script gets four desktops out of
 them; the two exist because "it works out of the box on a default Ubuntu desktop" is a claim
 about an *installed* system — one per supported LTS, because the two releases install
 differently — and a cloud image plus `ubuntu-desktop` is not one (26.04: 226 packages a

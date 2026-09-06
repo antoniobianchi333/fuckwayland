@@ -789,8 +789,8 @@ step to the next struct is `g_memdup2(ptr, n)` — a bounded copy of exactly n b
 and `g_strndup(ptr, 63)` for the connector names, with the address range-checked
 against `/proc/self/maps` first and list walks capped at 16. With pointers declared as
 pointers, a wrong offset killed gnome-shell outright (measured, 50.1, a node whose
-`next` was `0x1`); with them declared as numbers, all nine wrong descriptions tried
-across the two releases completed and none crashed.
+`next` was `0x1`); with them declared as numbers, all thirteen wrong descriptions tried
+across the three releases completed and none crashed.
 
 **3. Every check runs before every write, never once at install**, because a
 distribution upgrade can replace libmutter under a running session. The six of them,
@@ -1345,8 +1345,11 @@ Ubuntu installer, three virtio heads, nothing patched.
   a wrong-generation description on 24.04, and on 26.04 a 72-byte tail as `FwOverlap18`
   (`struct-size`), `layout_mode` and `switch_config` swapped at the same size
   (`sentinel`, `switch_config reads 1 at the offset this description believes, not
-  24410`) and the list read out of the `key` slot (`bounded-read`). **Nine in all, nine
-  refused by name, nine sessions still running.**
+  24410`) and the list read out of the `key` slot (`bounded-read`). Four more went in
+  with GNOME 51 and the `shared-library` guard that measuring it produced, among them
+  descriptions naming a library that is not mapped, which is the refusal that guard
+  exists to give. **Thirteen in all, thirteen refused by name, thirteen sessions still
+  running.**
 * **The consent path was measured too**, on 50.1: first apply asks and the second says
   one line; the agreement survives a reboot while the layout does not; a recorded
   `50.0` against a live `50.1` brings the whole paragraph back; a recorded struct size
@@ -1506,8 +1509,8 @@ Stated plainly, because a reader has to be able to decide against this:
 
 * **A wrong write is not a wrong answer, it is a dead compositor.** The checks turn
   nearly every wrong description into a refusal, and every one that was tried was
-  refused, but *nearly* is the honest word. Nine deliberate breakages caught is not a
-  proof that a tenth would be.
+  refused, but *nearly* is the honest word. Thirteen deliberate breakages caught is
+  not a proof that a fourteenth would be.
 * **The case the design cannot close by construction** is two fields of the same size
   swapped by an upstream change. The size gate passes, the sentinel may pass, and what
   is left is the bounded reader refusing an address that is not mapped, or the
@@ -1627,9 +1630,10 @@ where a `GList` head is. Those are exactly the facts a wrong description gets wr
 exactly the facts a running compositor will not tell you. A generator would have to
 guess them — on the build it is about to write into.
 
-**The evidence does not transfer, either.** Nine wrong descriptions were caught, but
-every one of them was caught *by disagreeing with the build*. A self-derived description
-cannot disagree with the build, so "the guards caught nine" says nothing about it.
+**The evidence does not transfer, either.** Thirteen wrong descriptions were caught,
+but every one of them was caught *by disagreeing with the build*. A self-derived
+description cannot disagree with the build, so "the guards caught thirteen" says
+nothing about it.
 
 The supportable half of the idea is real and is what `--from-header` is: derive the
 numbers mechanically, from the release's own source, at packaging time, where a human
@@ -1824,8 +1828,8 @@ LTS so that Wayland and Xorg are both covered, and GNOME on 26.10 because
 and two — `resolute-gnome-iso` and
 `noble-gnome-iso` — installed from `ubuntu-26.04.1-desktop-amd64.iso` and
 `ubuntu-24.04.4-desktop-amd64.iso` **by the Ubuntu installer itself**, unattended,
-with every question left alone. The ten exist because one script gets four desktops
-out of them. The two exist because "it works out of the box on a default Ubuntu
+with every question left alone. The eleven exist because one script gets four
+desktops out of them. The two exist because "it works out of the box on a default Ubuntu
 desktop" is a claim about an *installed* system, and a cloud image plus
 `ubuntu-desktop` measurably is not one: 226 packages a real 26.04 desktop install
 does not have, 55 it has and the cloud image has not, a different kernel with no

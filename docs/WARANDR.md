@@ -254,7 +254,11 @@ this section is only the window's half.
 
 * `unavailable` — no extension, or a GNOME nobody has measured. **Nothing
   changes**: the drop is refused with Mutter's sentence, exactly as the row
-  above says, and Apply passes no flag it did not pass in 0.3.
+  above says, and Apply passes no flag it did not pass in 0.3. There is no way
+  to force past that from the window, on purpose: the flag that gets past an
+  unmeasured build takes the running GNOME's major as an argument, read out of
+  a refusal the person has just read, and a checkbox carries none of that
+  (WXRANDR.md § `--unsafe-gnome-overlap-unmeasured`).
 * `available` — the route is there and nothing has been agreed to. The drop is
   taken, the status bar says what will be done instead of refusing, and the
   first Apply asks.

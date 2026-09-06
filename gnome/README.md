@@ -175,8 +175,8 @@ GNOME release is one record in `generations.json`, the same record in `GENERATIO
 in `wxrandr/gnome_overlap.py` (a test proves the two identical), one run of that
 script, and then the measurement:
 [docs/Technical.md § The table](../docs/Technical.md#the-table-and-adding-a-gnome-generation).
-The structure they describe, field by field and offset by offset on both generations,
-and what to do to add a third, is
+The structure they describe, field by field and offset by offset on both of the two
+shapes it has had, and what to do to add the next generation, is
 [docs/Technical.md § The private structure](../docs/Technical.md#the-private-structure-and-the-descriptions-that-describe-it);
 what the two bus methods take and answer, request by request, is
 [§ The bus interface](../docs/Technical.md#the-bus-interface-request-by-request).
@@ -595,9 +595,16 @@ repo can fix; the bugs that *were* fixable have been.
   layout state — on both paths, the US bypass included, so a session
   configured `us, de` and switched to German tells you it is assuming
   `English (US)` while it types US characters. Pin it with
-  `WDOTOOL_XKB_GROUP=2`; the daemon reads that when it is spawned, so a
-  script that changes the pin mid-run has to stop the daemon first
-  (`pkill -f 'wdotool __daemon'`). Three rig facts worth having:
+  `WDOTOOL_XKB_GROUP=2`, which is read from the environment of the
+  **command** and carried to the daemon with the text it is to type, so a
+  script that sets it mid-run is obeyed by the daemon that is already
+  running. (Before 0.4 the daemon read it only from the environment it was
+  spawned with, so the pin this notice asks for was ignored by any daemon
+  already up, and the notice kept printing.) The notice itself reaches every
+  command: the daemon's own log carries it once per layout state, and every
+  client's stderr carries it every time, because a session typing the wrong
+  characters on every command is not told by one line to whoever asked
+  first. Three rig facts worth having:
   `gsettings set org.gnome.desktop.input-sources current 1` does **not** move
   Mutter's active group (the keyboard shortcut does — `Super+Space` by
   default); `gsettings get org.gnome.desktop.input-sources current` is the

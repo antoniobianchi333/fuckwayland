@@ -675,10 +675,11 @@ publicly, which pins the same tail with a public number: on GNOME 46, whose
 default is physical, claiming logical gets `layout_mode reads 2 … DisplayConfig
 says 1`.
 
-**In every one of those deliberate breakages, `gnome-shell` survived.** Nine of
-them now across the two releases and four libmutter builds — five while this was
-being built, four more during the update testing below — each refused by name,
-no crash, no core dump, and the desktop still running afterwards.
+**In every one of those deliberate breakages, `gnome-shell` survived.** Thirteen
+of them now across the three releases — five while this was being built, four more
+during the update testing below, and four more with GNOME 51 and the
+`shared-library` guard that measuring it produced — each refused by name, no crash,
+no core dump, and the desktop still running afterwards.
 
 #### The one false refusal, and why the guard was not loosened
 
@@ -764,8 +765,8 @@ Not softened, because a reader has to be able to decide against this:
 
 * **A wrong write is not a wrong answer, it is a dead compositor.** The guards
   turn nearly every wrong description into a refusal, and the ones tried were
-  all refused, but *nearly* is the honest word. Nine deliberate breakages caught
-  is not a proof that a tenth would be.
+  all refused, but *nearly* is the honest word. Thirteen deliberate breakages
+  caught is not a proof that a fourteenth would be.
 * **The residual case the design cannot close by construction** is two fields
   of the same size swapped by an upstream change. The size gate passes and the
   sentinel may pass, and what is left is the bounded reader refusing an address
@@ -886,10 +887,10 @@ xrandr: dryrun: nothing was written
 ```
 
 `sh gnome/install-overlap.sh --check` runs the same probe from the installer,
-and is the honest way to ask whether your GNOME is one of the two this has been
+and is the honest way to ask whether your GNOME is one of the three this has been
 measured on.
 
-On anything else it refuses without reading anything private — 47, 48, 49, 51,
+On anything else it refuses without reading anything private — 47, 48, 49, 52,
 a shell that will not name its version — and the refusal is written for whoever
 is going to add that release:
 
@@ -988,10 +989,12 @@ No environment variable, so a layout script cannot acquire this by accident, and
 no setting that turns it on: the recorded agreement makes the tool quieter and
 never more capable. No `Restore` method on the extension, because the undo is a
 plain validated `wxrandr` line that does not depend on the dangerous half. No
-reconfiguration beyond positions. No place in the `.deb`, and its own installer
-and its own enable step. No support for GNOME 47 to 49 or 51 — only a way for
-somebody who knows their own machine to overrule that refusal, per invocation,
-having read what it may cost, with nothing remembered afterwards.
+reconfiguration beyond positions. No enabling by the package: the `.deb` carries
+the files since 0.4, and switching it on stays a `gnome-extensions enable` and a
+re-login that a person types, with its own installer and its own enable step from a
+clone. No support for GNOME 47 to 49, nor for 52 and whatever follows it — only a
+way for somebody who knows their own machine to overrule that refusal, per
+invocation, having read what it may cost, with nothing remembered afterwards.
 
 `warandr` has no button for it either, and none for
 `--unsafe-gnome-overlap-unmeasured` at all: forcing rests on somebody typing the
