@@ -17,7 +17,7 @@ sys.path.insert(0, ROOT)
 
 from fwcommon import session
 from fwcommon.errors import CmdError
-from support import (FakeEvdev, RecorderDev, abs_report, key_bitmap,
+from support import (FakeEvdev, RecorderDev, abs_report, env, key_bitmap,
                      stop_daemons_under)
 from wdotool import daemon, keymap, keystate, uinput
 
@@ -801,6 +801,36 @@ class TestPointerModel(unittest.TestCase):
 class TestGeometryFallback(unittest.TestCase):
     """B5: the daemon says when the layout size is only a guess."""
 
+    def test_a_query_does_not_print_the_guess_it_is_refusing(self):
+        """The 0.4 retest, on both X11 images: `wdotool getdisplaygeometry`
+        with no compositor printed two lines that contradict each other --
+
+            wdotool: cannot query Wayland output geometry (...); assuming 1920x1080
+            wdotool: no Wayland session found: ...; not guessing a display size
+
+        The second is the command's, and the documents promise it ("it never
+        invents a size"). The first is the daemon's pointer-map fallback,
+        which is true of a pointer move and of nothing else, so a caller that
+        is only *asking* says `quiet` and gets `fallback` in the reply to
+        decide with."""
+        d = make_daemon()
+        d.geom = None
+        err = io.StringIO()
+        # no compositor of any kind, whatever is running where this runs
+        with mock.patch.object(daemon, "_wayland_bbox",
+                               side_effect=OSError("no wayland socket found")):
+            with contextlib.redirect_stderr(err):
+                resp = d.handle({"op": "geometry", "quiet": True})
+            self.assertTrue(resp["fallback"])
+            self.assertEqual((resp["w"], resp["h"]),
+                             daemon.FALLBACK_GEOMETRY[2:])
+            self.assertEqual(resp.get("warnings") or [], [])
+            self.assertEqual(err.getvalue(), "")
+            # ...and the pointer path, which really does use the guess, says so
+            with contextlib.redirect_stderr(err):
+                d.handle({"op": "geometry"})
+        self.assertIn("assuming 1920x1080", err.getvalue())
+
     def test_geometry_reports_the_fallback(self):
         d = make_daemon()
         d.geom = None
@@ -812,6 +842,44 @@ class TestGeometryFallback(unittest.TestCase):
         d.geom = (0, 0, 640, 480)
         resp = d.handle({"op": "geometry"})
         self.assertFalse(resp["fallback"])
+
+
+class TestThePinIsSentWithTheRequest(unittest.TestCase):
+    """The client half of the same finding: WDOTOOL_XKB_GROUP is read where
+    the user set it -- in the environment of the *command* -- because the
+    daemon keeps the environment it was spawned with and outlives it."""
+
+    class Recorder(daemon.DaemonClient):
+        def __init__(self):
+            self.sent = []
+
+        def _rpc(self, **req):
+            self.sent.append(req)
+            return {"ok": True}
+
+    def sent_for(self, group):
+        c = self.Recorder()
+        with env(WDOTOOL_XKB_GROUP=group):
+            c.type_text("a", 12)
+            c.key("a", "press", 12, False)
+        return c.sent
+
+    def test_a_set_variable_travels_with_type_and_key(self):
+        self.assertEqual([r.get("xkb_group") for r in self.sent_for("2")],
+                         ["2", "2"])
+
+    def test_an_unset_one_leaves_the_request_as_it_was(self):
+        """An older daemon must see exactly what an older client sent."""
+        for req in self.sent_for(None):
+            self.assertNotIn("xkb_group", req)
+
+    def test_the_pointer_ops_do_not_carry_it(self):
+        c = self.Recorder()
+        with env(WDOTOOL_XKB_GROUP="2"):
+            c.mousemove_abs(1, 2)
+            c.button(1, True)
+        for req in c.sent:
+            self.assertNotIn("xkb_group", req)
 
 
 class TestTransientScope(unittest.TestCase):

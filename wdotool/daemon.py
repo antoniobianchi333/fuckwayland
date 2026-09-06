@@ -96,6 +96,24 @@ def _layout_mode(val, what: str = "layout_mode"):
     return _mode_field(val, what, _LAYOUT_MODES)
 
 
+def _xkb_group(val):
+    """`xkb_group` on the wire: the client's own WDOTOOL_XKB_GROUP, carried per request because the daemon
+    cannot see the client's environment and outlives it.
+
+    Lenient in exactly the way the variable is (`xkbmap._pinned_group`): anything that is not a plain 1..4 is
+    not a pin and the group gets inferred as usual, because a typo in a shell profile must not stop the tool
+    typing. Junk cannot get further than this: the value only ever reaches `xkbmap.fetch(group=)`."""
+    if val is None:
+        return None
+    if isinstance(val, bool) or not isinstance(val, (str, int)):
+        return None
+    raw = str(val).strip()
+    if not raw.isdigit():
+        return None
+    n = int(raw)
+    return n if 1 <= n <= 4 else None
+
+
 def _vkbd_mode(val, what: str = "vkbd_mode"):
     """`vkbd_mode` on the wire (VKBD_MODES, defined with the policy below). WDOTOOL_VKBD is read separately and
     stays lenient: a typo in a shell profile must not stop the tool typing, but a request is a request."""
@@ -1022,11 +1040,17 @@ class _Daemon:
 
     # -- geometry / pointer ------------------------------------------------
 
-    def geometry(self, warnings=None) -> tuple[int, int, int, int]:
+    def geometry(self, warnings=None, quiet=False) -> tuple[int, int, int, int]:
         """Layout bounding box (min_x, min_y, w, h), re-read from the compositor on every call so output-layout
         changes (wxrandr, hotplug) are visible immediately; the last good reading serves as the fallback when
         the compositor can't be queried. The origin can be non-zero/negative on multi-output layouts; pointer
-        coordinates are tracked in these global layout coordinates."""
+        coordinates are tracked in these global layout coordinates.
+
+        `quiet` is a caller that is *asking* rather than moving a pointer: `fallback` in the reply tells it the
+        numbers are the built-in guess, and it decides what to say. `getdisplaygeometry` is that caller, and it
+        refuses to print a size nobody measured -- so the fallback notice below, which is true of the pointer
+        map and of nothing else, contradicted the very next line the command printed (measured on both X11
+        images: "assuming 1920x1080" above "not guessing a display size", exit 2)."""
         try:
             box, outs = _wayland_bbox(detail=True)
             # The box is the wire's, always -- it is the space the compositor maps
@@ -1042,7 +1066,7 @@ class _Daemon:
                 self.geom_fallback = False
                 return self.geom
             self.geom_fallback = True
-            if not self.geom_warned:
+            if not self.geom_warned and not quiet:
                 self.geom_warned = True
                 msg = (f"wdotool: cannot query Wayland output geometry ({e}); "
                        f"assuming {FALLBACK_GEOMETRY[2]}x{FALLBACK_GEOMETRY[3]}")
@@ -1265,9 +1289,13 @@ class _Daemon:
         self._xkb_say(tag, msg)          # the log says it once ...
         self._xkb_warn_degraded(warnings)  # ... the client, every time
 
-    def _layout(self, warnings=None, forced=None):
+    def _layout(self, warnings=None, forced=None, group=None):
         """The reverse map for the compositor's ACTIVE layout, or None when the fixed US table is the right
         answer (B13).
+
+        `group` is the client's WDOTOOL_XKB_GROUP, carried on the request (see `_xkb_group`): it outranks the
+        daemon's own environment for this one command, so the pin the group notice tells people to set works
+        against a daemon that is already running rather than only against the next one.
 
         None is returned for the US bypass *and* for every failure: no compositor, an unreadable or unparsable
         keymap, a keymap with no typable character. The old path is the floor, never a traceback.
@@ -1282,7 +1310,7 @@ class _Daemon:
             self._xkb_warn_degraded(warnings)
             return None
         try:
-            snap = xkbmap.fetch(mods_wait=self._xkb_mods_wait)
+            snap = xkbmap.fetch(mods_wait=self._xkb_mods_wait, group=group)
         except xkbmap.XkbError as e:
             self._xkb_backoff = now + 5.0
             self._xkb_fell_back(f"cannot read the compositor's keymap ({e})", "read", warnings)
@@ -1297,7 +1325,8 @@ class _Daemon:
             # the commonest GNOME session there is, whose two groups are the same `us` twice -- +87 ms on every
             # command, B5.)
             self._xkb_mods_wait = 0.0
-        key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(), snap.group)
+        key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(),
+               snap.group, snap.group_known)
         if self._layout_cache is not None and self._layout_cache[0] == key:
             self._xkb_warn_degraded(warnings)
             self._xkb_warn_group(key, warnings)
@@ -1576,7 +1605,7 @@ class _Daemon:
         self._restore_mods(held, dev)
         self._flush(dev)
 
-    def _typing_layout(self, vkbd_path, warnings, layout_mode):
+    def _typing_layout(self, vkbd_path, warnings, layout_mode, xkb_group=None):
         """The character table for one typing op.
 
         On the virtual-keyboard path there is nothing to decide: the keymap that interprets our keycodes is the
@@ -1586,7 +1615,7 @@ class _Daemon:
         `--layout xkb` asks for a table built from the *session's* keymap, which would type through the wrong
         one, so it is refused in one line rather than obeyed into garbage."""
         if not vkbd_path:
-            return self._layout(warnings, layout_mode)
+            return self._layout(warnings, layout_mode, xkb_group)
         if xkbmap.layout_mode(layout_mode) == "xkb":
             self._xkb_say(
                 "vkbd-xkb",
@@ -1598,7 +1627,7 @@ class _Daemon:
         return None
 
     def op_key(self, spec, direction, delay_ms, clearmods, session=None,
-               layout_mode=None, vkbd_mode=None, warnings=None):
+               layout_mode=None, vkbd_mode=None, warnings=None, xkb_group=None):
         # The caller's list when it passed one: these ops can raise after _keyboard() has already let go of a
         # hold (see handle()), and a warnings list local to this frame takes that line down with it.
         if warnings is None:
@@ -1606,7 +1635,7 @@ class _Daemon:
         dev, vk = self._keyboard(warnings, vkbd_mode)
         # Outside the clear/restore window: reading the compositor's keymap is a query, and holding the
         # modifiers released across it buys nothing.
-        layout = self._typing_layout(vk, warnings, layout_mode)
+        layout = self._typing_layout(vk, warnings, layout_mode, xkb_group)
         # Restore even when the sequence is rejected or the injection fails:
         # the modifiers are already released by then.
         with self._mods_cleared(clearmods, warnings, session, dev, vk):
@@ -1630,13 +1659,13 @@ class _Daemon:
         return warnings + warns
 
     def op_type(self, text, delay_ms, clearmods, session=None,
-                layout_mode=None, vkbd_mode=None, warnings=None):
+                layout_mode=None, vkbd_mode=None, warnings=None, xkb_group=None):
         # The caller's list when it passed one: these ops can raise after _keyboard() has already let go of a
         # hold (see handle()), and a warnings list local to this frame takes that line down with it.
         if warnings is None:
             warnings = []
         dev, vk = self._keyboard(warnings, vkbd_mode)
-        layout = self._typing_layout(vk, warnings, layout_mode)  # see op_key
+        layout = self._typing_layout(vk, warnings, layout_mode, xkb_group)  # see op_key
         lname = keymap.layout_name(layout)
         with self._mods_cleared(clearmods, warnings, session, dev, vk):
             # xdo_enter_text_window: delay split between down and up, down capped at 50ms
@@ -1697,7 +1726,8 @@ class _Daemon:
                         req.get("clearmods", False), session,
                         _layout_mode(req.get("layout_mode")),
                         _vkbd_mode(req.get("vkbd_mode")),
-                        warnings=warnings)
+                        warnings=warnings,
+                        xkb_group=_xkb_group(req.get("xkb_group")))
             elif op == "key":
                 with self._vk_guard():
                     warnings = self.op_key(
@@ -1707,7 +1737,8 @@ class _Daemon:
                         req.get("clearmods", False), session,
                         _layout_mode(req.get("layout_mode")),
                         _vkbd_mode(req.get("vkbd_mode")),
-                        warnings=warnings)
+                        warnings=warnings,
+                        xkb_group=_xkb_group(req.get("xkb_group")))
             elif op == "clear_modifiers":
                 with self._vk_guard():
                     held = self.op_clear_modifiers(warnings, session)
@@ -1757,7 +1788,8 @@ class _Daemon:
                     self._no_pointer_yet()
                 return {"ok": True, "x": self.px, "y": self.py, "known": self.pos_known}
             elif op == "geometry":
-                gx, gy, w, h = self.geometry(warnings)
+                # `quiet`: a query, not a pointer move -- see geometry().
+                gx, gy, w, h = self.geometry(warnings, bool(req.get("quiet")))
                 return {"ok": True, "x": gx, "y": gy, "w": w, "h": h,
                         "fallback": self.geom_fallback, "warnings": warnings}
             elif op == "ping":
@@ -2127,6 +2159,18 @@ class DaemonClient:
         return resp
 
     @staticmethod
+    def _pin() -> dict:
+        """`xkb_group=` for a typing request: the client's own WDOTOOL_XKB_GROUP, sent only when it is set.
+
+        The daemon keeps the environment it was *spawned* with and outlives the command that spawned it, so the
+        pin the group notice asks for used to reach a fresh daemon and be ignored by a running one -- the
+        command printed the notice again and typed the other layout's characters. Like `--layout`, the value
+        travels with the request; an unset variable leaves the request byte-identical to what an older client
+        sent."""
+        raw = (os.environ.get("WDOTOOL_XKB_GROUP") or "").strip()
+        return {"xkb_group": raw} if raw else {}
+
+    @staticmethod
     def _modes(layout_mode, vkbd_mode) -> dict:
         """The optional mode fields, sent only when they were given: an absent flag must leave the request
         byte-identical to what an older client sent, and every test double keeps its signature."""
@@ -2140,12 +2184,13 @@ class DaemonClient:
     def type_text(self, text: str, delay_ms: int, clearmods: bool = False,
                   layout_mode: str | None = None, vkbd_mode: str | None = None):
         self._rpc(op="type", text=text, delay_ms=delay_ms, clearmods=clearmods,
-                  **self._modes(layout_mode, vkbd_mode))
+                  **self._modes(layout_mode, vkbd_mode), **self._pin())
 
     def key(self, spec: str, direction: str, delay_ms: int, clearmods: bool,
             layout_mode: str | None = None, vkbd_mode: str | None = None):
         self._rpc(op="key", spec=spec, direction=direction, delay_ms=delay_ms,
-                  clearmods=clearmods, **self._modes(layout_mode, vkbd_mode))
+                  clearmods=clearmods, **self._modes(layout_mode, vkbd_mode),
+                  **self._pin())
 
     def clear_modifiers(self) -> list:
         """Release the modifier keys and report which ones wdotool itself was holding, to be handed back to
@@ -2194,8 +2239,11 @@ class DaemonClient:
 
     def geometry_status(self) -> tuple[int, int, bool]:
         """(w, h, fallback): `fallback` is True when the compositor could not
-        be asked and the numbers are the built-in guess (B5)."""
-        resp = self._rpc(op="geometry")
+        be asked and the numbers are the built-in guess (B5).
+
+        `quiet=True`: this caller prints its own line about the guess and must
+        not have the daemon's pointer-map one printed over it."""
+        resp = self._rpc(op="geometry", quiet=True)
         return (resp["w"], resp["h"], bool(resp.get("fallback")))
 
     def geometry_full(self) -> tuple[int, int, int, int]:

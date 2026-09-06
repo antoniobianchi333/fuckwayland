@@ -24,4 +24,4 @@ tool carry it and nothing else.
 #: from; pyproject.toml, debian/changelog and flake.nix state the same number
 #: for their own build systems, and scripts/build-deb.sh refuses to build
 #: when the first two disagree.
-VERSION = "0.3.0"
+VERSION = "0.4.0"

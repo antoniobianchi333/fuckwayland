@@ -541,17 +541,48 @@ def canonical_backend(value):
     return v if v in BACKEND_NAMES else None
 
 
-def scan_backend_argv(argv):
-    """`(value of --backend or None, an informational option is present, argv without our flag)`, read out of a
-    raw argv *before* anything is parsed -- which is where main() has to decide whether this X11 session hands
-    over to the real xrandr.  The stripped argv is what the original is then exec'd with: `--backend x11` asks
-    for the real xrandr, which has no such option to be handed.  A `--backend` with no value at all comes back
-    as `""` -- present, naming nothing -- so that the flag's own error is ours to print on every session, not
-    the original's.
+#: our own options that modify an *apply* rather than answer for themselves.
+#: Real xrandr has neither, so neither may reach it: on an X11 session
+#: `--persistent` came back as its `unrecognized option '--persistent'` and
+#: exit 1 with the layout unapplied, where the documents say an X11 apply
+#: works and simply saves nothing (WXRANDR.md, "Keeping a layout").
+OWN_APPLY_FLAGS = ("--persistent", gnome_overlap.FLAG)
 
-    argv is walked exactly the way parse() walks it, every option consuming its own arguments, so a *value* that
-    happens to spell one of our options (`--output --backend`, `--mode --backends`) is a value here too and can
-    never be mistaken for the flag.  Never raises: an argv the parser will reject is not this hook's business.
+
+def _walk_argv(argv):
+    """`(option, how many argv entries it takes)` for each option in a raw argv, walked exactly the way parse()
+    walks it -- every option consuming its own arguments, so a *value* that happens to spell one of our options
+    (`--output --backend`, `--mode --backends`) is a value here too and can never be mistaken for the flag.
+    Never raises: an argv the parser will reject is not this hook's business."""
+    i, n = 0, len(argv)
+    while i < n:
+        a = argv[i]
+        take = 1 + _ARITY.get(a, 0)
+        if a == "--newmode":                    # name, clock, 8 numbers, flags
+            take = 11
+            while i + take < n and argv[i + take].lower() in core.MODE_FLAGS:
+                take += 1
+        yield a, take
+        i += take
+
+
+def own_flags_in(argv):
+    """The options of OWN_APPLY_FLAGS this argv really carries, as a set -- an output *named* `--persistent`
+    is not one of them.  main() asks before handing over: one of these on an X11 session is a user asking for
+    something the original has never heard of, and the answer has to be ours."""
+    return {a for a, _take in _walk_argv(argv) if a in OWN_APPLY_FLAGS}
+
+
+def scan_backend_argv(argv):
+    """`(value of --backend or None, an informational option is present, argv without our own options)`, read
+    out of a raw argv *before* anything is parsed -- which is where main() has to decide whether this X11
+    session hands over to the real xrandr.  The stripped argv is what the original is then exec'd with:
+    `--backend x11` asks for the real xrandr, which has no such option to be handed, and neither does it have
+    the two in OWN_APPLY_FLAGS.  A `--backend` with no value at all comes back as `""` -- present, naming
+    nothing -- so that the flag's own error is ours to print on every session, not the original's.
+
+    argv is walked by `_walk_argv`, so an output named like one of our options is a value here too.  Never
+    raises: an argv the parser will reject is not this hook's business.
     """
     backend = None
     info = False
@@ -580,7 +611,8 @@ def scan_backend_argv(argv):
             take = 11
             while i + take < n and argv[i + take].lower() in core.MODE_FLAGS:
                 take += 1
-        rest.extend(argv[i:i + take])
+        if a not in OWN_APPLY_FLAGS:
+            rest.extend(argv[i:i + take])
         i += take
     return backend, info, rest
 
@@ -1538,10 +1570,24 @@ def main(argv=None) -> int:
         # in it is still left alone -- not pre-checked, and not allowed to suppress an X11 session's handover.
         forced = "x11"
     ours = info_only or (flag is not None and asked not in ("auto", "x11"))
+    mine = own_flags_in(args)
     if not ours:
+        # The X11 session's own answer to our two apply options, given before the handover because after it
+        # there is no code of ours left to give one.  `--persistent` is dropped and the apply goes through:
+        # the X server keeps no layout of its own, which is what "on sway and X11 nothing is written either
+        # way" has always meant, and the real xrandr would have refused the whole command over a flag it has
+        # never had.  `--unsafe-gnome-overlap` is refused in the same words a KDE or a sway session refuses it
+        # in: this is not GNOME, and X11 overlaps monitors without any of it.
+        handover = entry and (forced == "x11"
+                              or passthrough.session_kind("xrandr", os.environ) == "x11")
+        if handover and gnome_overlap.FLAG in mine:
+            stdio.warn("xrandr: %s only means anything on GNOME; this session "
+                       "is x11, which places overlapping monitors without it\n"
+                       % gnome_overlap.FLAG)
+            return 1
         rc = passthrough.maybe_exec_real(
-            "xrandr", args if flag is None else stripped, entry=entry,
-            force=forced == "x11")
+            "xrandr", args if (flag is None and not mine) else stripped,
+            entry=entry, force=forced == "x11")
         if rc is not None:
             return rc
     if argv is None:

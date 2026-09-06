@@ -216,6 +216,32 @@ class Lookahead(unittest.TestCase):
             cli.scan_backend_argv(list(argv))     # must simply not raise
         self.assertEqual(self.scan("--zorp", "--backend", "sway")[0], "sway")
 
+    def test_our_own_apply_options_are_stripped_too(self):
+        """The 0.4 retest, on both X11 images: `wxrandr --persistent --output
+        Virtual-2 --below Virtual-1` came back as the real xrandr's
+        `unrecognized option '--persistent'`, exit 1, layout unchanged, where
+        the documents say an X11 apply works and saves nothing."""
+        self.assertEqual(self.scan("--persistent", "--output", "DP-1", "--auto"),
+                         (None, False, ["--output", "DP-1", "--auto"]))
+        self.assertEqual(self.scan("--unsafe-gnome-overlap", "--output", "DP-1",
+                                   "--pos", "960x0"),
+                         (None, False, ["--output", "DP-1", "--pos", "960x0"]))
+        self.assertEqual(self.scan("--backend", "x11", "--persistent",
+                                   "--output", "DP-1", "--off"),
+                         ("x11", False, ["--output", "DP-1", "--off"]))
+
+    def test_which_of_our_options_this_argv_really_carries(self):
+        self.assertEqual(cli.own_flags_in(["--persistent"]), {"--persistent"})
+        self.assertEqual(cli.own_flags_in(["--query"]), set())
+        # ...and an output *named* like one of them is a value, not a flag
+        for argv in (["--output", "--persistent", "--off"],
+                     ["--output", "--unsafe-gnome-overlap", "--auto"],
+                     ["--mode", "--persistent"]):
+            self.assertEqual(cli.own_flags_in(list(argv)), set(), argv)
+        self.assertEqual(
+            cli.own_flags_in(["--output", "--persistent", "--off",
+                              "--persistent"]), {"--persistent"})
+
     def test_an_ordinary_argv_is_handed_on_untouched(self):
         argv = ["--output", "DP-1", "--primary", "--mode", "1920x1080",
                 "--pos", "0x0", "--rotate", "normal", "--output", "HDMI-2",

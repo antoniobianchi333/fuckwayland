@@ -217,7 +217,12 @@ and it does not override `entry`), the
 two informational options never hand over (the original would only answer
 `unrecognized option`), and an *output* named `--backend` (`--output
 --backend --off`) is a value, not a flag. The flag itself is stripped from
-the argv the original is exec'd with: real xrandr has no such option. Forcing
+the argv the original is exec'd with: real xrandr has no such option, and
+neither has it `--persistent`, which is stripped the same way (an X11 apply
+then saves nothing, as it always did, instead of the original refusing the
+whole command over a flag it has never heard of) or
+`--unsafe-gnome-overlap`, which is refused before the handover in the words
+every non-GNOME session refuses it in. Forcing
 a backend that is not available here is one line naming what was missing and
 exit 1, never a silent fallback; a `--backend` with no value is still
 the flag (the scan returns `""`), so its error is ours on both kinds of
@@ -755,8 +760,11 @@ the identical layout is taken as drawn by KWin, by wlroots and by X.
 **second, separate** extension: the bridge is feature-detected JavaScript over public
 API across six Shell versions and stays that way, and this one ships a compiled
 typelib pinned to one libmutter generation's private structure layout. Different kind
-of thing, its own uuid, its own installer (`gnome/install-overlap.sh`), its own enable
-step, and not in the .deb.
+of thing, its own uuid, its own installer (`gnome/install-overlap.sh`) and its own enable
+step. Since 0.4 the package carries its files, because a route nobody can reach from
+the way almost everybody installs is not a route; what it does not carry is any step
+that turns it on. Installed, it is inert: nothing enables it, and the tool refuses the
+flag until `--gnome-overlap-allow` has been run against this build of GNOME.
 
 `nm -D` on the shipped library lists `meta_monitor_manager_apply_monitors_config`,
 `meta_monitor_manager_get_config_manager`, `meta_monitor_config_manager_get_current`,
@@ -1495,7 +1503,8 @@ All but seven are also written down in the README, in a tool contract or in
 |---|---|---|
 | `FUCKWAYLAND_PASSTHROUGH` | all six | `never` runs our own code whatever the session, `always` hands over whatever the session. `WDOTOOL_PASSTHROUGH`, `WWMCTL_PASSTHROUGH`, `WXPROP_PASSTHROUGH` and `WXRANDR_PASSTHROUGH` do the same per tool |
 | `WDOTOOL_REAL_XDOTOOL` and friends | `passthrough` | where the original is. Also `WWMCTL_REAL_WMCTRL`, `WXPROP_REAL_XPROP`, `WXRANDR_REAL_XRANDR`. Set but unusable is an error naming the variable, never a silent fallback |
-| `WDOTOOL_LAYOUT`, `WDOTOOL_XKB_GROUP`, `WDOTOOL_XKB_KEYMAP` | the daemon | the character table, the layout group, a keymap from a file |
+| `WDOTOOL_LAYOUT`, `WDOTOOL_XKB_KEYMAP` | the daemon | the character table, a keymap from a file |
+| `WDOTOOL_XKB_GROUP` | the **command**, carried to the daemon on the request | the layout group to pin. Read where the user set it, like `--layout`, because the daemon keeps the environment it was spawned with and outlives it |
 | `WDOTOOL_VKBD` | the daemon | `auto` / `on` / `off`, for both injection halves |
 | `WDOTOOL_SYNC_TIMEOUT`, `WDOTOOL_REL_MODE`, `WDOTOOL_SELECT_TIMEOUT` | `wdotool` | the `--sync` deadline (`0` waits for ever), `abs`/`rel` for relative pointer moves, and how long KWin's window picker waits (2 minutes by default; GNOME's picker is the bridge's own, capped at 30 s inside the extension, and reads no variable) |
 | `WDOTOOL_BACKEND` | `backend_detect` | force a window backend, ahead of detection |
@@ -1519,7 +1528,7 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2433 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2541 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite
@@ -1566,6 +1575,7 @@ hold across all of them and are enforced by tests of their own:
 | `wmirror/` | `test_wmirror_cli`, `test_wmirror_lifetime` | a fake `wl-mirror` binary, and the detach protocol driven for real |
 | `procs.py`, `stdio.py` | `test_wmirror_lifetime`, `test_stdout_gone` | real forks; `>/dev/full`, `\| head -1`, `>&-` |
 | the no-dialog guarantee | `test_no_portal` | nothing — it is a static check that no package here names the portal or PolicyKit |
+| what actually ships | `test_release_deb` | nothing — it unpacks the .deb committed in `release/` and compares its payload with the tree, because a binary in the repository is the one thing no other test here runs. It was the v0.3 build at 0.4 HEAD |
 
 Two environments run these. **In the development shell** (`nix develop`), a container
 with no `/dev/uinput`, `WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 sway` gives a

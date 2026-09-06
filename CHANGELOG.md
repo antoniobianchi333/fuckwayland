@@ -4,6 +4,49 @@ Every claim in this file was measured on the VM rig, or on a real desktop, befor
 was written down. The README keeps one short section per version; this is the long
 form.
 
+## Version 0.4
+
+Everything here was measured on the rig or on a real desktop, and most of it was found
+by using the tools on one rather than by reading them.
+
+- **The input daemon ends itself.** It checks its own socket by inode every fifteen
+  seconds and exits when that socket is gone or has been replaced, and it exits after
+  fifteen minutes with no client. Before that it ran for ever: a logout clears
+  `/run/user/<uid>`, and the daemon left behind was unreachable, held
+  `wdotool.sock.lock`, and made every later `wdotool` command in that boot fail with
+  "cannot start wdotool daemon". Measured on GNOME, KDE and sway, including through a
+  real `loginctl terminate-session`: the runtime directory goes at t+15s and the
+  daemon with it, and nothing is left behind.
+- **A key combination the layout cannot produce is refused.** `key ctrl+s` on a Greek
+  layout warns that `s` is not reachable and presses ctrl alone, where it used to press
+  the US position of that key, which on Greek is σ. Measured end to end in Kate on both
+  Plasma generations (nothing saved, exit 0, empty stderr, before) and against a sway
+  binding on the US `s` position, which is the objective oracle: `us` creates the file,
+  `gr` does not and warns, `us,gr` creates it again.
+- **The layout notice reaches every command.** A session with two layouts warned once
+  and then typed the wrong characters in silence. It now warns on every command that
+  types, and `WDOTOOL_XKB_GROUP` is read from the environment of the *command* and
+  carried to the daemon with the text, because the daemon keeps the environment it was
+  spawned with and outlives it: the pin the notice asks for used to be ignored by a
+  daemon that was already running.
+- **Keeping a layout on GNOME says what happened to it.** A persistent apply reports
+  when GNOME has already discarded `~/.config/monitors.xml` (one entry that fails the
+  adjacency check throws the whole file away, at every boot), warns when the layout
+  being saved is one that a change to fractional scaling would make GNOME refuse, and
+  copies the file it is about to replace to `monitors.xml.wxrandr-backup`.
+- **One route through GNOME's adjacency rule**, `wxrandr --unsafe-gnome-overlap`, off
+  by default, behind a second Shell extension that the package now carries and nothing
+  enables, and behind an agreement recorded against the build id of the `libmutter` the
+  checks ran on rather than against a version string. `warandr` has the same route as
+  an option that never asks, for a window started from a hotkey.
+- **The retest of all of it** found four things wrong and one missing: `--persistent`
+  and `--unsafe-gnome-overlap` were handed to the real xrandr on an X11 session, where
+  the first refused the whole command over a flag xrandr has never had; the geometry
+  query printed a made-up size one line above refusing to guess one; several documents
+  disagreed with what the tools do; and the package committed in `release/` was still
+  the 0.3 build, so a user who installed the way the README says got none of this. The
+  package is built from this tree.
+
 ## Version 0.3
 
 A subtraction release. Nothing here is a new tool: the same six do the same things,

@@ -12,7 +12,7 @@
       packages = forAll (pkgs: rec {
         wdotool = pkgs.python3Packages.buildPythonApplication {
           pname = "fuckwayland";
-          version = "0.3.0";
+          version = "0.4.0";
           src = ./.;
           pyproject = true;
           build-system = [ pkgs.python3Packages.setuptools ];

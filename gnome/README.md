@@ -120,8 +120,12 @@ is not the one above. Everything above is the bridge: feature-detected JavaScrip
 against public API, six Shell versions, needed by `wdotool`, `wwmctl` and `wxprop`,
 safe to install and forget. The overlap extension is a different kind of thing and is
 kept apart from it on purpose — its own uuid, its own installer
-(`sh gnome/install-overlap.sh`), its own enable step, and **not in the .deb**. Nobody
-gets this one by accident, and nothing else in fuckwayland needs it.
+(`sh gnome/install-overlap.sh`) and its own **separate enable step**. The package
+carries its files, and carries nothing that turns it on: no autostart entry enables it
+the way one enables the bridge, so on a machine installed from the .deb it sits in
+`/usr/share/gnome-shell/extensions` doing nothing until somebody enables it by hand
+(`gnome-extensions enable fuckwayland-overlap@fuckwayland`, then log out and back in).
+Nobody gets this one by accident, and nothing else in fuckwayland needs it.
 
 Why separate, in one line each:
 
@@ -178,7 +182,7 @@ The six checks, and what each was measured catching, are in
 and in [docs/WXRANDR.md](../docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
 
 ```sh
-sh gnome/install-overlap.sh          # then log out and back in once
+sh gnome/install-overlap.sh          # then log out and back in once (exit 1 until you do)
 sh gnome/install-overlap.sh --check  # state, bus name, and a Probe: every guard, nothing applied
 sh gnome/install-overlap.sh --uninstall
 ```

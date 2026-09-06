@@ -1,3 +1,27 @@
+fuckwayland (0.4.0) unstable; urgency=medium
+
+  * The input daemon ends itself: when its socket is gone or has been replaced,
+    and after fifteen minutes with no client.  A logout that clears the runtime
+    directory used to leave one running and unreachable for the rest of the
+    uptime, holding the lock that stops the next one starting.
+  * wdotool refuses a key combination the active layout cannot produce instead
+    of pressing the US position for it, which made ctrl+s on a Greek layout do
+    nothing and exit 0.
+  * The notice about which layout is assumed reaches every command, not only
+    the first, and WDOTOOL_XKB_GROUP is read where the user sets it rather than
+    only by a daemon that may already be running.
+  * wxrandr --persistent reports a monitors.xml GNOME has already discarded,
+    warns when the layout being saved is one a fractional scaling change would
+    break, and keeps the previous file beside the new one.
+  * A route through GNOME's adjacency rule, behind --unsafe-gnome-overlap, a
+    second Shell extension the package now carries, and an agreement recorded
+    per libmutter build.  Nothing enables the extension for you.
+  * warandr gained the same option in a form that never asks, wxrandr and
+    warandr both gained the bookkeeping around it, and neither is handed to the
+    real xrandr on an X11 session any more.
+
+ -- Antonio Bianchi <antonio.bianchi.333@gmail.com>  Sun, 06 Sep 2026 09:00:00 +0000
+
 fuckwayland (0.3.0) unstable; urgency=medium
 
   * Initial packaging: the six tools in /usr/bin, the GNOME Shell bridge

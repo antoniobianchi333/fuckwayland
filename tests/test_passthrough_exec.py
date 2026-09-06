@@ -102,6 +102,45 @@ class Tree(unittest.TestCase):
             return [json.loads(line) for line in f if line.strip()]
 
 
+class OurOwnOptions(Tree):
+    """wxrandr has options real xrandr has never heard of, and an X11 session
+    hands the argv over untouched. Measured in the 0.4 retest on
+    `resolute-kde-x11` and `noble-xfce`: `--persistent` reached the original,
+    which answered `unrecognized option '--persistent'` and exit 1 with the
+    layout unchanged -- while WXRANDR.md says an X11 apply saves nothing,
+    which reads as an apply that works."""
+
+    def test_persistent_is_dropped_and_the_apply_still_happens(self):
+        p, out, err = self.run_tool("xrandr", "--persistent",
+                                    "--output", "DP-1", "--auto")
+        self.assertEqual(p.returncode, 0, err)
+        recs = self.records()
+        self.assertEqual(len(recs), 1, recs)
+        self.assertEqual(recs[0]["argv"], ["--output", "DP-1", "--auto"])
+        self.assertEqual(recs[0]["pid"], p.pid)      # still an execve
+
+    def test_an_output_named_like_the_option_is_handed_over_whole(self):
+        p, out, err = self.run_tool("xrandr", "--output", "--persistent", "--off")
+        self.assertEqual(p.returncode, 0, err)
+        self.assertEqual(self.records()[0]["argv"],
+                         ["--output", "--persistent", "--off"])
+
+    def test_the_overlap_flag_is_refused_in_the_words_every_other_session_uses(self):
+        p, out, err = self.run_tool("xrandr", "--unsafe-gnome-overlap",
+                                    "--output", "DP-1", "--pos", "960x0")
+        self.assertEqual(p.returncode, 1, out)
+        self.assertIn("--unsafe-gnome-overlap only means anything on GNOME", err)
+        self.assertIn("this session is x11", err)
+        self.assertEqual(self.records(), [])    # the original never ran
+
+    def test_the_bookkeeping_options_answer_for_themselves(self):
+        for opt in ("--gnome-overlap-status", "--gnome-overlap-forget"):
+            os.path.exists(self.log) and os.remove(self.log)
+            p, out, err = self.run_tool("xrandr", opt)
+            self.assertEqual(self.records(), [], opt)
+            self.assertNotIn("unrecognized", err, opt)
+
+
 class Handover(Tree):
     def test_argv_survives_and_it_is_an_exec(self):
         p, out, err = self.run_tool("xdotool", "search", "--name", "x y",
