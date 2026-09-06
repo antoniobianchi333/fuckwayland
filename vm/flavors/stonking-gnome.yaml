@@ -1,0 +1,61 @@
+#cloud-config
+# vmctl flavor stonking-gnome: Ubuntu 26.10 (stonking) + GNOME on Wayland,
+# GDM autologin of user test (uid 1000, password test, NOPASSWD sudo).
+# The reason this flavor exists: 26.10 is the first Ubuntu carrying GNOME Shell
+# 51 and libmutter-51.so.0, the generation on which libmutter's API version
+# stopped being a counter of its own and became the GNOME major.  It is the
+# image `--unsafe-gnome-overlap`'s generation table and
+# `--unsafe-gnome-overlap-unmeasured` are measured against.
+#  * ubuntu-desktop-minimal, not ubuntu-desktop, and an apt pin against the snap
+#    wrapper packages: snapd does not work in the 26.10 cloud image, so a deb
+#    whose postinst installs a snap blocks the build for half an hour and then
+#    fails (same reason as stonking-kde).  ubuntu-desktop-minimal is gdm3 +
+#    gnome-shell + ubuntu-session, which is the whole Wayland session.
+# vmctl fills in the two @@...@@ placeholders at build time (root ssh public
+# key; the contents of vm/build-image.sh). The base image lives in $VMIMAGES:
+# vmctl-base: stonking-server-cloudimg-amd64.img
+# vmctl-desktop: gnome
+hostname: stonking-gnome
+manage_etc_hosts: true
+disable_root: false
+ssh_pwauth: false
+ssh_authorized_keys:
+  - @@ROOT_PUBKEY@@
+users:
+  - name: test
+    uid: 1000
+    gecos: Test User
+    groups: [adm, sudo]
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: test
+    sudo: ALL=(ALL) NOPASSWD:ALL
+write_files:
+  - path: /etc/ssh/sshd_config.d/60-vmctl.conf
+    content: "PermitRootLogin prohibit-password\n"
+  - path: /etc/modules-load.d/uinput.conf
+    content: "uinput\n"
+  - path: /etc/apt/preferences.d/vmctl-no-snap-wrappers
+    content: |
+      # vmctl (stonking-gnome): snapd does not work in the 26.10 cloud image, so
+      # any deb whose postinst installs a snap blocks the build for half an
+      # hour and then fails. None of them is part of the GNOME session.
+      Package: firefox thunderbird
+      Pin: release *
+      Pin-Priority: -1
+  - path: /etc/vmctl-build.env
+    content: |
+      FLAVOR=stonking-gnome
+      DESKTOP=gnome
+      DESKTOP_PKG=ubuntu-desktop-minimal
+      EXTRA_PKGS="xdotool wmctrl x11-utils x11-xserver-utils"
+  - path: /usr/local/sbin/vmctl-build
+    permissions: '0755'
+    content: |
+      @@BUILD_SCRIPT@@
+runcmd:
+  - [/usr/local/sbin/vmctl-build]
+power_state:
+  mode: poweroff
+  message: vmctl golden build finished
+  timeout: 120

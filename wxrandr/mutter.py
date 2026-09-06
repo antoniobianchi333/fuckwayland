@@ -675,18 +675,39 @@ class MutterOutputs:
             return None
         return plan, fault
 
-    def _overlap_client(self, plan):
-        """The checks that happen out here, before the extension is asked
+    def _overlap_client(self, plan, force=None):
+        """The checks that happen out here, before the extension is asked to do
         anything: is this a GNOME whose private layout has been measured, is the
         extension actually running, and is a position really the only thing this
-        invocation changes.  Returns `(client, shell_version, want, expect)`."""
+        invocation changes.  Returns `(client, shell_version, want, expect)`.
+
+        `force` is a `--unsafe-gnome-overlap-unmeasured` request or None, and the
+        only one of the three it touches is the first.  The other two are
+        certain refusals: an extension that is not on the bus cannot be talked
+        into being there, and an invocation that changes a mode cannot be talked
+        into being two words.
+
+        The one bus call that happens on the way to a refusal is on the *first*
+        check's failure path, and it writes nothing: `_unmeasured_facts()` below
+        asks the extension to refuse in its own words so that the message can
+        carry the numbers a maintainer needs."""
         ov = gnome_overlap.Overlap(self.bus)
         version = ov.shell_version()
-        why = gnome_overlap.unsupported_reason(version)
+        no_force = gnome_overlap.force_reason(force, version) if force else None
+        if no_force:
+            raise Fatal("%s: %s\n" % (gnome_overlap.FORCE_FLAG, no_force))
+        why = gnome_overlap.unsupported_reason(version, force)
         if why:
-            raise Fatal("%s: %s.  Nothing was changed; this layout needs a "
-                        "compositor that will place it (KDE, wlroots and X all "
-                        "do).\n" % (gnome_overlap.FLAG, why))
+            if gnome_overlap.shell_major(version) is None:
+                raise Fatal("%s: %s.  Nothing was changed; this layout needs a "
+                            "compositor that will place it (KDE, wlroots and X "
+                            "all do).\n" % (gnome_overlap.FLAG, why))
+            # A build nobody has measured: the one refusal that is cautious
+            # rather than certain, so it prints what a maintainer needs to add
+            # it -- including the numbers, which the extension will hand over
+            # with its own refusal at the same gate if it is there to ask.
+            raise Fatal(gnome_overlap.unmeasured_refusal(
+                version, self._unmeasured_facts(ov)))
         if not gnome_overlap.only_positions_differ(plan, self.current_config):
             raise Fatal("%s: this invocation changes more than where the monitors "
                         "are (a mode, a scale, a rotation, the primary or which "
@@ -696,6 +717,24 @@ class MutterOutputs:
         if not ov.running():
             raise Fatal("%s: %s" % (gnome_overlap.FLAG, gnome_overlap.INSTALL_HINT))
         return ov, version, gnome_overlap.groups(plan), self.current_groups()
+
+    def _unmeasured_facts(self, ov):
+        """The extension's own measurements of a build it has just refused, or
+        None when there is no extension to ask.
+
+        It is a Probe: every guard runs, the first one refuses, and the reply
+        carries what had been measured before it did -- the version strings, the
+        libmutter mapped, and MetaMonitorsConfig's size out of the GType
+        registry.  All public, none of it a private read, and it is the
+        difference between a refusal a maintainer can act on and one that sends
+        them to a debugger for numbers this already had."""
+        try:
+            if not ov.running():
+                return None
+            reply = ov.probe(self.layout_mode, self.current_groups())
+        except (gnome_overlap.OverlapError, DBusError, OSError, ValueError):
+            return None
+        return reply.get("found")
 
     def overlap_available(self):
         """`(shell version, why the overlap route is not usable here or None)`,
@@ -715,14 +754,22 @@ class MutterOutputs:
         `--gnome-overlap-allow` records the answer of.  Same gate, in the same
         order, as an apply -- an agreement must not be recordable on a
         compositor an apply would refuse."""
-        _version, why = self.overlap_available()
+        version, why = self.overlap_available()
         if why:
+            if gnome_overlap.generation_for(version) is None and \
+                    gnome_overlap.shell_major(version) is not None:
+                # the same maintainer message the apply gives, because
+                # `--gnome-overlap-allow` on a new release is exactly where
+                # somebody lands who is about to add one
+                raise Fatal(gnome_overlap.unmeasured_refusal(
+                    version, self._unmeasured_facts(gnome_overlap.Overlap(self.bus)),
+                    force_hint=False))
             raise Fatal("%s: %s" % (gnome_overlap.ALLOW_FLAG, why
                                     if why.endswith("\n") else why + "\n"))
         return gnome_overlap.Overlap(self.bus).probe(self.layout_mode,
                                                      self.current_groups())
 
-    def overlap_dryrun(self, state: core.State, targets: list) -> bool:
+    def overlap_dryrun(self, state: core.State, targets: list, force=None) -> bool:
         """--dryrun --unsafe-gnome-overlap: print what a real run would do and
         run every guard inside the extension, writing nothing at all.  False
         when Mutter would accept the layout, so the ordinary dryrun answers."""
@@ -730,18 +777,19 @@ class MutterOutputs:
         if route is None:
             return False
         plan, fault = route
-        ov, version, want, expect = self._overlap_client(plan)
+        ov, version, want, expect = self._overlap_client(plan, force)
         moves = gnome_overlap.moves_text(expect, want)
         if not moves:
             warn(NOTHING_TO_DO)
             return True
+        if force:
+            core.warn_bare(gnome_overlap.forcing_warning(version))
         core.warn_bare(gnome_overlap.warning(
             version, moves, gnome_overlap.undo_command(expect)))
         warn("GNOME's rule this breaks: %s\n" % fault)
-        reply = ov.probe(self.layout_mode, expect)
+        reply = ov.probe(self.layout_mode, expect, force)
         if not reply.get("ok"):
-            raise Fatal("%s: %s" % (gnome_overlap.FLAG,
-                                    gnome_overlap.refusal_text(reply)))
+            raise Fatal(self._overlap_refusal(reply, version, force))
         for check in reply.get("checks") or []:
             warn("overlap check %s: %s\n" % (check.get("name"), check.get("detail")))
         notes = gnome_overlap.notes_text(reply)
@@ -750,7 +798,20 @@ class MutterOutputs:
         warn("dryrun: nothing was written\n")
         return True
 
-    def apply_overlap(self, state: core.State, targets: list):
+    def _overlap_refusal(self, reply, version, force):
+        """A refusal from inside the extension, as the line to raise.
+
+        A refusal that forcing could get past -- there is one, and it is
+        `shell-version` -- becomes the maintainer's message with the numbers the
+        reply carries, instead of a sentence the reader can do nothing with.
+        Every other refusal is certain and stays one line: an unforceable check
+        refused because something is wrong, and printing how to force would be
+        offering a bypass that does not exist."""
+        if not force and gnome_overlap.refusal_is_forceable(reply):
+            return gnome_overlap.unmeasured_refusal(version, reply.get("found"))
+        return "%s: %s" % (gnome_overlap.FLAG, gnome_overlap.refusal_text(reply))
+
+    def apply_overlap(self, state: core.State, targets: list, force=None):
         """Apply a layout GNOME refuses, through the overlap extension.  None
         when Mutter would accept the layout: the caller then applies it the
         ordinary way, which is what happens for every layout but this one."""
@@ -758,7 +819,7 @@ class MutterOutputs:
         if route is None:
             return None
         plan, fault = route
-        ov, version, want, expect = self._overlap_client(plan)
+        ov, version, want, expect = self._overlap_client(plan, force)
         moves = gnome_overlap.moves_text(expect, want)
         if not moves:
             # already where it was asked to be: nothing to write, and so
@@ -771,19 +832,24 @@ class MutterOutputs:
         # arrangement of this code in which it could be mistaken for one of
         # them: every refusal above has already happened, and every check inside
         # the extension is still to come.
-        rec = gnome_overlap.load_consent()
+        #
+        # A forced run does not come here at all: it never reads the agreement,
+        # so there is no arrangement of this code in which a recorded yes makes
+        # a forced run quieter, and the paragraph is printed every single time.
+        rec = None if force else gnome_overlap.load_consent()
         quiet, _why = gnome_overlap.consent_covers(rec, version)
         if quiet:
             warn(gnome_overlap.quiet_line(rec, fault))
         else:
+            if force:
+                core.warn_bare(gnome_overlap.forcing_warning(version))
             core.warn_bare(gnome_overlap.warning(
                 version, moves, gnome_overlap.undo_command(expect)))
             warn("GNOME's rule this breaks: %s\n" % fault)
         core.record_lastmodes(state, targets)
-        reply = ov.apply(self.layout_mode, expect, want)
+        reply = ov.apply(self.layout_mode, expect, want, force)
         if not reply.get("ok"):
-            raise Fatal("%s: %s" % (gnome_overlap.FLAG,
-                                    gnome_overlap.refusal_text(reply)))
+            raise Fatal(self._overlap_refusal(reply, version, force))
         notes = gnome_overlap.notes_text(reply)
         if notes:
             warn(notes)

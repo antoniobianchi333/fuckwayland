@@ -940,8 +940,9 @@ the byte counts the bounded reader copies:
 project ever writes into another program.** Eight per moved monitor, and nothing else
 in the tree can write anything into gnome-shell at all.
 
-**How the descriptions are made.** `gnome/overlap-typelib/gen-gir.py` emits one `.gir`
-per generation and compiles each with `g-ir-compiler`. Two properties of what it emits
+**How the descriptions are made.** `gnome/overlap-typelib/gen-gir.py` reads the table
+(*The table, and adding a GNOME generation*, below), emits one `.gir` per record and
+compiles each with `g-ir-compiler`. Two properties of what it emits
 matter more than the rest of the file:
 
 * **no pointer is declared as a pointer.** Every pointer field above is `guint64`, so
@@ -969,18 +970,238 @@ python3 gnome/overlap-typelib/gen-gir.py --check   # recompile and compare, chan
 `--check` is what notices a `.gir` edited without a rebuild, and the test suite runs
 the same comparison over the checked-in bytes.
 
-**Adding a generation** is four edits and one measurement, and the measurement is the
-work. The edits: an entry in `BUILDS` in `gen-gir.py`, which is
-`generation → (soname, how many ints sit between disabled_monitor_specs and
-layout_mode)` and is the whole of what differs between the two descriptions today (1
-for mutter 14, 3 for mutter 18); the Shell major in `SUPPORTED` in `rules.js`; the same
-major in `SUPPORTED_MAJORS` in `wxrandr/gnome_overlap.py`; and `shell-version` in
-`metadata.json`. Two tests hold those three lists together, so adding a release to one
-and not the others fails the suite rather than shipping a gate that disagrees with
-itself: `VersionGate::test_the_gate_matches_what_the_extension_declares` for the
-metadata, and `RulesJS::test_the_version_gate_is_the_same_on_both_sides`, which runs
-`rules.js` under plain `node` and is skipped where there is none. The measurement is
-step 5 of *If a GNOME upgrade breaks this*, below.
+#### The table, and adding a GNOME generation
+
+Everything that is specific to a GNOME release lives in one file,
+`gnome/fuckwayland-overlap@fuckwayland/generations.json`, as one record per
+generation:
+
+```json
+{ "shell_major": 50, "libmutter": "18", "soname": "libmutter-18.so.0",
+  "meta_typelib": "18", "namespace": "FwOverlap18",
+  "struct_size": 80, "tail_slots": 3,
+  "measured_on": "Ubuntu 26.04, GNOME Shell 50.1, mutter 50.1" }
+
+{ "shell_major": 51, "libmutter": "51", "soname": "libmutter-51.so.0",
+  "meta_typelib": "51", "namespace": "FwOverlap51",
+  "struct_size": 80, "tail_slots": 3,
+  "measured_on": "Ubuntu 26.10, GNOME Shell 51.beta, mutter 51~beta" }
+```
+
+GNOME 51 is the first generation added by following the procedure below rather
+than by writing it, and the two records above are why `struct_size` alone cannot
+name a generation: 50 and 51 have the same private layout, so the two
+descriptions differ only in what they are called. A forced run that picks by size
+therefore picks the newest of the records that agree on `tail_slots` and says the
+others describe the same bytes; records that *disagree* at one size are a refusal,
+because the size cannot say which of them this build is.
+
+**Every name is written out; none is computed.** That is the whole design change,
+and mutter is why. Through GNOME 50, libmutter's API version was a counter of its
+own — 46 carried `libmutter-14`, 50 carried `libmutter-18` — so
+`libmutter-<major − 32>.so.0` happened to be right, and this tree derived a
+soname, a typelib version and a `FwOverlap` namespace from one small integer in
+four different places. mutter 51 sets `libmutter_api_version = '51'`
+(`meson.build` line 10 of the `51~rc` tarball), so the next Ubuntu ships
+`/usr/lib/x86_64-linux-gnu/libmutter-51.so.0` from `libmutter-51-0`, with
+`Meta-51.typelib` from `gir1.2-mutter-51` beside it — checked against the archive,
+not guessed. The arithmetic is gone, and a table that stores strings does not care:
+a generation whose names follow no scheme at all is still one record.
+
+There are two copies of the table and there have to be: the extension is installed
+into `~/.local/share/gnome-shell/extensions` and `wxrandr` into a venv or a `.deb`,
+and neither can read the other's files at run time. So `GENERATIONS` in
+`wxrandr/gnome_overlap.py` carries the same records, and
+`tests/test_overlap_force.py` compares them field for field and names the file to
+fix. Everything else is *generated* from the table:
+`gnome/overlap-typelib/gen-gir.py` writes the `.gir`, compiles the `.typelib`, and
+writes `metadata.json`'s `shell-version` list, and `--check` fails if any of the
+three has gone stale. `gnome/install-overlap.sh` reads the table too, for which
+typelibs must be present and which shells to warn about. There is no fourth place.
+
+**The procedure**, in order. Steps 1 and 2 are typing; step 3 is the work.
+
+1. **Derive the numbers from the release's own source.** Not from the running
+   compositor — see *Why the description is not generated from the running
+   compositor* below.
+
+   ```console
+   $ apt source mutter        # or the .orig.tar.xz from the archive
+   $ python3 gnome/overlap-typelib/gen-gir.py --from-header \
+         mutter-51/src/backends/meta-monitor-config-manager.h --shell 51
+       0  24  GObject parent
+      24   8  MetaMonitorsConfig * parent_config
+      32   8  MetaMonitorsConfigKey * key
+      40   8  GList * logical_monitor_configs
+      48   8  GList * disabled_monitor_specs
+      56   8  GList * for_lease_monitor_specs
+      64   4  MetaMonitorsConfigFlag flags
+      68   4  MetaLogicalMonitorLayoutMode layout_mode
+      72   4  MetaMonitorSwitchConfigType switch_config
+     instance size 80
+     the two numbers a record needs:  "struct_size": 80, "tail_slots": 3
+     GNOME 51 is not in the table.  Adding it is one record in each of …
+   ```
+
+   It fails closed three ways: a type whose size it does not know is an error
+   naming that type, a header that has moved anything in the head of the struct is
+   refused outright (the description's *shape* is then wrong, not only its
+   numbers), and a `--shell` it has no record for prints the record to add rather
+   than inventing one. `--gen`, which used to take the libmutter generation, is now
+   an error naming `--shell`: the table is keyed by GNOME major, and a script that
+   takes one number when it means the other invites exactly the wrong answer.
+2. **Write the record twice and regenerate.** The soname is the file
+   `gnome-shell` actually maps — read it out of `/proc/$(pidof gnome-shell)/maps`,
+   do not compose it — and `meta_typelib` is what `GIRepository` answers for `Meta`.
+
+   ```console
+   $ $EDITOR gnome/fuckwayland-overlap@fuckwayland/generations.json
+   $ $EDITOR wxrandr/gnome_overlap.py          # GENERATIONS, the same record
+   $ python3 gnome/overlap-typelib/gen-gir.py  # .gir, .typelib, metadata.json
+   $ python3 gnome/overlap-typelib/gen-gir.py --check   # proves nothing is stale
+   $ python3 -m unittest discover -s tests
+   ```
+
+   `metadata.json` is part of that generation and not a fourth place to edit:
+   both its `shell-version` list and the sentence of its `description` that names
+   the measured releases come out of the table, and `--check` fails when either
+   has gone stale. `shell-version` is not cosmetic — `gnome-shell` refuses to
+   *load* an extension that does not name the running Shell major, which is why,
+   until a release is in the table, `install-overlap.sh` adds that major to the
+   **installed** copy and says so. That is what makes the honest refusal (and
+   `--unsafe-gnome-overlap-unmeasured`) reachable on a build nobody has measured;
+   it changes nothing about what the extension will do once loaded.
+3. **Confirm it on a live compositor before trusting it, and in this order.** The
+   arithmetic agreeing with upstream source is necessary and not sufficient: two
+   fields of the same size swapped upstream would pass step 1 and every static
+   check here.
+
+   1. `sh gnome/install-overlap.sh --check` — every guard against the running
+      libmutter, writing nothing. All six have to pass. `struct-size` compares the
+      new description's record size with `GObject.type_query()` on the live build,
+      and `sentinel` writes `0x5f5a` through Mutter's own `set_switch_config` on a
+      throwaway object and demands it back at the offset the description believes,
+      which is what pins the *tail*.
+   2. `wxrandr --dryrun --unsafe-gnome-overlap …` on a three-head VM: the same
+      guards plus the bounded read and the field-by-field comparison against
+      Mutter's public view, still writing nothing.
+   3. Apply it, and check the pixels, not the log: crop both heads' screendumps to
+      the shared region and compare the raw RGB. `vm/vmctl` builds the images, and
+      the numbers the two shipped generations produced are in
+      [WXRANDR.md](WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
+   4. Break it on purpose. Install a deliberately wrong description — the
+      neighbouring generation's, or one with two same-size fields swapped — and
+      confirm it is *refused by name* with `gnome-shell` still running. A guard
+      nobody has watched fire on this release is a guard nobody has tested on it;
+      that is how the first `pending-dialog` check shipped unable to fire at all.
+
+      **Log in again between descriptions.** gjs *maps* a typelib into the
+      process and keeps the mapping, so writing different bytes over a file a
+      running `gnome-shell` has already loaded changes the blob under it and the
+      next call through that description aborts the process — a dead session
+      that says nothing about the description you were testing. Measured on
+      GNOME 51, twice, before it was understood. The same hazard is a real one
+      for users, not only for testing, so `install-overlap.sh` replaces a
+      typelib by **rename** rather than in place: the running shell keeps the
+      inode it already mapped and picks the new files up at the next login,
+      which is when it was going to read them anyway.
+
+   Only then does the record describe a supported build. Until then the honest
+   state is the refusal, and `--unsafe-gnome-overlap-unmeasured` is what somebody
+   who wants it anyway uses at their own risk.
+
+#### What GNOME 51 measured, and what it changed
+
+The procedure above was run once as written, by somebody starting from the refusal
+message, against Ubuntu 26.10's `stonking-gnome` image (GNOME Shell 51.beta,
+`libmutter-51.so.0` build `e13468162ed2`, mutter `51~beta-1ubuntu2`). What it produced:
+
+* **the numbers.** `gen-gir.py --from-header` on mutter 51's own
+  `meta-monitor-config-manager.h` lays `MetaMonitorsConfig` out at 80 bytes with three
+  tail slots, `for_lease_monitor_specs` at 48 and `switch_config` at 72 — the same
+  layout as mutter 18, under different names for everything around it. The live
+  build agreed: `GObject.type_query()` reported 80, the sentinel round-tripped at the
+  declared offset, the bounded read walked three logical monitors and the field by
+  field comparison against Mutter's public view was identical.
+* **the proof.** An overlap applied on three heads, and the shared 960 columns
+  compared as raw RGB: byte identical between head 0's right and head 1's left
+  (`sha256` equal, ImageMagick `AE` 0), against 1.0e6 differing pixels for the
+  control crop, on a region whose standard deviation is 4951 so it is not a flat
+  colour. `~/.config/monitors.xml` was never created.
+* **the guards, made to fire.** A 72-byte description under the GNOME 51 name:
+  `refused (struct-size)`, `gnome-shell` still running. `key` and
+  `logical_monitor_configs` exchanged, which are the same size: `refused
+  (bounded-read): node[1]: 0x1+24 is not in a readable mapping`, still running.
+* **two things the written procedure did not say**, both of which cost a session
+  before they were understood, and both now in it: a description must name no shared
+  library, and a typelib must be replaced by rename rather than in place. They are
+  the `shared-library` check and the `mv` in `install-overlap.sh`.
+* **one thing the tool could not do at all.** Before this, no forced run could ever
+  have worked on any new GNOME: `metadata.json`'s `shell-version` is generated from
+  the table, `gnome-shell` will not load an extension that does not name the running
+  major, so on an unmeasured build the bus name was never taken and forcing met a
+  refusal it is not allowed to force. `install-overlap.sh` names the running major in
+  the installed copy now.
+
+`--unsafe-gnome-overlap-unmeasured` was then measured doing its job twice: on GNOME 51
+before it was added to the table, and on a real GNOME 50.1 with the table's 80-byte
+record keyed to a major that is not 50, which is the same situation from the other
+side. Both applied, both proved on the pixels, neither recorded anything.
+
+#### Forcing past the version gate
+
+`--unsafe-gnome-overlap-unmeasured <major>`, added in 0.4 alongside the table
+above, and the only thing in this repository that gets past a refusal.
+
+**What it is.** A second flag, never a value of the first: `--unsafe-gnome-overlap`
+stays the only option that turns the overlap route on at all, and typing the
+unmeasured one alone is a usage error. Its argument is the GNOME Shell major of the
+machine in front of you, compared with the running one out in `wxrandr` and again
+inside `gnome-shell`. That argument is the design: a command line pasted out of a
+forum names the poster's GNOME and is refused by number on anybody else's, which is
+a property a bare `--force` cannot have. It is not a default anywhere, no
+environment variable sets it, `warandr` has no way to reach it, and a forced run
+neither reads nor writes the recorded agreement — so the paragraph it prints cannot
+be silenced, and `--gnome-overlap-allow` refuses to be typed with it.
+
+**What it skips: one check.** That this GNOME is in the table, and with it the tie
+between the shell and the libmutter it is *supposed* to carry — on a build nobody
+has measured there is no supposed to. The description to read through is then
+chosen by the size the running build's own GType registry reports for
+`MetaMonitorsConfig`, which is a selection and not a relaxation: the size still has
+to be exactly a shipped description's, an ambiguous answer is a refusal, and a size
+nothing describes is a refusal that says forcing cannot invent a description.
+
+**What it cannot skip: everything else, and the rule is not a list of exceptions.**
+A refusal here is either *cautious* — this is a build nobody has measured — or
+*certain* — something is missing, or has just proved itself wrong. Only the first
+kind is forceable, and there is exactly one of them. The certain ones, each for its
+own reason: `--persistent` (the file it writes is read back through the validator
+this exists to get past); a compositor that is not GNOME (KDE, wlroots and X place
+the layout as drawn — there is nothing to buy); a shell that will not say its
+version (forcing is somebody vouching for a build by naming it, and a version
+nothing can read is not a build anybody can name); an extension that is not on the
+bus (nothing there to talk to); an invocation that changes more than a position
+(the extension writes two words and cannot do anything else); `symbols` (libmutter
+has dropped an export — the code cannot run); `struct-size` (no description of this
+struct exists); `sentinel`, `bounded-read`, `layout-mode`, `public-view`,
+`read-back`, `positive-control` (the read or the write has just disagreed with
+Mutter, which is the guard working); `shared-library` (the description names a
+library that is not mapped, and calling through it would abort the process rather
+than fail); and `pending-dialog`, which protects
+`~/.config/monitors.xml` and is the one this must never touch.
+
+The extension decides which of its own refusals is forceable and says so in the
+reply (`forceable`); `wxrandr` reads the answer rather than parsing the wording, and
+falls back to the same one-entry list only for an extension too old to say.
+`tests/test_overlap_force.py` runs every certain refusal again with the flag typed
+and demands it still refuses.
+
+**What it prints before it does it**: what is skipped, what is not, that the two
+words may land somewhere else on this build and take the session with them, that
+nothing is recorded, and the way back from a session that will not start — the same
+route as the ordinary warning, which is printed underneath it and not instead of
+it.
 
 #### Every check, in order
 
@@ -992,8 +1213,9 @@ passes and refuses under three different names depending on what was wrong.
 
 | # | check | what it catches | what a failure looks like |
 |---|---|---|---|
-| 1 | `shell-version` | a build nobody has measured: Shell major in {46, 50}, exactly one libmutter mapped into the process, its generation the matching one, and the `Meta` typelib version agreeing with it | `GNOME Shell 48.3: this extension knows the private layout of 46 and 50 only`, or `GNOME Shell 50.1 should carry libmutter-18, this process has [14]`, or `the Meta typelib says 14, libmutter says 18`. The tool refuses one release earlier still, from the Shell's public version property, before the bus is touched |
+| 1 | `shell-version` | a build nobody has measured: the Shell major is a record in the table, exactly one libmutter is mapped into the process, its soname is the one that record names, and the `Meta` typelib version agrees with it. The one check `--unsafe-gnome-overlap-unmeasured` can be told to skip | `GNOME Shell 48.3: this extension knows the private layout of GNOME 46 and 50 and 51 only`, or `GNOME Shell 50.1 should carry libmutter-18, this process has [14]`, or `the Meta typelib says 14, libmutter says 18`. The tool refuses one release earlier still, from the Shell's public version property, before the bus is touched |
 | 2 | `typelib` | the description is missing, will not load, has lost a symbol, or describes a structure of the wrong size. The size is read back out of *our own* typelib through `GIRepository` and compared with `GObject.type_query(MetaMonitorsConfig).instance_size`, so there is no constant in this tree to go stale | `FwOverlap18-1.0.typelib is not installed in …`, `FwOverlap18.create_linear is not callable`, or the one that matters: `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
+| 2b | `shared-library` | a description that names a shared library GIRepository cannot open. It is read statically out of the loaded namespace, before any call is made through it, because the failure it prevents is not catchable: gjs asserts and aborts the process on the first call through a namespace whose module did not load | `FwOverlap18 names the shared library libmutter-18.so.0, which is not mapped into gnome-shell ([libmutter-51.so.0] are)`. Descriptions generated here name none; this is for one left behind by an older install. Measured on GNOME 51, where the same input killed the session before this check existed |
 | 3 | `sentinel` | the tail has moved even though the size has not. `0x5f5a` is written through Mutter's own exported `set_switch_config`, on a throwaway `create_linear()` object and never on the live one, and has to reappear at the offset this description believes | `switch_config reads 0 at the offset this description believes, not 24410: the tail of MetaMonitorsConfig is not where it was measured`. It pins offset 64 on mutter 14 and 72 on mutter 18, which is precisely what differs between them |
 | 4 | `pending-dialog` | the one window in which a mutated configuration could reach Mutter's *writer*: confirming a *Keep changes?* makes Mutter save whatever is current, and a saved overlap poisons `monitors.xml` for ever. `Main.modalCount` must be exactly 0 | `something holds a modal grab on the shell (Main.modalCount is 1). If that is GNOME asking whether to keep a display change, …`. It fails closed: a count that is not a whole number, or is negative, refuses too. Measured refusing with the dialog on screen on both releases; measured **not** firing at all in the first cut of this check, which is its own subsection below; and measured refusing once with nothing on screen at all, seconds into a fresh session, which is under "Measured against a real update stream" |
 | 5 | `bounded-read` | anything unreadable: the whole configuration is copied out with `g_memdup2` and `g_strndup`, every address checked against `/proc/self/maps` first, list walks capped at 16 monitors and connector names at 63 bytes | `node[1]: 0x1+24 is not in a readable mapping` — the wild pointer that killed a shell back when pointers were declared as pointers. `layout-mode` refuses here too, when the publicly reported layout mode is not what is read at the offset believed: `layout_mode reads 2 at the offset this description believes; DisplayConfig says 1` |
@@ -1214,11 +1436,16 @@ check it, and none of it needs a debugger:
 1. **`sh gnome/install-overlap.sh --check`.** It runs every guard against the running
    libmutter and writes nothing. The refusal names the check, and the check names the
    cause. Everything below is that output read closely.
-2. **`shell-version`** — a new GNOME. The allowlist is `SUPPORTED` in `rules.js`
-   (shell major → libmutter generation) and `SUPPORTED_MAJORS` in
-   `wxrandr/gnome_overlap.py`, and `metadata.json`'s `shell-version`, and the three
-   are held together by a test. Adding a release is not an edit to those lines: it is
-   the measurement in step 5. A recorded agreement (below) has already stopped
+2. **`shell-version`** — a new GNOME. The allowlist is the table,
+   `gnome/fuckwayland-overlap@fuckwayland/generations.json` and its twin
+   `GENERATIONS` in `wxrandr/gnome_overlap.py`; `metadata.json` is generated from it
+   and a test proves the two copies identical. The refusal prints what to add: the
+   versions found, the `MetaMonitorsConfig` size this build reports, what is shipped
+   to compare it against, the two files the record goes in and what to run
+   afterwards. Adding a release is still not an edit to those lines, it is the
+   measurement in *The table, and adding a GNOME generation* above. Somebody who
+   knows their machine and wants it anyway has
+   `--unsafe-gnome-overlap-unmeasured <major>`, which skips this check and no other. A recorded agreement (below) has already stopped
    applying at this point, on its own, because it names the version it was given on:
    the upgraded machine asks in full again rather than proceeding on an old yes.
 3. **`struct-size`**, reported by the `typelib` check — `MetaMonitorsConfig`
@@ -1230,7 +1457,7 @@ check it, and none of it needs a debugger:
 
    ```console
    $ python3 gnome/overlap-typelib/gen-gir.py --from-header \
-         mutter-50.1/src/backends/meta-monitor-config-manager.h --gen 18
+         mutter-50.1/src/backends/meta-monitor-config-manager.h --shell 50
        0  24  GObject parent
       24   8  MetaMonitorsConfig * parent_config
       32   8  MetaMonitorsConfigKey * key
@@ -1241,8 +1468,8 @@ check it, and none of it needs a debugger:
       68   4  MetaLogicalMonitorLayoutMode layout_mode
       72   4  MetaMonitorSwitchConfigType switch_config
      instance size 80
-     BUILDS entry:  <generation>: ("libmutter-<generation>.so.0", 3),
-     agrees with the description shipped for libmutter-18 (3 4-byte slots)
+     the two numbers a record needs:  "struct_size": 80, "tail_slots": 3
+     agrees with the record shipped for GNOME 50 (FwOverlap18, 80 bytes, 3 4-byte slots)
    ```
 
    It reads the release's own header, lays the struct out under the x86-64 rules, and
@@ -1406,11 +1633,13 @@ cannot disagree with the build, so "the guards caught nine" says nothing about i
 
 The supportable half of the idea is real and is what `--from-header` is: derive the
 numbers mechanically, from the release's own source, at packaging time, where a human
-still has to add the generation to three allowlists and prove it on a three-head VM
-before anything ships. That keeps the arithmetic honest without letting the compositor
-mark its own work. Carrying descriptions for more generations is likewise a matter of
-measuring them, not of writing more of them: `BUILDS` takes any number of entries and
-the four places that must agree are held together by a test.
+still has to write the record into the table and prove it on a three-head VM before
+anything ships. That keeps the arithmetic honest without letting the compositor mark
+its own work. Carrying descriptions for more generations is likewise a matter of
+measuring them, not of writing more of them: the table takes any number of records,
+everything else is generated from it, and the one copy that cannot be generated --
+`GENERATIONS` in `wxrandr/gnome_overlap.py`, because wxrandr and the extension are
+installed in different places -- is held to it by a test that names the file to fix.
 
 > **The one warning worth its own line: never hand-edit `monitors.xml` to force an
 > overlap.** Mutter discards the whole file on any error, so one bad entry silently
@@ -1588,9 +1817,11 @@ libinput has to be listed or sway does not pick up the uinput devices at all.
 ## 10. The VM rig
 
 `vm/` is where every "it works on GNOME" sentence in this repo comes from.
-`vm/vmctl` builds and runs **twelve golden images**: ten built from an Ubuntu *cloud*
+`vm/vmctl` builds and runs **thirteen golden images**: eleven built from an Ubuntu *cloud*
 image plus a desktop metapackage (four desktops over three releases, Plasma twice per
-LTS so that Wayland and Xorg are both covered), and two — `resolute-gnome-iso` and
+LTS so that Wayland and Xorg are both covered, and GNOME on 26.10 because
+`stonking-gnome` is the only image carrying GNOME Shell 51 and `libmutter-51.so.0`),
+and two — `resolute-gnome-iso` and
 `noble-gnome-iso` — installed from `ubuntu-26.04.1-desktop-amd64.iso` and
 `ubuntu-24.04.4-desktop-amd64.iso` **by the Ubuntu installer itself**, unattended,
 with every question left alone. The ten exist because one script gets four desktops

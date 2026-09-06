@@ -1,7 +1,7 @@
 # vm/ — test VMs
 
 **`vmctl`** is the rig: full, default-configured Ubuntu desktops in QEMU/KVM, in
-**twelve flavors**. Ten are four desktops (GNOME, KDE Plasma, Xfce, sway) over three
+**thirteen flavors**. Eleven are four desktops (GNOME, KDE Plasma, Xfce, sway) over three
 releases, built from an Ubuntu *cloud* image plus a desktop metapackage. The other two
 (**`resolute-gnome-iso`**, **`noble-gnome-iso`**) are installed from the Ubuntu 26.04 and
 24.04 desktop **ISOs by the Ubuntu installer itself** — the images a claim about "a default
@@ -137,9 +137,9 @@ keys/id_ed25519[.pub]            guest root ssh key, generated once
 
 ## Flavors
 
-Twelve golden images. **Ten** are four desktops over three Ubuntu releases — Plasma twice on
-each LTS, once on Wayland and once on Xorg — each an Ubuntu *cloud* image plus that desktop's
-metapackage; the other **two**, `resolute-gnome-iso` and `noble-gnome-iso`, are real Ubuntu
+Thirteen golden images. **Eleven** are four desktops over three Ubuntu releases — Plasma twice on
+each LTS, once on Wayland and once on Xorg, and GNOME on 26.10 as well — each an Ubuntu
+*cloud* image plus that desktop's metapackage; the other **two**, `resolute-gnome-iso` and `noble-gnome-iso`, are real Ubuntu
 26.04 and 24.04 desktop **installations**, done by the Ubuntu installer off the release ISOs
 with every question left alone. The ten exist because one script gets four desktops out of
 them; the two exist because "it works out of the box on a default Ubuntu desktop" is a claim
@@ -168,10 +168,11 @@ native tool reports monitors.
 | `resolute-xfce` | 26.04 LTS | Xfce 4.20 (`xubuntu-desktop`) | LightDM | **X11** | `xrandr` |
 | `resolute-sway` | 26.04 LTS | sway 1.11 / wlroots, Xwayland, `foot`, `grim` | greetd | Wayland | `swaymsg -t get_outputs` |
 | `stonking-kde` | 26.10 | Plasma 6.7 / KWin 6.7 (`kde-plasma-desktop`) | SDDM | Wayland | `kscreen-doctor -o` |
+| `stonking-gnome` | 26.10 | GNOME Shell 51 / mutter 51 (`ubuntu-desktop-minimal`) | GDM | Wayland | the same |
 | **`resolute-gnome-iso`** | 26.04 LTS | **GNOME Shell 50.1 / mutter 50.1 — installed from `ubuntu-26.04.1-desktop-amd64.iso` by the Ubuntu installer, default source `ubuntu-desktop-minimal`** | GDM | Wayland | the same |
 | **`noble-gnome-iso`** | 24.04 LTS | **GNOME Shell 46.0 / mutter 46 — installed from `ubuntu-24.04.4-desktop-amd64.iso` by the Ubuntu installer, default source `ubuntu-desktop-minimal`** | GDM | Wayland | the same |
 
-The ten cloud-image flavors (the two ISO flavors keep their installer's defaults instead —
+The eleven cloud-image flavors (the two ISO flavors keep their installer's defaults instead —
 see below for what that changes):
 
 * user `test` (uid 1000, password `test`, groups `adm,sudo`, bash, `NOPASSWD` sudo); root ssh by key
@@ -209,6 +210,22 @@ see below for what that changes):
   dialog of `gnome-initial-setup-upgrade-login.service`, whose unit is gated on the first marker
   existing and the second one *not* existing — so the first marker alone switches that dialog on).
   The `update-notifier` / `ubuntu-report` autostarts are hidden for `test`.
+
+`stonking-gnome` exists for one reason too: **Ubuntu 26.10 is the first Ubuntu
+carrying GNOME Shell 51**, and mutter 51 is where `libmutter_api_version` stopped
+being a counter of its own and became the GNOME major, so the library is
+`libmutter-51.so.0` with `Meta-51.typelib` beside it rather than the
+`libmutter-19` the 46 → 14, 50 → 18 arithmetic would have produced. It is the
+image `--unsafe-gnome-overlap`'s generation table, and
+`--unsafe-gnome-overlap-unmeasured`, are measured against: the private
+`MetaMonitorsConfig` layout, the guards passing, the guards made to fail, and
+what forcing does on a build the table does not name
+([docs/Technical.md § 6](../docs/Technical.md#the-table-and-adding-a-gnome-generation)).
+Like `stonking-kde` it takes a smaller package set than the distro's full
+metapackage, for the same reason: snapd does not work in the 26.10 cloud image, so
+a deb whose postinst installs a snap blocks the build. `ubuntu-desktop-minimal`
+plus a pin against the snap wrapper packages is GDM, `gnome-shell` and
+`ubuntu-session`, which is the whole Wayland session.
 
 **KDE Plasma** (`noble-kde`, `resolute-kde`, `stonking-kde`, `noble-kde-x11`,
 `resolute-kde-x11`)

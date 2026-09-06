@@ -197,7 +197,10 @@ class Recording(ConsentCase):
         self.assertEqual(code, 1)
         self.assertIn("not a build this has been measured on", err)
         self.assertFalse(os.path.exists(self.path()))
-        self.assertEqual(self.ext_calls(), [])
+        # one call, and it is the Probe that refuses at the first check: it is
+        # what puts the size this build reports into the message a maintainer
+        # reads (tests/test_overlap_force.py).  Nothing private was read.
+        self.assertEqual(self.ext_calls(), ["Probe"])
 
     def test_nothing_is_recorded_when_the_extension_is_not_running(self):
         self.mock.overlap.present = False
@@ -404,7 +407,8 @@ class NoAgreementSkipsAnything(ConsentCase):
         code, out, err = self.run_cli(FLAG, *MOVE)
         self.assertEqual(code, 1)
         self.assertIn("not a build this has been measured on", err)
-        self.assertEqual(self.ext_calls(), [])
+        # the Probe that refuses at the first check, for the maintainer message
+        self.assertEqual(self.ext_calls(), ["Probe"])
         self.assertEqual(self.applied(), [])
 
     def test_a_shell_that_will_not_say_its_version_is_still_refused(self):
@@ -486,8 +490,11 @@ class NoAgreementSkipsAnything(ConsentCase):
         read = body.index("load_consent()")
         # every guard in the apply path is above it
         for guard in ("route = self.overlap_route(state, targets)",
-                      "if route is None:", "self._overlap_client(plan)"):
+                      "if route is None:", "self._overlap_client(plan, force)"):
             self.assertLess(body.index(guard), read, guard)
+        # and a forced run does not read it at all: there is no agreement that
+        # can make one of those quieter (tests/test_overlap_force.py)
+        self.assertIn("rec = None if force else gnome_overlap.load_consent()", body)
         # ...and the extension's own answer is still what decides, below it
         self.assertLess(read, body.index('if not reply.get("ok"):'))
         # `quiet` reaches warn(), warn_bare() and applied_text(quiet=...), and

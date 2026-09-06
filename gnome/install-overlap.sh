@@ -195,35 +195,123 @@ copy_files() {
     fi
     mkdir -p "$DEST/typelib"
     cp -f "$SRC/metadata.json" "$SRC/extension.js" "$SRC/rules.js" \
-          "$SRC/org.fuckwayland.Overlap1.xml" "$DEST/"
-    cp -f "$SRC"/typelib/*.typelib "$DEST/typelib/"
+          "$SRC/generations.json" "$SRC/org.fuckwayland.Overlap1.xml" "$DEST/"
+    # Typelibs are replaced by RENAME, never written in place.  gjs maps a
+    # typelib into memory and keeps the mapping for the life of the process, so
+    # rewriting the bytes of one a running gnome-shell has already loaded
+    # changes the blob under it and the next call through the description aborts
+    # the process -- which on Wayland is the session.  Measured on GNOME 51,
+    # reinstalling over a session that had used the extension once.  A rename
+    # leaves the old inode mapped and the running shell keeps working until the
+    # next login, which is when it was going to read the new files anyway.
+    for tl in "$SRC"/typelib/*.typelib; do
+        cp -f "$tl" "$DEST/typelib/.$(basename "$tl").new"
+        mv -f "$DEST/typelib/.$(basename "$tl").new" "$DEST/typelib/$(basename "$tl")"
+    done
     if [ "$SYSTEM" = 0 ] && [ "$ME" = 0 ] && [ "$TARGET_UID" != 0 ]; then
         chown -R "$TARGET_USER" "$TARGET_HOME/.local/share/gnome-shell" 2>/dev/null || true
     fi
     echo "install-overlap.sh: installed into $DEST"
 }
 
+# gnome-shell will not load an extension whose metadata.json does not name the
+# running Shell major, and metadata.json is generated from the table -- so on a
+# GNOME nobody here has measured the extension is installed, enabled, and
+# OUT_OF_DATE, the bus name is never taken, and `wxrandr
+# --unsafe-gnome-overlap-unmeasured`, which exists for exactly that machine,
+# cannot reach anything to force.  So: name the running major in the INSTALLED
+# copy, never in the tree, and say so.
+#
+# This does not make the extension act on an unmeasured build.  Loading it and
+# writing through it are two different things: it comes up idle, and its own
+# `shell-version` check refuses every call on a build that is not in the table
+# unless that call carries --unsafe-gnome-overlap-unmeasured with this machine's
+# GNOME major in it.  What this buys is the honest refusal -- with the libmutter,
+# the Meta typelib and the MetaMonitorsConfig size a maintainer needs, measured
+# on the machine in front of them -- instead of "the extension is not running".
+name_this_shell() {
+    nts_major=${1%%.*}
+    nts_file="$DEST/metadata.json"
+    [ -f "$nts_file" ] || return 0
+    # awk rather than sed, and over lines rather than over one line: gen-gir.py
+    # writes the array on one line while it is short and over several once it is
+    # not, and a rule that only understood one of those would quietly do nothing
+    # on the day a third generation was added.  Insert before the first "]"
+    # after the "shell-version" key, whichever line it is on.
+    awk -v maj="$nts_major" '
+        BEGIN { seen = 0; done = 0 }
+        index($0, "\"shell-version\"") { seen = 1 }
+        {
+            if (seen && !done && index($0, "]")) {
+                p = index($0, "]")
+                if (index($0, "\"" maj "\"")) { done = 1; print; next }
+                printf "%s, \"%s\"%s\n", substr($0, 1, p - 1), maj, substr($0, p)
+                done = 1
+                next
+            }
+            if (seen && !done && index($0, "\"" maj "\"")) { done = 1; seen = 0 }
+            print
+        }' "$nts_file" > "$nts_file.new" || { rm -f "$nts_file.new"; return 0; }
+    # Only replace it, and only say so, if the file really gained the version.
+    if cmp -s "$nts_file" "$nts_file.new"; then
+        rm -f "$nts_file.new"
+        return 0
+    fi
+    mv -f "$nts_file.new" "$nts_file"
+    if [ "$SYSTEM" = 0 ] && [ "$ME" = 0 ] && [ "$TARGET_UID" != 0 ]; then
+        chown "$TARGET_USER" "$nts_file" 2>/dev/null || true
+    fi
+    echo "install-overlap.sh: added \"$nts_major\" to the shell-version list of the" \
+         "INSTALLED copy of metadata.json (the repository's copy is generated from" \
+         "the table and is untouched), because gnome-shell will not load an" \
+         "extension that does not name the running Shell major -- and an extension" \
+         "it does not load cannot even tell you what your build is.  It comes up" \
+         "idle and still refuses every call on this GNOME unless the call carries" \
+         "wxrandr --unsafe-gnome-overlap-unmeasured $nts_major." >&2
+}
+
+# Everything version-specific comes out of the table, so this script has no
+# list of its own to fall out of step with it.  Two greps over one file, which
+# this project generates and keeps one record per line: the namespaces (one
+# typelib each must be present) and the GNOME majors (which shells this has been
+# measured on).
+TABLE="$SRC/generations.json"
+
+table_field() {
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",]*\).*/\1/p" "$TABLE"
+}
+
 case $MODE in
 install)
     [ -d "$SRC" ] || { echo "install-overlap.sh: $SRC is missing" >&2; exit 1; }
-    for t in "$SRC"/typelib/FwOverlap14-1.0.typelib "$SRC"/typelib/FwOverlap18-1.0.typelib; do
+    [ -f "$TABLE" ] || { echo "install-overlap.sh: $TABLE is missing" >&2; exit 1; }
+    for ns in $(table_field namespace); do
+        t="$SRC/typelib/$ns-1.0.typelib"
         [ -f "$t" ] || {
             echo "install-overlap.sh: $t is missing; run" \
                  "python3 gnome/overlap-typelib/gen-gir.py" >&2
             exit 1
         }
     done
+    MAJORS=$(table_field shell_major | tr '\n' ' ')
     v=$(shell_version || true)
-    case ${v:-} in
-        46.*|50.*|46|50) ;;
-        '') echo "install-overlap.sh: no running GNOME Shell to ask; installing anyway" >&2 ;;
-        *)  echo "install-overlap.sh: GNOME Shell $v: this extension has been" \
-                 "measured on 46 and 50 only and refuses to write on anything" \
+    if [ -z "${v:-}" ]; then
+        echo "install-overlap.sh: no running GNOME Shell to ask; installing anyway" >&2
+    else
+        known=no
+        for m in $MAJORS; do
+            case ${v:-} in "$m"|"$m".*) known=yes ;; esac
+        done
+        [ "$known" = yes ] || \
+            echo "install-overlap.sh: GNOME Shell $v: this extension has been" \
+                 "measured on ${MAJORS% } only and refuses to write on anything" \
                  "else.  Installing it is harmless -- it does nothing until it is" \
                  "called -- but wxrandr --unsafe-gnome-overlap will say this" \
-                 "compositor is not supported." >&2 ;;
-    esac
+                 "compositor is not measured, and will print what a maintainer" \
+                 "needs to add it." >&2
+    fi
     copy_files
+    [ -n "${v:-}" ] && [ "${known:-yes}" = no ] && name_this_shell "$v"
     if [ "$DO_ENABLE" = 1 ]; then
         enable_setting || true
         if ext_loaded; then
@@ -247,11 +335,20 @@ EOM
 check)
     echo "uuid:         $UUID"
     echo "files:        $([ -f "$DEST/extension.js" ] && echo "$DEST" || echo 'not installed')"
+    echo "table:        $([ -f "$DEST/generations.json" ] && echo installed || echo MISSING)"
     echo "typelibs:     $(ls "$DEST/typelib" 2>/dev/null | tr '\n' ' ' || echo none)"
     echo "shell:        $(shell_version || echo unknown)"
     echo "enabled:      $(setting_has enabled-extensions && echo yes || echo no)"
     echo "loaded:       $(ext_loaded && echo yes || echo 'no (log out and back in)')"
     echo "state:        $(ext_state)   (1 ACTIVE 2 INACTIVE 3 ERROR 4 OUT_OF_DATE 6 INITIALIZED)"
+    [ "$(ext_state)" = 4 ] && cat >&2 <<'EOM'
+install-overlap.sh: OUT_OF_DATE means gnome-shell will not load it: the
+installed metadata.json does not name this Shell major, so nothing here is
+running and wxrandr will say the extension is not on the bus.  Run
+install-overlap.sh again (no arguments) and log in again -- it names the
+running major in the installed copy.  The extension still refuses every call
+on a GNOME that is not in the table unless the call forces it.
+EOM
     echo "$BUS_NAME: $(name_owned && echo owned || echo 'not owned')"
     if name_owned; then
         echo "probe:"
