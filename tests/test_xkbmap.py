@@ -1107,6 +1107,64 @@ class TestDiagnosticSubcommand(unittest.TestCase):
 # the review's findings, one regression test each
 
 
+class TestThePinReachesARunningDaemon(unittest.TestCase):
+    """The 0.4 retest, on GNOME `us,de`: the notice says "Set
+    WDOTOOL_XKB_GROUP=<n> to pin one", and against a daemon that was already
+    running that did nothing at all -- the daemon reads its own environment,
+    which is the one it was spawned with. `WDOTOOL_XKB_GROUP=2 wdotool type
+    yz` printed the notice again and typed `zy`; the same command with the
+    daemon killed first printed nothing and typed `yz`. So the pin travels
+    with the request, like --layout."""
+
+    def typed(self, name, **extra):
+        """One `type` request through handle(), with the *daemon's* own
+        environment carrying no pin at all."""
+        d = make_daemon()
+        with env(WDOTOOL_XKB_KEYMAP=os.path.join(KEYMAPS, name + ".xkb"),
+                 WDOTOOL_XKB_GROUP=None, WDOTOOL_LAYOUT=None):
+            resp = d.handle(dict(op="type", text="z", delay_ms=0, **extra))
+        self.assertTrue(resp.get("ok"), resp)
+        return d, [w for w in (resp.get("warnings") or []) if "assuming" in w]
+
+    def test_without_a_pin_the_group_is_guessed_and_said(self):
+        d, said = self.typed("us_de")
+        self.assertEqual(taps(d.kb), [(44, 1), (44, 0)])      # US z: <AB01>
+        self.assertEqual(len(said), 1, said)
+
+    def test_the_requests_pin_is_obeyed_and_silences_the_notice(self):
+        for value in (2, "2", " 2 "):
+            d, said = self.typed("us_de", xkb_group=value)
+            self.assertEqual(taps(d.kb), [(21, 1), (21, 0)],   # German z: <AD11>
+                             repr(value))
+            self.assertEqual(said, [], repr(value))
+
+    def test_junk_is_not_a_pin_and_types_anyway(self):
+        """The variable is deliberately lenient (a typo in a shell profile
+        must not stop the tool typing), and the socket is a trust boundary:
+        anything that is not a plain 1..4 is simply not a pin."""
+        for value in (0, 5, "banana", "", "2x", True, [2], 2.7):
+            d, said = self.typed("us_de", xkb_group=value)
+            self.assertEqual(taps(d.kb), [(44, 1), (44, 0)], repr(value))
+            self.assertEqual(len(said), 1, repr(value))
+
+    def test_one_daemon_serves_pinned_and_unpinned_clients(self):
+        """The layout cache is keyed on the guess as well as on the group, or
+        the second client gets the first one's answer and its notice."""
+        d = make_daemon()
+        with env(WDOTOOL_XKB_KEYMAP=os.path.join(KEYMAPS, "us_de.xkb"),
+                 WDOTOOL_XKB_GROUP=None, WDOTOOL_LAYOUT=None):
+            first = d.handle({"op": "type", "text": "z", "delay_ms": 0})
+            second = d.handle({"op": "type", "text": "z", "delay_ms": 0,
+                               "xkb_group": 2})
+            third = d.handle({"op": "type", "text": "z", "delay_ms": 0})
+        self.assertEqual(taps(d.kb), [(44, 1), (44, 0),
+                                      (21, 1), (21, 0),
+                                      (44, 1), (44, 0)])
+        for resp, want in ((first, 1), (second, 0), (third, 1)):
+            said = [w for w in (resp.get("warnings") or []) if "assuming" in w]
+            self.assertEqual(len(said), want, resp)
+
+
 class TestTheAssumedGroupIsAnnounced(unittest.TestCase):
     """B1: the "which layout is active?" notice lived on the reverse-map
     path only, so a `us,de` session -- the one case where the bypass is taken
@@ -1329,7 +1387,7 @@ class TestTheModifiersWait(unittest.TestCase):
         seen = []
         body = text(name)
 
-        def fake_fetch(timeout=2.0, mods_wait=0.08):
+        def fake_fetch(timeout=2.0, mods_wait=0.08, keymap=None, group=None):
             seen.append(mods_wait)
             return xkbmap.Snapshot(body, 1, "test", True, mods_seen)
 

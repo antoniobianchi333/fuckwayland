@@ -101,7 +101,10 @@ $ wdotool type 'Grüße, ça va?'      # de, fr, es, dvorak ... all fine
   session `key ctrl+s` warns and presses ctrl alone, because `<AC02>` is σ there and
   Ctrl+σ is not Save. (It used to press it and say nothing, measured in Kate on both
   Plasma versions: nothing saved, exit 0, empty stderr. Configure a Latin layout
-  alongside, or pin its group, and the chord lands.)
+  **first**, or pin its group, and the chord lands: the layout wdotool reaches is the
+  group it assumes, which is group 1. Measured on sway against a binding on the US `s`
+  position: `us,gr` presses it, `gr,us` warns and presses nothing, `WDOTOOL_XKB_GROUP`
+  on the Latin group presses it whichever order they are in.)
 * **When the active layout is plain US, none of this runs.** wdotool checks the
   keymap key by key against its built-in US table and, when they agree, uses the
   built-in table. Keyboard *options* do not spoil that: swapping Caps and Escape, or
@@ -115,14 +118,24 @@ layout reaches only through a Compose *sequence* that is not a dead-key pair (`�
 German, say) is skipped with the warning above — wdotool composes nothing itself, it
 presses keys. And **which of several configured layouts is active**:
 `wl_keyboard.modifiers` carries that and every compositor sends it only to the window
-with keyboard focus, which an injector never is. With several layouts configured
-wdotool uses the **first** and says so — on every command that types, not once per
-session — so a `us, de` session that has switched to German types US characters until
-you pin the group:
+with keyboard focus, which an injector never is. Where the keymap holds more than one
+group and they do not bind the same symbols, wdotool uses the **first** and says so —
+on every command that types, not once per session — so a `us, de` session that has
+switched to German types US characters until you pin the group:
 
 ```console
 $ WDOTOOL_XKB_GROUP=2 wdotool type 'Grüße'   # the second configured layout
 ```
+
+**On GNOME that notice appears with a single layout configured too**, and it is not
+wrong to. Mutter compiles its own `us` fallback group after your sources, so one
+German source is the two-group keymap `pc_de_us_2_inet` and one Greek source is
+`pc_gr_us_2_inet`: from the keymap alone a session with one layout and a session with
+two are the same thing. The guess is right there — group 1 is your layout, and typing
+was byte-exact in the measurement — so on a one-layout GNOME desktop the notice is
+noise, and `WDOTOOL_XKB_GROUP=1` silences it. KDE and sway compile one group for one
+source and say nothing. A lone `us` source is the case nobody hears from at all: its
+two groups bind the same symbols, so there is nothing to choose between.
 
 That is a limitation of the Wayland protocol, and on **KDE it is a limitation we have
 not lifted rather than one the protocol imposes**: KWin publishes the live layout
@@ -167,11 +180,15 @@ daemon and a daemon may already be running with different ones.
 | `WDOTOOL_XKB_GROUP=<n>` | pin the active layout group (1 = the first one) |
 | `WDOTOOL_XKB_KEYMAP=<file>` | read the keymap from a file instead of the compositor |
 
-These four are read by the *daemon*, which keeps the environment it was started with,
-so set them before the first wdotool command of a session — or stop the running
-daemon first, which is what a script that changes the pin mid-run has to do. Changing
-your **layout** needs none of that: the keymap and the active group are re-read on
-every single command, so a long-running daemon follows a layout switch by itself.
+`WDOTOOL_XKB_GROUP` is read by the **command**, which sends the pin to the daemon with
+the text it is typing, exactly as `--layout` does: it is the one the notice above tells
+people to set, and telling them to set a variable a running daemon then ignores was
+worse than saying nothing (measured: the same command typed `zy` with a daemon up and
+`yz` with none). The other three are read by the *daemon*, which keeps the environment
+it was started with, so set those before the first wdotool command of a session, or
+stop the running daemon first. Changing your **layout** needs none of that: the keymap
+and the active group are re-read on every single command, so a long-running daemon
+follows a layout switch by itself.
 
 `wdotool __keymap` is a hidden diagnostic that prints what the compositor actually
 sent; `--info` summarises it (groups, active group, whether the US bypass takes it),
@@ -990,11 +1007,15 @@ Daemon notes:
     `layout_mode`, because the daemon cannot see the client's environment).
     It outranks the variables below. `--layout us` returns from `_layout()`
     before any fetch or bypass check, which is the promise it makes.
-    Then the environment (read by the daemon, which keeps what it was
-    spawned with): `WDOTOOL_LAYOUT=us` never reads a keymap at all,
+    Then `WDOTOOL_XKB_GROUP=<n>`, which pins the group and is read from the
+    *client's* environment and carried on the request as `xkb_group`, for the
+    same reason `--layout` is: the daemon outlives the command that started it
+    and cannot see what the next one was run with, so a pin that only reached
+    a fresh daemon was ignored by a running one and the notice kept printing.
+    Then the rest of the environment (read by the daemon, which keeps what it
+    was spawned with): `WDOTOOL_LAYOUT=us` never reads a keymap at all,
     `WDOTOOL_LAYOUT=xkb` forces the reverse map even on a US layout,
-    `WDOTOOL_XKB_KEYMAP=<file>` reads a keymap from a file (what the tests use),
-    `WDOTOOL_XKB_GROUP=<n>` pins the group.
+    `WDOTOOL_XKB_KEYMAP=<file>` reads a keymap from a file (what the tests use).
 - **spawn hygiene (B10/B11)**: the double-forked grandchild closes every fd
   above stdio (it used to keep the client's session-D-Bus socket ESTABLISHED
   for its whole life), `chdir("/")`, keeps only the environment it needs

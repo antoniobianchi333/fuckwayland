@@ -76,6 +76,17 @@ walks argv with xrandr's own option arities, so an output literally named
 `--backend` (`--output --backend --off`) is a value there too and is handed
 over untouched.
 
+**Nothing else of ours reaches the original either.** `--persistent` is
+stripped from the handed-over argv as well, so an X11 apply that asks for it
+applies and simply saves nothing, which is what this document has always said
+an X11 apply does; it used to be handed on, and the real xrandr answered
+`unrecognized option '--persistent'`, exit 1, layout unchanged.
+`--unsafe-gnome-overlap` is refused before the handover in the same words a
+KDE or a sway session refuses it in — this is not GNOME, and X11 places
+overlapping monitors without any of it. The three bookkeeping options
+(`--gnome-overlap-status`, `--gnome-overlap-allow`, `--gnome-overlap-forget`)
+answer for themselves on every session and never hand over.
+
 Three options real xrandr does not have, and — like `--persistent` — not in
 its usage text, so `--help` and every other byte stay xrandr's:
 
@@ -857,7 +868,7 @@ What maps:
 
 | xrandr | Mutter |
 |---|---|
-| output name, make/model/serial, mm size | monitor connector, spec; mm from `width-mm`/`height-mm` when Mutter sends them, else from `wl_output.geometry` (Mutter 46/50 never emit the D-Bus keys — verified with gdbus — but give the EDID size to `wl_output`, which is what XWayland's RandR prints: 320mm x 200mm on a QEMU head, byte-identical here) |
+| output name, make/model/serial, mm size | monitor connector, spec; mm from `width-mm`/`height-mm` when Mutter sends them, else from `wl_output.geometry` (Mutter 46/50 never emit the D-Bus keys — verified with gdbus — but give the EDID size to `wl_output`, which is what XWayland's RandR prints: 480mm x 270mm on a 1920x1080 QEMU head, byte-identical here) |
 | mode table (`*` current, `+` preferred, `WxHi` interlaced) | the monitor's mode list; opaque ids kept verbatim (`Mode.mode_id`) |
 | enabled, `WxH+X+Y`, rotation/reflection, scale | membership of a logical monitor; its x/y, transform, scale. Mutter numbers transforms like `wl_output` with the spec's counter-clockwise 90 — through Mutter's XWayland real xrandr prints 1 as `left`, 3 as `right`, 5 as `left X axis`, 7 as `right X axis` (all eight measured on GNOME 50), whereas sway's verified table has "90" == `right`; `mutter.MUTTER_RANDR_VIEW` holds the measured words and the 1↔3 / 5↔7 permutation follows from it |
 | `--mode/--rate/--auto/--preferred` | mode id chosen by size + nearest rate |
@@ -1062,7 +1073,12 @@ because 5.27 through 6.6 are still supported.
 **absent from `wl_registry`** on that session — the globals are
 `kde_output_device_registry_v2` v23, `kde_output_management_v2` v21 and
 `kde_output_order_v1` v1 — so the registry path is not an optimisation there,
-it is the only way to see an output at all. Through it, on two virtual heads:
+it is the only way to see an output at all. It also decides the order the
+outputs are *listed* in: 6.7 hands them out in the order the registry announces
+them, which on the rig puts `Virtual-2` before `Virtual-1`, where 5.27 and 6.6
+(and the real xrandr on the same machine) list `Virtual-1` first. Nothing here
+sorts them: the list is the compositor's own, on every backend, and on KDE it is
+the one `kscreen-doctor` shows. Through it, on two virtual heads:
 `--query` and `--listmonitors` list both outputs with every mode, `--mode`,
 `--pos`/`--right-of`, `--rotate left`, `--off` and back, `--scale 1.5`
 (1920 ÷ 1.5 → 1280×720, byte-equal to `kscreen-doctor`'s `Geometry`),
@@ -1193,7 +1209,9 @@ session achieves nothing, because KWin writes it out again on the way out.
 settings?* for 20 seconds: ignored, the layout reverts and nothing is written;
 confirmed, `monitors.xml` appears at once and the layout then survives both a hotplug
 and a reboot. The dialog and the switch are GNOME's alone: on KDE `--persistent` is
-accepted and changes nothing, and on sway and X11 nothing is written either way.
+accepted and changes nothing, and on sway and X11 nothing is written either way — on
+X11 the option is dropped from the argv the real xrandr is handed, which has never had
+it, so the apply itself goes through as usual.
 
 The way to get a layout back on any of the four is to save it as a script and put
 that script on a key. That is arandr's habit, it reads the same everywhere, and it

@@ -33,12 +33,12 @@ look at what it is up against.
 
 On a default Ubuntu 24.04 or 26.04 desktop, one file and one command. The built
 package is in the clone, at
-[`release/fuckwayland_0.3.0_all.deb`](release/fuckwayland_0.3.0_all.deb), and on the
+[`release/fuckwayland_0.4.0_all.deb`](release/fuckwayland_0.4.0_all.deb), and on the
 [releases page](https://github.com/antoniobianchi333/fuckwayland/releases). From the
 top of a clone:
 
 ```sh
-sudo apt install ./release/fuckwayland_0.3.0_all.deb
+sudo apt install ./release/fuckwayland_0.4.0_all.deb
 ```
 
 `sh scripts/build-deb.sh` rebuilds that same file in place from the source beside it.
@@ -325,9 +325,9 @@ $ wxrandr --version
 xrandr program version       1.5.4
 Server reports RandR version 1.6
 $ warandr --version
-warandr 0.3.0
+warandr 0.4.0
 $ wmirror --version
-wmirror 0.3.0
+wmirror 0.4.0
 ```
 
 On a **Wayland** session (GNOME, KDE, sway) the version strings are ours, and the
@@ -673,7 +673,12 @@ wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
 ```
 
 The first step installs `fuckwayland-overlap@fuckwayland`, which is not the bridge
-extension the other tools use and is installed by hand for exactly that reason. The
+extension the other tools use and is installed by hand for exactly that reason. It
+exits 1 until the log out and back in it asks for, the same as the bridge installer
+does, so a script that runs these in order stops there on purpose. From the package
+rather than a clone the files are already in `/usr/share/gnome-shell/extensions` and
+the first step is instead `gnome-extensions enable fuckwayland-overlap@fuckwayland`,
+then the same log out and back in: nothing in the package turns this one on for you. The
 second prints what the flag does, what it risks and what it saves, runs every check
 against the GNOME that is running, and records what those checks measured — down to
 the build id of the `libmutter` they ran against, because a version number does not
@@ -703,7 +708,7 @@ What it looks like when it works:
 $ wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
 xrandr: --unsafe-gnome-overlap: applying a layout GNOME refuses ("logical monitors not adjacent (an overlap counts, and so does a gap)"), as agreed on 2026-09-06
 $ wxrandr --query | grep Virtual-2
-Virtual-2 connected 1920x1080+960+0 (normal left inverted right x axis y axis) 320mm x 200mm
+Virtual-2 connected 1920x1080+960+0 (normal left inverted right x axis y axis) 480mm x 270mm
 ```
 
 Both monitors then really draw the shared region, the same pixels on each one, and a
@@ -984,6 +989,25 @@ appears. KWin has no equivalent: it applies and saves at once, and says so.
 
 The long form of each release, with the measurements behind it, is
 [CHANGELOG.md](CHANGELOG.md).
+
+<!-- release-notes: 0.4 -->
+### 0.4
+
+The release that made the tools survive a real desktop rather than a fresh one. The
+input daemon now ends itself when its socket is gone or replaced and when nobody has
+used it for fifteen minutes, so a logout no longer leaves one running, unreachable and
+holding the lock that stops the next one starting. A key combination the active layout
+cannot produce is refused with a line rather than pressed at its US position, which is
+what made a save shortcut on a Greek layout do nothing and exit 0. The notice about
+which layout wdotool had to assume reaches every command instead of the first one
+only, and the variable that pins the layout is read where you set it rather than only
+by a daemon that may already be running. Keeping a layout on GNOME says when GNOME has
+already thrown its saved file away, warns when the layout being saved is one a
+fractional scaling change would break, and keeps a copy of the file it replaces. There
+is one route through GNOME's refusal to overlap monitors, off by default, behind a
+second Shell extension and an agreement recorded for the exact build of GNOME the
+checks ran against. And the package in `release/` is built from this tree, which is how
+any of it reaches anybody.
 
 <!-- release-notes: 0.3 -->
 ### 0.3

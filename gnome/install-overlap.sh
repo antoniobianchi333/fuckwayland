@@ -6,12 +6,20 @@
 #   install-overlap.sh --check                    report status, and probe
 #   install-overlap.sh --uninstall [--system]     disable + remove
 #
-# This is deliberately NOT part of install-bridge.sh and it is not installed by
-# the .deb.  The bridge is feature-detected JavaScript over public API and is
-# meant to be installed and forgotten; this one ships a compiled type
-# description pinned to the private layout of one libmutter generation and
-# writes into gnome-shell's own memory.  Two different kinds of thing, two
-# installers, two enable steps, and nobody gets this one by accident.
+# This is deliberately NOT part of install-bridge.sh.  The bridge is
+# feature-detected JavaScript over public API and is meant to be installed and
+# forgotten; this one ships a compiled type description pinned to the private
+# layout of one libmutter generation and writes into gnome-shell's own memory.
+# Two different kinds of thing, two installers, two enable steps, and nobody
+# gets this one by accident.  The .deb carries the files (a route nobody can
+# reach from the way almost everybody installs is not a route) and nothing that
+# enables them.
+#
+# Exit status, the same as install-bridge.sh's: 0 when the extension is up and
+# answering, 1 when it is installed and enabled but gnome-shell has not loaded
+# it yet, which is every first install and is what the message then asks you to
+# fix by logging out and back in.  A script that installs and then carries on
+# has to expect that 1.
 #
 # It is safe to leave installed and enabled: the extension does nothing at
 # login and nothing at all until wxrandr calls it.  --check proves that by
@@ -49,6 +57,9 @@ Usage: install-overlap.sh [--system] [--no-enable]
   --check      files, gsettings entry, extension state, $BUS_NAME, and a
                Probe: every guard run against the running libmutter, no write
   --uninstall  disable and delete the extension
+
+Exit status of an install: 0 when the extension is up, 1 when it is installed
+and waiting for the log out and back in that lets gnome-shell load it.
 
 What this extension is for, and what it risks, is in gnome/README.md and in
 docs/WXRANDR.md under "--unsafe-gnome-overlap".  Nothing else in fuckwayland
@@ -228,6 +239,8 @@ install-overlap.sh: log out and back in once.  gnome-shell scans extension
 directories only at login, and on Wayland it cannot be restarted in place.
 The extension is already enabled, so it comes up by itself after the re-login
 -- and comes up idle: it does nothing until wxrandr calls it.
+(The files are installed: this exit status of 1 says the bus name is not up
+yet, and after the re-login the same command exits 0.)
 EOM
     exit 1
     ;;
