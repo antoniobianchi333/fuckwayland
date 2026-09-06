@@ -525,7 +525,9 @@ nothing. `--persistent` makes GNOME ask *Keep changes?*, and only a confirmed di
 writes `monitors.xml`, and that dialog is the only safe way that file is ever
 written. Why Mutter refuses monitors that share area, and what to reach for instead,
 is under
-[What your desktop will not let warandr do](#what-your-desktop-will-not-let-warandr-do).
+[What your desktop will not let warandr do](#what-your-desktop-will-not-let-warandr-do),
+and the one opt-in route to having the overlap anyway is
+[Overlapping monitors on GNOME](#overlapping-monitors-on-gnome).
 
 Which backend it is using is never a guess: `--print-backend` prints the token
 (`--verbose` adds the session, why it was chosen, the compositor and the protocol
@@ -615,52 +617,26 @@ different resolutions are refused by name, saying which two differ and how. KWin
 the one desktop that will scale a mirrored copy onto a differently shaped panel. On
 wlroots the copy crops instead, which is the gap [`wmirror`](#wmirror) fills.
 
-There is an honest substitute, and it is not an overlap. GNOME will not place two
-monitors so that they share area, and the closest thing to be had is a mirrored
-region: the same pixels in two places, matching exactly, and that is the whole of it.
-The copy is a copy, so it takes the clicks that land on it rather than passing them
-to the window they came from, and where it is made by screen capture instead of by
-the layout it lasts only as long as that capture session, which a screen lock ends.
-Whole monitor mirroring is the layout doing it, above. A region of one monitor on
-another is [`wmirror`](#wmirror) on wlroots, and on GNOME it needs the desktop
-portal, which asks permission once a session.
+Short of the route below, there is an honest substitute, and it is not an overlap.
+GNOME will not place two monitors so that they share area, and the closest thing to be
+had is a mirrored region: the same pixels in two places, matching exactly, and that is
+the whole of it. The copy is a copy, so it takes the clicks that land on it rather
+than passing them to the window they came from, and where it is made by screen capture
+instead of by the layout it lasts only as long as that capture session, which a screen
+lock ends. Whole monitor mirroring is the layout doing it, above. A region of one
+monitor on another is [`wmirror`](#wmirror) on wlroots, and on GNOME it needs the
+desktop portal, which asks permission once a session.
 
 **Never hand edit `~/.config/monitors.xml` to force an overlap.** Mutter reads that
 file back through the same validator and throws away the **whole file** when any part
 of it fails, so one bad entry silently takes every other monitor arrangement you had
 saved down with it, at every boot, and the only trace is a line in the system journal.
 
-There is one way through, and it is off, and it is not in the package.
-`wxrandr --unsafe-gnome-overlap` places the layout anyway, by writing eight bytes per
-monitor into the running `gnome-shell` through a second Shell extension you install by
-hand. It does nothing unless GNOME refuses the layout. It re-checks the running Mutter
-before every write and refuses on any build it has not been measured on, which today
-means GNOME 46 and GNOME 50 and nothing else. It saves nothing, so the layout goes at
-the next login and `~/.config/monitors.xml` is never written on that path. It prints
-what it is about to do and the exact command that undoes it. And if every one of those
-checks is wrong anyway, `gnome-shell` dies, and on Wayland `gnome-shell` is the
-session, so every program running in it dies too. That is the honest price, and this
-is the only thing here that can charge it. The long form, with each guard, what it was
-measured catching, and what risk is left, is
-[docs/WXRANDR.md § --unsafe-gnome-overlap](docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
-If you are not sure you want it, you do not.
-
-Since 0.4 that paragraph can be **agreed to once**, for the build it was measured on:
-`wxrandr --gnome-overlap-allow` runs all six checks and, only if they pass, records
-what they found — the GNOME Shell version, libmutter's generation and the size this
-build's private configuration struct turned out to be — in
-`~/.config/fuckwayland/overlap-consent.json`. A later overlapping apply then says one
-line instead of the paragraph. It records the *risk* and never the *checking*: every
-check still runs on every apply, and a GNOME upgrade makes the agreement stop applying
-by itself. `wxrandr --gnome-overlap-status` says where you stand and
-`wxrandr --gnome-overlap-forget` withdraws it, from a text console if need be.
-
-And with that extension installed, this window can use it: drag two monitors into an
-overlap and press Apply, and `warandr` explains what it is about to do once, in a
-dialog with a *Do not ask again on this GNOME* box, and then does it — saying in the
-status bar, every time, that it is placing a layout GNOME refuses and that the layout
-is gone at the next login. Without the extension nothing changes: the drop is refused
-in Mutter's name exactly as before.
+Since 0.4 there is one route through the adjacency rule, off by default and installed
+by hand, and it is [Overlapping monitors on GNOME](#overlapping-monitors-on-gnome)
+below. With it in place, dragging two monitors into an overlap and pressing Apply asks
+once and then does it. Without it nothing changes: the drop is refused in Mutter's own
+name exactly as before.
 
 One more GNOME habit worth knowing: an Apply that switches a monitor on or off makes
 the desktop move keyboard focus off the window, so click it again before the next
@@ -682,6 +658,66 @@ on the command line, so a hotkey can pin one.
 
 Contract: [docs/WARANDR.md](docs/WARANDR.md), including where the layout scripts go
 and how to bind one to a key on each desktop.
+
+#### Overlapping monitors on GNOME
+
+GNOME refuses to place two monitors so that they share screen area, as the table
+above says. There is one way to have it anyway. It is off, it is not in the package,
+and it is the only thing in this repository that can cost you the session you are
+sitting in. Three steps:
+
+```sh
+sh gnome/install-overlap.sh     # a second Shell extension, then log out and back in
+wxrandr --gnome-overlap-allow   # read it once, agree to this build of GNOME
+wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
+```
+
+The first step installs `fuckwayland-overlap@fuckwayland`, which is not the bridge
+extension the other tools use and is installed by hand for exactly that reason. The
+second prints what the flag does, what it risks and what it saves, runs every check
+against the GNOME that is running, and records what those checks measured, so that
+later runs say one line instead of the paragraph. The third is an ordinary `wxrandr`
+line with the flag added, and the flag does nothing at all unless the layout is one
+GNOME refuses. In `warandr` there is no flag to type: drag two monitors into an
+overlap and press Apply, and the window explains it once, in a dialog with a *Do not
+ask again on this GNOME* box.
+
+What it looks like when it works:
+
+```console
+$ wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
+xrandr: --unsafe-gnome-overlap: applying a layout GNOME refuses ("logical monitors not adjacent (an overlap counts, and so does a gap)"), as agreed on 2026-09-06
+$ wxrandr --query | grep Virtual-2
+Virtual-2 connected 1920x1080+960+0 (normal left inverted right x axis y axis) 320mm x 200mm
+```
+
+Both monitors then really draw the shared region, the same pixels on each one, and a
+window inside it is on both at once. The pointer crosses the seam without a jump and
+clicks land on the window that is drawn where you clicked.
+
+**The layout is gone at the next login**, and that is deliberate rather than
+unfinished. The file GNOME saves layouts in is read back through the same validator
+that refused this one, and one entry that fails throws the whole file away at every
+boot, taking every other arrangement you had saved with it. So nothing here writes
+that file. Getting the layout back after a login is running the command again, from a
+startup script or a hotkey if you want it every time.
+
+Withdrawing the agreement is `wxrandr --gnome-overlap-forget`, which needs no desktop
+and works from a text console, and `wxrandr --gnome-overlap-status` says where you
+stand. Removing the route altogether is `sh gnome/install-overlap.sh --uninstall`.
+
+The honest part: this works by writing eight bytes per monitor into the running
+`gnome-shell`, at a place that is a private detail of one build of it, and if that
+place is ever wrong `gnome-shell` dies and takes every program in your session with
+it. Six checks run before every write and refuse any build they do not recognise,
+which today means GNOME 46 and GNOME 50 and nothing else, so what a GNOME upgrade
+normally does is make this refuse and say why, with the agreement no longer applying
+and nothing changed. The long form, with every check, what each was measured catching
+and what risk is left, is
+[docs/WXRANDR.md § --unsafe-gnome-overlap](docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through),
+and the maintainer's account is
+[docs/Technical.md § 6](docs/Technical.md#why-mutter-refuses-monitors-that-share-area).
+If you are not sure you want this, you do not.
 
 ### wmirror
 
@@ -937,7 +973,7 @@ Developed against real desktops, not against a model of them. `vm/` is the rig:
 `vmctl` builds and runs twelve golden images, each with up to four virtual monitors
 that can be plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/README.md` documents the whole thing and `vm/SETUP.md` is how to
-set the rig up on a machine of your own. `tests/` holds the suite, 2371 tests: unit
+set the rig up on a machine of your own. `tests/` holds the suite, 2491 tests: unit
 tests, wire-level fake compositors and X servers, live-compositor integration,
 hostile-input torture, byte-parity oracles against the real xdotool, wmctrl, xprop
 and xrandr, and one static check that no package ever reaches for the desktop portal

@@ -15,6 +15,8 @@ Byte-parity notes, against xrandr 1.5.4:
   `--gnome-overlap-{allow,forget,status}` that manage its agreement.
 """
 
+import contextlib
+import io
 import math
 import os
 import re
@@ -880,15 +882,30 @@ def _do_overlap_status(opts) -> int:
     """Answer, always.  The session is built here rather than in `_run_session`
     so that a machine with no compositor -- a text console, a broken session, an
     X11 box -- gets `unavailable` and the recorded agreement read back to it,
-    instead of xrandr's "Can't open display"."""
+    instead of xrandr's "Can't open display".
+
+    Both ways a session can fail to build are caught, because they are not the
+    same one: a backend that is named but not there raises `Fatal`, while no
+    compositor at all leaves through `Session._cant_open()`, which writes
+    xrandr's own line and raises `SystemExit`.  That second one is the text
+    console this command exists for, so its line is captured and becomes the
+    reason rather than being printed over the answer."""
     sess = None
     try:
+        said = io.StringIO()
         try:
-            sess = Session(opts.backend)
+            with contextlib.redirect_stderr(said):
+                sess = Session(opts.backend)
+            if said.getvalue():         # a warning on the way up: not ours to eat
+                stdio.warn(said.getvalue())
             lines = overlap_status_lines(sess)
         except Fatal as e:
             lines = overlap_status_lines(
                 None, unavailable=" ".join(str(e.args[0]).split()))
+        except SystemExit:
+            lines = overlap_status_lines(
+                None, unavailable=" ".join(said.getvalue().split()) or
+                "there is no session to ask")
         for line in lines:
             print(line)
     finally:

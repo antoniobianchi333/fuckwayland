@@ -327,18 +327,18 @@ deliberately, once, and *for one build*:
 ```console
 $ wxrandr --gnome-overlap-allow
 check shell-version: GNOME Shell 50.1, libmutter-18
-check typelib: FwOverlap18, MetaMonitorsConfig 128 bytes as declared
+check typelib: FwOverlap18, MetaMonitorsConfig 80 bytes as declared
 check sentinel: switch_config round-tripped at the declared offset
 check pending-dialog: nothing holds a modal grab, so GNOME is not asking "Keep changes?"
 check bounded-read: 2 logical monitors, every address range-checked
 check public-view: identical to Mutter's public view (global.display + MetaMonitorManager.get_monitors)
 
-Agreeing to --unsafe-gnome-overlap on GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 128 bytes).
+Agreeing to --unsafe-gnome-overlap on GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 80 bytes).
 
   What it does:         places monitors GNOME's own validator refuses, by writing
                         ...
   What is agreed:       this build and no other.  The agreement records
-                            GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 128 bytes)
+                            GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 80 bytes)
                         and stops applying the moment any of that changes, which
                         is what a distribution upgrade does.
   What is not agreed:   any of the checking.  Every check above runs again on
@@ -405,7 +405,7 @@ agreed
 shell: 50.1
 extension: running
 agreed on: 2026-09-06T09:12:44Z
-agreed for: GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 128 bytes)
+agreed for: GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 80 bytes)
 agreed by: wxrandr --gnome-overlap-allow
 file: /home/test/.config/fuckwayland/overlap-consent.json
 ```
@@ -425,7 +425,7 @@ type description over the shipped one:
 | guard | what it catches | what it did when made to fire |
 |---|---|---|
 | `shell-version` | a build nobody has measured: shell major ∈ {46, 50}, exactly one libmutter mapped and of the matching generation, the `Meta` typelib version agreeing | with the table edited to claim libmutter 19 for GNOME 50: `refused (libmutter): GNOME Shell 50.1 should carry libmutter-19, this process has [18]` |
-| `typelib` | the structure is not the shape we describe: our own record's size, read back from *our own* typelib through `GIRepository` so there is no constant to go stale, against `GObject.type_query(MetaMonitorsConfig).instance_size` | `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
+| `typelib` (refusing as `struct-size`) | the structure is not the shape we describe: our own record's size, read back from *our own* typelib through `GIRepository` so there is no constant to go stale, against `GObject.type_query(MetaMonitorsConfig).instance_size` | `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
 | `sentinel` | the tail has moved even though the size has not: a value written through Mutter's own exported `set_switch_config` must reappear at the offset we believe, on a throwaway `create_linear()` object and never on the live one | pins the two offsets that actually differ between mutter 14 and 18 |
 | `pending-dialog` | the one window in which a mutated configuration could reach Mutter's *writer*: `Main.modalCount` must be exactly 0, and anything else, including a count that will not read as a whole number, is a refusal | with *Keep these display settings?* on screen, on both releases: `refused (pending-dialog): something holds a modal grab on the shell …` and the confirmed dialog then saved the layout **GNOME** had applied |
 | `bounded-read` | anything unreadable: the whole configuration is copied out with `g_memdup2`/`g_strndup`, every address range-checked against `/proc/self/maps` first, list walks capped | with `key` and `logical_monitor_configs` swapped, which are the same size: `node[1]: 0x1+24 is not in a readable mapping` — the wild pointer that killed a shell back when pointers were declared as pointers |

@@ -352,6 +352,7 @@ c.roundtrip()                         # dispatch until the sync callback fires
 
 The rest of this section is `dbus_mini` in full, because it is the one whose wire
 details a change is most likely to trip over.
+
 ### `dbus_mini` in full
 
 Pure-stdlib D-Bus client for the session bus and any `unix:` address (QEMU's
@@ -706,6 +707,7 @@ and the copy against real files from both releases, and
 every refusal leaves the file byte-identical and writes no copy, an accepted persistent
 apply writes the copy and still does not touch the file, and a temporary apply does not
 open it — that last one enforced by making the reader explode if it is called.
+
 ### Why Mutter refuses monitors that share area
 
 The one geometry the four backends do not agree on, and the long form the README and
@@ -746,7 +748,7 @@ the identical layout is taken as drawn by KWin, by wlroots and by X.
 | `~/.config/monitors.xml` | the parser calls the **same verifier**, and a failure discards the **entire file** — see the warning below |
 | a GNOME Shell extension | **the one route that works**, and since 0.4 it is packaged, opt-in and off: it reaches the non-introspected libmutter symbols by shipping a type description of its own. Measured working on **both** versions, shared region byte-identical. It also encodes a private struct offset and the library SONAME, and a wrong offset **writes into the compositor's heap** rather than raising an error, which on Wayland means the user loses the session. What makes that shippable is below |
 
-#### The overlap extension, and the three properties that make it shippable
+#### The extension, and the three properties that make it shippable
 
 `gnome/fuckwayland-overlap@fuckwayland`, behind `wxrandr --unsafe-gnome-overlap`
 ([WXRANDR.md](WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through)). It is a
@@ -768,53 +770,234 @@ place, and a refusal after the write puts the old bytes back before returning.
 
 Three properties, and the extension is worth nothing without all three.
 
-**1. It does nothing at login.** `enable()` exports one D-Bus object and stops — no
-typelib load, no symbol touched, nothing read. The catastrophic failure this design
-exists to prevent is a crash at session start with the extension already enabled and
-no way to reach a setting, so there is no code that can run then.
-`tests/test_gnome_overlap.py` reads the body of `enable()` and fails on any mention of
-a typelib, `imports.gi`, libmutter or the reader.
+**1. It does nothing at login.** `enable()` exports one D-Bus object and stops: no
+typelib load, no symbol touched, nothing read. It is the property the whole design
+rests on, and what holds it and what was measured are in *Nothing at login, and
+nothing on disk*, below.
 
 **2. No pointer is ever dereferenced by the type system.** Every pointer in the
 described structures is declared `guint64`, so reading one yields a *number*; each
 step to the next struct is `g_memdup2(ptr, n)` — a bounded copy of exactly n bytes —
 and `g_strndup(ptr, 63)` for the connector names, with the address range-checked
-against `/proc/self/maps` first and list walks capped. With pointers declared as
+against `/proc/self/maps` first and list walks capped at 16. With pointers declared as
 pointers, a wrong offset killed gnome-shell outright (measured, 50.1, a node whose
 `next` was `0x1`); with them declared as numbers, all four wrong descriptions
 completed and none crashed.
 
-**3. Every check runs before every write, never once at install** — a distribution
-upgrade can replace libmutter under a running session. In order, all six measured
-green on GNOME 46.0 and 50.1:
+**3. Every check runs before every write, never once at install**, because a
+distribution upgrade can replace libmutter under a running session. The six of them,
+in order and with what each one says when it fires, are two subsections below.
 
-| check | what it catches | measured refusal |
+#### The bus interface, request by request
+
+`org.fuckwayland.Overlap1` on `/org/fuckwayland/Overlap`, owned as
+`org.fuckwayland.Overlap` on the session bus. One read-only property, `Version`
+(currently 1), and two methods, each taking one JSON string and returning one. The
+interface file is `org.fuckwayland.Overlap1.xml` in the extension directory, kept
+beside the copy embedded in `extension.js` for reading rather than for loading.
+
+Both methods take the same request object, and neither field is required:
+
+* `layout_mode` — the number `GetCurrentState` reports publicly, 1 physical or 2
+  logical. It decides nothing about the layout. It is checked against the value read at
+  the offset this description believes, and a disagreement is a refusal, which pins the
+  structure's tail a second time with a number the caller got from Mutter's public API:
+  claiming logical mode on GNOME 46, whose default is physical, gets `layout_mode reads
+  2 at the offset this description believes; DisplayConfig says 1`.
+* `expect` — the layout the caller believes is running, one entry per logical monitor
+  as `{"connectors": [...], "x": …, "y": …}`. On GNOME 46 it is also where the
+  connector names in the public comparison come from, because that Shell exposes no
+  way to name a monitor from JS at all and a synchronous DisplayConfig call from
+  inside gnome-shell would deadlock against gnome-shell.
+
+**`Probe(request) → result`** runs the six checks and reads the live configuration,
+and writes nothing anywhere the session can see: the only write it makes at all is the
+sentinel, into a throwaway `MetaMonitorsConfig` it builds for the purpose with
+`meta_monitor_config_manager_create_linear()`. The reply is
+`{"ok": true, "version": 1, "shell": "50.1", "libmutter": 18, "instance_size": 80,
+"checks": [{"name", "ok", "detail"}, …], "monitors": [{"connectors", "x", "y", "w",
+"h", "scale", "transform", "primary"}, …], "wrote": false}`. `instance_size` is the
+number `GObject.type_query(MetaMonitorsConfig).instance_size` returned during the
+struct-size check, and it is in the reply because the caller records an agreement
+against it: what is agreed to has to be what was measured. `wxrandr --dryrun
+--unsafe-gnome-overlap` prints exactly this method's `checks` and applies nothing, and
+`sh gnome/install-overlap.sh --check` calls it with an empty request after printing
+where the extension is installed and whether it is loaded.
+
+**`ApplyOverlap(request) → result`** does all of that, then, with `want` in the request
+in the same shape as `expect`:
+
+1. **the request must describe this session.** `expect` must name exactly the logical
+   monitors that were read, and each one must be at the position the request says it
+   was, or `refused (request): Virtual-2 is at +1920+0, the request was built when it
+   was at +960+0: re-read the layout and try again`. `want` must name the same
+   monitors. Nothing here is addressed by pointer: a caller names connectors and
+   positions, and every address comes from the extension's own bounded read.
+2. **what is asked for must be a layout Mutter refuses.** `want` is run through this
+   tree's reimplementation of Mutter's rule (`rules.js`, `mutterFault()`), and if
+   Mutter would have *accepted* it the answer is `refused (not-an-overlap): Mutter
+   accepts this layout: apply it the ordinary way, without this extension`. A layout
+   GNOME will take goes down a path that validates, arms a revert timer and can be
+   undone from a dialog, and there is no reason to write into a compositor's heap for
+   it. This is also what stops the bus interface being a general display-configuration
+   API for anything else on the bus.
+3. **the digest**, `~/.config/monitors.xml` hashed with SHA-256 before anything moves.
+4. **the write**: for each monitor that actually changes position, four bytes at the
+   `MetaLogicalMonitorConfig`'s `x` and four at its `y`, little-endian, through
+   `memcpy` declared to take its length from the array it is handed. The address is
+   re-checked against `/proc/self/maps` immediately before the write even though the
+   read that produced it already cleared it. A request that moves nothing is
+   `refused (request): that is the layout this session already has`.
+5. **the read-back**: the whole configuration is read again the same bounded way and
+   must differ from what was there in exactly the requested `x` and `y`, with `w`, `h`,
+   `scale`, `transform`, `primary` and the connector names unchanged.
+6. **the positive control**: `meta_verify_monitors_config()` must **refuse** the
+   result. If Mutter's own validator accepts what was built, the write did not land on
+   the field that validator reads, and nothing is applied.
+7. **the apply**: `meta_monitor_manager_apply_monitors_config(mm, cfg,
+   METHOD_TEMPORARY)`. The constant is 1 and it is the only one in the file. 2 is
+   `PERSISTENT`, which is what makes Mutter write `monitors.xml`, and it has to be
+   unreachable rather than merely unused.
+8. **the digest again**, and it is returned rather than assumed: `saved_config`
+   carries the path and both digests and `unchanged`, and if it ever differs the reply
+   is turned to `ok: false` on the way out.
+
+A successful reply adds `wrote`, `applied`, `wrote_words` (two per moved monitor),
+`fault` (the sentence Mutter's rule would have given), `verify` (what the validator
+actually said), the re-read `monitors`, and `public`, which is Mutter's own answer
+about the same monitors after the apply.
+
+**Every refusal is a reply, not a D-Bus error**: `{"ok": false, "version": 1, "check":
+"…", "reason": "…", "checks": […]}`, so a refusal reads the same wherever it came from
+and the caller can print which check said no. A refusal *after* the write puts the old
+words back, in reverse order, before it returns, and nothing has been applied on that
+path either way. Anything that is not one of the named refusals comes back as
+`check: "internal"` with the exception's message, and its stack goes to the journal.
+
+The named checks a refusal can carry, all of them:
+
+| refusal | when |
+|---|---|
+| `shell-version`, `libmutter`, `meta-typelib` | not a measured build, or its libmutter and its `Meta` typelib disagree with each other |
+| `typelib`, `symbols`, `struct-size` | the shipped description is missing, will not load, has lost a symbol, or does not match this build's `MetaMonitorsConfig` size |
+| `sentinel` | the tail of the structure is not where it was measured |
+| `pending-dialog` | something holds a modal grab, so GNOME may be asking *Keep changes?* |
+| `maps`, `current`, `bounded-read` | `/proc/self/maps` unreadable, no current configuration, or an address in the walk is not in a readable mapping |
+| `layout-mode`, `public-view`, `connectors` | what was read privately does not agree with what Mutter says publicly |
+| `request`, `not-an-overlap` | the caller's picture of the session is stale, names other monitors, changes nothing, or asks for a layout Mutter would have accepted |
+| `write`, `read-back`, `positive-control`, `apply` | the address went away, the write did not land where it was aimed, Mutter's validator accepted the result, or the apply itself failed |
+| `internal` | anything else, with the stack in the journal |
+
+#### The private structure, and the descriptions that describe it
+
+`MetaMonitorsConfig` is a `GObject` declared in `src/backends/meta-monitor-config-manager.h`
+with no public accessors for the fields that matter. It is not in the introspection
+data and it has no stable layout: the whole feature rests on knowing where two 32-bit
+words are, per generation, and on proving that belief before every write. Measured on
+stock GNOME 46.0 (libmutter 14) and 50.1 (libmutter 18), with `parent_config` and
+`switch_config` proved by writing sentinels through the exported accessors:
+
+| offset | libmutter 14 (GNOME 46) | libmutter 18 (GNOME 50) |
 |---|---|---|
-| `shell-version` | a build nobody has measured: shell major ∈ {46, 50}, exactly one libmutter mapped, its generation the matching one, the `Meta` typelib version agreeing | `GNOME Shell 48.3 is not a build this has been measured on` (from the tool, before the extension is asked) |
-| `typelib` | our own record's size, read back from *our own* typelib through `GIRepository` (no constant to go stale), against `GObject.type_query(MetaMonitorsConfig).instance_size`; then every declared symbol probed | a 14-shaped description with mutter 18's tail, installed on 46: `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
-| `sentinel` | the tail has moved: a value written through Mutter's own exported `set_switch_config` must appear at the offset we believe, on a throwaway `create_linear()` object, never on the live one | pins offsets 64 (mutter 14) / 72 (mutter 18), which are what differ between the two |
-| `pending-dialog` | the one window in which a mutated configuration could reach Mutter's writer: confirming a "Keep changes?" makes Mutter save whatever is *current*, and a saved overlap poisons `monitors.xml` for ever | `Main.modalCount` must be exactly 0. Measured refusing with the dialog on screen on both releases, and measured **not** firing at all in the first cut of this check, which is its own subsection below |
-| `bounded-read` | anything unreadable: the whole configuration read through `g_memdup2`, every address checked against `/proc/self/maps` | `0x…+40 is not in a readable mapping` |
-| `public-view` | everything else: count, x, y, w, h, scale, primary and connector names against `global.display` and `MetaMonitorManager` | the **same-size field swap** — the residual risk the safety work could not otherwise close — read garbage and was refused: `private read has 1 monitors, Mutter reports 3; monitor 0: x reads -41753344, Mutter says 0 …`, **and gnome-shell survived it** |
+| 0 to 23 | `GObject` header (class pointer, ref count, qdata) | the same |
+| 24 | `parent_config` | `parent_config` |
+| 32 | `key` | `key` |
+| 40 | `logical_monitor_configs` (a `GList *`) | the same, at the same offset |
+| 48 | `disabled_monitor_specs` | `disabled_monitor_specs` |
+| 56 | `flags` | unused |
+| 60 | `layout_mode` | unused |
+| 64 | `switch_config` | unused |
+| 68 | padding | `layout_mode` |
+| 72 | — | `switch_config` |
+| 76 | — | padding |
+| **size** | **72 bytes** | **80 bytes** |
 
-Then, after the write and before the apply: the configuration is re-read the same
-bounded way and must differ from the old one in exactly the requested `x` and `y`; and
-`meta_verify_monitors_config()` must **refuse** it. That last one is a positive
-control — if Mutter's validator accepts what we built, the write did not land on the
+The list at 40 is the one that is walked, and it is the same offset on both, which is
+exactly the trap: a description written for one generation reads plausible monitors on
+the other and gets the tail wrong. That is what the struct-size gate and the sentinel
+are for, and it is why there is one description per generation rather than one with a
+conditional in it.
+
+The four records reached from there are the same on both generations. The sizes are
+the byte counts the bounded reader copies:
+
+| record | fields | size |
+|---|---|---|
+| `GList` node | `data` +0, `next` +8, `prev` +16 | 24 |
+| `MetaLogicalMonitorConfig` | **`x` +0, `y` +4**, `width` +8, `height` +12, `monitor_configs` +16, `transform` +24, `scale` (float) +28, `is_primary` +32, `is_presentation` +36 | 40 |
+| `MetaMonitorConfig` | `monitor_spec` +0, `mode_spec` +8, `enable_underscanning` +16 | 24 |
+| `MetaMonitorSpec` | `connector` +0, `vendor` +8, `product` +16, `serial` +24 | 32 |
+
+**`x` at +0 and `y` at +4 of a `MetaLogicalMonitorConfig` are the only bytes this
+project ever writes into another program.** Eight per moved monitor, and nothing else
+in the tree can write anything into gnome-shell at all.
+
+**How the descriptions are made.** `gnome/overlap-typelib/gen-gir.py` emits one `.gir`
+per generation and compiles each with `g-ir-compiler`. Two properties of what it emits
+matter more than the rest of the file:
+
+* **no pointer is declared as a pointer.** Every pointer field above is `guint64`, so
+  reading one yields a number that JavaScript can range-check rather than an address
+  gjs will follow. The steps between structures are declared as functions: `dup_cfg`,
+  `dup_node`, `dup_lmc`, `dup_mc` and `dup_ms` are all `g_memdup2` with a different
+  return record each, `strn` is `g_strndup`, `addr` is `g_object_ref` returning a
+  number, `type_name` is `g_type_name_from_instance` (offset 0 only, and a
+  `GTypeInstance`'s first word is frozen ABI), and `wr` is `memcpy`;
+* **nothing that can write `~/.config/monitors.xml` is declared.**
+  `meta_monitor_config_manager_save_current()` is not in the file and neither is any
+  other `*save*` symbol, so the writer is not callable from the extension even by
+  mistake. `tests/test_gnome_overlap.py` asserts that against the `.gir` sources *and*
+  against the compiled `.typelib` bytes, and asserts that no spelling of
+  `METHOD_PERSISTENT` reaches the apply.
+
+The compiled typelibs are checked in, because compiling one needs `g-ir-compiler` from
+`libgirepository1.0-dev` and no desktop has that installed.
+
+```sh
+python3 gnome/overlap-typelib/gen-gir.py           # regenerate both .gir and .typelib
+python3 gnome/overlap-typelib/gen-gir.py --check   # recompile and compare, changing nothing
+```
+
+`--check` is what notices a `.gir` edited without a rebuild, and the test suite runs
+the same comparison over the checked-in bytes.
+
+**Adding a generation** is four edits and one measurement, and the measurement is the
+work. The edits: an entry in `BUILDS` in `gen-gir.py`, which is
+`generation → (soname, how many ints sit between disabled_monitor_specs and
+layout_mode)` and is the whole of what differs between the two descriptions today (1
+for mutter 14, 3 for mutter 18); the Shell major in `SUPPORTED` in `rules.js`; the same
+major in `SUPPORTED_MAJORS` in `wxrandr/gnome_overlap.py`; and `shell-version` in
+`metadata.json`. Two tests hold those three lists together, so adding a release to one
+and not the others fails the suite rather than shipping a gate that disagrees with
+itself: `VersionGate::test_the_gate_matches_what_the_extension_declares` for the
+metadata, and `RulesJS::test_the_version_gate_is_the_same_on_both_sides`, which runs
+`rules.js` under plain `node` and is skipped where there is none. The measurement is
+step 5 of *If a GNOME upgrade breaks this*, below.
+
+#### Every check, in order
+
+`Probe` and `ApplyOverlap` run the same five methods, which report six checks, in this
+order and on every call. A check that passes appends a line to `checks`, which is what
+`wxrandr --dryrun --unsafe-gnome-overlap` and `install-overlap.sh --check` print. Each
+one names itself when it refuses, except that the second reports as `typelib` when it
+passes and refuses under three different names depending on what was wrong.
+
+| # | check | what it catches | what a failure looks like |
+|---|---|---|---|
+| 1 | `shell-version` | a build nobody has measured: Shell major in {46, 50}, exactly one libmutter mapped into the process, its generation the matching one, and the `Meta` typelib version agreeing with it | `GNOME Shell 48.3: this extension knows the private layout of 46 and 50 only`, or `GNOME Shell 50.1 should carry libmutter-18, this process has [14]`, or `the Meta typelib says 14, libmutter says 18`. The tool refuses one release earlier still, from the Shell's public version property, before the bus is touched |
+| 2 | `typelib` | the description is missing, will not load, has lost a symbol, or describes a structure of the wrong size. The size is read back out of *our own* typelib through `GIRepository` and compared with `GObject.type_query(MetaMonitorsConfig).instance_size`, so there is no constant in this tree to go stale | `FwOverlap18-1.0.typelib is not installed in …`, `FwOverlap18.create_linear is not callable`, or the one that matters: `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
+| 3 | `sentinel` | the tail has moved even though the size has not. `0x5f5a` is written through Mutter's own exported `set_switch_config`, on a throwaway `create_linear()` object and never on the live one, and has to reappear at the offset this description believes | `switch_config reads 0 at the offset this description believes, not 24410: the tail of MetaMonitorsConfig is not where it was measured`. It pins offset 64 on mutter 14 and 72 on mutter 18, which is precisely what differs between them |
+| 4 | `pending-dialog` | the one window in which a mutated configuration could reach Mutter's *writer*: confirming a *Keep changes?* makes Mutter save whatever is current, and a saved overlap poisons `monitors.xml` for ever. `Main.modalCount` must be exactly 0 | `something holds a modal grab on the shell. If that is GNOME asking whether to keep a display change, …`. It fails closed: a count that is not a whole number, or is negative, refuses too. Measured refusing with the dialog on screen on both releases, and measured **not** firing at all in the first cut of this check, which is its own subsection below |
+| 5 | `bounded-read` | anything unreadable: the whole configuration is copied out with `g_memdup2` and `g_strndup`, every address checked against `/proc/self/maps` first, list walks capped at 16 monitors and connector names at 63 bytes | `node[1]: 0x1+24 is not in a readable mapping` — the wild pointer that killed a shell back when pointers were declared as pointers. `layout-mode` refuses here too, when the publicly reported layout mode is not what is read at the offset believed: `layout_mode reads 2 at the offset this description believes; DisplayConfig says 1` |
+| 6 | `public-view` | everything else: count, `x`, `y`, `w`, `h`, `scale`, `primary` and the connector names against `global.display` and `MetaMonitorManager`. This is where a wrong offset that survived the size gate and the sentinel dies, because garbage does not agree with the public view on all of that at once | `private read has 1 monitors, Mutter reports 3; monitor 0: x reads -41753344, Mutter says 0 …` **and gnome-shell survived it**. The reply says which public source was used, because GNOME 46 can only supply the geometry half and takes the names from what the caller read out of DisplayConfig |
+
+Then, on `ApplyOverlap` only, after the write and before the apply: the configuration
+is re-read the same bounded way and must differ from the old one in exactly the
+requested `x` and `y` (`read-back`), and `meta_verify_monitors_config()` must **refuse**
+it (`positive-control`). That last one is why the tool prints `mutter's own validator
+on the result: refused: Logical monitors not adjacent` and why that line is not
+decoration: if Mutter's validator accepts what was built, the write did not land on the
 field the validator reads, and nothing is applied.
-
-`layout_mode` is cross-checked against the value DisplayConfig reports publicly, which
-pins the tail a second time with a public number: claiming logical mode on GNOME 46
-(whose default is physical) gets `layout_mode reads 2 at the offset this description
-believes; DisplayConfig says 1`.
-
-**Measured end to end, both releases, three virtio heads.** Every check green;
-monitors placed at 0, 960 and 2880; the 960-pixel shared region cropped from two
-screendumps **byte-identical**; `meta_verify_monitors_config` refusing the mutated
-configuration by name; `monitors.xml` absent before and after, or present with an
-identical digest; the layout gone after a reboot, with no `monitors config` line in
-the journal; and a later confirmed `--persistent` of a valid layout writing that valid
-layout and nothing else.
 
 #### The check that could not fire, and what it cost
 
@@ -855,6 +1038,92 @@ now either exercised by a test that fails when it stops firing
 `ShippedExtension::test_the_pending_dialog_check_reads_a_field_that_exists`) or was
 made to fire live against a deliberately broken description.
 
+#### Nothing at login, and nothing on disk
+
+Two deliberate absences, and they are the reason this is shippable at all rather than
+a patch somebody keeps in a branch.
+
+**It never acts at login.** `enable()` exports one D-Bus object, owns one bus name and
+returns. It does not load a typelib, does not touch a libmutter symbol, does not read a
+monitor and does not look at `/proc/self/maps`. The failure this prevents is the only
+unrecoverable one available: a crash at session start, with the extension already
+enabled, and no desktop to reach a setting from. Because nothing runs then, an enabled
+extension that is never called is inert, which was measured over about ten logins on
+GNOME 50.1 and five on GNOME 46.0, the only journal line either of them ever wrote
+being `fuckwayland-overlap: enabled (idle; it acts only when called)`. The test that
+keeps it that way reads the body of `enable()` and fails on any mention of a typelib,
+`imports.gi`, libmutter, `get_config_manager` or the reader, so growing this method is
+a failing suite rather than a bad login.
+
+**It never persists a layout**, and four separate things hold that:
+
+1. `--persistent` and `--unsafe-gnome-overlap` refuse each other in the tool, in either
+   argument order, before a bus call is made;
+2. the type description does not name `meta_monitor_config_manager_save_current` or any
+   other writer, so the symbol is not callable from the extension at all, asserted
+   against both the `.gir` sources and the shipped `.typelib` bytes;
+3. the apply method is the constant `METHOD_TEMPORARY` (1), and `METHOD_PERSISTENT`
+   appears nowhere in the extension under any spelling;
+4. the file's SHA-256 is taken before and after every call and handed back in the reply,
+   so the tool reports rather than assumes, and says so loudly if it ever differs.
+
+That is not tidiness. `~/.config/monitors.xml` is read back through the very validator
+this feature exists to get past, and one entry it refuses discards the **whole file**
+at every boot, for ever, with the only trace a line in the journal. A persisted overlap
+would not be a layout that came back, it would be every saved arrangement the user had
+silently destroyed. So the layout goes at the next logout, and the way to have it again
+is to run the command again. The undo is printed before the change, is built from the
+layout that is running at that moment, and goes through DisplayConfig, so the way back
+never depends on the dangerous half still working or on the extension still being
+loaded.
+
+One surprise worth writing down: an overlap **does** survive a monitor unplug and
+replug inside the same session, because Mutter restores the layout from its own
+in-memory store without validating it again. It still goes at logout.
+
+#### What was measured, with the numbers
+
+GNOME 50.1 (Ubuntu 26.04) and GNOME 46.0 (Ubuntu 24.04), stock images built by the
+Ubuntu installer, three virtio heads, nothing patched.
+
+* **The shared region is really shared.** Monitors at 0, 960 and 2880; both heads'
+  screendumps cropped to the 960-pixel overlap and dumped as raw RGB have the **same
+  SHA-256**, and ImageMagick's `AE` and `RMSE` between them are **0**, against a
+  control of **507,079** differing pixels for the same head's own left and right
+  halves.
+* **A window inside the shared region is drawn byte-identically on both heads.**
+* **The pointer crosses the whole bounding box with no jump, no dead zone and no
+  duplication**, and a click in the shared region focuses the window drawn there.
+* **A small monitor inside a large one works**, which is the case mirroring cannot
+  express at all: a 1024x768 head at `+448+156` inside a 1920x1080 one is
+  byte-identical to that sub-rectangle of its neighbour.
+* **Mutter's own validator refuses the mutated configuration by name** on every apply,
+  which is the positive control that the write landed on the field the validator reads.
+* **`monitors.xml` never moves**: absent before and after, or present with an identical
+  digest across the apply; the layout gone after a reboot with no `monitors config` line
+  in the journal; and a later confirmed `--persistent` of a *valid* layout writing that
+  valid layout and nothing else.
+* **Five deliberate breakages were installed over the shipped extension**, across the
+  two releases, and every one was refused by name: a 14-shaped description with
+  mutter 18's tail (`struct-size`), the version table claiming libmutter 19 for GNOME
+  50 (`libmutter`), `key` and `logical_monitor_configs` swapped, which are the same size
+  (`bounded-read`, `node[1]: 0x1+24 is not in a readable mapping`), the list offset
+  shifted by 8 (`public-view`, `private read has 0 monitors, Mutter reports 3`), and a
+  same-size field swap that read garbage (`public-view`). **`gnome-shell` survived all
+  five**: no crash, no core dump, the desktop still running afterwards.
+* **The consent path was measured too**, on 50.1: first apply asks and the second says
+  one line; the agreement survives a reboot while the layout does not; a recorded
+  `50.0` against a live `50.1` brings the whole paragraph back; a recorded struct size
+  of 96 against a measured 80 prints the quiet line *and* withdraws the agreement; and,
+  the decisive one, with an agreement in place and a deliberately wrong type
+  description installed, the `struct-size` check refused, the exit status was 1 and
+  nothing was applied.
+* **The GUI half was driven on the real desktop** with `wdotool`: drag, Apply, dialog,
+  box, *Apply anyway*, after which `wxrandr --query` reads `Virtual-2
+  1920x1080+960+0`, the second head's screendump shows the shared 960 px and the
+  consent file exists. A second overlapping Apply produced no dialog, and Cancel
+  applied nothing.
+
 #### If a GNOME upgrade breaks this
 
 For whoever finds `--unsafe-gnome-overlap` refusing after an update, in the order to
@@ -870,7 +1139,8 @@ check it, and none of it needs a debugger:
    the measurement in step 5. A recorded agreement (below) has already stopped
    applying at this point, on its own, because it names the version it was given on:
    the upgraded machine asks in full again rather than proceeding on an old yes.
-3. **`typelib`** — `MetaMonitorsConfig` changed size. The message says both numbers.
+3. **`struct-size`**, reported by the `typelib` check — `MetaMonitorsConfig`
+   changed size. The message says both numbers.
    The fix is a new `.gir` for the new generation under `gnome/overlap-typelib/`,
    rebuilt with `python3 gnome/overlap-typelib/gen-gir.py`, whose `--check` proves the
    checked-in `.typelib` bytes match the `.gir` beside them. Nothing was read before
@@ -894,6 +1164,57 @@ check it, and none of it needs a debugger:
    are not where this description says they are, or the list is being changed under
    the walk. Neither is fixable by retrying, and a refusal is the right answer to
    both, which is what it gives.
+
+#### The risk that is left, and getting a session back
+
+Stated plainly, because a reader has to be able to decide against this:
+
+* **A wrong write is not a wrong answer, it is a dead compositor.** The checks turn
+  nearly every wrong description into a refusal, and every one that was tried was
+  refused, but *nearly* is the honest word. Five deliberate breakages caught is not a
+  proof that a sixth would be.
+* **The case the design cannot close by construction** is two fields of the same size
+  swapped by an upstream change. The size gate passes, the sentinel may pass, and what
+  is left is the bounded reader refusing an address that is not mapped, or the
+  public-view comparison noticing that the numbers are nonsense. Both were measured
+  catching exactly that, on two different swaps, and both are checks rather than
+  certainties.
+* **The allowlist is a claim about two builds this project measured.** A distribution
+  that backports a Mutter change without moving the Shell's major version can make the
+  version gate say yes to a library nobody has seen. What stands behind it then is the
+  structure size, the sentinel and the public-view comparison, in that order.
+* **If `gnome-shell` dies, everything in the session dies with it**: not the layout, the
+  browser, the editor, the unsaved buffer, the terminal it was typed in. On Wayland the
+  compositor is the session and there is no restarting it in place.
+
+**Getting a session back.** It should not come to this, because the extension does
+nothing at login and a layout that was never saved cannot come back to bite anybody.
+The route is printed in the warning the tool gives before every apply, and it is this,
+in order:
+
+1. **Log in again.** A `gnome-shell` that dies drops you at the login screen. Nothing
+   was saved, so what comes back is the layout you started with. Measured aside, twice:
+   after a `gnome-shell` killed outright, GNOME came back having set
+   `org.gnome.shell disable-user-extensions` to `true` by itself, so the next session
+   had this extension, and every other, inert.
+2. **If no session will start**, Ctrl+Alt+F3 to a text console, log in there, and
+   `gnome-extensions disable fuckwayland-overlap@fuckwayland`, then Ctrl+Alt+F1 back to
+   the login screen. This works from a real text login, which has `XDG_RUNTIME_DIR`
+   set. It does **not** always work from a bare shell with no session bus: it prints
+   `dconf-WARNING … failed to commit` and exits **0** having changed nothing, which is a
+   `gnome-extensions` behaviour and not something this project can fix.
+3. **The route that always works** is deleting the directory:
+   `rm -rf ~/.local/share/gnome-shell/extensions/fuckwayland-overlap@fuckwayland`. It
+   is printed in the warning for exactly that reason, and
+   `sh gnome/install-overlap.sh --uninstall` is the same thing with the disable step in
+   front of it.
+4. **Withdrawing the agreement** is `wxrandr --gnome-overlap-forget`, which builds no
+   session and opens no socket, or `rm ~/.config/fuckwayland/overlap-consent.json`,
+   which is the same thing and is why the record is a plain file.
+
+None of the four needs a graphical session, and the two that matter most have a form
+that is a plain `rm` of a directory or a file, so neither needs this tree, a working
+bus or a shell that will start.
 
 #### The agreement, and why it cannot skip any of the above
 
