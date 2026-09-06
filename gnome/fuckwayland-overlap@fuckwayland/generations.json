@@ -61,6 +61,16 @@
       "struct_size": 80,
       "tail_slots": 3,
       "measured_on": "Ubuntu 26.04, GNOME Shell 50.1, mutter 50.1"
+    },
+    {
+      "shell_major": 51,
+      "libmutter": "51",
+      "soname": "libmutter-51.so.0",
+      "meta_typelib": "51",
+      "namespace": "FwOverlap51",
+      "struct_size": 80,
+      "tail_slots": 3,
+      "measured_on": "Ubuntu 26.10, GNOME Shell 51.beta, mutter 51~beta-1ubuntu2 (libmutter-51.so.0 build e13468162ed2)"
     }
   ]
 }

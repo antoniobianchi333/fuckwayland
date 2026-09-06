@@ -693,13 +693,14 @@ Every option, safe ones and dangerous ones together:
 | `--gnome-overlap-forget` | wxrandr | withdraws the agreement. Needs no desktop, so it works from a text console |
 | `--unsafe-gnome-overlap` | wxrandr | **the one that applies it.** Ignored unless the layout really overlaps and the route is really there. Every check still runs |
 | `--unsafe-gnome-overlap` | warandr | applies overlapping layouts without ever asking, for a window started from a hotkey or a desktop entry. Waives the question, not the checks, and records no agreement |
-| `--unsafe-gnome-overlap-unmeasured N` | wxrandr | **the only thing here that gets past a refusal.** On a GNOME nobody has measured, and only there, it says *I know this machine, try anyway* — `N` is the GNOME Shell major that is running, so a line copied from a forum is refused on your machine. It skips that one check and no other, is never remembered, and can end your session. `warandr` has no way to reach it |
+| `--unsafe-gnome-overlap-unmeasured N` | wxrandr | **the only thing here that gets past a refusal.** On a GNOME nobody has measured, and only there, it says *I know this machine, try anyway* — `N` is the GNOME Shell major that is running, so a line copied from a forum is refused on your machine. It skips that one check and no other, is never remembered, and can end your session, `--dryrun` included, because the remaining checks run inside `gnome-shell`. `warandr` has no way to reach it |
 
 The checks are what stands between this and a lost session, so read what they are
 before reaching for anything that gets past them. There is exactly one thing that
 gets past one of them, and it is the last row of that table: on a GNOME this
 project has not measured — which is what a release upgrade produces —
-`--unsafe-gnome-overlap-unmeasured 51` says *this is my machine, try anyway*. It
+`--unsafe-gnome-overlap-unmeasured 52` says *this is my machine, try anyway*, with
+the number being the GNOME in front of you. It
 skips the check that says the build is known and nothing else: the struct size,
 the sentinel, the modal-grab guard, the bounded read, the comparison against
 GNOME's own view of the monitors and Mutter's own validator all still run, and
@@ -707,6 +708,13 @@ still refuse. It prints what may happen and how to get back before it happens,
 records nothing, and asks in full again next time. If a refusal names any other
 check, there is nothing to force: something is missing or has just proved itself
 wrong, and the answer stays no.
+
+**`--dryrun` is not a safe rehearsal of a forced run.** It writes nothing, and that
+is all it promises. The checks it runs happen inside `gnome-shell` and read through
+a description nobody has proved on this build, so a forced dryrun can end the
+session exactly like a forced apply. That is measured rather than theoretical: the
+first forced run ever attempted on a real GNOME 51 was a dryrun, and it took the
+session with it.
 
 What it looks like when it works:
 
@@ -736,7 +744,7 @@ The honest part: this works by writing eight bytes per monitor into the running
 `gnome-shell`, at a place that is a private detail of one build of it, and if that
 place is ever wrong `gnome-shell` dies and takes every program in your session with
 it. Six checks run before every write and refuse any build they do not recognise,
-which today means GNOME 46 and GNOME 50 and nothing else.
+which today means GNOME 46, GNOME 50 and GNOME 51 and nothing else.
 
 **Adding the next GNOME is meant to be small.** Everything version-specific — the
 library's file name, the typelib version, the type description, the size that
@@ -744,12 +752,22 @@ structure has to be — is one record per release in
 `gnome/fuckwayland-overlap@fuckwayland/generations.json`, and the refusal on an
 unmeasured build prints the versions it found, the size that build reports, what
 was expected, and the two files a record goes in. Every name in a record is
-written out rather than computed, because the next Ubuntu is where computing one
-stops working: mutter 51 renumbered its library to match the GNOME version, so
+written out rather than computed, because GNOME 51 is where computing one stopped
+working: mutter 51 renumbered its library to match the GNOME version, so
 GNOME 51 carries `libmutter-51.so.0` and not the `libmutter-19` the old counting
 would have produced. The procedure, including how to regenerate a type
 description from the release's own source and how to prove it before trusting it,
 is [docs/Technical.md § 6](docs/Technical.md#the-table-and-adding-a-gnome-generation).
+
+**GNOME 51 was added by following exactly that, and nothing else**, on Ubuntu
+26.10 with `libmutter-51.so.0`: the offsets came out of mutter 51's own header,
+the record went into the two files the refusal names, and every guard was then
+watched passing and watched failing on a three head desktop. The one thing the
+procedure did not say, and now does, is that a type description must not name a
+shared library: a forced run picks its description by size on a machine whose
+`libmutter` is by definition the wrong one, and a description that names a file
+which is not there made `gjs` abort `gnome-shell` on the first call through it.
+The descriptions name none now, and an old one that does is refused by name.
 
 **So does it survive a GNOME update? Measured, and yes — so far, and only so far.**
 Every update Ubuntu can deliver today was tried on desktops the Ubuntu installer
@@ -765,12 +783,13 @@ generation per release and keeps it for the release's life. What moves it is a r
 upgrade, 24.04 → 26.04, and there this is meant to refuse until somebody measures the
 new GNOME.
 
-**And when it is wrong it refuses rather than breaking anything.** Nine deliberately
-wrong descriptions of that structure have been installed on purpose across the two
-releases — wrong generation, fields of the same size swapped, the list read out of the
-wrong slot — and every one was refused by name, before any write, with `gnome-shell`
-still running afterwards. That is the bet this feature makes, and it has not lost it
-yet. It is still a bet: nine caught is not proof that a tenth would be, and what would
+**And when it is wrong it refuses rather than breaking anything.** Thirteen
+deliberately wrong descriptions of that structure have been installed on purpose
+across the three releases — wrong generation, fields of the same size swapped, the
+list read out of the wrong slot, a description naming a library that is not there —
+each of them put there the way a user would get one, at a login, and every one was
+refused by name, before any write, with `gnome-shell` still running afterwards. That is the bet this feature makes, and it has not lost it
+yet. It is still a bet: thirteen caught is not proof that a fourteenth would be, and what would
 beat all of it is an Ubuntu update that moves that structure without moving the
 version number the checks read. Nothing in 24.04's 28 months has done it, and one
 26.04 update in `-proposed` today does exactly that to a *different* private
@@ -1053,7 +1072,7 @@ then re-run verbatim on fresh images of four desktops.
 ## Testing
 
 Developed against real desktops, not against a model of them. `vm/` is the rig:
-`vmctl` builds and runs twelve golden images, each with up to four virtual monitors
+`vmctl` builds and runs thirteen golden images, each with up to four virtual monitors
 that can be plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/README.md` documents the whole thing and `vm/SETUP.md` is how to
 set the rig up on a machine of your own. `tests/` holds the suite, 2491 tests: unit
@@ -1081,4 +1100,4 @@ Ubuntu VM before it shipped. Vibe-check the code yourself, it can take it.
 | [docs/Blogpost.md](docs/Blogpost.md) | the long story: what X11 got right, four compositors with four answers, and what the measurements found |
 | [CHANGELOG.md](CHANGELOG.md) | the long form release notes |
 | [gnome/README.md](gnome/README.md) | the bridge extension's own interface and its live verification |
-| [vm/README.md](vm/README.md) | the rig: twelve flavors, what each one is, and what the six tools do on it |
+| [vm/README.md](vm/README.md) | the rig: thirteen flavors, what each one is, and what the six tools do on it |

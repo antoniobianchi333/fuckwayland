@@ -29,7 +29,7 @@ spawns on the hot path.
 ```
 gnome/
   fuckwayland-bridge@fuckwayland/
-    metadata.json                 uuid, shell-version ["45".."50"]
+    metadata.json                 uuid, shell-version generated from the table
     extension.js                  the extension (ESM)
     org.fuckwayland.Bridge1.xml   introspection XML (also embedded in extension.js)
   install-bridge.sh               POSIX sh installer / checker / uninstaller (+ --udev)

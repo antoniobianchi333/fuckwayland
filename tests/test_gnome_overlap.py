@@ -155,21 +155,33 @@ class FakeOverlap:
                 return self._refuse(
                     "shell-version",
                     "GNOME Shell %s: this extension knows the private layout of "
-                    "GNOME 46 and 50 only" % self.shell, True)
+                    "GNOME %s only"
+                    % (self.shell,
+                       " and ".join(str(m) for m in
+                                    gnome_overlap.SUPPORTED_MAJORS)), True)
             picked = [g for g in gnome_overlap.GENERATIONS
                       if g["struct_size"] == self.instance_size]
-            if len(picked) != 1:
+            # the same rule as rules.js selectByStructSize: records of one size
+            # that agree on `tail_slots` describe the same bytes under two
+            # names, so the newest of them is a selection rather than a guess;
+            # records that disagree cannot both be right and are a refusal.
+            shapes = {g["tail_slots"] for g in picked}
+            if not picked or len(shapes) > 1:
                 return self._refuse(
                     "struct-size",
                     "this build's MetaMonitorsConfig is %s bytes and no "
                     "description shipped here describes a struct that size"
                     % self.instance_size, False)
+            use = picked[-1]
+            same = ([g["namespace"] for g in picked[:-1]])
             forced = {"shell_major": gnome_overlap.shell_major(self.shell),
-                      "using": picked[0]["namespace"],
+                      "using": use["namespace"],
                       "because": "MetaMonitorsConfig is %s bytes here, which is "
-                                 "the size %s describes (measured on GNOME %s)"
-                                 % (self.instance_size, picked[0]["namespace"],
-                                    picked[0]["shell_major"])}
+                                 "the size %s describes (measured on GNOME %s%s)"
+                                 % (self.instance_size, use["namespace"],
+                                    use["shell_major"],
+                                    (", and the same bytes as %s" % ", ".join(same))
+                                    if same else "")}
         monitors = [dict(g, w=1920, h=1080, scale=1, transform=0,
                          primary=(g["x"] == 0))
                     for g in (req.get("want") or req.get("expect") or [])]
@@ -418,7 +430,8 @@ class VersionGate(unittest.TestCase):
             self.assertIsNone(gnome_overlap.unsupported_reason(v), v)
 
     def test_everything_else_is_refused_by_name(self):
-        for v in ("45.9", "47.0", "48.4", "49.1", "51.0", "3.38.5"):
+        for v in ("45.9", "47.0", "48.4", "49.1", "3.38.5",
+                  "%d.0" % (max(gnome_overlap.SUPPORTED_MAJORS) + 1)):
             why = gnome_overlap.unsupported_reason(v)
             self.assertIsNotNone(why, v)
             self.assertIn(v, why)

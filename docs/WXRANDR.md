@@ -332,7 +332,7 @@ deliberately, once, and *for one build*:
 
 ```console
 $ wxrandr --gnome-overlap-allow
-check shell-version: GNOME Shell 50.1, libmutter-18 (build 25d36850030c)
+check shell-version: GNOME Shell 50.1, libmutter-18.so.0 (build 25d36850030c)
 check typelib: FwOverlap18, MetaMonitorsConfig 80 bytes as declared
 check sentinel: switch_config round-tripped at the declared offset
 check pending-dialog: nothing holds a modal grab, so GNOME is not asking "Keep changes?"
@@ -532,6 +532,7 @@ Only the cautious one is forceable, and there is exactly one of them:
 | the extension is not on the bus | certain | still refused: there is nothing there to talk to |
 | the invocation changes a mode, scale, rotation, primary or mirroring | certain | still refused: the extension writes two words and can do none of that |
 | `symbols` — libmutter no longer exports something declared | certain | still refused: the code cannot run |
+| `shared-library` — the description names a library that is not mapped | certain | still refused, and this one is why forcing is survivable at all: see below |
 | `struct-size` — no shipped description is this size | certain | still refused: forcing picks a description, it does not write one |
 | `sentinel`, `bounded-read`, `layout-mode`, `public-view` | certain | still refused: the read has just disagreed with Mutter, which is the guard working |
 | `read-back`, `positive-control` | certain | still refused, and the old bytes are put back |
@@ -570,6 +571,40 @@ and then the ordinary warning underneath it — what moves, what it risks, what 
 saves, the undo line — because forcing adds a paragraph and replaces nothing. If
 it works, the apply says which description it used and that nothing was recorded.
 
+**`--dryrun` is not a safe rehearsal of a forced run.** It writes nothing, and
+that is all it promises: the checks it runs happen *inside* `gnome-shell` and
+read through a description nobody has proved on this build, so a forced dryrun
+can end the session exactly like a forced apply. Measured, on the first forced
+run ever attempted on a real GNOME 51: `gnome-shell` aborted during the checks,
+on a `--dryrun`, and the session went with it. The cause was a description that
+named `libmutter-18.so.0` — see the next paragraph — and it is fixed, but the
+shape of the risk is not: on an unmeasured build the checks themselves are the
+dangerous part, because they are the first thing to read private memory.
+
+**A description names no shared library, since 0.4 and because of that crash.**
+A `shared-library` in a `.gir` makes GIRepository `dlopen` exactly that file, and
+a forced run picks its description by struct size on a machine whose `libmutter`
+is by definition not the one that description was measured against. The `dlopen`
+fails, and gjs does not raise: it asserts and aborts the process, which on
+Wayland is the session. The shipped descriptions therefore name nothing and the
+symbols resolve out of `gnome-shell`'s own global scope, where `libmutter`
+already is; a description that *does* name one — an older install's, or a hand
+built one — is refused by name (`shared-library`) before anything is called
+through it. Which library is mapped is still proved, from `/proc/self/maps`,
+which is where a file name belongs.
+
+**On an unmeasured GNOME the extension has to be able to load at all**, and it
+could not: `gnome-shell` refuses to load an extension whose `metadata.json` does
+not name the running Shell major, and that list is generated from the table. So
+on exactly the builds this flag exists for, the extension sat installed, enabled
+and `OUT_OF_DATE`, the bus name was never taken, and the flag met *the overlap
+extension is not running*, which is certain and not forceable.
+`gnome/install-overlap.sh` now names the running major in the **installed** copy
+of `metadata.json` when that major is not in the table, and says so. That makes
+the extension load; it does not make it act. Its own `shell-version` check still
+refuses every call on a build the table does not name unless the call carries
+this flag.
+
 **And when it is not what you want**, which is most of the time: the refusal it
 answers is also the message that says how to make this GNOME a measured one, and
 that is the better ending. See below.
@@ -584,7 +619,7 @@ type description over the shipped one:
 
 | guard | what it catches | what it did when made to fire |
 |---|---|---|
-| `shell-version` | a build nobody has measured: shell major ∈ {46, 50}, exactly one libmutter mapped and of the matching generation, the `Meta` typelib version agreeing | with the table edited to claim libmutter 19 for GNOME 50: `refused (libmutter): GNOME Shell 50.1 should carry libmutter-19, this process has [18]` |
+| `shell-version` | a build nobody has measured: the shell major is one the table names (46, 50 and 51 today), exactly one libmutter mapped and of the matching generation, the `Meta` typelib version agreeing | with the table edited to claim libmutter 19 for GNOME 50: `refused (libmutter): GNOME Shell 50.1 should carry libmutter-19, this process has [18]` |
 | `typelib` (refusing as `struct-size`) | the structure is not the shape we describe: our own record's size, read back from *our own* typelib through `GIRepository` so there is no constant to go stale, against `GObject.type_query(MetaMonitorsConfig).instance_size` | `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
 | `sentinel` | the tail has moved even though the size has not: a value written through Mutter's own exported `set_switch_config` must reappear at the offset we believe, on a throwaway `create_linear()` object and never on the live one | pins the two offsets that actually differ between mutter 14 and 18 |
 | `pending-dialog` | the one window in which a mutated configuration could reach Mutter's *writer*: `Main.modalCount` must be exactly 0, and anything else, including a count that will not read as a whole number, is a refusal | with *Keep these display settings?* on screen, on both releases: `refused (pending-dialog): something holds a modal grab on the shell (Main.modalCount is 1) …` and the confirmed dialog then saved the layout **GNOME** had applied. It is the one guard measured refusing when it should not have: see below |
@@ -803,7 +838,7 @@ is printed in the warning anyway:
 inside the extension against the running libmutter, writing nothing:
 
 ```console
-xrandr: overlap check shell-version: GNOME Shell 46.0, libmutter-14 (build 9e23feb34618)
+xrandr: overlap check shell-version: GNOME Shell 46.0, libmutter-14.so.0 (build 9e23feb34618)
 xrandr: overlap check typelib: FwOverlap14, MetaMonitorsConfig 72 bytes as declared
 xrandr: overlap check sentinel: switch_config round-tripped at the declared offset
 xrandr: overlap check pending-dialog: nothing holds a modal grab, so GNOME is not asking "Keep changes?"

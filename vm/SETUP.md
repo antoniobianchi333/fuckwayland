@@ -101,10 +101,10 @@ Disk, measured on the finished images (`du -sh ~/vm-data/golden/*.qcow2`):
   metapackage (`noble-gnome` the smallest, `resolute-kde-x11` the largest), **3.5 GB**
   for `stonking-kde` (the bare Plasma session, no metapackage), **0.7 GB** for
   `resolute-sway`, and **8.7 GB** (`resolute-gnome-iso`) and **10 GB**
-  (`noble-gnome-iso`) for the two the Ubuntu installer builds; all twelve together,
-  76 GB;
+  (`noble-gnome-iso`) for the two the Ubuntu installer builds; all thirteen together,
+  80 GB;
 * the base cloud images they are overlays on: 0.6 GB (24.04), 0.8 GB (26.04) and
-  0.8 GB (26.10, `stonking-kde` only), in `~/images`; and a desktop ISO per installer
+  0.8 GB (26.10, `stonking-kde` and `stonking-gnome`), in `~/images`; and a desktop ISO per installer
   flavor, 6.1 GB (26.04) and 6.2 GB (24.04);
 * an instance is an overlay on its golden: a few hundred kilobytes when created,
   173 MB after one self-test, tens to a few hundred MB after a day of use. It never

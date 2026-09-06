@@ -26,7 +26,10 @@ What is held down here:
   `GENERATIONS` are proved identical, `metadata.json` is proved derived from
   them, and nothing anywhere composes a library name out of a number -- which is
   the thing that stopped being true when mutter 51 renumbered libmutter's API
-  version to the GNOME major;
+  version to the GNOME major.  The stand-in for an unmeasured GNOME is one
+  past the newest record rather than a number written down, because writing
+  one down is how these tests came to be testing a build that had since been
+  measured;
 * **what a refusal prints** is a golden, because a message a maintainer cannot
   act on is the same as no message.
 """
@@ -55,22 +58,34 @@ MOVE = ("--output", "Virtual-2", "--pos", "960x0")
 
 TABLE_JSON = os.path.join(EXT_DIR, "generations.json")
 
-#: A GNOME nobody in this tree has measured, standing in for the next Ubuntu.
-#: The numbers are real: mutter 51's own meson.build sets
-#: `libmutter_api_version = '51'`, the archive's libmutter-51-0 ships
-#: /usr/lib/x86_64-linux-gnu/libmutter-51.so.0 and gir1.2-mutter-51 ships
-#: Meta-51.typelib, and `gen-gir.py --from-header` on 51's
-#: src/backends/meta-monitor-config-manager.h lays the struct out at 80 bytes
-#: with three tail slots.  None of that makes 51 supported -- it is not in the
-#: table and nothing here adds it -- it makes the *shape* of the next release
-#: something these tests can be written against.
-NEXT = {"shell_major": 51, "libmutter": "51", "soname": "libmutter-51.so.0",
-        "meta_typelib": "51", "namespace": "FwOverlap51",
+#: A GNOME nobody in this tree has measured: ONE PAST the newest record, worked
+#: out from the table rather than written down here.  It used to be written
+#: down, as 51, and then GNOME 51 was measured on Ubuntu 26.10 and every
+#: assertion about "the build nobody has measured" was quietly about a build
+#: that had been -- so the number moves with the table now, and adding a
+#: generation cannot leave this file testing the wrong thing.
+UNMEASURED_MAJOR = max(gnome_overlap.SUPPORTED_MAJORS) + 1
+UM = str(UNMEASURED_MAJOR)                      # what gets typed after the flag
+UMV = "%d.0" % UNMEASURED_MAJOR                 # what such a shell reports
+
+#: the same build as a table record, for the tests about what the table can
+#: express.  The names follow no scheme on purpose: mutter 51 renumbered
+#: libmutter's API version to the GNOME major, so a record has to be able to say
+#: anything.
+NEXT = {"shell_major": UNMEASURED_MAJOR, "libmutter": UM,
+        "soname": "libmutter-%s.so.0" % UM,
+        "meta_typelib": UM, "namespace": "FwOverlap%s" % UM,
         "struct_size": 80, "tail_slots": 3,
         "measured_on": "nowhere: this record is a test fixture"}
 
+#: which shipped description a forced run on such a build would be given: the
+#: newest whose declared size matches, which is what rules.js does.
+def _by_size(size=80):
+    hits = [g for g in gnome_overlap.GENERATIONS if g["struct_size"] == size]
+    return hits[-1]["namespace"]
 
-def unmeasured(mock, shell="51.0"):
+
+def unmeasured(mock, shell=UMV):
     """Point the mock extension at a GNOME nobody has measured, with the
     library and typelib names that release really carries."""
     ov = mock.overlap = FakeOverlap(shell=shell)
@@ -91,14 +106,14 @@ class Reachability(Case):
         flag and typing this one has to be a usage error, or there would be a
         command line in which this is what turns the feature on."""
         unmeasured(self.mock)
-        code, out, err = self.run_cli(FORCE, "51", *MOVE)
+        code, out, err = self.run_cli(FORCE, UM, *MOVE)
         self.assertEqual(code, 1)
         self.assertIn("only means something together with %s" % FLAG, err)
         self.assertEqual(self.ext_calls(), [])
         self.assertEqual(self.applied(), [])
 
     def test_it_needs_a_whole_gnome_major_and_not_a_version_string(self):
-        for bad in ("", "51.0", "fifty-one", "-1", "51x", "٥١"):
+        for bad in ("", UMV, "fifty-one", "-1", UM + "x", "٥١"):
             code, out, err = self.run_cli(FLAG, FORCE, bad, *MOVE)
             self.assertEqual(code, 1, bad)
             self.assertIn("takes the GNOME Shell major version", err)
@@ -112,21 +127,22 @@ class Reachability(Case):
     def test_it_has_to_name_the_gnome_in_front_of_you(self):
         """The property a bare --force cannot have: a line copied from a forum
         names the GNOME that person had, and is refused here by number."""
-        unmeasured(self.mock, "51.0")
+        unmeasured(self.mock, UMV)
         code, out, err = self.run_cli(FLAG, FORCE, "49", *MOVE)
         self.assertEqual(code, 1)
-        self.assertIn("names GNOME Shell 49; this session is GNOME Shell 51.0", err)
+        self.assertIn("names GNOME Shell 49; this session is GNOME Shell %s" % UMV,
+                      err)
         self.assertIn("copied from somewhere else", err)
         self.assertEqual(self.ext_calls(), [])
         self.assertEqual(self.applied(), [])
 
     def test_it_applies_when_it_names_this_gnome(self):
-        ov = unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        ov = unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 0, err)
         self.assertEqual(self.ext_calls(), ["ApplyOverlap"])
         # the request carries the force, explicitly, on the call itself
-        self.assertEqual(ov.calls[0][1]["force"], {"shell_major": 51})
+        self.assertEqual(ov.calls[0][1]["force"], {"shell_major": UNMEASURED_MAJOR})
 
     def test_a_measured_gnome_does_not_need_it_and_is_unchanged_by_it(self):
         """Typing it where it is not needed changes nothing at all: the version
@@ -136,8 +152,8 @@ class Reachability(Case):
         self.assertEqual(self.ext_calls(), ["ApplyOverlap"])
 
     def test_a_layout_gnome_accepts_never_reaches_any_of_it(self):
-        unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli(FLAG, FORCE, "51", "--output", "Virtual-2",
+        unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, "--output", "Virtual-2",
                                       "--pos", "1920x0")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.ext_calls(), [])
@@ -150,10 +166,10 @@ class NotADefault(Case):
         self.assertIsNone(cli.Session.overlap_force)
 
     def test_no_environment_variable_turns_it_on(self):
-        unmeasured(self.mock, "51.0")
-        env = {"WXRANDR_UNSAFE_GNOME_OVERLAP_UNMEASURED": "51",
-               "WXRANDR_OVERLAP_FORCE": "1", "WXRANDR_FORCE": "51",
-               "WXRANDR_UNMEASURED": "51"}
+        unmeasured(self.mock, UMV)
+        env = {"WXRANDR_UNSAFE_GNOME_OVERLAP_UNMEASURED": UM,
+               "WXRANDR_OVERLAP_FORCE": "1", "WXRANDR_FORCE": UM,
+               "WXRANDR_UNMEASURED": UM}
         code, out, err = self.run_cli(FLAG, *MOVE, env=env)
         self.assertEqual(code, 1)
         self.assertIn("is not a build this has been measured on", err)
@@ -180,15 +196,15 @@ class NeverRemembered(Case):
         return gnome_overlap.consent_path()
 
     def test_a_forced_run_records_nothing(self):
-        unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 0, err)
         self.assertFalse(os.path.exists(self.consent_file()))
         self.assertIn("Nothing was recorded", err)
 
     def test_the_agreement_and_the_flag_cannot_be_typed_together(self):
-        for argv in ((FLAG, FORCE, "51", gnome_overlap.ALLOW_FLAG),
-                     (gnome_overlap.ALLOW_FLAG, FLAG, FORCE, "51")):
+        for argv in ((FLAG, FORCE, UM, gnome_overlap.ALLOW_FLAG),
+                     (gnome_overlap.ALLOW_FLAG, FLAG, FORCE, UM)):
             code, out, err = self.run_cli(*argv)
             self.assertEqual(code, 1, argv)
             self.assertIn("cannot be used together", err)
@@ -198,14 +214,14 @@ class NeverRemembered(Case):
         """Written by hand for exactly the build in the room, which is the only
         way such a file could exist at all -- `--gnome-overlap-allow` cannot
         produce one here.  The paragraph is printed anyway."""
-        unmeasured(self.mock, "51.0")
+        unmeasured(self.mock, UMV)
         path = self.consent_file()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"format": gnome_overlap.CONSENT_FORMAT, "shell": "51.0",
-                       "libmutter": "51", "struct_size": 80,
+            json.dump({"format": gnome_overlap.CONSENT_FORMAT, "shell": UMV,
+                       "libmutter": UM, "struct_size": 80,
                        "agreed": "2026-01-01T00:00:00Z", "how": "by hand"}, fh)
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 0, err)
         self.assertIn("forcing past the one check", err)
         self.assertIn("What may happen:", err)
@@ -216,8 +232,8 @@ class NeverRemembered(Case):
         for it: nothing calls this on the forced path, and if anything ever did
         it would raise rather than write."""
         facts = gnome_overlap.facts(
-            {"shell": "51.0", "libmutter": "51", "instance_size": 80,
-             "forced": {"shell_major": 51, "using": "FwOverlap18"}})
+            {"shell": UMV, "libmutter": UM, "instance_size": 80,
+             "forced": {"shell_major": UNMEASURED_MAJOR, "using": _by_size()}})
         self.assertTrue(facts["forced"])
         with self.assertRaises(ValueError) as e:
             gnome_overlap.save_consent(facts, "a test that should not have")
@@ -272,7 +288,7 @@ class WhichRefusalsAreForceable(Case):
 
     def test_a_compositor_that_is_not_gnome_is_certain(self):
         for backend in ("kwin", "sway", "wlr"):
-            code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE, backend=backend)
+            code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE, backend=backend)
             self.assertEqual(code, 1, backend)
             self.assertIn("only means anything on GNOME", err)
             self.assertEqual(self.ext_calls(), [], backend)
@@ -282,37 +298,37 @@ class WhichRefusalsAreForceable(Case):
         naming it.  A version string nothing can read is not a build anybody
         can name, so there is nothing for the flag to agree with."""
         self.mock.overlap.shell = None
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 1)
         self.assertIn("does not report a version this can read", err)
         self.assertEqual(self.ext_calls(), [])
 
     def test_an_extension_that_is_not_there_is_certain(self):
-        ov = unmeasured(self.mock, "51.0")
+        ov = unmeasured(self.mock, UMV)
         ov.present = False
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 1)
         self.assertIn("the overlap extension is not running", err)
         self.assertEqual(self.applied(), [])
 
     def test_more_than_a_position_is_certain(self):
-        unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE, "--mode", "1280x720")
+        unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE, "--mode", "1280x720")
         self.assertEqual(code, 1)
         self.assertIn("changes more than where the monitors are", err)
         self.assertEqual(self.ext_calls(), [])
 
     def test_persistent_is_certain(self):
-        code, out, err = self.run_cli(FLAG, FORCE, "51", "--persistent", *MOVE)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, "--persistent", *MOVE)
         self.assertEqual(code, 1)
         self.assertIn("cannot be used together", err)
         self.assertEqual(self.ext_calls(), [])
 
     def test_a_symbol_that_is_absent_is_certain(self):
-        ov = unmeasured(self.mock, "51.0")
+        ov = unmeasured(self.mock, UMV)
         ov.reply = {"ok": False, "check": "symbols", "forceable": False,
-                    "reason": "FwOverlap18.create_linear is not callable"}
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+                    "reason": "%s.create_linear is not callable" % _by_size()}
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 1)
         self.assertIn("the overlap extension refused (symbols)", err)
         self.assertIn("create_linear is not callable", err)
@@ -323,9 +339,9 @@ class WhichRefusalsAreForceable(Case):
         """Forcing picks a description by size; it cannot write one.  A build
         whose MetaMonitorsConfig is a size nothing here describes has nothing
         to force with, and says so."""
-        ov = unmeasured(self.mock, "51.0")
+        ov = unmeasured(self.mock, UMV)
         ov.instance_size = 96
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 1)
         self.assertIn("the overlap extension refused (struct-size)", err)
         self.assertIn("96 bytes", err)
@@ -334,11 +350,11 @@ class WhichRefusalsAreForceable(Case):
     def test_every_other_check_stays_refused_with_the_flag_typed(self):
         for check in ("sentinel", "pending-dialog", "bounded-read",
                       "public-view", "layout-mode", "read-back",
-                      "positive-control", "table"):
-            ov = unmeasured(self.mock, "51.0")
+                      "positive-control", "table", "shared-library"):
+            ov = unmeasured(self.mock, UMV)
             ov.reply = {"ok": False, "check": check, "forceable": False,
                         "reason": "made to fire for this test"}
-            code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+            code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
             self.assertEqual(code, 1, check)
             self.assertIn("the overlap extension refused (%s)" % check, err)
             self.assertEqual(self.applied(), [], check)
@@ -346,11 +362,11 @@ class WhichRefusalsAreForceable(Case):
     # -- cautious: the one that forcing is for -------------------------------
 
     def test_the_version_gate_is_the_only_one_that_changes_answer(self):
-        unmeasured(self.mock, "51.0")
+        unmeasured(self.mock, UMV)
         code, out, err = self.run_cli(FLAG, *MOVE)
         self.assertEqual(code, 1)
         self.assertIn("is not a build this has been measured on", err)
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 0, err)
 
 
@@ -358,9 +374,9 @@ class WhichRefusalsAreForceable(Case):
 
 class WhatForcingPrints(Case):
     def test_the_paragraph_is_printed_before_the_call_every_time(self):
-        unmeasured(self.mock, "51.0")
+        unmeasured(self.mock, UMV)
         for _ in range(3):
-            code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+            code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
             self.assertEqual(code, 0, err)
             head = err[:err.index("What it does:")]
             self.assertIn("forcing past the one check", head)
@@ -370,9 +386,10 @@ class WhatForcingPrints(Case):
                 self.assertIn(said, head)
 
     def test_it_says_what_is_skipped_and_what_cannot_be(self):
-        unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
-        self.assertIn("one thing: that GNOME Shell 51.0 is a build this project has",
+        unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
+        self.assertIn("one thing: that GNOME Shell %s is a build this project has"
+                      % UMV,
                       err)
         self.assertIn("chosen instead by the size this build's own GType registry", err)
         for kept in ("sentinel", "modal-grab", "bounded read", "public",
@@ -381,8 +398,8 @@ class WhatForcingPrints(Case):
         self.assertIn("none of it can be forced", err)
 
     def test_it_says_what_may_happen_and_what_to_do_if_it_does(self):
-        unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertIn("gnome-shell crashes", err)
         self.assertIn("every program running in it goes", err)
         # the way back, in full, and it is the same one the ordinary warning gives
@@ -393,22 +410,22 @@ class WhatForcingPrints(Case):
     def test_the_ordinary_warning_is_printed_as_well(self):
         """Forcing adds a paragraph; it never replaces the one that says what
         moves, what it risks, what it saves and how to undo it."""
-        unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         for said in ("What it does:", "What it risks:", "What it saves:",
                      "To undo:"):
             self.assertIn(said, err)
         self.assertIn("move Virtual-2 from +1920+0 to +960+0", err)
 
     def test_the_apply_says_which_description_it_used(self):
-        unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
-        self.assertIn("applied on an unmeasured GNOME through FwOverlap18", err)
+        unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
+        self.assertIn("applied on an unmeasured GNOME through %s" % _by_size(), err)
         self.assertIn("MetaMonitorsConfig is 80 bytes here", err)
 
     def test_a_dryrun_prints_it_and_writes_nothing(self):
-        unmeasured(self.mock, "51.0")
-        code, out, err = self.run_cli("--dryrun", FLAG, FORCE, "51", *MOVE)
+        unmeasured(self.mock, UMV)
+        code, out, err = self.run_cli("--dryrun", FLAG, FORCE, UM, *MOVE)
         self.assertEqual(code, 0, err)
         self.assertIn("forcing past the one check", err)
         self.assertIn("dryrun: nothing was written", err)
@@ -422,16 +439,16 @@ class WhatARefusalPrints(Case):
     part is there."""
 
     def refusal(self):
-        unmeasured(self.mock, "51.0")
+        unmeasured(self.mock, UMV)
         code, out, err = self.run_cli(FLAG, *MOVE)
         self.assertEqual(code, 1)
         return err
 
     def test_it_names_the_versions_found(self):
         err = self.refusal()
-        self.assertIn("GNOME Shell 51.0", err)
-        self.assertIn("libmutter-51.so.0", err)
-        self.assertIn("Meta typelib 51", err)
+        self.assertIn("GNOME Shell %s" % UMV, err)
+        self.assertIn("libmutter-%s.so.0" % UM, err)
+        self.assertIn("Meta typelib %s" % UM, err)
 
     def test_it_names_the_structure_size_this_build_reports(self):
         self.assertIn("MetaMonitorsConfig 80 bytes, from this build's GType "
@@ -453,21 +470,21 @@ class WhatARefusalPrints(Case):
 
     def test_it_offers_the_flag_with_this_machines_number_in_it(self):
         err = self.refusal()
-        self.assertIn("%s %s 51" % (FLAG, FORCE), err)
+        self.assertIn("%s %s %s" % (FLAG, FORCE, UM), err)
         self.assertIn("skips this one check and no other", err)
         self.assertIn("may end this session", err)
 
     def test_a_forced_run_is_not_told_how_to_force(self):
         """It is already forcing.  Repeating the offer would be noise on the one
         message that has to be read."""
-        ov = unmeasured(self.mock, "51.0")
+        ov = unmeasured(self.mock, UMV)
         ov.reply = {"ok": False, "check": "sentinel", "forceable": False,
                     "reason": "the tail is not where it was measured"}
-        code, out, err = self.run_cli(FLAG, FORCE, "51", *MOVE)
+        code, out, err = self.run_cli(FLAG, FORCE, UM, *MOVE)
         self.assertNotIn("To try it here now", err)
 
     def test_with_no_extension_it_says_the_numbers_need_one(self):
-        ov = unmeasured(self.mock, "51.0")
+        ov = unmeasured(self.mock, UMV)
         ov.present = False
         code, out, err = self.run_cli(FLAG, *MOVE)
         self.assertEqual(code, 1)
@@ -477,7 +494,7 @@ class WhatARefusalPrints(Case):
     def test_the_agreement_option_gives_the_same_message(self):
         """`--gnome-overlap-allow` on a new release is exactly where a
         maintainer lands, so it is the same message and not a shorter one."""
-        unmeasured(self.mock, "51.0")
+        unmeasured(self.mock, UMV)
         code, out, err = self.run_cli(gnome_overlap.ALLOW_FLAG)
         self.assertEqual(code, 1)
         self.assertIn("To add this build:", err)
@@ -529,10 +546,21 @@ class TheTable(unittest.TestCase):
         self.assertEqual(girs, sorted("%s-1.0.gir" % g["namespace"]
                                       for g in self.table()["generations"]))
 
-    def test_the_shipped_gir_names_the_soname_the_record_does(self):
+    def test_no_shipped_gir_names_a_shared_library(self):
+        """The inverse of what this asserted until 0.4, and the reason is a
+        dead session: a `shared-library` makes GIRepository dlopen exactly that
+        file, and a forced run picks a description by size on a machine whose
+        libmutter is by definition not the one the description was measured
+        against.  The dlopen fails and gjs aborts gnome-shell on the first call
+        through it -- measured on GNOME 51, on a `--dryrun` that writes
+        nothing.  A description is a layout; which library is mapped is proved
+        from /proc/self/maps."""
         for g in self.table()["generations"]:
             text = self.read(os.path.join(GIR_DIR, "%s-1.0.gir" % g["namespace"]))
-            self.assertIn('shared-library="%s"' % g["soname"], text)
+            body = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+            self.assertNotIn("shared-library", body)
+            self.assertNotIn(g["soname"], body)
+            self.assertIn('name="%s"' % g["namespace"], body)
 
     #: code that builds a *file name* or a *namespace* out of a substituted
     #: value.  Prose about the old scheme is fine and is everywhere; a format
@@ -585,12 +613,13 @@ class TheTable(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(table, fh)
             records = gen.load_table(path)
-        self.assertEqual([g["shell_major"] for g in records], [46, 50, 51])
+        self.assertEqual([g["shell_major"] for g in records],
+                         list(gnome_overlap.SUPPORTED_MAJORS) + [UNMEASURED_MAJOR])
         ns, text = gen.gir(records[-1])
-        self.assertEqual(ns, "FwOverlap51")
-        self.assertIn('shared-library="libmutter-51.so.0"', text)
-        self.assertIn('name="FwOverlap51"', text)
-        self.assertEqual(gen.metadata_shell_versions(records), ["46", "50", "51"])
+        self.assertEqual(ns, NEXT["namespace"])
+        self.assertIn('name="%s"' % NEXT["namespace"], text)
+        self.assertEqual(gen.metadata_shell_versions(records),
+                         [str(m) for m in gnome_overlap.SUPPORTED_MAJORS] + [UM])
 
     def test_it_can_express_a_name_that_follows_no_scheme_at_all(self):
         """Not a prediction, a property: the next rename does not have to be one
@@ -605,7 +634,7 @@ class TheTable(unittest.TestCase):
                    namespace="FwOverlapMainline")
         ns, text = gen.gir(odd)
         self.assertEqual(ns, "FwOverlapMainline")
-        self.assertIn('shared-library="libmutter-mainline.so.0"', text)
+        self.assertIn('name="FwOverlapMainline"', text)
 
     def test_a_record_missing_a_field_is_an_error_naming_the_field(self):
         import importlib.util
@@ -812,26 +841,48 @@ class RulesJSForce(unittest.TestCase):
         got = self.call("console.log(JSON.stringify(input.sizes.map("
                         "s => R.selectByStructSize(input.table, s))));\n",
                         {"table": table, "sizes": [72, 80, 96, 0, None, -8]})
-        self.assertEqual(got[0]["generation"]["namespace"], "FwOverlap14")
-        self.assertEqual(got[1]["generation"]["namespace"], "FwOverlap18")
+        self.assertEqual(got[0]["generation"]["namespace"], _by_size(72))
+        self.assertEqual(got[1]["generation"]["namespace"], _by_size(80))
         for i in (2, 3, 4, 5):
             self.assertNotIn("generation", got[i])
             self.assertIn("refusal", got[i])
         self.assertIn("no description shipped here describes", got[2]["refusal"])
         self.assertIn("Forcing cannot invent a description", got[2]["refusal"])
 
-    def test_two_descriptions_of_one_size_is_a_refusal_not_a_coin_toss(self):
+    def test_two_descriptions_that_disagree_are_a_refusal_not_a_coin_toss(self):
+        """One size, two shapes: neither can be assumed and the size cannot
+        choose, so it refuses."""
         table = self.table()
-        table["generations"] = [dict(g, struct_size=80)
-                                for g in table["generations"]]
+        table["generations"] = [dict(g, struct_size=80, tail_slots=1 + i)
+                                for i, g in enumerate(table["generations"])]
         got = self.call("console.log(JSON.stringify("
                         "R.selectByStructSize(input, 80)));\n", table)
         self.assertNotIn("generation", got)
         self.assertIn("cannot say which one", got["refusal"])
+        self.assertIn("do not agree on what is in them", got["refusal"])
+
+    def test_two_descriptions_of_one_size_that_agree_are_one_description(self):
+        """The shipped table is already this: GNOME 50 and GNOME 51 are both 80
+        bytes with three tail slots, measured separately, and the two .girs
+        differ only in their name.  Refusing that as "ambiguous" would take the
+        escape hatch away from every release after the first repeat, so the
+        newest is chosen and the answer says the others describe the same
+        bytes."""
+        table = self.table()
+        table["generations"] = [dict(g, struct_size=80, tail_slots=3)
+                                for g in table["generations"]]
+        got = self.call("console.log(JSON.stringify("
+                        "R.selectByStructSize(input, 80)));\n", table)
+        self.assertNotIn("refusal", got)
+        self.assertEqual(got["generation"]["namespace"],
+                         table["generations"][-1]["namespace"])
+        self.assertEqual(got["sameShape"],
+                         [g["namespace"] for g in table["generations"][:-1]])
 
     def test_the_forceable_list_is_the_same_on_both_sides(self):
         checks = ["shell-version", "struct-size", "sentinel", "pending-dialog",
-                  "bounded-read", "public-view", "symbols", "table", "libmutter"]
+                  "bounded-read", "public-view", "symbols", "table", "libmutter",
+                  "shared-library"]
         got = self.call("console.log(JSON.stringify(input.map("
                         "c => R.isForceable(c))));\n", checks)
         for check, js in zip(checks, got):
@@ -871,6 +922,131 @@ class RulesJSForce(unittest.TestCase):
                         "lines: R.describeTable(input)}));\n", table)
         self.assertEqual(got["majors"], list(gnome_overlap.SUPPORTED_MAJORS))
         self.assertEqual(got["lines"], gnome_overlap.describe_table())
+
+
+class TheDescriptionNamesNoLibrary(unittest.TestCase):
+    """What a forced run on GNOME 51 cost before it was fixed, held down.
+
+    A `shared-library` in the description makes GIRepository dlopen that exact
+    file.  A forced run picks its description by struct size, on a machine whose
+    libmutter is by definition not the one the description was measured against
+    -- so the dlopen fails, and gjs does not raise: it asserts and aborts the
+    process, which on Wayland is the session.  It was measured doing exactly
+    that on Ubuntu 26.10, on a `--dryrun` that writes nothing.
+    """
+
+    def test_the_extension_refuses_a_description_naming_an_absent_library(self):
+        """The guard for descriptions this project did not generate: one left
+        behind by an older install, or built by hand.  It is a static read of
+        the loaded namespace, before any call is made through it."""
+        src = open(os.path.join(EXT_DIR, "extension.js"), encoding="utf-8").read()
+        self.assertIn("sharedLibraries(", src)
+        self.assertIn("refuse('shared-library'", src)
+        # ...and it happens before anything is called through the description
+        self.assertLess(src.index("refuse('shared-library'"),
+                        src.index("lib.strn(0, 0)"))
+        self.assertFalse(gnome_overlap.is_forceable("shared-library"))
+
+    def test_nothing_is_called_through_a_description_of_the_wrong_size(self):
+        """`struct-size` is documented as refusing having read nothing, so the
+        one call that proves the description can reach the process has to come
+        after the size comparison, not before it."""
+        src = open(os.path.join(EXT_DIR, "extension.js"), encoding="utf-8").read()
+        self.assertLess(src.index("this build's MetaMonitorsConfig is ${actual}"),
+                        src.index("lib.strn(0, 0)"))
+
+
+class TheInstallerNamesTheRunningShell(unittest.TestCase):
+    """gnome-shell will not load an extension whose metadata.json does not name
+    the running Shell major -- so on exactly the builds
+    `--unsafe-gnome-overlap-unmeasured` exists for, the extension was installed,
+    enabled, OUT_OF_DATE, never on the bus, and the flag had nothing to reach.
+    The installer names the running major in the INSTALLED copy, and this is
+    that function, run.
+    """
+
+    SH = os.path.join(ROOT, "gnome", "install-overlap.sh")
+
+    def run_it(self, metadata, major="51"):
+        """Extract name_this_shell() and run it over one metadata.json."""
+        src = open(self.SH, encoding="utf-8").read()
+        start = src.index("name_this_shell() {")
+        end = src.index("\n}\n", start) + 3
+        func = src[start:end]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "metadata.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(metadata)
+            script = ("SYSTEM=1\nME=1\nTARGET_UID=1\nTARGET_USER=x\n"
+                      'DEST="%s"\n%s\nname_this_shell "%s"\n'
+                      % (tmp, func, major))
+            r = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh), r.stderr
+
+    def test_it_adds_the_major_to_an_array_written_on_one_line(self):
+        meta, err = self.run_it('{"shell-version": ["46", "50"], "x": 1}\n')
+        self.assertEqual(meta["shell-version"], ["46", "50", "51"])
+        self.assertIn("added", err)
+
+    def test_it_adds_the_major_to_an_array_written_over_several(self):
+        """The format gen-gir.py writes as soon as there are three records, and
+        the one a one-line rule silently did nothing to."""
+        meta, err = self.run_it('{\n  "shell-version": [\n    "46",\n'
+                                '    "50"\n  ],\n  "x": 1\n}\n')
+        self.assertEqual(meta["shell-version"], ["46", "50", "51"])
+        self.assertIn("added", err)
+
+    def test_it_says_nothing_when_the_major_is_already_there(self):
+        for text in ('{"shell-version": ["46", "51"]}\n',
+                     '{\n  "shell-version": [\n    "46",\n    "51"\n  ]\n}\n'):
+            meta, err = self.run_it(text)
+            self.assertEqual(meta["shell-version"], ["46", "51"])
+            self.assertEqual(err, "")
+
+    def test_it_takes_the_major_out_of_a_full_version(self):
+        meta, _err = self.run_it('{"shell-version": ["46"]}\n', major="51.beta")
+        self.assertEqual(meta["shell-version"], ["46", "51"])
+
+
+class ThePackageShipsWhatTheExtensionReads(unittest.TestCase):
+    """The table is read at call time, out of the extension's own directory, so
+    a package that installs the extension without it installs an extension that
+    refuses.  It did: `generations.json` was missing from debian/*.install from
+    the day the table was introduced until GNOME 51 was added, because nothing
+    exercised the packaged copy."""
+
+    def test_every_file_the_extension_reads_is_in_the_package(self):
+        install = open(os.path.join(ROOT, "debian", "fuckwayland.install"),
+                       encoding="utf-8").read()
+        for name in ("extension.js", "rules.js", "metadata.json",
+                     "generations.json", "org.fuckwayland.Overlap1.xml"):
+            self.assertIn("%s/%s" % (gnome_overlap.UUID, name), install, name)
+        self.assertIn("%s/typelib/*" % gnome_overlap.UUID, install)
+
+    def test_the_directory_holds_nothing_the_package_leaves_out(self):
+        """The other direction, so that a file added beside the extension is
+        either packaged or deliberately not."""
+        install = open(os.path.join(ROOT, "debian", "fuckwayland.install"),
+                       encoding="utf-8").read()
+        for name in sorted(os.listdir(EXT_DIR)):
+            if name == "typelib":
+                continue
+            self.assertIn("%s/%s" % (gnome_overlap.UUID, name), install, name)
+
+
+class TheMetadataDescriptionComesFromTheTable(unittest.TestCase):
+    def test_it_names_every_measured_release(self):
+        """It said "46 and 50" by hand, and stayed saying it when 51 was
+        measured.  gen-gir.py writes that sentence now, and --check fails if it
+        is stale."""
+        meta = json.load(open(os.path.join(EXT_DIR, "metadata.json"),
+                              encoding="utf-8"))
+        majors = [str(g["shell_major"]) for g in gnome_overlap.GENERATIONS]
+        listed = "%s and %s" % (", ".join(majors[:-1]), majors[-1])
+        self.assertIn("Only GNOME Shell %s have been measured" % listed,
+                      meta["description"])
 
 
 if __name__ == "__main__":

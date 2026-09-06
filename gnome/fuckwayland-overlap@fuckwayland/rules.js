@@ -123,9 +123,18 @@ export function forceGate(force, shellVersion) {
 
 // Which shipped description a forced run may use: the one whose declared
 // MetaMonitorsConfig size is the size this build's GType registry reports.
-// Returns {generation} or {refusal}.  It is a selection, not a relaxation --
-// the size still has to be exactly equal, the sentinel still has to round-trip
-// at that description's offsets, and an ambiguous answer is a refusal.
+// Returns {generation, sameShape} or {refusal}.  It is a selection, not a
+// relaxation -- the size still has to be exactly equal, the sentinel still has
+// to round-trip at that description's offsets, and an answer that is genuinely
+// ambiguous is a refusal.
+//
+// Two records of one size are NOT automatically ambiguous, and that matters as
+// soon as a second generation keeps the same layout: `tail_slots` is the whole
+// of what differs between the descriptions this project generates, so two
+// records that agree on it describe the same bytes under two names, and picking
+// either is the same choice.  (GNOME 50 and GNOME 51 are exactly that: 80 bytes,
+// 3 slots, measured separately.)  Two that DISAGREE cannot both be right about
+// this build and the size cannot say which is, so that is the refusal.
 export function selectByStructSize(table, size) {
     const all = generations(table);
     if (!Number.isInteger(size) || size <= 0) {
@@ -134,8 +143,6 @@ export function selectByStructSize(table, size) {
                          'is no description to pick'};
     }
     const hits = all.filter(g => g.struct_size === size);
-    if (hits.length === 1)
-        return {generation: hits[0]};
     if (!hits.length) {
         return {refusal: `this build's MetaMonitorsConfig is ${size} bytes and ` +
                          `no description shipped here describes a struct that ` +
@@ -143,9 +150,20 @@ export function selectByStructSize(table, size) {
                              .join(', ')}).  Forcing cannot invent a description: ` +
                          'this needs a new one, from the release\'s own header'};
     }
-    return {refusal: `${hits.length} shipped descriptions declare ${size} bytes ` +
-                     `(${hits.map(g => g.namespace).join(', ')}), so the size ` +
-                     'cannot say which one this build is'};
+    const shapes = hits.map(g => g.tail_slots)
+                       .filter((v, i, a) => a.indexOf(v) === i);
+    if (shapes.length > 1) {
+        return {refusal: `${hits.length} shipped descriptions declare ${size} ` +
+                         `bytes and they do not agree on what is in them ` +
+                         `(${hits.map(g => `${g.namespace} ${g.tail_slots} slots`)
+                             .join(', ')}), so the size cannot say which one this ` +
+                         'build is'};
+    }
+    // generations() sorts by shell_major, so the last hit is the most recently
+    // measured build with these bytes.
+    const pick = hits[hits.length - 1];
+    return {generation: pick,
+            sameShape: hits.filter(g => g !== pick).map(g => g.namespace)};
 }
 
 // -- Mutter's own geometry rule ----------------------------------------------
