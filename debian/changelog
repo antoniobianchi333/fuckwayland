@@ -19,6 +19,10 @@ fuckwayland (0.4.0) unstable; urgency=medium
   * warandr gained the same option in a form that never asks, wxrandr and
     warandr both gained the bookkeeping around it, and neither is handed to the
     real xrandr on an X11 session any more.
+  * Everything that differs per GNOME generation is one record in the overlap
+    extension's generations.json, which the package now ships, and
+    --unsafe-gnome-overlap-unmeasured <major> is the one way past the check
+    that this build is one of the measured ones.  GNOME 51 is measured.
 
  -- Antonio Bianchi <antonio.bianchi.333@gmail.com>  Sun, 06 Sep 2026 09:00:00 +0000
 

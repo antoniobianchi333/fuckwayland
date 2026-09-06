@@ -192,7 +192,8 @@ and `--udev` never touches the bridge extension. Read the [Threat
 model](#threat-model) first, because anyone who can open `/dev/uinput` can type as
 you, and know one gotcha while you experiment: `wdotool` keeps the virtual devices
 alive in a small `__daemon` process, and one started while access existed keeps
-injecting after the rule is removed. Log out, or stop it, to see the change.
+injecting after the rule is removed. Log out and it is gone within seconds, stop it
+by hand, or leave it alone for the quarter of an hour of idleness that ends it.
 
 ### From a clone, with pip
 
@@ -406,9 +407,9 @@ across the whole output layout), so the compositor cannot tell it from real hard
 On wlroots every injecting command skips that entirely through
 `zwp_virtual_keyboard_v1` and `zwlr_virtual_pointer_v1` and needs no privilege at
 all. The first invocation forks a small daemon that owns the devices, because
-creating them costs about 600ms of hotplug and you should pay it once; it goes away
-again a quarter of an hour after the last command, or at once when its socket does —
-logging out takes the socket with the session. **Window
+creating them costs about 600ms of hotplug and you should pay it once. It goes away
+again a quarter of an hour after the last command, and at once when its socket goes,
+which is what a logout does to it. **Window
 management** talks to the compositor: sway and i3 IPC, GNOME Shell through the
 bundled bridge extension, KDE Plasma through KWin scripting, and the
 wlr-foreign-toplevel protocol as the generic fallback. Window ids are real, stable
@@ -529,8 +530,12 @@ unlike X, allows neither gaps nor overlaps, an output that changes size keeps it
 neighbours touching it, with a warning. Changes are temporary like xrandr's and write
 nothing. `--persistent` makes GNOME ask *Keep changes?*, and only a confirmed dialog
 writes `monitors.xml`, and that dialog is the only safe way that file is ever
-written. Why Mutter refuses monitors that share area, what to reach for instead, and the one
-opt-in route to having the overlap anyway are under
+written. That file is all or nothing, so a persistent apply first says when GNOME has
+already thrown it away, says when the layout being saved is one that switching
+fractional scaling on would make GNOME refuse, and keeps the bytes it is about to
+replace in `monitors.xml.wxrandr-backup`. Why Mutter refuses monitors that share
+area, what to reach for instead, and the one opt-in route to having the overlap
+anyway are under
 [What your desktop will not let warandr do](#what-your-desktop-will-not-let-warandr-do).
 
 Which backend it is using is never a guess: `--print-backend` prints the token
@@ -680,9 +685,9 @@ rather than a clone the files are already in `/usr/share/gnome-shell/extensions`
 the first step is instead `gnome-extensions enable fuckwayland-overlap@fuckwayland`,
 then the same log out and back in: nothing in the package turns this one on for you. The
 second prints what the flag does, what it risks and what it saves, runs every check
-against the GNOME that is running, and records what those checks measured — down to
+against the GNOME that is running, and records what those checks measured, down to
 the build id of the `libmutter` they ran against, because a version number does not
-change when Ubuntu replaces that library — so that later runs say one line instead of
+change when Ubuntu replaces that library, so that later runs say one line instead of
 the paragraph, and an update ends the agreement rather than outliving it. The third is
 an ordinary `wxrandr` line with the flag added, and the flag does nothing at all unless
 the layout is one GNOME refuses. In `warandr` there is nothing to type at all: drag two
@@ -698,12 +703,12 @@ Every option, safe ones and dangerous ones together:
 | `--gnome-overlap-forget` | wxrandr | withdraws the agreement. Needs no desktop, so it works from a text console |
 | `--unsafe-gnome-overlap` | wxrandr | **the one that applies it.** Ignored unless the layout really overlaps and the route is really there. Every check still runs |
 | `--unsafe-gnome-overlap` | warandr | applies overlapping layouts without ever asking, for a window started from a hotkey or a desktop entry. Waives the question, not the checks, and records no agreement |
-| `--unsafe-gnome-overlap-unmeasured N` | wxrandr | **the only thing here that gets past a refusal.** On a GNOME nobody has measured, and only there, it says *I know this machine, try anyway* — `N` is the GNOME Shell major that is running, so a line copied from a forum is refused on your machine. It skips that one check and no other, is never remembered, and can end your session, `--dryrun` included, because the remaining checks run inside `gnome-shell`. `warandr` has no way to reach it |
+| `--unsafe-gnome-overlap-unmeasured N` | wxrandr | **the only thing here that gets past a refusal.** On a GNOME nobody has measured, and only there, it says *I know this machine, try anyway*, and `N` is the GNOME Shell major that is running, so a line copied from a forum is refused on your machine. It skips that one check and no other, is never remembered, and can end your session, `--dryrun` included, because the remaining checks run inside `gnome-shell`. `warandr` has no way to reach it |
 
 The checks are what stands between this and a lost session, so read what they are
 before reaching for anything that gets past them. There is exactly one thing that
 gets past one of them, and it is the last row of that table: on a GNOME this
-project has not measured — which is what a release upgrade produces —
+project has not measured, which is what a release upgrade produces,
 `--unsafe-gnome-overlap-unmeasured 52` says *this is my machine, try anyway*, with
 the number being the GNOME in front of you. It
 skips the check that says the build is known and nothing else: the struct size,
@@ -751,9 +756,9 @@ place is ever wrong `gnome-shell` dies and takes every program in your session w
 it. Six checks run before every write and refuse any build they do not recognise,
 which today means GNOME 46, GNOME 50 and GNOME 51 and nothing else.
 
-**Adding the next GNOME is meant to be small.** Everything version-specific — the
-library's file name, the typelib version, the type description, the size that
-structure has to be — is one record per release in
+**Adding the next GNOME is meant to be small.** Everything version-specific, the
+library's file name, the typelib version, the type description and the size that
+structure has to be, is one record per release in
 `gnome/fuckwayland-overlap@fuckwayland/generations.json`, and the refusal on an
 unmeasured build prints the versions it found, the size that build reports, what
 was expected, and the two files a record goes in. Every name in a record is
@@ -774,11 +779,11 @@ shared library: a forced run picks its description by size on a machine whose
 which is not there made `gjs` abort `gnome-shell` on the first call through it.
 The descriptions name none now, and an old one that does is refused by name.
 
-**So does it survive a GNOME update? Measured, and yes — so far, and only so far.**
+**So does it survive a GNOME update? Measured, and yes, so far and only so far.**
 Every update Ubuntu can deliver today was tried on desktops the Ubuntu installer
 built: eight version pairs across 24.04 and 26.04, including the pair each ISO ships,
 the newest in `-updates`, the 26.04 update sitting in `-proposed` that nobody has
-received yet, and — the case a version number cannot see — the GA library swapped
+received yet, and, the case a version number cannot see, the GA library swapped
 under a newer shell. All eight applied with all six checks passing, and the private
 structure this depends on had not moved in any of them. No session was lost, none was
 damaged, nothing was ever written to the file GNOME saves layouts in, and an `apt
@@ -790,20 +795,21 @@ new GNOME.
 
 **And when it is wrong it refuses rather than breaking anything.** Thirteen
 deliberately wrong descriptions of that structure have been installed on purpose
-across the three releases — wrong generation, fields of the same size swapped, the
-list read out of the wrong slot, a description naming a library that is not there —
+across the three releases, wrong generation, fields of the same size swapped, the
+list read out of the wrong slot, a description naming a library that is not there,
 each of them put there the way a user would get one, at a login, and every one was
-refused by name, before any write, with `gnome-shell` still running afterwards. That is the bet this feature makes, and it has not lost it
-yet. It is still a bet: thirteen caught is not proof that a fourteenth would be, and what would
-beat all of it is an Ubuntu update that moves that structure without moving the
-version number the checks read. Nothing in 24.04's 28 months has done it, and one
+refused by name, before any write, with `gnome-shell` still running afterwards. That
+is the bet this feature makes, and it has not lost it yet. It is still a bet:
+thirteen caught is not proof that a fourteenth would be, and what would beat all of
+it is an Ubuntu update that moves that structure without moving the version number
+the checks read. Nothing in 24.04's 28 months has done it, and one
 26.04 update in `-proposed` today does exactly that to a *different* private
 structure, so the mechanism is real.
 
 **What to expect after an update**, which is the part worth knowing before you enable
-this: almost always nothing — the same command keeps working. Once per library update,
+this: almost always nothing, the same command keeps working. Once per library update,
 one line saying the agreement has been withdrawn, because what you agreed to was one
-measured build of GNOME and that build is gone; run it again and read the paragraph
+measured build of GNOME and that build is gone. Run it again and read the paragraph
 again. Once per release upgrade, a refusal naming the check that refused. And, seen
 once in all the testing, a refusal saying something holds a modal grab with nothing on
 screen, seconds after a post-update login: run the command again a moment later.
@@ -867,10 +873,12 @@ What each tool does on each desktop, measured rather than assumed, on nine golde
 images: GNOME 46 and 50, Plasma 5.27 and 6.6 on Wayland and the same two again on
 **Xorg**, Xfce 4.18 and 4.20, sway 1.11 on wlroots, twice per image, once **inside
 the session** and once as **root over ssh with an empty environment**, against real
-windows on a two-head layout. Three more images stand behind the table without being
+windows on a two-head layout. Four more images stand behind the table without being
 counted in it: a default Ubuntu 26.04 and a default 24.04 desktop installed from the
-release ISOs, on which this whole install guide was re-run verbatim, and a Plasma 6.7
-cloud image, which is a probe for one protocol change rather than a support target.
+release ISOs, on which this whole install guide was re-run verbatim, a Plasma 6.7
+cloud image, which is a probe for one protocol change rather than a support target,
+and a GNOME 51 desktop on 26.10, which is where the third GNOME of the overlap route
+was measured and is not a support target either.
 `vm/README.md` keeps the rig and the verbatim messages behind these cells, and
 [docs/Technical.md § 10](docs/Technical.md#10-the-vm-rig) is what the images are and
 where a cloud flavor is measurably not a desktop install.
@@ -896,7 +904,7 @@ desktop portal: [No authorization dialog](#no-authorization-dialog).
 
 **(a)** With the differences in
 [docs/WDOTOOL.md § What differs from X on KDE Plasma](docs/WDOTOOL.md#what-differs-from-x-on-kde-plasma)
-(raise, lower, shading, maximize on 5.27, minted window ids) — and one pixel per
+(raise, lower, shading, maximize on 5.27, minted window ids), and one pixel per
 monitor that is KWin's, not ours: `mousemove` reaches every pixel of every head in
 every layout measured **except an output's top-left**, where KWin's own 1x1 screen
 edge pushes the cursor back to `1,1` and, on a stock Plasma 6, opens the Overview.
@@ -951,12 +959,12 @@ hotkey, and the one thing these tools will not do, so wmirror says exactly that 
 exits 1 rather than half working.
 
 **(l)** Pointer coordinates are the desktop's own **layout** coordinates under HiDPI
-and fractional scaling — logical pixels on GNOME 50 and Plasma, and raw pixels on
+and fractional scaling, so logical pixels on GNOME 50 and Plasma and raw pixels on
 GNOME 46 with "Fractional Scaling" off, which is that release's own layout mode and
 not a defect. Measured at 100%, 150% and 200%, one head and two of different scales,
-against the cursor plane on the scanout: 0px. One Mutter 46 state *is* a defect —
-switching Fractional Scaling on under an already-scaled monitor leaves GNOME
-advertising a layout it has stopped drawing — and there `mousemove` still lands on the
+against the cursor plane on the scanout: 0px. One Mutter 46 state *is* a defect.
+Switching Fractional Scaling on under an already-scaled monitor leaves GNOME
+advertising a layout it has stopped drawing, and there `mousemove` still lands on the
 coordinate you ask for, because Mutter maps the pointer across that same advertised
 layout, while `getdisplaygeometry` describes a desktop that is not there. wdotool says
 so when it happens, and changing the scale once clears it:
@@ -1037,20 +1045,30 @@ The long form of each release, with the measurements behind it, is
 ### 0.4
 
 The release that made the tools survive a real desktop rather than a fresh one. The
-input daemon now ends itself when its socket is gone or replaced and when nobody has
-used it for fifteen minutes, so a logout no longer leaves one running, unreachable and
-holding the lock that stops the next one starting. A key combination the active layout
-cannot produce is refused with a line rather than pressed at its US position, which is
-what made a save shortcut on a Greek layout do nothing and exit 0. The notice about
-which layout wdotool had to assume reaches every command instead of the first one
-only, and the variable that pins the layout is read where you set it rather than only
-by a daemon that may already be running. Keeping a layout on GNOME says when GNOME has
-already thrown its saved file away, warns when the layout being saved is one a
-fractional scaling change would break, and keeps a copy of the file it replaces. There
-is one route through GNOME's refusal to overlap monitors, off by default, behind a
-second Shell extension and an agreement recorded for the exact build of GNOME the
-checks ran against. And the package in `release/` is built from this tree, which is how
-any of it reaches anybody.
+input daemon ends itself now: it looks at its own socket every fifteen seconds and
+goes when that socket has been deleted or replaced, and it goes after fifteen minutes
+with no client. What went away with that is a daemon that ran for the rest of the
+uptime, because a logout clears the runtime directory and left one behind that nothing
+could dial and that held the lock stopping the next one from starting. A key
+combination the active layout cannot produce is refused with a line rather than
+pressed at its US position, which is what made a save shortcut on a Greek layout do
+nothing and exit 0. The notice about which layout wdotool had to assume reaches every
+command instead of the first one only, and the variable that pins the layout is read
+where you set it rather than only by a daemon that may already be running. Keeping a
+layout on GNOME says when GNOME has already thrown its saved file away, warns when the
+layout being saved is one a fractional scaling change would break, and keeps a copy of
+the file it replaces. `--persistent` stopped refusing the whole command on an X11
+session, where there is no such file and nothing for it to save. There is one route
+through GNOME's refusal to overlap monitors, off by default, behind a second Shell
+extension that the package carries and nothing enables, an agreement recorded
+against the exact build of GNOME the checks ran on, an option in the GUI that never
+asks, and one option that forces past the single check saying this build is a measured
+one, for the GNOME nobody has measured yet. Everything version-specific about that
+route became one record per GNOME release in a table, and GNOME 51 was added to it by
+following the written procedure and nothing else, on an Ubuntu 26.10 desktop that is
+the rig's thirteenth image. Both default installs, every desktop and both Ubuntu
+releases were retested, the package in `release/` is built from this tree rather than
+left at the previous one, and the suite stands at **2614 tests**.
 
 <!-- release-notes: 0.3 -->
 ### 0.3
@@ -1099,7 +1117,7 @@ Developed against real desktops, not against a model of them. `vm/` is the rig:
 `vmctl` builds and runs thirteen golden images, each with up to four virtual monitors
 that can be plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/README.md` documents the whole thing and `vm/SETUP.md` is how to
-set the rig up on a machine of your own. `tests/` holds the suite, 2491 tests: unit
+set the rig up on a machine of your own. `tests/` holds the suite, 2614 tests: unit
 tests, wire-level fake compositors and X servers, live-compositor integration,
 hostile-input torture, byte-parity oracles against the real xdotool, wmctrl, xprop
 and xrandr, and one static check that no package ever reaches for the desktop portal
