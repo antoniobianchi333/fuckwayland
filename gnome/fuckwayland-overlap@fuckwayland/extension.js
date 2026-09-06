@@ -39,7 +39,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 // Every decision with a right answer lives next door, in a file with no gi
 // imports, so that tests/test_gnome_overlap.py can run it under plain node.
-import {SUPPORTED, generationFor, mutterFault, key, cmpRegion, le32, compare, drift} from './rules.js';
+import {SUPPORTED, generationFor, mutterFault, modalVerdict, key, cmpRegion, le32, compare, drift} from './rules.js';
 
 const BUS_NAME = 'org.fuckwayland.Overlap';
 const OBJECT_PATH = '/org/fuckwayland/Overlap';
@@ -368,30 +368,33 @@ class Guarded {
         return this;
     }
 
-    // 3b. Refuse while GNOME is asking "Keep changes?".
+    // 3b. Refuse while anything holds a modal grab, because "Keep changes?" is
+    //     one of the things that does.
     //
-    // A pending display change is the one window in which a configuration we
-    // mutated could reach Mutter's writer: confirming the dialog makes Mutter
-    // save whatever configuration is current, and after our apply that is the
-    // overlapping one.  wxrandr cannot arm such a change together with this
-    // flag (--persistent is refused), but gnome-control-center can have one up
-    // in another window.  Reading a JS field on the window manager cannot crash
-    // anything, and an undefined field is a no.
+    // This is the guard that stands between this extension and the only lasting
+    // damage it can do: Mutter saves the *current* configuration when a pending
+    // display change is confirmed, and a saved overlap poisons
+    // ~/.config/monitors.xml for ever (rules.js says how, and what was measured
+    // when this check could not fire).  wxrandr cannot arm such a change
+    // together with this flag -- --persistent is refused -- but the Settings
+    // panel in another window can, and did.
+    //
+    // Main.modalCount is a number on the window that matters and a refusal
+    // whenever it is not readable; the decision itself is in rules.js, where
+    // plain node tests it.  Reading a field on the shell's own main module
+    // cannot crash anything.
     noPendingDialog() {
-        let dialog;
+        let modal;
         try {
-            dialog = Main.wm && Main.wm._displayChangeDialog;
+            modal = Main.modalCount;
         } catch (e) {
-            dialog = null;
+            modal = null;
         }
-        if (dialog) {
-            refuse('pending-dialog',
-                   'GNOME is asking whether to keep a display change; answer ' +
-                   'that first -- confirming it while this had moved a monitor ' +
-                   'would be the one way an overlapping layout could reach ' +
-                   '~/.config/monitors.xml');
-        }
-        this._pass('pending-dialog', 'no "Keep changes?" dialog is open');
+        const bad = modalVerdict(modal);
+        if (bad)
+            refuse('pending-dialog', bad);
+        this._pass('pending-dialog',
+                   'nothing holds a modal grab, so GNOME is not asking "Keep changes?"');
         return this;
     }
 
@@ -657,8 +660,11 @@ export default class FwOverlap extends Extension {
                 if (!g.maps.holds(m.addr, 8))
                     refuse('write', `0x${m.addr.toString(16)} is no longer readable`);
                 undo.push({addr: m.addr, x: m.x, y: m.y});
-                g.lib.wr(m.addr, le32(w.x | 0), 4);          // MetaLogicalMonitorConfig.x, +0
-                g.lib.wr(m.addr + 4, le32(w.y | 0), 4);      // .y, +4
+                // le32() is four bytes and the typelib takes the length from
+                // the array itself, so there is no count to pass (and gjs
+                // warns about one that is passed).
+                g.lib.wr(m.addr, le32(w.x | 0));             // MetaLogicalMonitorConfig.x, +0
+                g.lib.wr(m.addr + 4, le32(w.y | 0));         // .y, +4
             }
             if (!undo.length)
                 refuse('request', 'that is the layout this session already has');
@@ -722,8 +728,8 @@ export default class FwOverlap extends Extension {
             // applied on this path, so the session is untouched either way.
             for (const u of undo.reverse()) {
                 if (g.maps.holds(u.addr, 8)) {
-                    g.lib.wr(u.addr, le32(u.x), 4);
-                    g.lib.wr(u.addr + 4, le32(u.y), 4);
+                    g.lib.wr(u.addr, le32(u.x));
+                    g.lib.wr(u.addr + 4, le32(u.y));
                 }
             }
             throw e;

@@ -122,6 +122,9 @@ class FakeOverlap:
                         "detail": "FwOverlap18, MetaMonitorsConfig 80 bytes as declared"},
                        {"name": "sentinel", "ok": True,
                         "detail": "switch_config round-tripped at the declared offset"},
+                       {"name": "pending-dialog", "ok": True,
+                        "detail": 'nothing holds a modal grab, so GNOME is not '
+                                  'asking "Keep changes?"'},
                        {"name": "bounded-read", "ok": True,
                         "detail": "2 logical monitors, every address range-checked"},
                        {"name": "public-view", "ok": True,
@@ -652,8 +655,8 @@ class DryRun(Case):
     def test_dryrun_reports_the_checks_the_extension_ran(self):
         code, out, err = self.run_cli("--dryrun", FLAG, "--output", "Virtual-2",
                                       "--pos", "960x0")
-        for name in ("shell-version", "typelib", "sentinel", "bounded-read",
-                     "public-view"):
+        for name in ("shell-version", "typelib", "sentinel", "pending-dialog",
+                     "bounded-read", "public-view"):
             self.assertIn("overlap check %s:" % name, err)
 
     def test_a_dryrun_of_an_adjacent_layout_is_the_ordinary_one(self):
@@ -742,6 +745,38 @@ class ShippedExtension(unittest.TestCase):
                           "maps", "Guarded", "wr(", "apply(", "Probe", "memdup"):
             self.assertNotIn(forbidden, body, forbidden)
         self.assertIn("Gio.DBusExportedObject.wrapJSObject", body)
+
+    def test_the_pending_dialog_check_reads_a_field_that_exists(self):
+        """The guard between this feature and the only lasting damage it can do.
+
+        It used to read `Main.wm._displayChangeDialog`, which exists on neither
+        supported release -- measured on 46.0 and 50.1, with the dialog on
+        screen and without it -- so it passed always, and a "Keep changes?"
+        confirmed while an overlap was applied wrote that overlap into
+        ~/.config/monitors.xml, on both.  A check that cannot fire is worse than
+        no check, because it is believed.  What it reads now is the modal count,
+        which goes 0 -> 1 while the dialog is up.
+        """
+        body = self.js[self.js.index("    noPendingDialog() {"):]
+        body = body[:body.index("\n    }\n") + 6]
+        self.assertIn("Main.modalCount", body)
+        self.assertIn("modalVerdict(modal)", body)
+        self.assertIn("refuse('pending-dialog'", body)
+        # the field it cannot see: nowhere in the file, under any spelling
+        self.assertNotIn("_displayChangeDialog", self.js)
+        # and the pass line is reached only when the verdict was nothing
+        self.assertLess(body.index("refuse('pending-dialog'"),
+                        body.index("this._pass('pending-dialog'"))
+
+    def test_the_write_passes_no_length_of_its_own(self):
+        """The typelib declares the write's length parameter as the length of
+        the byte array, so gjs takes it from there and drops a third argument
+        with a `JS WARNING: Too many arguments` in the journal.  le32() is four
+        bytes by construction."""
+        calls = re.findall(r"lib\.wr\((.*?)\);", self.js)
+        self.assertTrue(calls)
+        for call in calls:
+            self.assertEqual(call.count(","), 1, call)
 
     def test_the_apply_method_is_a_constant(self):
         self.assertIn("const METHOD_TEMPORARY = 1;", self.js)
@@ -945,6 +980,26 @@ class RulesJS(unittest.TestCase):
         self.assertEqual(got[0], [])
         for diffs, case in zip(got[1:], cases[1:]):
             self.assertTrue(diffs, case)
+
+    def test_the_pending_dialog_verdict_can_actually_refuse(self):
+        """Demanded case by case, because the failure this replaces was a guard
+        that returned "fine" for every input there is."""
+        script = self.run_js(
+            "const cases = {zero: 0, one: 1, two: 2, negative: -1,\n"
+            "               missing: undefined, none: null, string: '1',\n"
+            "               nan: NaN, fraction: 0.5, object: {}};\n"
+            "const out = {};\n"
+            "for (const k of Object.keys(cases)) out[k] = R.modalVerdict(cases[k]);\n"
+            "console.log(JSON.stringify(out));\n")
+        got = self.call(script, None)
+        self.assertIsNone(got["zero"], got)
+        for name in ("one", "two", "negative", "missing", "none", "string",
+                     "nan", "fraction", "object"):
+            self.assertIsInstance(got[name], str, name)
+            self.assertTrue(got[name].strip(), name)
+        # the refusal a user will actually see says what is at stake
+        self.assertIn("monitors.xml", got["one"])
+        self.assertIn("Keep changes?", got["missing"])
 
     def test_le32_is_little_endian_and_takes_a_negative(self):
         script = self.run_js(

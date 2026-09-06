@@ -61,6 +61,55 @@ export function mutterFault(rects) {
     return null;
 }
 
+// -- the one thing that must not be on screen ---------------------------------
+//
+// A pending display change is the single window in which a configuration this
+// extension has mutated can reach Mutter's *writer*: answering "Keep changes?"
+// with Keep makes Mutter save whatever configuration is current, and after an
+// overlap apply that is the overlapping one.  It lands in
+// ~/.config/monitors.xml, whose reader runs the validator this whole feature
+// exists to get past, and which discards the entire file -- every other saved
+// arrangement -- at every boot, for ever.  That is not hypothetical: it was
+// measured happening on both releases, at a time when this check could not
+// fire.
+//
+// The count, and not the dialog: gnome-shell 46 and 50 build their
+// DisplayChangeDialog in windowManager.js and keep no reference to it anywhere
+// a reader can find.  `Main.wm._displayChangeDialog`, which an earlier version
+// of this check read, exists on neither -- so the check passed always, which is
+// worse than having no check at all, because a check that cannot fire is
+// believed.  What the dialog does do is take a modal grab, and `Main.modalCount`
+// goes 0 -> 1 while it is up (measured, 46.0 and 50.1).  Other things take a
+// modal grab too -- the overview, an open menu, the Alt+F2 dialog -- and
+// refusing on those as well is the price of a check that does not depend on
+// naming a dialog this shell will not name.
+//
+// It fails closed.  A count that is not a number is a refusal, so a shell that
+// renames the field stops the feature instead of quietly disarming its most
+// consequential guard.
+
+export function modalVerdict(modalCount) {
+    if (typeof modalCount !== 'number' || !Number.isInteger(modalCount)) {
+        return 'this shell does not report Main.modalCount as a whole number ' +
+               `(got ${typeof modalCount}), so whether GNOME is asking ` +
+               '"Keep changes?" cannot be read, and an unreadable check ' +
+               'refuses rather than guesses';
+    }
+    if (modalCount < 0) {
+        return `Main.modalCount is ${modalCount}, which is not a number of ` +
+               'modal grabs that can exist; this check refuses rather than ' +
+               'reads a shell it does not understand';
+    }
+    if (modalCount > 0) {
+        return 'something holds a modal grab on the shell.  If that is GNOME ' +
+               'asking whether to keep a display change, confirming it while ' +
+               'this had moved a monitor is the one way an overlapping layout ' +
+               'could reach ~/.config/monitors.xml and stay there.  Answer it ' +
+               '(or close the overview, or the menu) and run this again';
+    }
+    return null;
+}
+
 // -- shapes ------------------------------------------------------------------
 
 export const key = group => (group.connectors || []).slice().sort().join('+');
@@ -68,6 +117,9 @@ export const key = group => (group.connectors || []).slice().sort().join('+');
 export const cmpRegion = (a, b) => a.x - b.x || a.y - b.y ||
     key(a).localeCompare(key(b));
 
+// Exactly four bytes, always: the typelib declares the write's length
+// parameter as the length *of this array*, so gjs derives it from here and
+// extension.js passes no count of its own.
 export const le32 = v => [v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255];
 
 // -- the comparison ----------------------------------------------------------
