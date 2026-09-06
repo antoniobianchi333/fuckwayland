@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+import types
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -751,9 +752,71 @@ class WarandrSide(unittest.TestCase):
             if not name.endswith(".py"):
                 continue
             src = open(os.path.join(ROOT, "warandr", name), encoding="utf-8").read()
-            self.assertNotIn("gnome_overlap", src, name)
+            # Reaching in is what is forbidden, not saying the words: argparse turns
+            # warandr's own --unsafe-gnome-overlap into the attribute
+            # args.unsafe_gnome_overlap, which is warandr's flag, not wxrandr's module.
             self.assertNotIn("import wxrandr", src, name)
+            self.assertNotIn("from wxrandr", src, name)
+            self.assertNotIn("wxrandr.gnome_overlap", src, name)
+            self.assertNotIn("import gnome_overlap", src, name)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WarandrNeverAsks(unittest.TestCase):
+    """`warandr --unsafe-gnome-overlap`: somebody who has already decided,
+    starting the window from a hotkey or a desktop entry where a dialog is the
+    whole interaction. It waives being asked and nothing else."""
+
+    def _backend(self, state, overlaps=True):
+        from warandr import randr
+        b = randr.Backend(["wxrandr"], True, env={}, name="mutter")
+        b.overlap_state = lambda: state
+        layout = types.SimpleNamespace(overlaps=lambda: overlaps)
+        return b, layout
+
+    def test_it_does_not_ask_with_no_agreement_recorded(self):
+        b, layout = self._backend("available")
+        self.assertTrue(b.overlap_needs_asking(layout))      # without the flag
+        b.overlap_never_ask = True
+        self.assertFalse(b.overlap_needs_asking(layout))
+
+    def test_it_still_only_applies_where_the_route_is_really_there(self):
+        # waiving the question must not invent the capability
+        b, layout = self._backend("unavailable")
+        b.overlap_never_ask = True
+        self.assertEqual(b.overlap_flag(layout), [])
+        self.assertFalse(b.overlap_needs_asking(layout))
+
+    def test_it_changes_nothing_for_a_layout_that_does_not_overlap(self):
+        b, layout = self._backend("available", overlaps=False)
+        b.overlap_never_ask = True
+        self.assertEqual(b.overlap_flag(layout), [])
+
+    def test_it_is_off_unless_the_option_is_given(self):
+        from warandr import randr
+        self.assertFalse(randr.Backend(["wxrandr"], True, env={}).overlap_never_ask)
+
+    def test_the_option_reaches_the_backend(self):
+        from warandr import cli
+        args = cli._parser().parse_args(["--unsafe-gnome-overlap"])
+        self.assertTrue(args.unsafe_gnome_overlap)
+        self.assertFalse(cli._parser().parse_args([]).unsafe_gnome_overlap)
+
+    def test_it_records_no_agreement(self):
+        # How a program was started must not change what it leaves on disk.
+        # warandr does record one, but only from the dialog box the user
+        # ticks, so the flag must not reach that path: it waives the question
+        # and leaves the answer unwritten.
+        import inspect
+        from warandr import cli, gui, randr
+        self.assertNotIn("allow_overlap", inspect.getsource(cli))
+        recorded = [ln.strip() for ln in inspect.getsource(gui).splitlines()
+                    if "allow_overlap" in ln]
+        self.assertTrue(recorded, "the dialog should still be able to record")
+        for ln in recorded:
+            self.assertNotIn("never_ask", ln)
+        # and the flag itself is nowhere near the recording method
+        self.assertNotIn("never_ask", inspect.getsource(randr.Backend.allow_overlap))

@@ -397,3 +397,51 @@ class HeadlessSway:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         shutil.rmtree(self.rtdir, ignore_errors=True)
+
+
+def compositor_pids():
+    """Headless compositors this user is running, as (pid, config) pairs.
+
+    A test that boots one names its own configuration file under a temporary
+    directory, which is what distinguishes it from the compositor somebody is
+    actually sitting in.  Read from /proc rather than by running ps, for the
+    same reason daemon_pids does: no subprocess, and nothing to parse."""
+    out = []
+    uid = os.getuid()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + entry).st_uid != uid:
+                continue
+            with open("/proc/%s/cmdline" % entry, "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        if not argv or os.path.basename(argv[0].decode("utf-8", "replace")) != "sway":
+            continue
+        conf = ""
+        for i, a in enumerate(argv):
+            if a in (b"-c", b"--config") and i + 1 < len(argv):
+                conf = argv[i + 1].decode("utf-8", "replace")
+        out.append((int(entry), conf))
+    return out
+
+
+def stop_compositor(pid, timeout=5.0):
+    """SIGTERM, then SIGKILL, then wait. True when it is gone."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        deadline = time.monotonic() + timeout / 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            time.sleep(0.05)
+    return False

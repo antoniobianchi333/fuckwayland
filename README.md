@@ -99,6 +99,23 @@ exports, where it puts itself and which hotkey chords Mutter will not hand to a
 script are in [gnome/README.md](gnome/README.md), and what installing it grants, to
 whom, is [Threat model](#threat-model).
 
+There is a **second, separate** extension, and almost nobody needs it. GNOME refuses
+to place two monitors so that they share screen area, and it is the only desktop of
+the four that does. The [.deb](#install) puts this one on disk too, but nothing turns
+it on and nothing uses it: it is not enabled for anybody, it does nothing at login
+even once enabled, and no layout reaches it without a flag typed on purpose and an
+agreement given on purpose. From a clone, or if you want it enabled:
+
+```sh
+sh gnome/install-overlap.sh          # enable it, then log out and back in
+sh gnome/install-overlap.sh --check  # is it loaded? is the route there?
+wxrandr --gnome-overlap-allow        # read what it risks, agree once
+```
+
+It is the only thing here that can cost you the session you are sitting in. Read
+[Overlapping monitors on GNOME](#overlapping-monitors-on-gnome) before you use it,
+which is where every option is listed and where what it risks is spelled out.
+
 #### KDE Plasma
 
 Stock Plasma Wayland sessions, Plasma 5.27 (Ubuntu 24.04) and Plasma 6.6 (26.04),
@@ -662,9 +679,8 @@ and how to bind one to a key on each desktop.
 #### Overlapping monitors on GNOME
 
 GNOME refuses to place two monitors so that they share screen area, as the table
-above says. There is one way to have it anyway. It is off, it is not in the package,
-and it is the only thing in this repository that can cost you the session you are
-sitting in. Three steps:
+above says. There is one way to have it anyway. It is off, and it is the only thing in this
+repository that can cost you the session you are sitting in. Three steps:
 
 ```sh
 sh gnome/install-overlap.sh     # a second Shell extension, then log out and back in
@@ -680,9 +696,22 @@ the build id of the `libmutter` they ran against, because a version number does 
 change when Ubuntu replaces that library — so that later runs say one line instead of
 the paragraph, and an update ends the agreement rather than outliving it. The third is
 an ordinary `wxrandr` line with the flag added, and the flag does nothing at all unless
-the layout is one GNOME refuses. In `warandr` there is no flag to type: drag two
+the layout is one GNOME refuses. In `warandr` there is nothing to type at all: drag two
 monitors into an overlap and press Apply, and the window explains it once, in a dialog
 with a *Do not ask again on this GNOME* box.
+
+Every option, safe ones and dangerous ones together:
+
+| option | tool | what it does |
+|---|---|---|
+| `--gnome-overlap-status` | wxrandr | says whether the route is there and whether you have agreed. Reads nothing and changes nothing |
+| `--gnome-overlap-allow` | wxrandr | runs every check, prints what you are agreeing to, and records it for this build of GNOME. Agreeing changes what is printed later and nothing else |
+| `--gnome-overlap-forget` | wxrandr | withdraws the agreement. Needs no desktop, so it works from a text console |
+| `--unsafe-gnome-overlap` | wxrandr | **the one that applies it.** Ignored unless the layout really overlaps and the route is really there. Every check still runs |
+| `--unsafe-gnome-overlap` | warandr | applies overlapping layouts without ever asking, for a window started from a hotkey or a desktop entry. Waives the question, not the checks, and records no agreement |
+
+The checks are what stands between this and a lost session, so read what they are
+before reaching for anything that gets past them.
 
 What it looks like when it works:
 
@@ -843,41 +872,52 @@ Three heads, three layout shapes, both Plasma generations, read back from KWin's
 cursor position:
 [docs/WDOTOOL.md § Pointer accuracy](docs/WDOTOOL.md#pointer-accuracy). A monitor at
 a **negative origin** is a wlroots shape, not a KDE one: KWin refuses one outright.
+
 **(b)** On a plain X11 session the tools *are* the originals, so the command set is
 whatever is installed there: both Ubuntu images carry xdotool 3.20160805.1, which has
 no `windowstate` at all, while parity is claimed against 4.20260303.1.
+
 **(c)** Four, all about sway's tiling: `windowmove`, `windowsize` and `windowraise`
 on a *tiled* window warn and do not change it (float it first), `windowlower` warns
 on every window because sway has no lower, and `windowstate MAXIMIZED_VERT` or
 `_HORZ` has no equivalent there and fails cleanly.
+
 **(d)** On Plasma 6.6 plasmashell's own desktop windows carry an empty caption, so
 those `wwmctl -l` rows have a blank title where 5.27 prints `Desktop @ QRect(…)`.
+
 **(e)** sway's Xwayland runs with no authority file, so only the session user's own
 processes can open it, the real `xprop` from a root shell included. Rather than fail,
 `wxprop -root` answers from sway's IPC, see [docs/WXPROP.md](docs/WXPROP.md).
+
 **(f)** KWin applies a layout immediately and permanently, with no temporary mode and
 no confirmation dialog, and says so on stderr together with the line that puts the
 previous layout back:
 [docs/WXRANDR.md § KWin backend](docs/WXRANDR.md#kwin-backend-wxrandrkwinpy).
+
 **(g)** X11 answers are the X server's own, and whether an output is marked `primary`
 is the desktop's business.
+
 **(h)** `warandr` is the one tool with a dependency, the GTK 3 bindings named in
 [Install](#other-ways-to-install), which a minimal sway image may lack.
+
 **(i)** sway and wlroots is the only family that implements `zwp_virtual_keyboard_v1`
 *and* `zwlr_virtual_pointer_v1`, so it is the only one where every injecting command
 runs with no root, no group and no udev rule. Mutter and KWin implement neither, both
 measured:
 [docs/WDOTOOL.md](docs/WDOTOOL.md#typing-and-clicking-with-no-privilege---vkbd).
+
 **(j)** Plasma on Xorg is an X11 session like any other and is handled like one,
 measured on both generations. Why the two things that look like they should change
 that answer do not is
 [docs/Technical.md § 2](docs/Technical.md#2-session-discovery-and-the-x11-handover).
+
 **(k)** `wmirror` drives the external `wl-mirror`, which needs wlroots'
 `zwlr_screencopy_manager_v1` or the standard `ext-image-copy-capture-v1`. Neither
 KWin nor Mutter implements either, so the only capture route there is the desktop
 portal, which asks the user for permission once per session. That is useless from a
 hotkey, and the one thing these tools will not do, so wmirror says exactly that and
 exits 1 rather than half working.
+
 **(l)** Pointer coordinates are the desktop's own **layout** coordinates under HiDPI
 and fractional scaling — logical pixels on GNOME 50 and Plasma, and raw pixels on
 GNOME 46 with "Fractional Scaling" off, which is that release's own layout mode and

@@ -51,6 +51,12 @@ def _parser():
     p.add_argument("--verbose", action="store_true",
                    help="with --print-backend: add what runs, why it was "
                         "picked, and what that tool says about the session")
+    p.add_argument("--unsafe-gnome-overlap", action="store_true",
+                   help="apply overlapping layouts on GNOME without asking "
+                        "first, for a window started from a hotkey or a "
+                        "desktop entry. Waives the question, not the checks, "
+                        "and records no agreement. See wxrandr "
+                        "--gnome-overlap-allow to agree once instead")
     return p
 
 
@@ -154,6 +160,10 @@ def _main(argv=None):
     args = _parser().parse_args(argv)
     try:
         backend = randr.choose(forced=args.backend)
+        # Set before anything asks: --command and --save go through the
+        # same backend, and the flag they print must match what Apply
+        # would really run.
+        backend.overlap_never_ask = args.unsafe_gnome_overlap
         backend.set_display(args.randr_display)
         if args.print_backend:
             backend.identify()

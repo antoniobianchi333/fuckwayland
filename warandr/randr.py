@@ -111,6 +111,8 @@ class Backend:
             # set_display() still overrides it.
             passthrough.repair_x_env(self.env)
         self.source = source
+        #: warandr --unsafe-gnome-overlap: apply an overlapping layout without asking first
+        self.overlap_never_ask = False
         #: the backend token: ``x11``, one of wxrandr's, or ``wayland``
         #: until ``identify()`` has asked which one wxrandr picked
         self.name = name or ("wayland" if wayland else "x11")
@@ -183,7 +185,18 @@ class Backend:
         """True when applying *this* layout is the thing the user has to be
         asked about once: an overlap, on GNOME, through the extension, with no
         agreement recorded yet.  False the moment one is (``agreed``), which is
-        the whole point of recording it."""
+        the whole point of recording it.
+
+        ``overlap_never_ask`` is warandr's ``--unsafe-gnome-overlap``: somebody
+        who has already decided, starting the window from a hotkey or a desktop
+        entry where a dialog is the whole interaction.  It waives the *asking*
+        and nothing else -- the flag is still only added to a layout that really
+        overlaps on a GNOME that really has the route, and every check the
+        extension makes still runs on every apply.  It deliberately records no
+        agreement: how a program was started should not change what it leaves
+        behind on disk."""
+        if self.overlap_never_ask:
+            return False
         return bool(self.overlap_flag(layout)) and self.overlap_state() != "agreed"
 
     def overlap_flag(self, layout):

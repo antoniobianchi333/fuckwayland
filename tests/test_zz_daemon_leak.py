@@ -25,7 +25,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from support import daemon_pids, daemon_runtime_dir, stop_daemon
+from support import (compositor_pids, daemon_pids, daemon_runtime_dir,
+                     stop_compositor, stop_daemon)
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -34,6 +35,7 @@ from support import daemon_pids, daemon_runtime_dir, stop_daemon
 os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 
 _BEFORE = set(daemon_pids())
+_SWAY_BEFORE = {pid for pid, _ in compositor_pids()}
 
 # A daemon signalled a moment ago is allowed to finish dying: a test's own
 # cleanup waits for its daemons, but a daemon that is on its way out for a
@@ -64,6 +66,30 @@ class NoDaemonIsLeftBehind(unittest.TestCase):
         self.fail("%d wdotool daemon(s) still running at the end of the "
                   "suite: %s%s -- whatever spawned them must stop them "
                   "(tests/support.py: stop_daemons_under)"
+                  % (len(left), detail,
+                     "; could not stop %s" % stuck if stuck else ""))
+
+    def test_the_suite_stopped_every_compositor_it_started(self):
+        """The same rule for the headless compositors the live tests boot.
+
+        Six were found alive on the test machine, the oldest forty-six hours
+        old, left by scripts run beside the suite rather than by the suite
+        itself.  The suite is clean today and this keeps it that way."""
+        deadline = time.monotonic() + GRACE
+        while True:
+            now = {pid: conf for pid, conf in compositor_pids()}
+            left = sorted(set(now) - _SWAY_BEFORE)
+            if not left or time.monotonic() >= deadline:
+                break
+            time.sleep(0.2)
+        if not left:
+            return
+        detail = ", ".join("pid %d (%s)" % (pid, now.get(pid) or "no config")
+                           for pid in left)
+        stuck = [pid for pid in left if not stop_compositor(pid)]
+        self.fail("%d headless compositor(s) still running at the end of the "
+                  "suite: %s%s -- whatever booted them must stop them "
+                  "(tests/support.py: HeadlessSway)"
                   % (len(left), detail,
                      "; could not stop %s" % stuck if stuck else ""))
 
