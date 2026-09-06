@@ -20,6 +20,9 @@ In the box:
 
 ## Motivation
 
+Yes, this is far too much code for something that just types into a window. Have a
+look at what it is up against.
+
 - https://www.semicomplete.com/blog/xdotool-and-exploring-wayland-fragmentation/
 - https://daniele.tech/2025/04/how-to-center-the-mouse-between-monitors-in-wayland/
 - https://thelastguardian.me/posts/2026-04-26-screen-control-on-wayland/
