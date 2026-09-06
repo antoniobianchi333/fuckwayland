@@ -443,7 +443,7 @@ that they share screen area, by a validator every route into Mutter goes through
 0.4 has one way through it: a second Shell extension that the package ships and that
 nothing enables, an agreement you record against the exact build of GNOME the checks
 ran on, and eight bytes per monitor written into a private structure of the running
-`gnome-shell`. Six checks refuse any build they do not recognise. Thirteen
+`gnome-shell`. Six checks refuse any build they do not recognise. Twelve
 deliberately wrong descriptions of that structure were installed on purpose and every
 one was refused by name, before any write, with the session still running. It is
 still a bet, it is off, and if you are not sure you want it you do not.

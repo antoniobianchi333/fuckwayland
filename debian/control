@@ -40,4 +40,7 @@ Description: X11 power tools as drop-in clones for Wayland
  Also installed: the GNOME Shell bridge extension that the window commands
  need on GNOME (system-wide, enabled for each user at their next login), a
  udev rule that lets the user at the active seat open /dev/uinput without
- root, and the warandr application-menu entry.
+ root, and the warandr application-menu entry.  A second, separate GNOME
+ Shell extension is carried for wxrandr --unsafe-gnome-overlap and is enabled
+ for nobody: nothing in this package turns it on, and it does nothing until
+ somebody enables it by hand.  See README.Debian.

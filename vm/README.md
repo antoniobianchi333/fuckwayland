@@ -195,7 +195,10 @@ see below for what that changes):
   `network-online.target` — and with it cloud-init and ssh — for its full 2-minute timeout on
   every boot. `resolute-sway` has no NetworkManager; there networkd stays in charge.
 * the finished image's package list is dumped over the serial console and stored in
-  `golden/<flavor>-packages.txt` and `vm/reference/<flavor>-packages.txt`.
+  `golden/<flavor>-packages.txt`, and committed as `vm/reference/<flavor>-packages.txt`
+  for the eleven flavors built on a released Ubuntu. The two 26.10 images are a
+  development release whose package set moves under the flavor, so theirs stay in
+  `golden/` only.
 
 **GNOME** (`noble-gnome`, `resolute-gnome`)
 
@@ -326,7 +329,7 @@ nine are what the desktop-support matrix is measured on.
 
 **The default install** (`resolute-gnome-iso`)
 
-The other ten flavors answer "does this work on GNOME 50 / Plasma 6 / Xfce / sway?". This one
+The other eleven flavors answer "does this work on GNOME 50 / Plasma 6 / Xfce / sway?". This one
 answers a different question — "does this work on **a default Ubuntu 26.04 desktop**, freshly
 installed and updated?" — and it can only answer it by being one. Same ISO a person downloads,
 same installer, same default install source, nothing added and, more importantly, **nothing
@@ -344,7 +347,8 @@ an image that has been tidied up cannot answer a question about an untidy one.
    5 its `select_autoinstall()` looks at — and installs; the installer powers the VM off.
 2. **Configure** (1.5 min). The installed disk is booted once and `vm/build-iso-image.sh`
    runs in it over ssh: update, GDM autologin, cloud-init re-enabled. Then power off, and the
-   disk *is* the golden image — a plain qcow2 with no backing file, unlike the other ten.
+   disk *is* the golden image — a plain qcow2 with no backing file, unlike the eleven
+   cloud-image ones.
 
 **Why the kernel argument.** The config alone is not enough on the *desktop* installer. With
 the seed and no `autoinstall` on the command line the live session comes up, the installer

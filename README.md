@@ -45,9 +45,10 @@ sudo apt install ./release/fuckwayland_0.4.0_all.deb
 
 That is the six tools in `/usr/bin`, the GNOME Shell bridge extension where
 `gnome-shell` looks for it, the udev rule that opens `/dev/uinput` to whoever is at
-the seat, and the `warandr` menu entry. **One** `Architecture: all` package for
-**both** releases, because every module here is pure standard library and your own
-`python3` byte compiles it at install time. The real `xdotool`, `wmctrl`, `xprop` and
+the seat, the `warandr` menu entry, and one thing that is put there and left switched
+off, the [overlap extension](#overlapping-monitors-on-gnome). **One**
+`Architecture: all` package for **both** releases, because every module here is pure
+standard library and your own `python3` byte compiles it at install time. The real `xdotool`, `wmctrl`, `xprop` and
 `xrandr` stay exactly as they were, so a script that calls both keeps working, and
 `sudo apt remove fuckwayland` takes every piece away again.
 
@@ -673,7 +674,7 @@ repository that can cost you the session you are sitting in. Three steps:
 
 ```sh
 sh gnome/install-overlap.sh     # a second Shell extension, then log out and back in
-wxrandr --gnome-overlap-allow   # read it once, agree to this build of GNOME
+wxrandr --gnome-overlap-allow   # read it once, agree to this build of GNOME (optional)
 wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
 ```
 
@@ -688,7 +689,9 @@ second prints what the flag does, what it risks and what it saves, runs every ch
 against the GNOME that is running, and records what those checks measured, down to
 the build id of the `libmutter` they ran against, because a version number does not
 change when Ubuntu replaces that library, so that later runs say one line instead of
-the paragraph, and an update ends the agreement rather than outliving it. The third is
+the paragraph, and an update ends the agreement rather than outliving it. It is the
+one of the three that can be left out: nothing is gated on it, and without it the
+third step still works and prints the whole paragraph every single time. The third is
 an ordinary `wxrandr` line with the flag added, and the flag does nothing at all unless
 the layout is one GNOME refuses. In `warandr` there is nothing to type at all: drag two
 monitors into an overlap and press Apply, and the window explains it once, in a dialog
@@ -748,7 +751,9 @@ startup script or a hotkey if you want it every time.
 
 Withdrawing the agreement is `wxrandr --gnome-overlap-forget`, which needs no desktop
 and works from a text console, and `wxrandr --gnome-overlap-status` says where you
-stand. Removing the route altogether is `sh gnome/install-overlap.sh --uninstall`.
+stand. Removing the route altogether is `sh gnome/install-overlap.sh --uninstall`
+from a clone, and `gnome-extensions disable fuckwayland-overlap@fuckwayland` from the
+package, which is the first step of the three undone whichever way you took it.
 
 The honest part: this works by writing eight bytes per monitor into the running
 `gnome-shell`, at a place that is a private detail of one build of it, and if that
@@ -793,14 +798,16 @@ generation per release and keeps it for the release's life. What moves it is a r
 upgrade, 24.04 → 26.04, and there this is meant to refuse until somebody measures the
 new GNOME.
 
-**And when it is wrong it refuses rather than breaking anything.** Thirteen
+**And when it is wrong it refuses rather than breaking anything.** Twelve
 deliberately wrong descriptions of that structure have been installed on purpose
 across the three releases, wrong generation, fields of the same size swapped, the
 list read out of the wrong slot, a description naming a library that is not there,
 each of them put there the way a user would get one, at a login, and every one was
 refused by name, before any write, with `gnome-shell` still running afterwards. That
-is the bet this feature makes, and it has not lost it yet. It is still a bet:
-thirteen caught is not proof that a fourteenth would be, and what would beat all of
+last one is also the only input that ever did take a session down, and it did that
+before the guard which now refuses it existed, which is the dryrun described above.
+That is the bet this feature makes, and it has not lost it yet. It is still a bet:
+twelve caught is not proof that a thirteenth would be, and what would beat all of
 it is an Ubuntu update that moves that structure without moving the version number
 the checks read. Nothing in 24.04's 28 months has done it, and one
 26.04 update in `-proposed` today does exactly that to a *different* private
@@ -1066,7 +1073,7 @@ asks, and one option that forces past the single check saying this build is a me
 one, for the GNOME nobody has measured yet. Everything version-specific about that
 route became one record per GNOME release in a table, and GNOME 51 was added to it by
 following the written procedure and nothing else, on an Ubuntu 26.10 desktop that is
-the rig's thirteenth image. Both default installs, every desktop and both Ubuntu
+the rig's thirteenth image. Both default installs, every desktop and both LTS
 releases were retested, the package in `release/` is built from this tree rather than
 left at the previous one, and the suite stands at **2614 tests**.
 

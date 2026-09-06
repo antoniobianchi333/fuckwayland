@@ -621,8 +621,21 @@ available: yes
 
 (One `chosen by:` line, never two: warandr passed the `--backend` flag that
 wxrandr would otherwise report back to it, so the inner answer is dropped
-where it only restates the outer one.) Exit 1 with `warandr: ...`
-on backend/parse/file errors.
+where it only restates the outer one.) `--version` prints `warandr
+<release>` and exits. Exit 1 with `warandr: ...` on backend/parse/file
+errors.
+
+`--unsafe-gnome-overlap` is the last option and the only dangerous one, and
+it is the command-line half of [Overlapping monitors on
+GNOME](#overlapping-monitors-on-gnome) above: it applies an overlapping
+layout without ever opening that dialog, for a window started from a hotkey
+or a desktop entry where there is nobody to answer it. It waives the
+question and not one check, and it records no agreement — the window's box
+is what records one, so a hotkey cannot agree on the user's behalf. Where
+the route is not there, or the layout does not overlap, it changes nothing.
+The flag that gets past an *unmeasured* GNOME is a wxrandr option with no
+warandr spelling at all, on purpose: WXRANDR.md §
+[`--unsafe-gnome-overlap-unmeasured`](WXRANDR.md#forcing-past-a-refusal-on-a-gnome-nobody-has-measured).
 
 ## Launching on GNOME (verified live: Ubuntu 24.04 / GNOME 46, 26.04 / GNOME 50)
 

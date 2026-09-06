@@ -41,6 +41,12 @@ byte-parity oracles.
   usage exit 1).
 - `-display`, `-fs`, `-grammar` edge flags: -display honored for the X plane;
   -grammar prints the real grammar text.
+- The whole option set, which is xprop 1.2.8's own and is what the usage text
+  lists: `-help`, `-grammar`, `-display`, `-id`, `-name`, `-font`, `-remove`,
+  `-set`, `-root`, `-len`, `-notype`, `-fs`, `-frame`, `-f`, `-spy`, `-version`.
+  Single dash, all of them: `--help` and the other double-dash forms are
+  `wxprop: unrecognized argument --help` and exit 1, which is the real tool's
+  answer too, so there is no long option anywhere in this tool to document.
 - `-font <name>` is real: XWayland serves the core fonts (xfonts-base), so the
   font plane is `OpenFont` + `QueryFont` on the X connection and the FONTPROPs
   print through xprop's *font* format table — which replaces the window one for

@@ -82,6 +82,39 @@ Wayland forces a few honest approximations:
 | `behave`, `behave_screen_edge` | both wait on X events that do not exist here, so both are unsupported and fail cleanly. Every other `--sync`, `windowmap`'s included, is implemented and bounded: see [`--sync` waits are bounded](#--sync-waits-are-bounded) |
 | `selectwindow` | click-to-select on GNOME (a bridge grab, needs bridge v2 or newer) and on KDE (KWin's own picker); Escape cancels with rc 1, as does a second picker or a shell that is already modal (the GNOME overview, a menu). sway and i3 have no picker in their IPC, so there the wait ends on the next focus *change* and re-selecting the focused window never returns |
 
+### The option surface, per command
+
+Every long option any command accepts, which is xdotool's own set and is what
+`wdotool <cmd> --help` prints for each of them. Nothing here is ours: the two options
+that are (`--layout` and `--vkbd`) go **before** the command and are
+[below](#forcing-the-layout). `-h`/`--help` is accepted everywhere.
+
+| commands | options |
+|---|---|
+| `search` | `--all` `--any` `--class` `--classname` `--desktop` `--limit` `--maxdepth` `--name` `--onlyvisible` `--pid` `--prefix` `--role` `--screen` `--shell` `--sync` `--title` |
+| `set_window` | `--class` `--classname` `--icon-name` `--name` `--overrideredirect` `--role` `--urgency` |
+| `type` | `--args` `--clearmodifiers` `--delay` `--file` `--terminator` `--window` |
+| `key`, `keydown`, `keyup` | `--clearmodifiers` `--delay` `--repeat` `--repeat-delay` `--window` |
+| `click` | `--clearmodifiers` `--delay` `--repeat` `--window` |
+| `mousemove` | `--clearmodifiers` `--screen` `--sync` `--window` |
+| `mousemove_relative` | `--clearmodifiers` `--polar` `--sync` |
+| `mousedown`, `mouseup` | `--clearmodifiers` `--window` |
+| `exec` | `--args` `--sync` `--terminator` |
+| `windowstate` | `--add` `--remove` `--toggle` (last one on the line wins, as upstream) |
+| `getwindowgeometry`, `getmouselocation` | `--prefix` `--shell` |
+| `behave_screen_edge` | `--delay` `--quiesce` (the command itself is unsupported here, above) |
+| `windowmove` | `--relative` `--sync` |
+| `windowsize` | `--sync` `--usehints` |
+| `windowactivate`, `windowfocus`, `windowmap`, `windowminimize`, `windowunmap` | `--sync` |
+| `set_desktop` | `--relative` |
+| the other 24 | none |
+
+`--sync` is bounded everywhere it appears: [`--sync` waits are
+bounded](#--sync-waits-are-bounded). `search --title` is upstream's deprecated
+spelling of `--name` and behaves as one. `scripts/check-docs.py` reads this table's
+neighbourhood the hard way, by running every one of those help texts and comparing
+the options in them against the documents.
+
 Desktops map to workspaces (0-based). `windowunmap`/`windowminimize` use the
 scratchpad on sway. GNOME has a longer list of honest differences (shell grabs, the
 lock screen, `selectwindow`): see **Known limitations on GNOME** in
