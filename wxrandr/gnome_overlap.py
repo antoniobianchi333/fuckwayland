@@ -159,9 +159,9 @@ def unsupported_reason(version, force=None):
     """Why this compositor is not one to write into, or None if it is one.
 
     Deliberately a version *allowlist* rather than a blocklist.  The offsets
-    this depends on are private, they already differ between the two releases
-    that are supported, and a wrong one does not raise an error -- it writes
-    into the compositor's heap.
+    this depends on are private, they already differ between the generations
+    in the table, and a wrong one does not raise an error -- it writes into
+    the compositor's heap.
 
     `force` is a `--unsafe-gnome-overlap-unmeasured` request, and it is the one
     thing that turns this particular refusal into a yes.  It cannot turn any
