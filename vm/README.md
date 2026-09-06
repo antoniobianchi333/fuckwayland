@@ -329,7 +329,8 @@ nine are what the desktop-support matrix is measured on.
 
 **The default install** (`resolute-gnome-iso`)
 
-The other eleven flavors answer "does this work on GNOME 50 / Plasma 6 / Xfce / sway?". This one
+The eleven cloud-image flavors answer "does this work on GNOME 50 / Plasma 6 / Xfce /
+sway?", and `noble-gnome-iso` asks this one's question again for 24.04 (below). This one
 answers a different question — "does this work on **a default Ubuntu 26.04 desktop**, freshly
 installed and updated?" — and it can only answer it by being one. Same ISO a person downloads,
 same installer, same default install source, nothing added and, more importantly, **nothing

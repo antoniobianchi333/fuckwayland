@@ -1075,7 +1075,7 @@ route became one record per GNOME release in a table, and GNOME 51 was added to 
 following the written procedure and nothing else, on an Ubuntu 26.10 desktop that is
 the rig's thirteenth image. Both default installs, every desktop and both LTS
 releases were retested, the package in `release/` is built from this tree rather than
-left at the previous one, and the suite stands at **2614 tests**.
+left at the previous one, and the suite stands at **2618 tests**.
 
 <!-- release-notes: 0.3 -->
 ### 0.3
@@ -1124,7 +1124,7 @@ Developed against real desktops, not against a model of them. `vm/` is the rig:
 `vmctl` builds and runs thirteen golden images, each with up to four virtual monitors
 that can be plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/README.md` documents the whole thing and `vm/SETUP.md` is how to
-set the rig up on a machine of your own. `tests/` holds the suite, 2614 tests: unit
+set the rig up on a machine of your own. `tests/` holds the suite, 2618 tests: unit
 tests, wire-level fake compositors and X servers, live-compositor integration,
 hostile-input torture, byte-parity oracles against the real xdotool, wmctrl, xprop
 and xrandr, and one static check that no package ever reaches for the desktop portal

@@ -1051,3 +1051,40 @@ class TheMetadataDescriptionComesFromTheTable(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ADryRunCannotBeForced(unittest.TestCase):
+    """Measured on a real GNOME 51: the first forced run ever attempted was a
+    `--dryrun`, and it ended the session. Forcing picks a description by size,
+    that description names the library it was built for, and the interpreter
+    inside gnome-shell aborts rather than raising when it cannot be opened. So
+    a dry run promises a safe look at an unmeasured build and cannot give one."""
+
+    def _err(self, argv):
+        from wxrandr import cli
+        try:
+            cli.parse(argv)
+        except Exception as e:                      # ArgErr
+            return str(e)
+        return ""
+
+    def test_it_is_refused(self):
+        err = self._err(["--unsafe-gnome-overlap", "--unsafe-gnome-overlap-unmeasured",
+                         "51", "--dryrun", "--output", "X", "--pos", "1x0"])
+        self.assertIn("cannot be rehearsed with --dryrun", err)
+
+    def test_the_message_says_where_to_look(self):
+        err = self._err(["--unsafe-gnome-overlap", "--unsafe-gnome-overlap-unmeasured",
+                         "51", "--dryrun", "--output", "X", "--pos", "1x0"])
+        self.assertIn("add the build first", err)
+
+    def test_a_dry_run_without_forcing_is_fine(self):
+        # the ordinary flag rehearses safely: every check runs and refuses
+        err = self._err(["--unsafe-gnome-overlap", "--dryrun",
+                         "--output", "X", "--pos", "1x0"])
+        self.assertNotIn("cannot be rehearsed", err)
+
+    def test_forcing_without_a_dry_run_is_fine(self):
+        err = self._err(["--unsafe-gnome-overlap", "--unsafe-gnome-overlap-unmeasured",
+                         "51", "--output", "X", "--pos", "1x0"])
+        self.assertNotIn("cannot be rehearsed", err)

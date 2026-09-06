@@ -74,7 +74,7 @@ by using the tools on one rather than by reading them.
   the 0.3 build, so a user who installed the way the README says got none of this. The
   package is built from this tree, and was rebuilt again once the overlap extension
   had a table to read, which is what `tests/test_release_deb.py` noticed.
-- **2614 tests**, up from 2262, the new ones being the daemon's two ways of ending,
+- **2618 tests**, up from 2262, the new ones being the daemon's two ways of ending,
   the chord the layout cannot produce, the pin carried on the request, the guards
   around the saved display configuration, and every refusal of the overlap route
   classified and then re-run with the forcing option to see which of them it changes.
