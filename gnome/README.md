@@ -159,6 +159,11 @@ gnome/
 The typelibs are checked in because compiling one needs `g-ir-compiler`, which no
 desktop has installed. `python3 gnome/overlap-typelib/gen-gir.py` rebuilds them from
 the `.gir` sources, and `--check` is what notices a `.gir` edited without a rebuild.
+The structure they describe, field by field and offset by offset on both generations,
+and what to do to add a third, is
+[docs/Technical.md § The private structure](../docs/Technical.md#the-private-structure-and-the-descriptions-that-describe-it);
+what the two bus methods take and answer, request by request, is
+[§ The bus interface](../docs/Technical.md#the-bus-interface-request-by-request).
 
 **Three properties, and it is worth nothing without all three:** it does nothing at
 login (`enable()` exports one D-Bus object and stops, so it is safe to leave installed
@@ -174,12 +179,14 @@ and in [docs/WXRANDR.md](../docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route
 
 ```sh
 sh gnome/install-overlap.sh          # then log out and back in once
-sh gnome/install-overlap.sh --check  # state, bus name, and a Probe: every guard, no write
+sh gnome/install-overlap.sh --check  # state, bus name, and a Probe: every guard, nothing applied
 sh gnome/install-overlap.sh --uninstall
 ```
 
 `--check` is the honest way to ask whether your GNOME is one of the two this has been
-measured on: it runs every guard against the running libmutter and writes nothing. On
+measured on: it runs every guard against the running libmutter and changes nothing the
+session can see, the only write anywhere being the sentinel into a throwaway
+configuration object of the extension's own making. On
 a stock 26.04 it says `FwOverlap18, MetaMonitorsConfig 80 bytes as declared`, and on
 24.04 `FwOverlap14 … 72 bytes`.
 

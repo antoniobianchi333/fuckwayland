@@ -79,11 +79,19 @@ class ConsentCase(Case):
     def stderr_lines(self, err):
         return [ln for ln in err.splitlines() if ln.strip()]
 
-    def run_cli_no_session(self, *argv):
+    def run_cli_no_session(self, *argv, how=None):
         """`cli.main` with a Session that cannot be built at all: a text console,
-        or a session that will not start."""
+        or a session that will not start.
+
+        `how` is which of the two ways that happens: `Fatal` for a backend that
+        was named and is not there, and by default the real `_cant_open()`, which
+        is what a machine with no compositor does -- it writes xrandr's own line
+        to stderr and raises SystemExit, and answering anyway is the whole point
+        of this command."""
         def boom(_sess, forced=None):
-            raise Fatal("Can't open display\n")
+            if how is Fatal:
+                raise Fatal("Can't open display\n")
+            cli.Session._cant_open()
         orig = cli.Session.__init__
         cli.Session.__init__ = boom
         out, err = io.StringIO(), io.StringIO()
@@ -547,15 +555,25 @@ class Status(ConsentCase):
     def test_it_answers_with_no_session_at_all(self):
         """A status query has to be answerable from a text console with a
         session that will not start: the record is a file, and half of what this
-        reports is in it."""
+        reports is in it.
+
+        Both ways a session fails to build, because they are different
+        exceptions: a named backend that is not there is a `Fatal`, and no
+        compositor at all goes through `_cant_open()`, which is xrandr's own
+        "Can't open display" and a `SystemExit`.  The second one is the text
+        console this command is for, and it used to walk straight past the
+        answer."""
         self.agree()
-        code, out, err = self.run_cli_no_session(STATUS)
-        self.assertEqual(code, 0, err)
-        lines = out.splitlines()
-        self.assertEqual(lines[0], "unavailable")
-        self.assertIn("reason: Can't open display", lines)
-        self.assertIn("agreed by: wxrandr --gnome-overlap-allow", lines)
-        self.assertIn("file: %s" % self.path(), lines)
+        for how in (Fatal, None):
+            code, out, err = self.run_cli_no_session(STATUS, how=how)
+            self.assertEqual(code, 0, err)
+            lines = out.splitlines()
+            self.assertEqual(lines[0], "unavailable", how)
+            self.assertIn("reason: Can't open display", lines)
+            self.assertIn("agreed by: wxrandr --gnome-overlap-allow", lines)
+            self.assertIn("file: %s" % self.path(), lines)
+            # and the stray line does not land on top of the answer
+            self.assertNotIn("Can't open display", err)
 
     def test_it_reads_nothing_out_of_gnome_shell(self):
         """A GUI runs this at startup.  It must not cost a walk of Mutter's

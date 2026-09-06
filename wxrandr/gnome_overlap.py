@@ -389,7 +389,7 @@ def facts(reply):
 
 
 def describe_build(f):
-    """"GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 128 bytes)"."""
+    """"GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 80 bytes)"."""
     return ("GNOME Shell %s (libmutter-%s, MetaMonitorsConfig %s bytes)"
             % (f.get("shell") or "?", f.get("libmutter") if f.get("libmutter") is not None else "?",
                f.get("struct_size") if f.get("struct_size") is not None else "?"))
