@@ -599,6 +599,39 @@ class TestKeyStateReader(unittest.TestCase):
 class TestPointerMapping(unittest.TestCase):
     """B1/B2/B7: where an injected move actually lands."""
 
+    def test_kwin_three_head_layouts_round_trip(self):
+        """The same round trip over the three-head layouts KWin actually
+        makes, which is where the claim had never been measured.
+
+        Live on Plasma 6.6 and 5.27 (`repro/kde-6-pointer-3head.py`, three
+        1920x1080 heads) every corner and centre of every output landed on
+        the pixel asked for, and so did 100 swept x values at the layout's
+        two ends -- read back from KWin's own `workspace.cursorPos`.  The
+        shapes are KDE's own: KWin refuses a negative position for an
+        enabled output ("Position of enabled output %1 is negative"), so
+        `--pos -1920x0` shifts the whole layout instead and leaves a
+        1920px hole in the middle of the bounding box, and a head at scale
+        1.5 is 1280x720 logical beside one dropped 200px down.
+
+        The one live miss is KWin's and not the map's: a 1x1 screen edge at
+        an output's top-left corner pushes the cursor back a pixel, so
+        (0,0) reads (1,1).  Nothing on this side can reach that pixel.
+        """
+        for geom in ((0, 0, 5760, 1080),      # three heads in a row
+                     (0, 0, 7680, 1080),      # ...with the hole in it
+                     (0, 0, 5120, 1280)):     # scale 1.5 + a y offset
+            gx, gy, w, h = geom
+            d = make_daemon(geom)
+            for x in (gx, gx + 1, gx + w // 2, gx + w - 1):
+                for y in (gy, gy + 1, gy + h // 2, gy + h - 1):
+                    d.tablet.events.clear()
+                    d.op_mousemove_abs(x, y, [])
+                    ax, ay = abs_report(d.tablet)
+                    self.assertEqual(
+                        (gx + compositor_pixel(ax, w),
+                         gy + compositor_pixel(ay, h)), (x, y),
+                        "geom=%r target=%d,%d axes=%d,%d" % (geom, x, y, ax, ay))
+
     def test_abs_round_trips_through_the_compositor_inverse(self):
         """B7: every x must survive daemon -> tablet -> compositor. The old
         (x-gx)*32767//(w-1) map lost a pixel wherever the division was

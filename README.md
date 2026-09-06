@@ -713,7 +713,7 @@ real tools, whichever desktop is drawing it.
 
 | | GNOME 46 / 50 | Plasma 5.27 / 6.6 (Wayland) | X11 sessions: Xfce 4.18 / 4.20, Plasma on Xorg **(j)** | sway 1.11 (wlroots) |
 |---|---|---|---|---|
-| **wdotool** | all 48 commands, and the window ones need the [bridge extension](#gnome) | all 48, nothing to install **(a)** | hands over to the installed `xdotool` **(b)** | all 48, four differences **(c)** |
+| **wdotool** | all 48 commands, and the window ones need the [bridge extension](#gnome) **(l)** | all 48, nothing to install **(a)** | hands over to the installed `xdotool` **(b)** | all 48, four differences **(c)** |
 | **wwmctl** | works, the window list needs the bridge | works **(d)** | hands over to `wmctrl` | works |
 | **wxprop** | works, X and native windows | works | hands over to `xprop` | works, and from a root shell `-root` is synthesized **(e)** |
 | **wxrandr** | works (mutter) | works (kwin) **(f)** | hands over to `xrandr` **(g)** | works (sway) |
@@ -729,7 +729,14 @@ desktop portal: [No authorization dialog](#no-authorization-dialog).
 
 **(a)** With the differences in
 [docs/WDOTOOL.md § What differs from X on KDE Plasma](docs/WDOTOOL.md#what-differs-from-x-on-kde-plasma)
-(raise, lower, shading, maximize on 5.27, minted window ids).
+(raise, lower, shading, maximize on 5.27, minted window ids) — and one pixel per
+monitor that is KWin's, not ours: `mousemove` reaches every pixel of every head in
+every layout measured **except an output's top-left**, where KWin's own 1x1 screen
+edge pushes the cursor back to `1,1` and, on a stock Plasma 6, opens the Overview.
+Three heads, three layout shapes, both Plasma generations, read back from KWin's own
+cursor position:
+[docs/WDOTOOL.md § Pointer accuracy](docs/WDOTOOL.md#pointer-accuracy). A monitor at
+a **negative origin** is a wlroots shape, not a KDE one: KWin refuses one outright.
 **(b)** On a plain X11 session the tools *are* the originals, so the command set is
 whatever is installed there: both Ubuntu images carry xdotool 3.20160805.1, which has
 no `windowstate` at all, while parity is claimed against 4.20260303.1.
@@ -765,6 +772,17 @@ KWin nor Mutter implements either, so the only capture route there is the deskto
 portal, which asks the user for permission once per session. That is useless from a
 hotkey, and the one thing these tools will not do, so wmirror says exactly that and
 exits 1 rather than half working.
+**(l)** Pointer coordinates are the desktop's own **layout** coordinates under HiDPI
+and fractional scaling — logical pixels on GNOME 50 and Plasma, and raw pixels on
+GNOME 46 with "Fractional Scaling" off, which is that release's own layout mode and
+not a defect. Measured at 100%, 150% and 200%, one head and two of different scales,
+against the cursor plane on the scanout: 0px. One Mutter 46 state *is* a defect —
+switching Fractional Scaling on under an already-scaled monitor leaves GNOME
+advertising a layout it has stopped drawing — and there `mousemove` still lands on the
+coordinate you ask for, because Mutter maps the pointer across that same advertised
+layout, while `getdisplaygeometry` describes a desktop that is not there. wdotool says
+so when it happens, and changing the scale once clears it:
+[docs/WDOTOOL.md § Pointer accuracy](docs/WDOTOOL.md#pointer-accuracy).
 
 ## Threat model
 
@@ -884,7 +902,7 @@ Developed against real desktops, not against a model of them. `vm/` is the rig:
 `vmctl` builds and runs twelve golden images, each with up to four virtual monitors
 that can be plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/README.md` documents the whole thing and `vm/SETUP.md` is how to
-set the rig up on a machine of your own. `tests/` holds the suite, 2283 tests: unit
+set the rig up on a machine of your own. `tests/` holds the suite, 2371 tests: unit
 tests, wire-level fake compositors and X servers, live-compositor integration,
 hostile-input torture, byte-parity oracles against the real xdotool, wmctrl, xprop
 and xrandr, and one static check that no package ever reaches for the desktop portal

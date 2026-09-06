@@ -519,6 +519,24 @@ minutes; neither can touch a daemon with a client connected or a key held down. 
 period, the check interval and the two off switches are in
 [WDOTOOL.md § The input daemon](WDOTOOL.md#the-input-daemon).
 
+**One layout box, from one source — except where one source cannot answer.** Every
+absolute pointer coordinate is mapped across the layout bounding box the daemon reads
+off the Wayland wire, so which *pixel space* that box is in decides where a move
+lands. `zxdg_output_v1`'s logical geometry is that source, and it stays that
+source in every state measured — including the one GNOME 46 state where it is stale
+(Fractional Scaling switched on under an already-scaled monitor, after which Mutter
+stops re-sending `logical_size`), because Mutter maps absolute pointer motion across
+the same stale rectangle it is advertising. Reading the box from DisplayConfig there
+instead, which is the obvious repair and was implemented and measured, lands every
+target at twice the coordinate asked for. What that state really breaks is
+`getdisplaygeometry`, which then describes a desktop that is not being drawn, and on
+the wire it is byte for byte a legitimate physical-mode session where the same numbers
+are right. So `wdotool/layoutbox.py` gates on the signature the two share (a head whose
+logical size is its raw mode size while it claims `wl_output.scale` >= 2), asks
+`org.gnome.Mutter.DisplayConfig` only then, and turns a disagreement into one
+diagnostic rather than a different box. The gate is the point: the common session never
+opens a bus, so the check cannot cost anything anywhere else.
+
 **One layout decision, in one function.** `xkbmap.decide(text, group, mode)` is the
 single answer to "which character table does this keystroke use?", and
 `xkbmap.layout_mode(forced)` is the single answer to "which mode are we in?". Three
@@ -843,7 +861,7 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2283 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2371 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite
@@ -870,7 +888,8 @@ hold across all of them and are enforced by tests of their own:
 | `window_cmds.py`, `desktop_cmds.py` | `test_windows_cmds`, `test_windows_sway` | `FakeBackend` in-memory; a real headless sway |
 | `input_cmds.py`, `daemon.py`, `uinput.py` | `test_input_cmds`, `test_input_daemon`, `test_input_uinput`, `test_daemon_lifetime`, `test_torture_regressions`, `test_hardening` | `FakeDaemon`, `RecorderDev`, and `WDOTOOL_FAKE_UINPUT=1` writing into a regular file |
 | `vkbd.py`, `vptr.py` | `test_vkbd`, `test_vptr` | `wl_fake.Server`: a real unix socket speaking the Wayland wire format |
-| `xkbmap.py`, `keymap.py`, `us_keymap.py` | `test_xkbmap`, `test_keymap`, `test_layout_flag` | `tests/fixtures/keymaps/*.xkb`, each a byte-for-byte capture of what a compositor handed a client |
+| `xkbmap.py`, `keymap.py`, `us_keymap.py` | `test_xkbmap`, `test_keymap`, `test_layout_flag` | `tests/fixtures/keymaps/*.xkb`, each a byte-for-byte capture of what a compositor handed a client, from GNOME, sway and KWin |
+| `layoutbox.py` | `test_scale_spaces` | a wl_output/xdg_output fake replaying one measured scaling state per test, and `FakeMutter` on the mock bus as the second source |
 | `keys_cmds.py` | `test_keys_cmds` | recorded evdev streams |
 | `backend_gnome.py` | `test_backend_gnome`, `test_wwmctl_gnome`, `test_wxprop_gnome` | `MockBridge` on `dbus_mini`'s in-process mock bus |
 | `backend_kwin.py`, `kwin_js.py` | `test_backend_kwin` | a fake KWin on the same mock bus, answering `loadScript`/`run`/`unloadScript` |

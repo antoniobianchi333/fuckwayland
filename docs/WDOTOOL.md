@@ -96,7 +96,12 @@ $ wdotool type 'Grüße, ça va?'      # de, fr, es, dvorak ... all fine
 * Characters the active layout genuinely cannot produce warn and skip, one line each,
   and the rest of the string is typed — `ñ` is not on a French keyboard
   (`fr(basic)` has no `dead_tilde` and no `ntilde`), so `type 'ñ'` says so and types
-  nothing.
+  nothing. **`key` says the same thing about a key name the layout cannot reach**,
+  rather than pressing the built-in US table's *position* for it: on a Greek-only
+  session `key ctrl+s` warns and presses ctrl alone, because `<AC02>` is σ there and
+  Ctrl+σ is not Save. (It used to press it and say nothing, measured in Kate on both
+  Plasma versions: nothing saved, exit 0, empty stderr. Configure a Latin layout
+  alongside, or pin its group, and the chord lands.)
 * **When the active layout is plain US, none of this runs.** wdotool checks the
   keymap key by key against its built-in US table and, when they agree, uses the
   built-in table. Keyboard *options* do not spoil that: swapping Caps and Escape, or
@@ -106,17 +111,29 @@ $ wdotool type 'Grüße, ça va?'      # de, fr, es, dvorak ... all fine
   never a failure.
 
 Two things are still on the honest list. **Compose-only characters**: a character the
-layout reaches only through a Compose *sequence* that is not a dead-key pair (`ø` on
+layout reaches only through a Compose *sequence* that is not a dead-key pair (`ñ` on
 German, say) is skipped with the warning above — wdotool composes nothing itself, it
 presses keys. And **which of several configured layouts is active**:
 `wl_keyboard.modifiers` carries that and every compositor sends it only to the window
 with keyboard focus, which an injector never is. With several layouts configured
-wdotool uses the **first** and says so, so a `us, de` session that has switched to
-German types US characters until you pin the group:
+wdotool uses the **first** and says so — on every command that types, not once per
+session — so a `us, de` session that has switched to German types US characters until
+you pin the group:
 
 ```console
 $ WDOTOOL_XKB_GROUP=2 wdotool type 'Grüße'   # the second configured layout
 ```
+
+That is a limitation of the Wayland protocol, and on **KDE it is a limitation we have
+not lifted rather than one the protocol imposes**: KWin publishes the live layout
+index on the session bus (`org.kde.KeyboardLayouts` `getLayout` on Plasma 6,
+`org.kde.kded5 /modules/keyboard` on 5.27), measured answering correctly across a
+layout switch, and wdotool does not read it yet. Until it does, `WDOTOOL_XKB_GROUP`
+is the answer on KDE as everywhere else. Measured end to end in a real Kate window on
+Plasma 6.6 and 5.27 (`repro/kde-keys-1-group-guess.sh`): with one `de` layout
+configured, plain text, AltGr, dead keys and chords all arrive byte for byte; with
+`us, de` and German switched on, `Grüße yz @` arrives as `Gre zy ""` until the group
+is pinned, and then arrives whole.
 
 The measured engineering behind all of it — the reverse map, the US bypass, the group
 guess, the cache — is [the active layout](#the-input-daemon), below.
@@ -638,19 +655,89 @@ character cell) of the request.
 
 ## Pointer accuracy
 
-`mousemove` and `mousemove_relative` are pixel-exact: the target is emitted as an
-absolute position on a virtual tablet mapped across the whole output layout, so
-neither pointer acceleration nor an already-identical coordinate can lose the move.
-On sway/i3, relative moves keep using relative events (that rig runs `pointer_accel
-0`); `WDOTOOL_REL_MODE=abs|rel` forces either mode anywhere.
+`mousemove` and `mousemove_relative` are pixel-exact **in the layout's own
+coordinates**, with one pixel per output on KDE that is the compositor's and not
+ours: the target is emitted as an absolute position on a virtual tablet mapped across
+the whole output layout, so neither pointer acceleration nor an already-identical
+coordinate can lose the move. On sway/i3, relative moves keep using relative events
+(that rig runs `pointer_accel 0`); `WDOTOOL_REL_MODE=abs|rel` forces either mode
+anywhere.
 
 Where the [pointer protocol](#typing-and-clicking-with-no-privilege---vkbd) is used
 instead of the tablet, it is exact rather than merely pixel-exact: the two paths were
-measured against each other on the same three-head rig, one head at a negative origin
-and one at scale 1.5, and every target landed on the same pixel — the protocol path
-with 0.000 error, the tablet path within its own 1/32768-of-the-layout axis step. The
-arithmetic on both sides is `abs scaling (B7)` and `the coordinate map` in
-[the input daemon](#the-input-daemon).
+measured against each other on the same three-head **wlroots** rig, one head at a
+negative origin and one at scale 1.5, and every target landed on the same pixel — the
+protocol path with 0.000 error, the tablet path within its own 1/32768-of-the-layout
+axis step. The arithmetic on both sides is `abs scaling (B7)` and `the coordinate map`
+in [the input daemon](#the-input-daemon). That rig's shape is a wlroots shape: **KWin
+refuses a negative position for an enabled output** on both 5.27 and 6.6 (`Position of
+enabled output %1 is negative`), so a monitor at a negative origin cannot be arranged
+on KDE at all, and asking `wxrandr` for one shifts the whole layout instead.
+
+### On KDE, the top-left pixel of an output is KWin's
+
+Measured on Plasma 6.6 (kwin 6.6.6, Ubuntu 26.04) and 5.27 (Ubuntu 24.04), three
+1920x1080 heads, in three layouts — a plain row, a row with a 1920px hole in it, and
+one head at scale 1.5 beside one dropped 200px down — with every corner and centre of
+every output asked for and read back from KWin's own `workspace.cursorPos`, plus 150
+swept x values at the two ends of the layout. Everything landed on the pixel asked
+for, including all 150 sweeps, **except an output's top-left pixel**: KWin puts a 1x1
+screen edge there and pushes the cursor back, so `mousemove 0 0` reads `1,1`. On 6.6
+that is every output's corner; on 5.27 only a corner no neighbour shares.
+
+It is not the coordinate map, and nothing on this side can reach it: a
+`mousemove_relative` walk into the corner in REL mode stops at `1,1` as well and only
+reaches `0,0` on a second attempt, and disabling the hot corner
+(`Effect-overview BorderActivate=8`) stops the Overview opening but not the push-back.
+**On a stock Plasma 6, `wdotool mousemove 0 0` opens the Overview**, so a script that
+parks the pointer at the origin takes the whole desktop with it: park it at `1,1`.
+A target that lands in a hole in the layout snaps to the nearest output, which is
+KWin's business too. `repro/kde-6-pointer-3head.py` is the measurement.
+
+KDE's per-device output mapping does not enter into it, which is worth knowing
+because it is what the complaint threads reach for: KWin sees the tablet as
+`wdotool virtual tablet` and will accept an `OutputName` for it, in `kcminputrc` or
+live over D-Bus, but applies that mapping to touch and tablet-tool devices and not to
+absolute pointer motion. Pinning it to each head in turn changed nothing, on either
+generation — every target still exact. Writing the property does make KWin persist an
+`OutputUuid=` line under our device's name in the user's `kcminputrc`.
+
+### Which pixels the coordinates are in, under scaling
+
+They are the compositor's **layout** coordinates: what `wxrandr --query` prints and
+what `getdisplaygeometry` reports, which on a scaled desktop are logical pixels, not
+device ones. A 1920x1080 head at 200% is a 960x540 desktop, and `mousemove 960 540`
+is its bottom-right corner. Measured at scale 1, 1.5 and 2, on one head and on two
+heads of different scales, on GNOME 50, GNOME 46 and Plasma 6.6, against the KMS
+cursor plane on the scanout (device pixels, which nothing here produces) — 0px error
+everywhere, bar the half pixel a 1.5 factor leaves.
+
+**GNOME 46 has a second layout mode, and it is not a bug.** With "Fractional Scaling"
+off — 24.04's default — Mutter is in *physical* layout mode and its layout
+coordinates are raw pixels: the same head at 200% is a 1920x1080 desktop and
+`mousemove 400 100` lands at device 400,100. Both modes were measured; the coordinate
+you pass is whatever the desktop itself is using, and `wxrandr --query` says which.
+
+**One GNOME 46 state is a Mutter defect, and the pointer is not the part of it that
+is wrong.** Turn Fractional Scaling **on** while a monitor is already at 200% and
+Mutter 46 moves to logical mode without re-sending `zxdg_output_v1.logical_size`: the
+desktop it draws is 960x540 and the layout it advertises is still 1920x1080. It maps
+absolute pointer motion across the layout it advertises, so `mousemove` keeps landing
+on the coordinate you ask for — measured in that state against the KMS cursor plane,
+every target from `100,100` to the desktop's last pixel at `959,539`, 1:1. What is
+wrong is what you are **told**: `getdisplaygeometry` reports 1920x1080 for a desktop
+that ends at 959,539, so a script that works out the middle of the screen from it aims
+at the bottom-right corner, and `1600,1000` looks like a legal coordinate while being
+off the screen.
+
+Nothing on the wire separates that state from a legitimate physical-mode session — mode
+1920x1080, `wl_output.scale` 2 and xdg logical 1920x1080 are byte for byte what both
+send — so wdotool asks `org.gnome.Mutter.DisplayConfig` when, and only when, the wire
+carries that signature, and **says so once** when the two answers differ, naming both
+and the way out. It does not take DisplayConfig's number for the pointer: that was
+tried, and since Mutter's absolute-input mapping uses the stale rectangle too, it lands
+every target at twice the coordinate asked for (`wdotool/layoutbox.py`). Changing the
+scale once clears the whole state; 26.04 and Plasma never enter it.
 
 ## Command dispatch contract
 
@@ -773,7 +860,18 @@ Daemon notes:
   zxdg_output logical size/position when advertised), with a 3s socket timeout so a
   wedged compositor falls back instead of hanging the daemon. Cache is the full
   layout box `(min_x, min_y, w, h)` — multi-output layouts can have non-zero or
-  negative origins. Fallback (0, 0, 1920, 1080) + warn, and the `geometry` reply
+  negative origins. **One wire state does not say which pixel space it is in** — a
+  head whose advertised logical size *is* its raw mode size while it claims
+  `wl_output.scale` 2 or more is either GNOME 46 in physical layout mode or GNOME 46
+  that has stopped updating `logical_size` — and only that state asks
+  `org.gnome.Mutter.DisplayConfig`, over a bus kept open, to compare. The box stays
+  the wire's either way, because that is the rectangle the compositor maps absolute
+  motion across even when it is stale; a difference is a one-off diagnostic, since it
+  is `getdisplaygeometry` that is then reporting a desktop that is not there. Every
+  other session (scale 1, any logical-mode session, KDE, sway, X11) never opens a bus
+  and pays nothing: `wdotool/layoutbox.py`, and
+  [Pointer accuracy](#pointer-accuracy) for the measurement.
+  Fallback (0, 0, 1920, 1080) + warn, and the `geometry` reply
   says `fallback: true` so `getdisplaygeometry` can refuse to print a guess
   (rc 2) instead of pretending. `DaemonClient.geometry()` keeps returning
   `(w, h)`, `geometry_full()` adds the origin, `geometry_status()` adds the flag.
@@ -1124,7 +1222,8 @@ it, one row per command, measured on Plasma 5.27 and 6.6.
 | `selectwindow` | KWin has one reply slot for its window picker, so a second picker started while the first is up takes the click. The first call then waits until `WDOTOOL_SELECT_TIMEOUT` (2 minutes) and says so |
 | XWayland ids on Plasma 6 | `x11window.h` lost every scriptable property in 6, so `View.xid` is matched through the X server's own client list: pid and `WM_CLASS` filter, title and geometry score. Where those tie, two windows of one application in the same place under the same title, the order of the two lists decides, and that is exact rather than a guess: `_NET_CLIENT_LIST` is KWin's own window list with everything but the managed X11 windows dropped. A client that publishes neither `_NET_WM_PID` nor `WM_CLASS`, and a pair that nothing at all separates, keep id 0 rather than being handed one of two ids |
 | `wxprop -root` | `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW` and `_NET_DESKTOP_NAMES` are ours (native windows included), not KWin's stale X copies |
-| `getmouselocation` | answered by KWin (`workspace.cursorPos`), like GNOME's: a mouse moved by hand, or by another process, reads correctly, and the query needs no `/dev/uinput` at all |
+| `getmouselocation` | answered by KWin (`workspace.cursorPos`), like GNOME's: a mouse moved by hand, or by another process, reads correctly, and the query needs no `/dev/uinput` at all. The X11 tool is not a second opinion here: under KWin's XWayland `xdotool getmouselocation` answered the X root's centre (2880,540 on a three-head rig) wherever the pointer really was |
+| `mousemove` to an output's top-left pixel | KWin owns that pixel: a 1x1 screen edge there pushes the cursor back, so `mousemove 0 0` reads `1,1` (6.6 at every output's corner, 5.27 only at a corner no neighbour shares), and on a stock Plasma 6 the same move opens the Overview. Every other pixel of every output is exact, in every layout measured. [Pointer accuracy](#pointer-accuracy) |
 
 A window state that a client applies asynchronously (fullscreen and maximize on a
 Wayland client, applied when it acks the configure) is waited for before the command

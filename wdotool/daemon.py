@@ -29,7 +29,7 @@ import time
 import traceback
 
 from fwcommon.errors import CmdError
-from wdotool import keymap, keystate, uinput, vkbd, vptr, xkbmap
+from wdotool import keymap, keystate, layoutbox, uinput, vkbd, vptr, xkbmap
 
 # Per-euid log path: /tmp is shared, and a root-owned log must not break (or
 # leak into) another user's daemon spawn.
@@ -204,9 +204,12 @@ def _bbox_of(boxes) -> tuple[int, int, int, int]:
     return (minx, miny, maxx - minx, maxy - miny)
 
 
-def _wayland_bbox() -> tuple[int, int, int, int]:
+def _wayland_bbox(detail: bool = False):
     """Bounding box (min_x, min_y, w, h) of all outputs, queried over the
-    Wayland wire. Prefers zxdg_output_manager_v1 logical size/position."""
+    Wayland wire. Prefers zxdg_output_manager_v1 logical size/position.
+
+    With detail=True, returns (box, outs) -- the per-head wire state as well, which
+    is what says whether the box is in an ambiguous pixel space (wdotool/layoutbox.py)."""
     from fwcommon import session
     from fwcommon.wayland_mini import WlConn
 
@@ -271,7 +274,8 @@ def _wayland_bbox() -> tuple[int, int, int, int]:
                 boxes.append((o["x"], o["y"], w // s, h // s))
         if not boxes:
             raise RuntimeError("no wl_output geometry advertised")
-        return _bbox_of(boxes)
+        box = _bbox_of(boxes)
+        return (box, outs) if detail else box
     finally:
         conn.close()
 
@@ -545,6 +549,7 @@ class _Daemon:
         self._xkb_said: set = set()  # one-shot diagnostics already emitted
         self._xkb_degraded = None  # set while the keymap cannot be used
         self._xkb_group_said = None  # layout state the group notice was for
+        self._xkb_group_msg = None   # ...and the notice itself, for every later client
         # zwp_virtual_keyboard_v1 (see vkbd.py). ONE connection and ONE keyboard object for the daemon's life:
         # the compositor releases whatever a client was holding when it disconnects, so a keydown that has to
         # survive until the next command cannot be a per-command connection. `_vk_error` + `_vk_backoff` keep a
@@ -1023,7 +1028,13 @@ class _Daemon:
         the compositor can't be queried. The origin can be non-zero/negative on multi-output layouts; pointer
         coordinates are tracked in these global layout coordinates."""
         try:
-            self.geom = _wayland_bbox()
+            box, outs = _wayland_bbox(detail=True)
+            # The box is the wire's, always -- it is the space the compositor maps
+            # absolute motion across, measured even where it is stale. One GNOME state
+            # advertises a layout it is not drawing, and there this says so once; on
+            # every other session it opens nothing. See wdotool/layoutbox.py.
+            self.geom = layoutbox.check(
+                box, outs, warn=lambda tag, msg: self._xkb_say(tag, msg, warnings))
             self.geom_fallback = False
             return self.geom
         except Exception as e:
@@ -1215,12 +1226,31 @@ class _Daemon:
             warnings.append("wdotool: " + msg)
 
     def _xkb_say_group(self, state, msg: str, warnings):
-        """The "which layout is active?" notice: once per layout state, and again whenever the state changes --
-        a layout switch is exactly when the guess is worth repeating."""
+        """The "which layout is active?" notice: on the daemon's own stderr once per layout state (and again
+        whenever the state changes -- a layout switch is exactly when the guess is worth repeating), but in the
+        answer to EVERY client, through _xkb_warn_group below.
+
+        Measured on Plasma 6.6 with `us, de` and German switched on: three identical `wdotool type` runs
+        printed it once, because the second and third hit the layout cache and returned before ever reaching
+        here. A script therefore saw one warning and then typed the wrong characters in silence, which is the
+        same defect _xkb_warn_degraded was written for -- a session typing the wrong thing on every command is
+        not told by a single line to whoever happened to ask first."""
+        self._xkb_group_msg = (state, "wdotool: " + msg)
         if self._xkb_group_said == state:
+            if warnings is not None:
+                warnings.append("wdotool: " + msg)
             return
         self._xkb_group_said = state
         self._xkb_print(msg, warnings)
+
+    def _xkb_warn_group(self, state, warnings):
+        """Tell *this* client that the active layout was a guess, whether or not an earlier client was told.
+        Said from the cache-hit path, where the notice above is not reached at all."""
+        if warnings is None or self._xkb_group_msg is None:
+            return
+        said_for, msg = self._xkb_group_msg
+        if said_for == state:
+            warnings.append(msg)
 
     def _xkb_warn_degraded(self, warnings):
         """Tell *this* client that the keymap could not be used, whether or not an earlier client was told. A
@@ -1270,6 +1300,7 @@ class _Daemon:
         key = (hashlib.sha256(snap.text.encode("utf-8", "replace")).digest(), snap.group)
         if self._layout_cache is not None and self._layout_cache[0] == key:
             self._xkb_warn_degraded(warnings)
+            self._xkb_warn_group(key, warnings)
             return self._layout_cache[1]
         self._xkb_degraded = None
         rmap = None
