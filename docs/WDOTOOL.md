@@ -45,15 +45,20 @@ interface.
 
 ## `click --repeat`
 
-`click --repeat N` sends the button N times rather than once, and `--repeat-delay MS`
-is the gap between them, both spelled and defaulted as xdotool spells and defaults
-them. It is the one option of `click` that is easy to miss, because a double click is
-what people reach for it for:
+`click --repeat N` sends the button N times rather than once, and the gap between
+them is `--delay MS`, 100 ms by default. It is the one option of `click` that is easy
+to miss, because a double click is what people reach for it for:
 
 ```console
-$ wdotool click --repeat 2 1        # a double click, left button
-$ wdotool click --repeat 3 --repeat-delay 120 1
+$ wdotool click --repeat 2 1              # a double click, left button
+$ wdotool click --repeat 3 --delay 120 1
 ```
+
+Watch the spelling, because it is not ours: the **key** commands call the same thing
+`--repeat-delay` and keep `--delay` for the gap between keystrokes, while `click` has
+only one gap and calls it `--delay`. That is how xdotool spells them, so it is how
+these do. `--delay` on `click` does nothing at all without `--repeat`, again as
+xdotool documents.
 
 The gap is real time, so a repeat is not instantaneous, and the tool waits for it
 before exiting the way xdotool does.
