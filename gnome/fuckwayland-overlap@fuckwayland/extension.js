@@ -507,6 +507,11 @@ class Guarded {
             version: VERSION,
             shell: this.shell,
             libmutter: this.generation,
+            // The size the struct-size check just read out of this build's GType
+            // registry.  It is in the answer because the caller records an
+            // agreement against it (wxrandr/gnome_overlap.py): what was agreed to
+            // has to be what was measured, not a number typed anywhere else.
+            instance_size: this.instanceSize,
             checks: this.checks,
             monitors: this.monitors(),
         }, extra || {});

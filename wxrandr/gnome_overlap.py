@@ -24,17 +24,24 @@ gnome-shell, and on Wayland a dead compositor is the whole session, so:
   and the extension is not even asked whether it is there;
 * **it refuses on a compositor it does not recognise**, before it asks the
   extension anything, and the extension refuses again on its own account;
-* **the warning is printed before the call, in full, every time,** and cannot be
-  switched off;
+* **the warning is printed before the call, in full,** on every invocation until it
+  is agreed to -- once, deliberately, and only for the build the checks passed on;
+  see "the agreement" at the foot of this file for why that changes what is
+  printed and nothing else;
 * **it can never write ~/.config/monitors.xml.**  `--persistent` and this flag
   are mutually exclusive here; the extension's type description does not declare
   Mutter's writer at all, and it reports the file's digest from before and after
   its work so the tool can say so rather than assume it.
 
-There is no confirmation prompt, deliberately.  See `warning()`.
+There is no confirmation prompt on the command line, deliberately.  See
+`warning()`; warandr's dialog is the other half, and it too can only ever record
+the agreement below.
 """
 
 import json
+import os
+import re
+import time
 
 from fwcommon.dbus_mini import Bus, DBusError
 
@@ -154,7 +161,8 @@ def warning(shell, moves, undo):
     """Exactly what is about to happen, what it risks and how to get back.
 
     Printed to stderr, in full, before the extension is called, on every
-    invocation, and there is no way to silence it.
+    invocation until `--gnome-overlap-allow` has recorded an agreement for this
+    build -- after which it is one line, and the checks are unchanged.
 
     **No confirmation prompt, on purpose.**  The decision is already made, once,
     by a flag that cannot be typed by accident and appears in no xrandr manual;
@@ -283,23 +291,235 @@ def refusal_text(reply):
             % (check, reply.get("reason") or "no reason given"))
 
 
-def applied_text(reply):
+def applied_text(reply, quiet=False):
     """What to print after a successful apply: what Mutter's validator said (a
     positive control that the write landed on the field it reads), and the proof
-    that the saved configuration file was not touched."""
+    that the saved configuration file was not touched.
+
+    `quiet` (an agreement covers this build) drops both -- they are reassurance,
+    and reassurance is exactly what somebody who has agreed does not need every
+    time.  What survives `quiet` is the one line that is not reassurance: a
+    saved configuration file that moved when it cannot have."""
     out = []
     verify = reply.get("verify")
-    if verify:
+    if verify and not quiet:
         out.append("mutter's own validator on the result: %s\n" % verify)
     saved = reply.get("saved_config") or {}
     if saved:
         if saved.get("unchanged"):
-            out.append("%s: unchanged (%s)\n"
-                       % (saved.get("path", "monitors.xml"),
-                          saved.get("before", "?")))
+            if not quiet:
+                out.append("%s: unchanged (%s)\n"
+                           % (saved.get("path", "monitors.xml"),
+                              saved.get("before", "?")))
         else:
             out.append("%s CHANGED across this call (%s -> %s); that should be "
                        "impossible, please report it\n"
                        % (saved.get("path", "monitors.xml"),
                           saved.get("before"), saved.get("after")))
     return "".join(out)
+
+
+# -- the agreement -----------------------------------------------------------
+#
+# The paragraph above is right the first time somebody does this and wrong the
+# fiftieth, and a warning nobody reads is not a warning.  So it can be agreed to
+# once -- but the agreement is *scoped to the build the checks were run on*,
+# because agreeing is agreeing to a measured risk, and a compositor nobody has
+# measured is not that risk.
+#
+# What the agreement does and does not do:
+#
+# * it silences the paragraph, and nothing else.  Every check in the list still
+#   runs on every call, inside gnome-shell, whether or not anything is recorded
+#   here: the applying path in wxrandr/mutter.py asks this module only what to
+#   *print*, and the reply's `ok` is what decides whether anything is written.
+#   There is no code path in which a recorded yes reaches a check.
+# * it never turns the feature on.  `--unsafe-gnome-overlap` is still the only
+#   thing that does, and it is still typed on every invocation.
+#
+# It is a file rather than GSettings or dconf: wxrandr must be able to read it
+# with no GLib bindings and no schema installed, a user has to be able to see
+# what they agreed to, and withdrawing it has to be possible with `rm` from a
+# console when the session will not start.
+
+CONSENT_DIR = "fuckwayland"
+CONSENT_NAME = "overlap-consent.json"
+CONSENT_FORMAT = 1
+ALLOW_FLAG = "--gnome-overlap-allow"
+FORGET_FLAG = "--gnome-overlap-forget"
+STATUS_FLAG = "--gnome-overlap-status"
+
+
+def consent_path(env=None):
+    """`$XDG_CONFIG_HOME/fuckwayland/overlap-consent.json`, else
+    `~/.config/fuckwayland/overlap-consent.json`.
+
+    Per user, never per system: it is the user's own session that a wrong offset
+    ends, so root's answer must not stand in for anybody else's.  The XDG rule is
+    the spec's, relative `XDG_CONFIG_HOME` ignored, the same one
+    `monitors_xml.default_path()` follows."""
+    env = os.environ if env is None else env
+    base = env.get("XDG_CONFIG_HOME") or ""
+    if not base.startswith("/"):
+        base = os.path.join(env.get("HOME", ""), ".config")
+    return os.path.join(base, CONSENT_DIR, CONSENT_NAME)
+
+
+def facts(reply):
+    """The three things the checks actually verified, out of an extension reply:
+    the GNOME Shell version string, libmutter's generation, and the size this
+    build's `MetaMonitorsConfig` was found to be.
+
+    They are what an agreement is recorded against.  The size comes from the
+    reply rather than from anything here, because the check that matters read it
+    out of the running GType registry -- a number written in this tree could go
+    stale against the compositor, which is the whole failure being guarded."""
+    size = reply.get("instance_size")
+    if size is None:
+        # an extension from before the field existed: the same number, from the
+        # check that reported it
+        for check in reply.get("checks") or []:
+            if check.get("name") == "typelib":
+                m = re.search(r"MetaMonitorsConfig (\d+) bytes", check.get("detail") or "")
+                if m:
+                    size = int(m.group(1))
+    return {"shell": str(reply.get("shell") or ""),
+            "libmutter": reply.get("libmutter"),
+            "struct_size": int(size) if size else None}
+
+
+def describe_build(f):
+    """"GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 128 bytes)"."""
+    return ("GNOME Shell %s (libmutter-%s, MetaMonitorsConfig %s bytes)"
+            % (f.get("shell") or "?", f.get("libmutter") if f.get("libmutter") is not None else "?",
+               f.get("struct_size") if f.get("struct_size") is not None else "?"))
+
+
+def load_consent(env=None):
+    """The recorded agreement, or None.  Anything unreadable, malformed or in a
+    format this build does not know is *not* an agreement: the file only ever
+    makes the tool quieter, so failing to read it can only make it louder."""
+    path = consent_path(env)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rec = json.loads(fh.read(1 << 16))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict) or rec.get("format") != CONSENT_FORMAT:
+        return None
+    if not rec.get("shell"):
+        return None
+    return rec
+
+
+def save_consent(f, how, env=None):
+    """Write the agreement.  Returns the path.
+
+    `f` is a `facts()` dict that came back from a *successful* probe or apply, so
+    nothing can be recorded for a build the six checks have not just passed on;
+    `how` is the words for how it was given, kept so that `--gnome-overlap-status`
+    can say it back."""
+    path = consent_path(env)
+    rec = dict(f)
+    rec.update({"format": CONSENT_FORMAT,
+                "agreed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "how": how})
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".new"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+    return path
+
+
+def forget_consent(env=None):
+    """Withdraw it.  `(path, removed)` -- `removed` False when there was
+    nothing to remove, which is not an error: `--gnome-overlap-forget` on a
+    machine that never agreed has done what it was asked."""
+    path = consent_path(env)
+    try:
+        os.unlink(path)
+        return path, True
+    except OSError:
+        return path, False
+
+
+def consent_covers(rec, shell):
+    """Does the recorded agreement cover the GNOME that is running *now*?
+
+    Only the version string can be compared here, and that is deliberate: this
+    question has to be answered before anything is read out of the compositor,
+    because its answer decides whether the paragraph is printed *before* the
+    write.  The other two recorded facts are audited afterwards, against the
+    reply, by `consent_drift()`.
+
+    Returns `(True, None)` or `(False, one sentence saying why not)`."""
+    if not rec:
+        return False, "nothing is recorded"
+    if str(rec.get("shell")) != str(shell):
+        return False, ("the agreement was given on GNOME Shell %s; this session "
+                       "is GNOME Shell %s" % (rec.get("shell"), shell))
+    return True, None
+
+
+def consent_drift(rec, f):
+    """The audit after the reply: everything the agreement recorded, against
+    everything the checks just measured.
+
+    Reaching this with a difference needs a build that kept its version string
+    and changed its private layout -- which the extension's own struct-size check
+    turns into a refusal, not a bad write -- so this is a record-keeping check
+    rather than a guard.  When it fires the record is withdrawn, and the next run
+    asks in full."""
+    if not rec:
+        return None
+    bad = []
+    for k, word in (("libmutter", "libmutter generation"),
+                    ("struct_size", "MetaMonitorsConfig size")):
+        want, got = rec.get(k), f.get(k)
+        if want is not None and got is not None and int(want) != int(got):
+            bad.append("%s %s, not %s" % (word, got, want))
+    if not bad:
+        return None
+    return ("this GNOME is not the one that was agreed to (%s); the agreement "
+            "has been withdrawn and the next run will ask again\n" % "; ".join(bad))
+
+
+def quiet_line(rec, fault):
+    """The whole of what an agreed run says.  One line, and the last one: it
+    names the rule GNOME would have refused this layout under, because a layout
+    no other desktop would blink at is still an unusual thing to be doing, and
+    the day it was agreed, because that is where `--gnome-overlap-status` and
+    `--gnome-overlap-forget` are found from."""
+    return ('%s: applying a layout GNOME refuses ("%s"), as agreed on %s\n'
+            % (FLAG, fault, str((rec or {}).get("agreed", "?")).split("T")[0]))
+
+
+def agreement_text(f):
+    """What `--gnome-overlap-allow` prints before it writes anything: the risk
+    being agreed to, and the two things the agreement is *not*.
+
+    The checks have already run and passed at this point -- that is where the
+    build in the first line comes from -- so this is a description of a measured
+    thing rather than a guess about one."""
+    return ("".join([
+        "Agreeing to %s on %s.\n\n" % (FLAG, describe_build(f)),
+        "  What it does:         places monitors GNOME's own validator refuses, by writing\n"
+        "                        8 bytes per monitor inside gnome-shell through the\n"
+        "                        %s extension, and then asking Mutter\n"
+        "                        to apply the result.\n" % UUID,
+        "  What it risks:        those 8 bytes go where this build of libmutter keeps a\n"
+        "                        logical monitor's position.  If that is ever wrong,\n"
+        "                        gnome-shell crashes, and on Wayland gnome-shell is the\n"
+        "                        session: every program running in it goes with it.\n",
+        "  What it saves:        nothing.  ~/.config/monitors.xml is never written on this\n"
+        "                        path, so an overlapping layout is gone at the next login.\n",
+        "  What is agreed:       this build and no other.  The agreement records\n"
+        "                            %s\n"
+        "                        and stops applying the moment any of that changes, which\n"
+        "                        is what a distribution upgrade does.\n" % describe_build(f),
+        "  What is not agreed:   any of the checking.  Every check above runs again on\n"
+        "                        every single apply, agreed or not, and a build this does\n"
+        "                        not recognise is refused however old the agreement is.\n",
+        "  To withdraw:          wxrandr %s\n" % FORGET_FLAG,
+        RECOVERY]))

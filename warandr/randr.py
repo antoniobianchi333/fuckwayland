@@ -68,6 +68,24 @@ OVERLAP = {
 OVERLAP_UNKNOWN = (True, "This backend has not been measured here; Apply "
                          "reports whatever the compositor makes of it.")
 
+#: GNOME with a way round its own refusal: `wxrandr --gnome-overlap-status`
+#: answered `agreed` or `available`, so the overlap extension is installed and
+#: this is a build it has been measured on.  One sentence for both answers, on
+#: purpose -- it is also the comment a saved script carries, and what a script
+#: says about a layout must not depend on whether the person who saved it had
+#: agreed to anything yet.
+OVERLAP_MUTTER_EXT = (
+    True, "GNOME's Mutter refuses monitors that are not edge-adjacent, so "
+          "warandr places these through the fuckwayland-overlap extension "
+          "instead; the layout is temporary and is gone at the next login.")
+
+#: what warandr adds to the Apply command line for an overlapping layout on
+#: GNOME, and to nothing else
+UNSAFE_OVERLAP = "--unsafe-gnome-overlap"
+#: and the three that manage the agreement to it (see docs/WXRANDR.md)
+OVERLAP_STATUS = "--gnome-overlap-status"
+OVERLAP_ALLOW = "--gnome-overlap-allow"
+
 
 class RandrError(Exception):
     pass
@@ -100,6 +118,11 @@ class Backend:
         self.forced = forced
         #: ``wxrandr --print-backend --verbose``, once it has been asked
         self.info = []
+        #: ``wxrandr --gnome-overlap-status`` as a dict, once it has been asked
+        #: and only on GNOME: ``{"state": "agreed"|"available"|"unavailable",
+        #: ...}``.  None until then, which reads as "no overlap route", so a
+        #: backend nobody has asked about behaves exactly as it did before.
+        self.overlap_info = None
         self._identified = False
 
     @property
@@ -135,8 +158,15 @@ class Backend:
         """The always-visible status-bar text."""
         return "backend: " + self.label
 
+    def overlap_state(self):
+        """``agreed`` / ``available`` / ``unavailable``, or None when nothing has
+        asked yet.  Only ever non-None on GNOME."""
+        return (self.overlap_info or {}).get("state")
+
     def overlap(self):
         """``(taken, sentence)`` for a partial overlap on this backend."""
+        if self.name == "mutter" and self.overlap_state() in ("agreed", "available"):
+            return OVERLAP_MUTTER_EXT
         return OVERLAP.get(self.name, OVERLAP_UNKNOWN)
 
     def overlap_note(self):
@@ -148,6 +178,29 @@ class Backend:
         raises, so a refused drop is reported in the compositor's name and never in ours."""
         taken, why = self.overlap()
         return None if taken else why
+
+    def overlap_needs_asking(self, layout):
+        """True when applying *this* layout is the thing the user has to be
+        asked about once: an overlap, on GNOME, through the extension, with no
+        agreement recorded yet.  False the moment one is (``agreed``), which is
+        the whole point of recording it."""
+        return bool(self.overlap_flag(layout)) and self.overlap_state() != "agreed"
+
+    def overlap_flag(self, layout):
+        """The flag Apply really adds for *this* layout, as a list: the unsafe
+        one, and only when the layout genuinely overlaps, the backend genuinely
+        is GNOME, and the route is genuinely there.  Every ordinary layout gets
+        ``[]`` and the command line warandr runs is the one it always ran."""
+        if (self.name == "mutter" and layout is not None
+                and self.overlap_state() in ("agreed", "available")
+                and layout.overlaps()):
+            return [UNSAFE_OVERLAP]
+        return []
+
+    def run_word_for(self, layout):
+        """``run_word`` plus that flag: what Apply will really run for this
+        layout, which is what the status bar promises to show."""
+        return " ".join([self.run_word] + self.overlap_flag(layout))
 
     def command(self):
         return " ".join(shlex.quote(a) for a in self.argv)
@@ -168,6 +221,13 @@ class Backend:
         # what a partial overlap means here: the window has to say it somewhere, and this paragraph is the one
         # that already explains the backend (indicator tooltip, About, Script Properties)
         lines.append("overlap: %s" % self.overlap_note())
+        state = self.overlap_state()
+        if state == "agreed":
+            info = self.overlap_info or {}
+            lines.append("overlapping layouts: agreed on %s (wxrandr --gnome-overlap-forget withdraws)"
+                         % (info.get("agreed on") or "?"))
+        elif state == "available":
+            lines.append("overlapping layouts: Apply explains the risk and asks, once")
         return lines
 
     def detail(self):
@@ -211,6 +271,11 @@ class Backend:
         if name and name != "auto":
             self.name = name
         self.info = lines
+        # ...and, now that the backend has a name, whether an overlapping layout
+        # can be applied on it at all.  Here rather than in snapshot(): it is one
+        # more subprocess, it belongs on the same worker thread as the question
+        # above, and the answer is a property of the session, not of a layout.
+        self.read_overlap_status(timeout=timeout)
         return self
 
     def set_display(self, display):
@@ -252,7 +317,47 @@ class Backend:
 
     def apply(self, layout):
         """Run the layout's command line; (rc, stdout, stderr)."""
-        return self.run(layout.args())
+        return self.run(self.overlap_flag(layout) + layout.args())
+
+    def read_overlap_status(self, timeout=20):
+        """Ask ``wxrandr --gnome-overlap-status`` and keep the answer.  GNOME
+        only, never raises, and cheap by contract: the command reads the Shell's
+        public version property and a bus name, and nothing out of gnome-shell
+        itself, which is what makes it safe to run at startup."""
+        if not self.wayland or self.name != "mutter":
+            self.overlap_info = None
+            return self.overlap_info
+        info = {"state": "unavailable"}
+        try:
+            rc, out, _err = self.run([OVERLAP_STATUS], timeout=timeout)
+        except RandrError:
+            self.overlap_info = info
+            return info
+        lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()]
+        # A wxrandr too old for the option exits non-zero with a usage error:
+        # no route, and no complaint -- exactly the behaviour before it existed.
+        if rc == 0 and lines and lines[0] in ("agreed", "available", "unavailable"):
+            info["state"] = lines[0]
+            for ln in lines[1:]:
+                if ": " in ln:
+                    k, v = ln.split(": ", 1)
+                    info[k.strip()] = v.strip()
+        self.overlap_info = info
+        return info
+
+    def allow_overlap(self, timeout=30):
+        """``wxrandr --gnome-overlap-allow``: record the agreement, then re-read
+        the status so the window is not left believing the old one.
+        ``(ok, message)``; the message is worth showing when it is not ok."""
+        try:
+            rc, out, err = self.run([OVERLAP_ALLOW], timeout=timeout)
+        except RandrError as e:
+            return False, str(e)
+        self.read_overlap_status()
+        if rc != 0:
+            return False, (err.strip() or out.strip()
+                           or "%s exited %d" % (OVERLAP_ALLOW, rc))
+        return self.overlap_state() == "agreed", err.strip()
 
 
 def _package_root(name):

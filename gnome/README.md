@@ -183,6 +183,17 @@ measured on: it runs every guard against the running libmutter and writes nothin
 a stock 26.04 it says `FwOverlap18, MetaMonitorsConfig 80 bytes as declared`, and on
 24.04 `FwOverlap14 … 72 bytes`.
 
+Once it is installed, `wxrandr` prints the whole risk paragraph before every
+overlapping apply until it is agreed to, once, for the build the checks passed on
+(`wxrandr --gnome-overlap-allow`, withdrawn with `--gnome-overlap-forget`), and
+`warandr` asks the same question in a dialog the first time an overlapping layout is
+applied. The agreement covers the *risk* and never the *checking*: every check in this
+extension runs on every call whatever is recorded, which is
+[docs/WXRANDR.md § Agreeing once](../docs/WXRANDR.md#agreeing-once-and-withdrawing).
+The extension's answer carries `instance_size`, the `MetaMonitorsConfig` size the
+struct-size check just read out of this build's GType registry, so what is agreed to is
+what was measured rather than a number written somewhere else.
+
 To get rid of it from a text console, when there is no desktop to do it from:
 `gnome-extensions disable fuckwayland-overlap@fuckwayland` works from a real login
 (one with `XDG_RUNTIME_DIR`), but in a bare shell with no session bus it prints

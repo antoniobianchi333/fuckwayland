@@ -697,6 +697,31 @@ class MutterOutputs:
             raise Fatal("%s: %s" % (gnome_overlap.FLAG, gnome_overlap.INSTALL_HINT))
         return ov, version, gnome_overlap.groups(plan), self.current_groups()
 
+    def overlap_available(self):
+        """`(shell version, why the overlap route is not usable here or None)`,
+        cheaply: the Shell's own public version property, our allowlist, and
+        whether the extension owns its bus name.  Nothing is read out of
+        gnome-shell -- this answers "would it work?", which is a question a GUI
+        asks at startup and which must not cost a walk of Mutter's heap."""
+        ov = gnome_overlap.Overlap(self.bus)
+        version = ov.shell_version()
+        why = gnome_overlap.unsupported_reason(version)
+        if why is None and not ov.running():
+            why = gnome_overlap.INSTALL_HINT
+        return version, why
+
+    def overlap_probe(self):
+        """Every check inside gnome-shell, and not one byte written: the Probe
+        `--gnome-overlap-allow` records the answer of.  Same gate, in the same
+        order, as an apply -- an agreement must not be recordable on a
+        compositor an apply would refuse."""
+        _version, why = self.overlap_available()
+        if why:
+            raise Fatal("%s: %s" % (gnome_overlap.ALLOW_FLAG, why
+                                    if why.endswith("\n") else why + "\n"))
+        return gnome_overlap.Overlap(self.bus).probe(self.layout_mode,
+                                                     self.current_groups())
+
     def overlap_dryrun(self, state: core.State, targets: list) -> bool:
         """--dryrun --unsafe-gnome-overlap: print what a real run would do and
         run every guard inside the extension, writing nothing at all.  False
@@ -738,15 +763,36 @@ class MutterOutputs:
             # same for every ordinary layout.
             warn(NOTHING_TO_DO)
             return self.snapshot(state)
-        core.warn_bare(gnome_overlap.warning(
-            version, moves, gnome_overlap.undo_command(expect)))
-        warn("GNOME's rule this breaks: %s\n" % fault)
+        # The agreement decides how much is said, and nothing else.  It is read
+        # here, between the last guard and the call, so that there is no
+        # arrangement of this code in which it could be mistaken for one of
+        # them: every refusal above has already happened, and every check inside
+        # the extension is still to come.
+        rec = gnome_overlap.load_consent()
+        quiet, _why = gnome_overlap.consent_covers(rec, version)
+        if quiet:
+            warn(gnome_overlap.quiet_line(rec, fault))
+        else:
+            core.warn_bare(gnome_overlap.warning(
+                version, moves, gnome_overlap.undo_command(expect)))
+            warn("GNOME's rule this breaks: %s\n" % fault)
         core.record_lastmodes(state, targets)
         reply = ov.apply(self.layout_mode, expect, want)
         if not reply.get("ok"):
             raise Fatal("%s: %s" % (gnome_overlap.FLAG,
                                     gnome_overlap.refusal_text(reply)))
-        core.warn_bare(gnome_overlap.applied_text(reply))
+        core.warn_bare(gnome_overlap.applied_text(reply, quiet=quiet))
+        # The audit the version string alone could not do: libmutter's
+        # generation and MetaMonitorsConfig's size, as the checks have just
+        # measured them, against what was agreed to.  A difference here needs a
+        # build that kept its version and moved its private layout, which the
+        # extension's own struct-size check turns into a refusal rather than a
+        # bad write -- so this is bookkeeping, and what it does is withdraw.
+        if quiet:
+            drift = gnome_overlap.consent_drift(rec, gnome_overlap.facts(reply))
+            if drift:
+                gnome_overlap.forget_consent()
+                warn("%s: %s" % (gnome_overlap.FLAG, drift))
         return self.snapshot(state)
 
     def apply(self, state: core.State, targets: list, persistent: bool = False) -> list:

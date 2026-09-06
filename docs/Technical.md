@@ -867,7 +867,9 @@ check it, and none of it needs a debugger:
    (shell major → libmutter generation) and `SUPPORTED_MAJORS` in
    `wxrandr/gnome_overlap.py`, and `metadata.json`'s `shell-version`, and the three
    are held together by a test. Adding a release is not an edit to those lines: it is
-   the measurement in step 5.
+   the measurement in step 5. A recorded agreement (below) has already stopped
+   applying at this point, on its own, because it names the version it was given on:
+   the upgraded machine asks in full again rather than proceeding on an old yes.
 3. **`typelib`** — `MetaMonitorsConfig` changed size. The message says both numbers.
    The fix is a new `.gir` for the new generation under `gnome/overlap-typelib/`,
    rebuilt with `python3 gnome/overlap-typelib/gen-gir.py`, whose `--check` proves the
@@ -892,6 +894,39 @@ check it, and none of it needs a debugger:
    are not where this description says they are, or the list is being changed under
    the walk. Neither is fixable by retrying, and a refusal is the right answer to
    both, which is what it gives.
+
+#### The agreement, and why it cannot skip any of the above
+
+The paragraph `--unsafe-gnome-overlap` prints is right the first time and noise the
+fiftieth, so since 0.4 it can be agreed to once, per user, in
+`$XDG_CONFIG_HOME/fuckwayland/overlap-consent.json`
+([WXRANDR.md § Agreeing once](WXRANDR.md#agreeing-once-and-withdrawing)). The design
+rule is one sentence: **the agreement decides what is printed and nothing else.**
+
+* it is recorded only by `--gnome-overlap-allow`, which runs the six checks first and
+  writes nothing if any of them refuses, so an agreement can only ever name a build
+  they have just passed on;
+* what it names is what they *measured* — the Shell version string, libmutter's
+  generation, and `GObject.type_query(MetaMonitorsConfig).instance_size` as the
+  `typelib` check read it, relayed to the caller as `instance_size` in the extension's
+  answer. No number in this tree, which is the failure that check exists to catch;
+* it is read in `MutterOutputs.apply_overlap()` *after* the last thing that can refuse
+  and *before* the call, and the only things the value it produces reaches are
+  `warn()`, `warn_bare()` and `applied_text(quiet=…)`.
+  `tests/test_overlap_consent.py` asserts that from the source, and re-runs every
+  refusal in `tests/test_gnome_overlap.py` with an agreement recorded for exactly the
+  build in the room. Measured live on 50.1 as well: with an agreement in place and a
+  deliberately wrong type description installed, the `struct-size` check refused and
+  nothing was applied;
+* the version string is compared before anything is read, because that comparison has
+  to decide whether the paragraph is printed *before* the write. The other two facts
+  are audited against the reply afterwards, and a difference deletes the record so the
+  next run asks in full — bookkeeping rather than a guard, because the extension's own
+  `typelib` check makes that case a refusal.
+
+`warandr` never imports any of this: it runs `wxrandr --gnome-overlap-status` and
+reads the token on the first line, which is why that command reads a public property
+and a bus name and nothing out of `gnome-shell`.
 
 Nothing about this is a supported interface, so "it broke on the new GNOME" is the
 expected outcome of an upgrade, not a surprise. The feature is designed to *refuse*
@@ -1054,8 +1089,8 @@ hold across all of them and are enforced by tests of their own:
 | `wwmctl/` | `test_wwmctl_cli`, `test_wwmctl_live`, `test_wwmctl_hardening`, `test_wwmctl_gnome` | `FakeSwayBackend`, `FakeX11`; real sway with XWayland for the live file |
 | `wxprop/` | `test_wxprop_cli`, `test_wxprop_fmt`, `test_wxprop_live`, `test_wxprop_gnome`, `test_wxprop_x11` | captured real-xprop bytes; a live XWayland server as the oracle |
 | `wxrandr/` | `test_wxrandr_unit`, `test_wxrandr_backend`, `test_wxrandr_mutter`, `test_wxrandr_kwin`, `test_wxrandr_live`, `test_wxrandr_hostile`, `test_wxrandr_gamma`, `test_monitors_xml` | `FakeMutter` on the mock bus; a wire-level fake KWin; real sway with real `xrandr` through XWayland as the oracle; real `monitors.xml` files from both default installs |
-| `wxrandr/gnome_overlap.py` + `gnome/fuckwayland-overlap@fuckwayland/` | `test_gnome_overlap` | the same mock bus with a mock `org.gnome.Shell` and a mock overlap extension on it, so a whole `--unsafe-gnome-overlap` run happens in-process; and plain `node` running the extension's own `rules.js` against `monitors_xml.py` |
-| `warandr/` | `test_warandr_model`, `test_warandr_parse`, `test_warandr_gui` | `tests/fixtures/fake_xrandr.py`, a RandR simulator; Xvfb plus xdotool driving the real editor |
+| `wxrandr/gnome_overlap.py` + `gnome/fuckwayland-overlap@fuckwayland/` | `test_gnome_overlap`, `test_overlap_consent` | the same mock bus with a mock `org.gnome.Shell` and a mock overlap extension on it, so a whole `--unsafe-gnome-overlap` run happens in-process; and plain `node` running the extension's own `rules.js` against `monitors_xml.py`. The consent file re-runs every refusal in the first with an agreement recorded, and asserts from the source that the agreement is read after the last one |
+| `warandr/` | `test_warandr_model`, `test_warandr_parse`, `test_warandr_gui`, `test_overlap_consent` | `tests/fixtures/fake_xrandr.py`, a RandR simulator (which also simulates a GNOME with the overlap extension and its agreement); Xvfb plus xdotool driving the real editor, dialog included |
 | `wmirror/` | `test_wmirror_cli`, `test_wmirror_lifetime` | a fake `wl-mirror` binary, and the detach protocol driven for real |
 | `procs.py`, `stdio.py` | `test_wmirror_lifetime`, `test_stdout_gone` | real forks; `>/dev/full`, `\| head -1`, `>&-` |
 | the no-dialog guarantee | `test_no_portal` | nothing — it is a static check that no package here names the portal or PolicyKit |

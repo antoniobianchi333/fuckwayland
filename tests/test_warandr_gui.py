@@ -145,6 +145,7 @@ class GuiSession(XvfbCase):
     NBOXES = 3
     SLOW_QUERY = None        # seconds a *query* takes (tests/fixtures/
                              # slow_xrandr.py); None: the instant fake
+    EXTRA_ENV = {}           # what this class needs the fake to pretend
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="warandr-gui-")
@@ -166,6 +167,7 @@ class GuiSession(XvfbCase):
             env["WARANDR_XRANDR"] = "%s %s" % (
                 sys.executable, os.path.join(FIXTURES, "slow_xrandr.py"))
             env["SLOW_QUERY"] = str(self.SLOW_QUERY)
+        env.update(self.EXTRA_ENV)
         self.env = env
         self.app_log = open(os.path.join(self.tmp, "app.log"), "w")
         self.launch()
@@ -676,6 +678,139 @@ class GuiDrive(GuiSession):
         self.wait_dump("layout", lambda d: not d["busy"], after=n)
         self.assertEqual(len(self.calls()), 2)
         self.assertIsNone(self.app.poll())
+
+
+class GuiOverlapConsent(GuiSession):
+    """The GNOME path, end to end, with the fake pretending to be a GNOME that
+    has the overlap extension: drag one output onto another, press Apply, get
+    the one dialog, tick the box, and never see it again.
+
+    The two halves this holds down are the two the feature is for: Apply on an
+    overlapping layout really does pass `--unsafe-gnome-overlap` (and passes it
+    to nothing else), and the second Apply asks nothing."""
+
+    # WARANDR_BACKEND=wayland is what makes the fake a Wayland tool rather than
+    # an X11 one; the fake then answers --print-backend with FAKE_XRANDR_AUTO_BACKEND
+    EXTRA_ENV = {"WARANDR_BACKEND": "wayland",
+                 "FAKE_XRANDR_AUTO_BACKEND": "mutter",
+                 "FAKE_XRANDR_OVERLAP": "available"}
+
+    def consent(self):
+        return os.path.join(self.tmp, "consent.json")
+
+    def setUp(self):
+        super().setUp()
+        # the fake keeps its record next to the apply log
+        self.assertTrue(os.path.isdir(self.tmp))
+
+    def gnome(self, after=0):
+        return self.backend_dump(lambda d: d["name"] == "mutter"
+                                 and d["overlap_state"] is not None, after=after)
+
+    def overlap_the_boxes(self, n):
+        """DP-2's centre onto DP-1's centre: a half overlap, which Mutter
+        refuses and the extension is the only way to get."""
+        lay = self.layout()
+        self.drag(lay["boxes"]["DP-2"], *self.centre(lay["boxes"]["DP-1"]))
+        return self.wait_dump("layout", lambda d: "320x180" in d["command"], after=n)
+
+    def test_the_dialog_the_box_and_then_never_again(self):
+        d, n = self.gnome(after=self.mark)
+        self.assertEqual(d["overlap_state"], "available")
+        # GNOME stops refusing the drop, and says what it will do instead
+        self.assertIn("fuckwayland-overlap extension", d["overlap"])
+        lay, n = self.overlap_the_boxes(n)
+        # ...and the drop's own sentence says what GNOME will be made to do
+        self.assertIn("DP-2 overlaps DP-1", lay["status"])
+        self.assertIn("fuckwayland-overlap extension", lay["status"])
+        # with the pointer off the boxes the status bar goes back to the
+        # command -- and it is the command Apply will really run, flag included
+        self.xdo("mousemove", 690, 240)
+        self.wait_dump("status", lambda d: "--unsafe-gnome-overlap" in d["text"]
+                       and "--pos 320x180" in d["text"], after=n)
+
+        # first Apply: the dialog, with the risk in it
+        self.click(lay["buttons"]["apply"])
+        dlg, n = self.wait_dump("overlap_dialog", after=n)
+        self.assertEqual(dlg["shared"], ["DP-1 and DP-2 share 1280x720 at +320+180"])
+        self.assertEqual(sorted(dlg["spots"]), ["apply anyway", "cancel", "check"])
+        self.shot("warandr-10-overlap-consent")
+        self.click(dlg["spots"]["check"])           # do not ask again
+        self.click(dlg["spots"]["apply anyway"])
+        ans, n = self.wait_dump("overlap_answer", after=n)
+        self.assertEqual((ans["apply"], ans["remember"]), (True, True))
+
+        applied, n = self.wait_dump("applied", after=n)
+        self.assertEqual((applied["rc"], applied["overlap"]), (0, True))
+        self.assertEqual(applied["agreed"], [True, ""])
+        # the flag really was passed, and only with the overlapping layout
+        self.assertIn("--unsafe-gnome-overlap", self.calls()[-1])
+        self.assertIn("--pos", self.calls()[-1])
+
+        # the window says what it did, and that it is temporary
+        st, n = self.wait_dump("status", lambda d: "gone at the next login"
+                               in d["text"], after=n)
+        self.assertIn("a layout GNOME refuses", st["text"])
+        self.assertIn("will not ask again", st["text"])
+        # the indicator's own explanation now says so too
+        self.backend_dump(lambda d: d["overlap_state"] == "agreed", after=self.mark)
+
+        # second Apply: no dialog at all, and the flag is still passed
+        before, mark = len(self.calls()), len(self.dumps())
+        lay = self.layout()
+        self.click(lay["buttons"]["apply"])
+        applied, n = self.wait_dump("applied", after=mark)
+        self.assertEqual((applied["rc"], applied["overlap"]), (0, True))
+        self.assertIsNone(applied["agreed"])
+        self.assertEqual([d["kind"] for d in self.dumps()[mark:]
+                          if d["kind"] in ("overlap_dialog", "overlap_answer")], [])
+        self.assertIn("--unsafe-gnome-overlap", self.calls()[before])
+
+    def test_cancel_applies_nothing(self):
+        d, n = self.gnome(after=self.mark)
+        lay, n = self.overlap_the_boxes(n)
+        before = len(self.calls())
+        self.click(lay["buttons"]["apply"])
+        dlg, n = self.wait_dump("overlap_dialog", after=n)
+        self.click(dlg["spots"]["cancel"])
+        ans, n = self.wait_dump("overlap_answer", after=n)
+        self.assertEqual((ans["apply"], ans["remember"]), (False, False))
+        self.wait_dump("status", lambda d: d["text"] == "not applied", after=n)
+        self.assertEqual(len(self.calls()), before)
+        # the edit is still there, ready to be applied
+        self.assertIn("320x180", self.layout()["command"])
+
+    def test_an_ordinary_layout_carries_no_flag_and_asks_nothing(self):
+        """The other half: on the same GNOME, with the same extension there, a
+        layout GNOME accepts is applied exactly as it always was."""
+        d, n = self.gnome(after=self.mark)
+        lay = self.layout()
+        self.assertNotIn("--unsafe-gnome-overlap", lay["status"])
+        self.click(lay["buttons"]["apply"])
+        applied, n = self.wait_dump("applied", after=n)
+        self.assertEqual((applied["rc"], applied["overlap"]), (0, False))
+        self.assertNotIn("--unsafe-gnome-overlap", self.calls()[-1])
+
+
+class GuiOverlapRefused(GuiSession):
+    """The same GNOME with no extension installed: the drop is refused in
+    Mutter's name, exactly as it was before any of this existed."""
+
+    EXTRA_ENV = {"WARANDR_BACKEND": "wayland",
+                 "FAKE_XRANDR_AUTO_BACKEND": "mutter"}
+
+    def test_without_the_extension_gnome_still_refuses(self):
+        d, n = self.backend_dump(lambda d: d["name"] == "mutter", after=self.mark)
+        self.assertEqual(d["overlap_state"], "unavailable")
+        self.assertIn("refuses monitors that are not edge-adjacent", d["overlap"])
+        self.assertNotIn("fuckwayland-overlap", d["overlap"])
+        lay = self.layout()
+        self.drag(lay["boxes"]["DP-2"], *self.centre(lay["boxes"]["DP-1"]))
+        st, n = self.wait_dump("status", lambda d: "Mutter refuses" in d["text"],
+                               after=n)
+        self.assertNotIn("--unsafe-gnome-overlap", st["text"])
+        # and the box did not move: the model refused the drop
+        self.assertNotIn("320x180", self.layout()["command"])
 
 
 #: a screen whose *small* output comes first, which is the order that used

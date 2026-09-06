@@ -11,7 +11,8 @@ Byte-parity notes, against xrandr 1.5.4:
   silently like the real thing.
 - wxrandr's own options stay out of the usage text, so `--help` is still
   xrandr's bytes: `--persistent`, `--backend NAME`, `--print-backend`,
-  `--backends`, `--unsafe-gnome-overlap`.
+  `--backends`, `--unsafe-gnome-overlap` and the three
+  `--gnome-overlap-{allow,forget,status}` that manage its agreement.
 """
 
 import math
@@ -113,6 +114,10 @@ class Opts:
         self.noprimary = False
         self.persistent = False     # --persistent (Mutter: write monitors.xml)
         self.overlap = False        # --unsafe-gnome-overlap (see wxrandr/gnome_overlap.py)
+        #: the three that manage the *agreement* to the above, and change no layout
+        self.overlap_allow = False   # --gnome-overlap-allow
+        self.overlap_forget = False  # --gnome-overlap-forget
+        self.overlap_status = False  # --gnome-overlap-status
         self.backend = None         # --backend NAME (None: auto)
         self.print_backend = False  # --print-backend
         self.list_backends = False  # --backends
@@ -420,6 +425,15 @@ def parse(argv: list) -> Opts:
             if o.persistent:
                 raise ArgErr(_PERSIST_CONFLICT)
             o.overlap = True
+        elif a in (gnome_overlap.ALLOW_FLAG, gnome_overlap.FORGET_FLAG,
+                   gnome_overlap.STATUS_FLAG):
+            # wxrandr extension: the agreement to the flag above, given once
+            # instead of a paragraph printed every time.  None of the three
+            # changes a layout, and none of them turns the flag on.
+            setattr(o, {gnome_overlap.ALLOW_FLAG: "overlap_allow",
+                        gnome_overlap.FORGET_FLAG: "overlap_forget",
+                        gnome_overlap.STATUS_FLAG: "overlap_status"}[a], True)
+            o.action = True
         elif a == "--backends":
             # wxrandr extension: one line per backend with its availability
             o.list_backends = True
@@ -554,7 +568,10 @@ def scan_backend_argv(argv):
             backend = a.split("=", 1)[1]
             i += 1
             continue
-        if a in ("--print-backend", "--backends"):
+        if a in ("--print-backend", "--backends", gnome_overlap.ALLOW_FLAG,
+                 gnome_overlap.FORGET_FLAG, gnome_overlap.STATUS_FLAG):
+            # informational or bookkeeping: they answer for themselves everywhere,
+            # and handing one to the real xrandr would only get "unrecognized option"
             info = True
         take = 1 + _ARITY.get(a, 0)
         if a == "--newmode":                    # name, clock, 8 numbers, flags
@@ -789,6 +806,122 @@ def _do_backend_info(opts) -> int:
     if opts.list_backends:
         for line in backends_lines():
             print(line)
+    return 0
+
+
+# -- the agreement to --unsafe-gnome-overlap ---------------------------------
+#
+# Three options that change no layout and turn nothing on.  They exist because
+# the paragraph `--unsafe-gnome-overlap` prints is right the first time and
+# noise the fiftieth, and a warning that is noise is not read.  What they do
+# *not* do is skip anything: the agreement is consulted for what to print, never
+# for whether to check, and wxrandr/gnome_overlap.py says so at more length.
+
+
+def _do_overlap_forget() -> int:
+    """`--gnome-overlap-forget`: withdraw the agreement, and say which file went.
+
+    It builds no Session and opens no socket, on purpose and not by accident:
+    the moment somebody most needs to withdraw this is from a text console, with
+    a session that will not start, and a withdrawal that needs a compositor
+    would be no use there."""
+    path, removed = gnome_overlap.forget_consent()
+    print("withdrawn: %s removed" % path if removed else
+          "nothing to withdraw: no agreement was recorded (%s)" % path)
+    return 0
+
+
+def overlap_status_lines(sess, unavailable=None) -> list:
+    """`--gnome-overlap-status`: the token on the first line, machine-readable
+    like `--print-backend`'s, then what is behind it.
+
+    `agreed` -- an overlapping layout applies here, quietly.
+    `available` -- it applies here, and asks first.
+    `unavailable` -- it does not apply here, and why.  `unavailable` is also the
+    answer when there was no session to ask, which is why that reason comes in
+    as an argument: the recorded agreement is a file, and reporting what is in
+    it must not need a compositor.
+
+    Nothing in here reads a byte out of gnome-shell: the Shell's version is its
+    own public property and the extension's presence is a bus name.  A status
+    query must be cheap enough for a GUI to run at startup, and running the
+    private-memory checks to answer "would this work?" would be the wrong shape
+    entirely."""
+    rec = gnome_overlap.load_consent()
+    lines = []
+    if unavailable:
+        lines += ["unavailable", "reason: %s" % unavailable]
+    elif sess.backend != "mutter":
+        lines += ["unavailable",
+                  "reason: this session is %s, which places overlapping "
+                  "monitors without any of this" % sess.backend]
+    else:
+        version, why = sess.impl.overlap_available()
+        lines.append("")                        # the token, filled in below
+        lines.append("shell: %s" % (version or "unknown"))
+        if why:
+            lines[0] = "unavailable"
+            lines.append("reason: %s" % why.rstrip("\n").replace("\n", " "))
+        else:
+            lines.append("extension: running")
+            covered, no = gnome_overlap.consent_covers(rec, version)
+            lines[0] = "agreed" if covered else "available"
+            if not covered:
+                lines.append("asks first: %s" % no)
+    if rec:
+        lines.append("agreed on: %s" % rec.get("agreed"))
+        lines.append("agreed for: %s" % gnome_overlap.describe_build(rec))
+        lines.append("agreed by: %s" % (rec.get("how") or "?"))
+    lines.append("file: %s" % gnome_overlap.consent_path())
+    return lines
+
+
+def _do_overlap_status(opts) -> int:
+    """Answer, always.  The session is built here rather than in `_run_session`
+    so that a machine with no compositor -- a text console, a broken session, an
+    X11 box -- gets `unavailable` and the recorded agreement read back to it,
+    instead of xrandr's "Can't open display"."""
+    sess = None
+    try:
+        try:
+            sess = Session(opts.backend)
+            lines = overlap_status_lines(sess)
+        except Fatal as e:
+            lines = overlap_status_lines(
+                None, unavailable=" ".join(str(e.args[0]).split()))
+        for line in lines:
+            print(line)
+    finally:
+        if sess is not None:
+            sess.close()
+    return 0
+
+
+def _do_overlap_allow(sess) -> int:
+    """`--gnome-overlap-allow`: run every check, show what passed, and record an
+    agreement against the build they passed on.
+
+    The probe comes first and the record second, and never the other way round:
+    an agreement is an agreement to a *measured* risk, so there must be no way
+    to record one for a compositor the checks have not just run on."""
+    flag = gnome_overlap.ALLOW_FLAG
+    if sess.backend != "mutter":
+        raise Fatal("%s: this session is %s, which places overlapping monitors "
+                    "without any of this -- there is nothing to agree to\n"
+                    % (flag, sess.backend))
+    reply = sess.impl.overlap_probe()
+    if not reply.get("ok"):
+        raise Fatal("%s: %s" % (flag, gnome_overlap.refusal_text(reply)))
+    for check in reply.get("checks") or []:
+        print("check %s: %s" % (check.get("name"), check.get("detail")))
+    facts = gnome_overlap.facts(reply)
+    if not facts["shell"] or facts["struct_size"] is None:
+        raise Fatal("%s: the extension did not say which build it verified "
+                    "(no MetaMonitorsConfig size in its answer), so there is "
+                    "nothing to record an agreement against\n" % flag)
+    print("")
+    print(gnome_overlap.agreement_text(facts), end="")
+    print("recorded in %s" % gnome_overlap.save_consent(facts, "wxrandr " + flag))
     return 0
 
 
@@ -1292,6 +1425,12 @@ def _run(argv) -> int:
         # informational and layout-free: they answer even where an action
         # would have been handed over to the real xrandr
         return _do_backend_info(opts)
+    if opts.overlap_forget:
+        # before any Session: withdrawing has to work with no compositor at all
+        return _do_overlap_forget()
+    if opts.overlap_status:
+        # ...and so does asking what is recorded
+        return _do_overlap_status(opts)
     if not opts.action:
         opts.query = True
     if opts.verbose:
@@ -1322,6 +1461,8 @@ def _run_session(sess: Session, opts: Opts) -> int:
     if opts.version:
         print("Server reports RandR version 1.6")
     outputs = sess.snapshot()
+    if opts.overlap_allow:
+        return _do_overlap_allow(sess)
     if opts.mode_ops:
         _do_mode_ops(sess, opts, outputs)
         if not (opts.setit_1_2 or opts.monitor_op or opts.props):
