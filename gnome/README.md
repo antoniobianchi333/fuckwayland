@@ -113,6 +113,68 @@ errors are logged at message level and always show up; expected errors
 level and need `G_MESSAGES_DEBUG=all` in the shell's environment. `--check`
 prints the extension state and any load error.
 
+## The other extension: fuckwayland-overlap
+
+`fuckwayland-overlap@fuckwayland` is a **second** extension in this directory, and it
+is not this one. Everything above is the bridge: feature-detected JavaScript against
+public API, six Shell versions, needed by `wdotool`, `wwmctl` and `wxprop`, safe to
+install and forget. The overlap extension is a different kind of thing and is
+deliberately kept apart from it — its own uuid, its own installer
+(`sh gnome/install-overlap.sh`), its own enable step, and **not in the .deb**.
+
+It exists for one thing: `wxrandr --unsafe-gnome-overlap`, which places two GNOME
+monitors so that they share screen area — a layout Mutter's configuration API refuses
+on adjacency grounds and nothing else in the compositor needs
+([docs/Technical.md § 6](../docs/Technical.md#why-mutter-refuses-monitors-that-share-area)).
+To do it, it ships a compiled type description of libmutter's *private*
+`MetaMonitorsConfig` layout and writes two 32-bit words per monitor into the running
+`gnome-shell`. A wrong layout would be a dead compositor, and on Wayland a dead
+compositor is the whole session.
+
+```
+gnome/
+  fuckwayland-overlap@fuckwayland/
+    metadata.json                 uuid, shell-version ["46", "50"] — and no others
+    extension.js                  the guards, the bounded reader, the write
+    rules.js                      the pure decisions (no gi: node can run it, and the
+                                  tests do)
+    org.fuckwayland.Overlap1.xml  Probe / ApplyOverlap, JSON in, JSON out
+    typelib/FwOverlap14-1.0.typelib   the description for libmutter 14 (GNOME 46)
+    typelib/FwOverlap18-1.0.typelib   ... and for libmutter 18 (GNOME 50)
+  overlap-typelib/gen-gir.py      generates and compiles both, and `--check` proves
+                                  the checked-in .typelib matches the .gir beside it
+  install-overlap.sh              install / --check / --uninstall
+```
+
+The typelibs are checked in because compiling one needs `g-ir-compiler`, which no
+desktop has installed. `python3 gnome/overlap-typelib/gen-gir.py` rebuilds them from
+the `.gir` sources; `--check` is what a CI run uses to notice a `.gir` edited without
+a rebuild.
+
+**Three properties, and it is worth nothing without all three:** it does nothing at
+login (`enable()` exports one D-Bus object and stops, so it is safe to leave installed
+and enabled for ever while never being called); every check runs before every write,
+not once at install, because an upgrade can replace libmutter under a running session;
+and no pointer is ever dereferenced by the type system — everything is a number,
+`g_memdup2` of a bounded range, and an address checked against `/proc/self/maps`
+first, so a wrong offset reads garbage that the comparison rejects instead of walking
+into a SIGSEGV. The six checks, and what each one was measured catching, are in
+[docs/Technical.md § 6](../docs/Technical.md#why-mutter-refuses-monitors-that-share-area).
+
+```sh
+sh gnome/install-overlap.sh          # then log out and back in once
+sh gnome/install-overlap.sh --check  # state, bus name, and a Probe: every guard, no write
+sh gnome/install-overlap.sh --uninstall
+```
+
+`--check` is the honest way to ask whether your GNOME is one of the two this has been
+measured on: it runs every guard against the running libmutter and writes nothing.
+
+It cannot write `~/.config/monitors.xml`: its type description does not name Mutter's
+writer, the apply method is a constant, and it reports the file's digest from before
+and after every call. What `--unsafe-gnome-overlap` prints, refuses and undoes is
+[docs/WXRANDR.md](../docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
+
 ## Security note
 
 Installing the bridge grants **every process that can reach your session
