@@ -26,7 +26,7 @@ gnome-shell, and on Wayland a dead compositor is the whole session, so:
   extension anything, and the extension refuses again on its own account.  That
   one refusal, and no other, can be forced past by somebody who knows their
   machine, with a second flag that names the GNOME in front of them:
-  `--unsafe-gnome-overlap-unmeasured 51`.  See "forcing" below for what it
+  `--unsafe-gnome-overlap-unmeasured 52`.  See "forcing" below for what it
   skips, what it cannot skip and why the argument is not decoration;
 * **the warning is printed before the call, in full,** on every invocation until it
   is agreed to -- once, deliberately, and only for the build the checks passed on;
@@ -224,7 +224,7 @@ def is_forceable(check):
 
 
 def parse_force(value):
-    """`--unsafe-gnome-overlap-unmeasured 51` -> `{"shell_major": 51}`.
+    """`--unsafe-gnome-overlap-unmeasured 52` -> `{"shell_major": 52}`.
 
     Raises ValueError for anything that is not a whole GNOME Shell major.  A
     version string is refused rather than truncated: the flag asks what major
@@ -234,7 +234,7 @@ def parse_force(value):
     if not re.fullmatch(r"[0-9]{1,3}", text):
         raise ValueError(
             "%s takes the GNOME Shell major version that is running here, as a "
-            "whole number (for example: %s 51).  It got %r.\n"
+            "whole number (for example: %s 52).  It got %r.\n"
             % (FORCE_FLAG, FORCE_FLAG, value))
     return {"shell_major": int(text)}
 

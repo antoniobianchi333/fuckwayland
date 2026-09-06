@@ -513,7 +513,7 @@ your GNOME" is a statement about *us*, and somebody who knows their machine is
 entitled to disagree with it — at their own risk, having read what that risk is.
 
 ```console
-$ wxrandr --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured 51 \
+$ wxrandr --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured 52 \
       --output Virtual-2 --pos 960x0
 ```
 
@@ -531,7 +531,7 @@ refused by number before a byte is read.
 
 ```console
 xrandr: --unsafe-gnome-overlap-unmeasured 49 names GNOME Shell 49; this session is
-GNOME Shell 51.0.  It has to name the GNOME in front of you, so that a command line
+GNOME Shell 52.0.  It has to name the GNOME in front of you, so that a command line
 copied from somewhere else is refused here rather than run
 ```
 
@@ -581,13 +581,14 @@ answer; `wxrandr` reads that flag rather than parsing the wording.
 **What it prints before it does anything**, always, in full:
 
 ```console
-xrandr: --unsafe-gnome-overlap-unmeasured 51: forcing past the one check that says this GNOME has
+xrandr: --unsafe-gnome-overlap-unmeasured 52: forcing past the one check that says this GNOME has
   been measured.  This session may end.
-  What is skipped:      one thing: that GNOME Shell 51.0 is a build this project has
+  What is skipped:      one thing: that GNOME Shell 52.0 is a build this project has
                         measured, and with it that the libmutter mapped into gnome-shell is
                         the one this GNOME is supposed to carry ...
                         MetaMonitorsConfig is 80 bytes here, which is the size
-                        FwOverlap18 describes (measured on GNOME 50)
+                        FwOverlap51 describes (measured on GNOME 51, and the
+                        same bytes as FwOverlap18)
   What is not skipped:  everything else, and none of it can be forced: exactly one libmutter
                         mapped, the Meta typelib agreeing with it, the struct size equal to
                         the description's, every symbol callable, the sentinel through
@@ -893,10 +894,10 @@ a shell that will not name its version — and the refusal is written for whoeve
 is going to add that release:
 
 ```console
-xrandr: --unsafe-gnome-overlap: GNOME Shell 51.0 is not a build this has been measured on.
+xrandr: --unsafe-gnome-overlap: GNOME Shell 52.0 is not a build this has been measured on.
   Nothing was read out of gnome-shell and nothing was written.
 
-  What is running:      GNOME Shell 51.0
+  What is running:      GNOME Shell 52.0
                         libmutter-51.so.0
                         Meta typelib 51
                         MetaMonitorsConfig 80 bytes, from this build's GType registry
@@ -915,7 +916,7 @@ xrandr: --unsafe-gnome-overlap: GNOME Shell 51.0 is not a build this has been me
                         metadata.json out of the table.  The procedure, and the three-head
                         measurement that has to follow it before anything ships, is
                         docs/Technical.md section 6, "Adding a GNOME generation".
-  To try it here now:   wxrandr --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured 51 <the rest of the line>
+  To try it here now:   wxrandr --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured 52 <the rest of the line>
                         which skips this one check and no other, records nothing, and
                         may end this session.  It prints what it is doing first; read
                         that before you type it.

@@ -199,13 +199,19 @@ sh gnome/install-overlap.sh --check  # state, bus name, and a Probe: every guard
 sh gnome/install-overlap.sh --uninstall
 ```
 
-`--check` is the honest way to ask whether your GNOME is one of the two this has been
+`--check` is the honest way to ask whether your GNOME is one of the ones this has been
 measured on: it runs every guard against the running libmutter and changes nothing the
 session can see, the only write anywhere being the sentinel into a throwaway
 configuration object of the extension's own making. On
-a stock 26.04 it says `FwOverlap18, MetaMonitorsConfig 80 bytes as declared`, and on
-24.04 `FwOverlap14 … 72 bytes`. Those two numbers held across every update either
-release can deliver today — eight version pairs, seven distinct libmutter builds,
+a stock 26.04 it says `FwOverlap18, MetaMonitorsConfig 80 bytes as declared`, on
+24.04 `FwOverlap14 … 72 bytes`, and on 26.10 `FwOverlap51 … 80 bytes` — GNOME 51 keeps
+mutter 18's private layout under a library called something else entirely. On a GNOME
+that is in none of those records it says `OUT_OF_DATE` until the installer has been run
+once on that build, because gnome-shell will not load an extension whose
+`metadata.json` does not name the running Shell major, and then it says
+`refused (shell-version)`, which is the honest answer with the numbers a maintainer
+needs in it. Those numbers held across every update either LTS
+can deliver today — eight version pairs, seven distinct libmutter builds,
 including 26.04's `-proposed` pair and the GA library under a newer shell — so an
 ordinary update is not what this breaks on; a release upgrade is, and there it refuses
 at `shell-version` ([docs/WXRANDR.md § What ordinary updates actually
