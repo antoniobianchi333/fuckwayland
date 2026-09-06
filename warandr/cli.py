@@ -55,8 +55,8 @@ def _parser():
                    help="apply overlapping layouts on GNOME without asking "
                         "first, for a window started from a hotkey or a "
                         "desktop entry. Waives the question, not the checks, "
-                        "and records no agreement. See wxrandr "
-                        "--gnome-overlap-allow to agree once instead")
+                        "and records no agreement. To agree once instead, "
+                        "see the wxrandr flag that records it")
     return p
 
 
