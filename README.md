@@ -627,6 +627,16 @@ file back through the same validator and throws away the **whole file** when any
 of it fails, so one bad entry silently takes every other monitor arrangement you had
 saved down with it, at every boot, and the only trace is a line in the system journal.
 
+There is one way through, and it is off, it is not in the package, and it is not in
+this window. `wxrandr --unsafe-gnome-overlap` places the layout anyway, by writing
+into the running `gnome-shell` through a second Shell extension installed by hand; it
+does nothing unless GNOME refuses the layout, it re-checks the running Mutter before
+every write and refuses on any build it has not been measured on, it saves nothing, it
+prints what it is about to do and how to undo it, and if all of its checks are wrong
+anyway the price is the session. It is
+[docs/WXRANDR.md § --unsafe-gnome-overlap](docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through),
+and if you are not sure you want it, you do not.
+
 One more GNOME habit worth knowing: an Apply that switches a monitor on or off makes
 the desktop move keyboard focus off the window, so click it again before the next
 Ctrl+S. And a monitor plugged in while the window is open shows up after New

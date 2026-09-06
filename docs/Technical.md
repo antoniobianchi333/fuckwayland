@@ -744,7 +744,77 @@ the identical layout is taken as drawn by KWin, by wlroots and by X.
 |---|---|
 | `ApplyMonitorsConfig` (D-Bus) | validates **before** it applies, on every method: 0 verify, 1 temporary, 2 persistent. `--dryrun` therefore gets exactly the answer an apply would |
 | `~/.config/monitors.xml` | the parser calls the **same verifier**, and a failure discards the **entire file** — see the warning below |
-| a GNOME Shell extension | can reach the non-introspected libmutter symbol by shipping a typelib of its own. Measured working on **both** versions, shared region byte-identical. It also encodes a private struct offset and the library SONAME, and a wrong offset **writes into the compositor's heap** rather than raising an error, which on Wayland means the user loses the session at login, repeatedly, with the extension already enabled. Not shipped, not going to be |
+| a GNOME Shell extension | **the one route that works**, and since 0.4 it is packaged, opt-in and off: it reaches the non-introspected libmutter symbols by shipping a type description of its own. Measured working on **both** versions, shared region byte-identical. It also encodes a private struct offset and the library SONAME, and a wrong offset **writes into the compositor's heap** rather than raising an error, which on Wayland means the user loses the session. What makes that shippable is below |
+
+#### The overlap extension, and the three properties that make it shippable
+
+`gnome/fuckwayland-overlap@fuckwayland`, behind `wxrandr --unsafe-gnome-overlap`
+([WXRANDR.md](WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through)). It is a
+**second, separate** extension: the bridge is feature-detected JavaScript over public
+API across six Shell versions and stays that way, and this one ships a compiled
+typelib pinned to one libmutter generation's private structure layout. Different kind
+of thing, its own uuid, its own installer (`gnome/install-overlap.sh`), its own enable
+step, and not in the .deb.
+
+`nm -D` on the shipped library lists `meta_monitor_manager_apply_monitors_config`,
+`meta_monitor_manager_get_config_manager`, `meta_monitor_config_manager_get_current`,
+`meta_monitor_config_manager_create_linear` and `meta_verify_monitors_config` as
+ordinary dynamic symbols — libmutter is built with hidden visibility, but the
+test-export macro expands to a real export. They are absent from the introspection
+data, not from the library, and an extension can prepend its own search path.
+`meta_monitors_config_copy` is exported on mutter 18 and **not** on mutter 14, so
+there is no copy to mutate: the configuration the session is running is mutated in
+place, and a refusal after the write puts the old bytes back before returning.
+
+Three properties, and the extension is worth nothing without all three.
+
+**1. It does nothing at login.** `enable()` exports one D-Bus object and stops — no
+typelib load, no symbol touched, nothing read. The catastrophic failure this design
+exists to prevent is a crash at session start with the extension already enabled and
+no way to reach a setting, so there is no code that can run then.
+`tests/test_gnome_overlap.py` reads the body of `enable()` and fails on any mention of
+a typelib, `imports.gi`, libmutter or the reader.
+
+**2. No pointer is ever dereferenced by the type system.** Every pointer in the
+described structures is declared `guint64`, so reading one yields a *number*; each
+step to the next struct is `g_memdup2(ptr, n)` — a bounded copy of exactly n bytes —
+and `g_strndup(ptr, 63)` for the connector names, with the address range-checked
+against `/proc/self/maps` first and list walks capped. With pointers declared as
+pointers, a wrong offset killed gnome-shell outright (measured, 50.1, a node whose
+`next` was `0x1`); with them declared as numbers, all four wrong descriptions
+completed and none crashed.
+
+**3. Every check runs before every write, never once at install** — a distribution
+upgrade can replace libmutter under a running session. In order, all six measured
+green on GNOME 46.0 and 50.1:
+
+| check | what it catches | measured refusal |
+|---|---|---|
+| `shell-version` | a build nobody has measured: shell major ∈ {46, 50}, exactly one libmutter mapped, its generation the matching one, the `Meta` typelib version agreeing | `GNOME Shell 48.3 is not a build this has been measured on` (from the tool, before the extension is asked) |
+| `typelib` | our own record's size, read back from *our own* typelib through `GIRepository` (no constant to go stale), against `GObject.type_query(MetaMonitorsConfig).instance_size`; then every declared symbol probed | a 14-shaped description with mutter 18's tail, installed on 46: `this build's MetaMonitorsConfig is 72 bytes, the description shipped for libmutter-14 is 80` — **having read nothing at all** |
+| `sentinel` | the tail has moved: a value written through Mutter's own exported `set_switch_config` must appear at the offset we believe, on a throwaway `create_linear()` object, never on the live one | pins offsets 64 (mutter 14) / 72 (mutter 18), which are what differ between the two |
+| `pending-dialog` | the one window in which a mutated configuration could reach Mutter's writer: confirming a "Keep changes?" makes Mutter save whatever is *current* | refuses while `Main.wm._displayChangeDialog` is up |
+| `bounded-read` | anything unreadable: the whole configuration read through `g_memdup2`, every address checked against `/proc/self/maps` | `0x…+40 is not in a readable mapping` |
+| `public-view` | everything else: count, x, y, w, h, scale, primary and connector names against `global.display` and `MetaMonitorManager` | the **same-size field swap** — the residual risk the safety work could not otherwise close — read garbage and was refused: `private read has 1 monitors, Mutter reports 3; monitor 0: x reads -41753344, Mutter says 0 …`, **and gnome-shell survived it** |
+
+Then, after the write and before the apply: the configuration is re-read the same
+bounded way and must differ from the old one in exactly the requested `x` and `y`; and
+`meta_verify_monitors_config()` must **refuse** it. That last one is a positive
+control — if Mutter's validator accepts what we built, the write did not land on the
+field the validator reads, and nothing is applied.
+
+`layout_mode` is cross-checked against the value DisplayConfig reports publicly, which
+pins the tail a second time with a public number: claiming logical mode on GNOME 46
+(whose default is physical) gets `layout_mode reads 2 at the offset this description
+believes; DisplayConfig says 1`.
+
+**Measured end to end, both releases, three virtio heads.** Every check green;
+monitors placed at 0, 960 and 2880; the 960-pixel shared region cropped from two
+screendumps **byte-identical**; `meta_verify_monitors_config` refusing the mutated
+configuration by name; `monitors.xml` absent before and after, or present with an
+identical digest; the layout gone after a reboot, with no `monitors config` line in
+the journal; and a later confirmed `--persistent` of a valid layout writing that valid
+layout and nothing else.
 
 > **The one warning worth its own line: never hand-edit `monitors.xml` to force an
 > overlap.** Mutter discards the whole file on any error, so one bad entry silently
@@ -861,7 +931,7 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2371 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2430 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite
@@ -903,6 +973,7 @@ hold across all of them and are enforced by tests of their own:
 | `wwmctl/` | `test_wwmctl_cli`, `test_wwmctl_live`, `test_wwmctl_hardening`, `test_wwmctl_gnome` | `FakeSwayBackend`, `FakeX11`; real sway with XWayland for the live file |
 | `wxprop/` | `test_wxprop_cli`, `test_wxprop_fmt`, `test_wxprop_live`, `test_wxprop_gnome`, `test_wxprop_x11` | captured real-xprop bytes; a live XWayland server as the oracle |
 | `wxrandr/` | `test_wxrandr_unit`, `test_wxrandr_backend`, `test_wxrandr_mutter`, `test_wxrandr_kwin`, `test_wxrandr_live`, `test_wxrandr_hostile`, `test_wxrandr_gamma`, `test_monitors_xml` | `FakeMutter` on the mock bus; a wire-level fake KWin; real sway with real `xrandr` through XWayland as the oracle; real `monitors.xml` files from both default installs |
+| `wxrandr/gnome_overlap.py` + `gnome/fuckwayland-overlap@fuckwayland/` | `test_gnome_overlap` | the same mock bus with a mock `org.gnome.Shell` and a mock overlap extension on it, so a whole `--unsafe-gnome-overlap` run happens in-process; and plain `node` running the extension's own `rules.js` against `monitors_xml.py` |
 | `warandr/` | `test_warandr_model`, `test_warandr_parse`, `test_warandr_gui` | `tests/fixtures/fake_xrandr.py`, a RandR simulator; Xvfb plus xdotool driving the real editor |
 | `wmirror/` | `test_wmirror_cli`, `test_wmirror_lifetime` | a fake `wl-mirror` binary, and the detach protocol driven for real |
 | `procs.py`, `stdio.py` | `test_wmirror_lifetime`, `test_stdout_gone` | real forks; `>/dev/full`, `\| head -1`, `>&-` |
