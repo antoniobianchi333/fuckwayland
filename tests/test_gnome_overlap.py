@@ -21,7 +21,9 @@ Four things this file is here to hold still:
   flags were typed;
 * nothing but the flag reaches it -- no environment variable, no default, no
   other backend, and not `--persistent`;
-* the warning is printed in full, before the call, every time; and
+* the warning is printed in full, before the call, every time -- these tests
+  record no agreement, and tests/test_overlap_consent.py is what happens when
+  one is recorded; and
 * the shipped type description cannot name Mutter's monitors.xml writer, and
   the apply method is a constant.
 """
@@ -106,6 +108,12 @@ class FakeOverlap:
         self.calls = []                  # [(member, request dict)]
         self.reply = None                # override the canned answer
         self.error = None                # answer with a D-Bus error instead
+        # the build the answer claims to have measured -- what an agreement is
+        # recorded against (tests/test_overlap_consent.py)
+        self.libmutter = 18
+        self.instance_size = 80          # the field; None: an extension too old to say
+        self.declared_size = 80          # what the typelib check's own detail reports
+        self.strip_typelib_check = False  # ...an extension too old for either
 
     def answer(self, member, req):
         self.calls.append((member, req))
@@ -115,11 +123,14 @@ class FakeOverlap:
                          primary=(g["x"] == 0))
                     for g in (req.get("want") or req.get("expect") or [])]
         out = {
-            "ok": True, "version": 1, "shell": self.shell, "libmutter": 18,
+            "ok": True, "version": 1, "shell": self.shell,
+            "libmutter": self.libmutter, "instance_size": self.instance_size,
             "checks": [{"name": "shell-version", "ok": True,
-                        "detail": "GNOME Shell %s, libmutter-18" % self.shell},
+                        "detail": "GNOME Shell %s, libmutter-%s"
+                                  % (self.shell, self.libmutter)},
                        {"name": "typelib", "ok": True,
-                        "detail": "FwOverlap18, MetaMonitorsConfig 80 bytes as declared"},
+                        "detail": "FwOverlap%s, MetaMonitorsConfig %s bytes as declared"
+                                  % (self.libmutter, self.declared_size)},
                        {"name": "sentinel", "ok": True,
                         "detail": "switch_config round-tripped at the declared offset"},
                        {"name": "pending-dialog", "ok": True,
@@ -141,6 +152,10 @@ class FakeOverlap:
                                  "before": "absent", "after": "absent",
                                  "unchanged": True},
             })
+        if self.instance_size is None:
+            out.pop("instance_size")
+        if self.strip_typelib_check:
+            out["checks"] = [c for c in out["checks"] if c["name"] != "typelib"]
         return out
 
 

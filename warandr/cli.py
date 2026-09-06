@@ -167,7 +167,10 @@ def _main(argv=None):
             backend.identify()
             layout = load_layout(backend, args.savedfile)
             if args.command:
-                print(layout.command_line(backend.run_word))
+                # run_word_for: on GNOME an overlapping layout really is applied
+                # with --unsafe-gnome-overlap, and --command's whole job is to
+                # print the line Apply would run
+                print(layout.command_line(backend.run_word_for(layout)))
             if args.save:
                 # ~/.screenlayout is where arandr puts these and where the GUI's Save As already creates on
                 # demand; --save is the same recipe without a window, so it should not fail on a fresh account

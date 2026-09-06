@@ -22,6 +22,15 @@ accepted and stripped from every invocation, ``--print-backend`` (with
 with one line, so a refused switch can be tested.  ``FAKE_XRANDR_AUTO_BACKEND``
 (default ``x11``) is the one auto would pick, ``FAKE_XRANDR_QUERY_LOG`` gets
 one JSON line per *query* — the apply log stays the applies only.
+
+The GNOME overlap agreement is simulated too, which is how the GUI test drives
+the consent dialog: ``--gnome-overlap-status``, ``--gnome-overlap-allow`` and
+``--gnome-overlap-forget`` answer like wxrandr's, against a record kept in
+``$FAKE_XRANDR_CONSENT``.  ``FAKE_XRANDR_OVERLAP`` says what the simulated
+session can do — ``available`` (the extension is there, nothing agreed yet),
+``agreed`` (a record already exists), ``unavailable``/unset (no route at all,
+which is what every other test sees).  ``FAKE_XRANDR_OVERLAP_ALLOW_FAIL`` makes
+``--gnome-overlap-allow`` fail with that message.
 """
 
 import json
@@ -282,6 +291,69 @@ def size_of(d):
     return core.logical_size(w, h, d["transform"], d["scale"])
 
 
+# -- the GNOME overlap agreement ---------------------------------------------
+
+OVERLAP_BUILD = {"shell": "50.1", "libmutter": 18, "struct_size": 128}
+
+
+def consent_file():
+    return os.environ.get("FAKE_XRANDR_CONSENT") or os.path.join(
+        os.path.dirname(os.environ.get("FAKE_XRANDR_LOG") or HERE), "consent.json")
+
+
+def consent_read():
+    try:
+        with open(consent_file()) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def overlap_route(backend):
+    """What this simulated session can do about an overlap: only GNOME can do
+    anything, and only when the fixture was told the extension is there."""
+    name = backend or auto_backend()
+    if name != "mutter":
+        return None
+    want = os.environ.get("FAKE_XRANDR_OVERLAP", "")
+    return want if want in ("available", "agreed") else None
+
+
+def overlap_status(backend):
+    route = overlap_route(backend)
+    rec = consent_read()
+    if route is None:
+        lines = ["unavailable", "reason: the fake says there is no overlap route here"]
+    else:
+        lines = ["agreed" if rec else "available", "shell: %s" % OVERLAP_BUILD["shell"],
+                 "extension: running"]
+        if not rec:
+            lines.append("asks first: nothing is recorded")
+    if rec:
+        lines += ["agreed on: %s" % rec.get("agreed"),
+                  "agreed for: GNOME Shell %s (libmutter-%s, MetaMonitorsConfig %s bytes)"
+                  % (rec.get("shell"), rec.get("libmutter"), rec.get("struct_size")),
+                  "agreed by: %s" % rec.get("how")]
+    lines.append("file: %s" % consent_file())
+    return "".join(ln + "\n" for ln in lines)
+
+
+def overlap_allow(backend):
+    fail = os.environ.get("FAKE_XRANDR_OVERLAP_ALLOW_FAIL")
+    if fail:
+        sys.stderr.write("xrandr: --gnome-overlap-allow: %s\n" % fail)
+        return 1
+    if overlap_route(backend) is None:
+        sys.stderr.write("xrandr: --gnome-overlap-allow: nothing to agree to here\n")
+        return 1
+    rec = dict(OVERLAP_BUILD, format=1, agreed="2026-01-01T00:00:00Z",
+               how="wxrandr --gnome-overlap-allow")
+    with open(consent_file(), "w") as f:
+        json.dump(rec, f)
+    sys.stdout.write("recorded in %s\n" % consent_file())
+    return 0
+
+
 def main(argv):
     given = list(argv)          # what the log records: the flag included
     backend, argv = take_backend(argv)
@@ -294,6 +366,18 @@ def main(argv):
         return 0
     if "--backends" in argv:
         sys.stdout.write(backends_table())
+        return 0
+    if "--gnome-overlap-status" in argv:
+        sys.stdout.write(overlap_status(backend))
+        return 0
+    if "--gnome-overlap-allow" in argv:
+        return overlap_allow(backend)
+    if "--gnome-overlap-forget" in argv:
+        try:
+            os.unlink(consent_file())
+            sys.stdout.write("withdrawn: %s removed\n" % consent_file())
+        except OSError:
+            sys.stdout.write("nothing to withdraw\n")
         return 0
     if argv in ([], ["-q"], ["--query"], ["--current"], ["--verbose"],
                 ["--current", "--verbose"], ["--verbose", "--current"]):
@@ -311,6 +395,9 @@ def main(argv):
     if log:
         with open(log, "a") as f:
             f.write(json.dumps(given) + "\n")
+    # wxrandr's own flag, and not a stanza: the log above keeps it (that is what
+    # the test asserts on), the simulated screen never sees it
+    argv = [a for a in argv if a != "--unsafe-gnome-overlap"]
     fail = os.environ.get("FAKE_XRANDR_FAIL")
     if fail:
         sys.stderr.write(fail if fail.endswith("\n") else fail + "\n")

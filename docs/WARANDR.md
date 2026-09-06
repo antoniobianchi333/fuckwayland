@@ -150,7 +150,7 @@ ImageMagick `compare -metric AE` and an md5 of the raw RGB:
 | `x11` (Xorg) | taken, silently | **same pixels** | `--pos 960x0` exit 0, screen 3840×1080 → 2880×1080; a yellow window at 1052,348 inside the region: `AE 0`, both crops md5 `c05208d2…` (measured, Xorg + Xfce) |
 | `kwin` (Plasma 6) | taken | **same pixels** | `kscreen-doctor …position.960,0` exit 0, no warning; `AE 0`, equal md5 at *two* overlap widths (960 px and 480 px) — KWin renders each output as a view onto one shared scene (measured, Plasma 6 / KWin Wayland) |
 | `sway` / `wlr` (wlroots) | taken | **same pixels** | `swaymsg … position 960 0` → success; a window floated to layout 1100,300, wholly inside the region, is drawn on **both** heads: `AE 0`, equal md5 (measured, sway 1.11) |
-| `mutter` (GNOME) | **refused** | n/a | `ApplyMonitorsConfig` → `Logical monitors not adjacent` for x = 0, 100, 960, 1919, 1921, 2500 — every layout that is not exactly edge-adjacent, overlap and gap alike; nothing half-applied (measured, GNOME 46 / Mutter) |
+| `mutter` (GNOME) | **refused**, unless the overlap extension is installed | same pixels, through it | `ApplyMonitorsConfig` → `Logical monitors not adjacent` for x = 0, 100, 960, 1919, 1921, 2500 — every layout that is not exactly edge-adjacent, overlap and gap alike; nothing half-applied (measured, GNOME 46 / Mutter). With `fuckwayland-overlap` installed, warandr places it anyway and the shared region comes back byte-identical on both heads: [Overlapping monitors on GNOME](#overlapping-monitors-on-gnome) |
 
 Measured, all four rows. **Inferred**, and said as inference: the `wlr`
 backend beyond sway (same wlroots renderer, only sway 1.11 on the bench);
@@ -187,7 +187,9 @@ indicator's tooltip, as an `overlap:` line — that paragraph (`--print-backend
 already explains the live backend, whereas the Backend menu's own tooltips
 are taken: they say why a backend is unreachable, and GTK 3 pops no tooltip
 over an insensitive menu item anyway. On GNOME the drop is refused with
-Mutter's sentence, never with ours. `--save`/`--command` ask
+Mutter's sentence, never with ours — unless the overlap extension is there, in
+which case the same three places say what warandr will do instead, and the
+indicator's tooltip carries an `overlapping layouts:` line as well. `--save`/`--command` ask
 `--print-backend` first, because `auto` on Wayland is only "wxrandr" until
 it has answered and a layout GNOME will not take must not be written out as
 if it were fine; the window asks off the main loop instead and patches the
@@ -236,8 +238,93 @@ from the X layout, overlaps included. That is why the same drag is taken as
 drawn on the other three rows, and why the status bar says *Mutter refuses
 this* rather than *this cannot be done*.
 
-The honest substitute, and the answer for a user who asks the window for an
-overlap on GNOME: GNOME will not place two monitors so that they share area,
+### Overlapping monitors on GNOME
+
+Since 0.4 there is one route through that validator, and `warandr` can use it:
+`fuckwayland-overlap@fuckwayland`, a *separate* GNOME Shell extension with its
+own installer and its own enable step, which writes the two numbers that are a
+monitor's position inside `gnome-shell` and asks Mutter to apply the result.
+What it is, what it risks and every check that stands between it and a dead
+session is [WXRANDR.md § `--unsafe-gnome-overlap`](WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through);
+this section is only the window's half.
+
+**What the window does.** At startup, once the backend has a name, it asks
+`wxrandr --gnome-overlap-status` on the same worker thread as
+`--print-backend --verbose`. The answer is one token:
+
+* `unavailable` — no extension, or a GNOME nobody has measured. **Nothing
+  changes**: the drop is refused with Mutter's sentence, exactly as the row
+  above says, and Apply passes no flag it did not pass in 0.3.
+* `available` — the route is there and nothing has been agreed to. The drop is
+  taken, the status bar says what will be done instead of refusing, and the
+  first Apply asks.
+* `agreed` — the route is there and this build has been agreed to. The first
+  Apply does not ask either.
+
+The status query is cheap by contract: it reads the Shell's public version
+property and a bus name, and nothing at all out of `gnome-shell`. A GUI runs it
+at startup, so answering *would this work?* must not cost a walk of Mutter's
+heap.
+
+**The one question, and the box.** The first time an overlapping layout is
+applied on a GNOME where the route exists, Apply opens a dialog: which two
+monitors share which rectangle, that Mutter refuses this and why the ordinary
+path cannot be used, what the extension does (eight bytes per monitor, inside
+`gnome-shell`), what that risks (`gnome-shell` is the session), that nothing is
+saved — and *Cancel* / *Apply anyway*, with **Cancel the default response**, so
+Return on a dialog nobody read is not a yes.
+
+A dialog at the moment of the first Apply, rather than a preference in a menu,
+because that is when the user has actually asked for the thing: the explanation
+is then about something they want instead of something they might one day want,
+and a preference nobody opens is read by nobody. The box on it —
+*Do not ask again on this GNOME* — is what makes it once rather than every
+time, and it is **not ticked by default**: agreeing is a second, deliberate act,
+and applying a single overlapping layout without agreeing to anything stays
+possible.
+
+The box records the same agreement `wxrandr --gnome-overlap-allow` records, in
+the same file, scoped to the same build — and it is recorded **after** a
+successful apply, never before it. If that write were ever the one that ended
+the session, the honest state to wake up in is one where nothing was agreed and
+the question is asked again.
+
+**What the window says while it does it.** The status bar already names the
+backend; an overlapping layout is the other unusual thing, so it is said out
+loud in the same place:
+
+* at the drop — `Virtual-2 overlaps Virtual-1. GNOME's Mutter refuses monitors
+  that are not edge-adjacent, so warandr places these through the
+  fuckwayland-overlap extension instead; the layout is temporary and is gone at
+  the next login.`
+* as the command, because the status bar's promise is that it shows what Apply
+  runs — `wxrandr --unsafe-gnome-overlap --output Virtual-1 …`. That flag is
+  added for an overlapping layout on GNOME with a route, and for nothing else;
+  a saved script still gets the bare `wxrandr`, because a layout script must run
+  on any desktop.
+* after the apply — `applied through the fuckwayland-overlap extension a layout
+  GNOME refuses (Virtual-1 and Virtual-2 share 960x1080 at +960+0); not saved,
+  gone at the next login`, plus `- agreed, warandr will not ask again on this
+  GNOME` when the box was ticked.
+* in the indicator's tooltip, About and Script Properties ▸ Backend, as an
+  `overlapping layouts:` line: the date it was agreed and how to withdraw, or
+  that Apply will explain and ask once.
+
+Withdrawing is `wxrandr --gnome-overlap-forget`; there is no button for it,
+because withdrawing has to work from a text console with a session that will
+not start, and that is where the command already works.
+
+**Verified live** on GNOME 50.1 (Ubuntu 26.04, two 1920×1080 virtio heads,
+`fuckwayland-overlap` installed): drag `Virtual-2` onto `Virtual-1`, Apply, the
+dialog, the box, *Apply anyway* — `wxrandr --query` then really reads
+`Virtual-2 … 1920x1080+960+0`, the second head's screendump shows the shared
+960 px, and the agreement file exists. The second overlapping Apply produced no
+dialog at all, passed the same flag, and `wxrandr` said one line.
+
+The honest substitute where the route is **not** there — no extension, or a
+GNOME this has not been measured on — and the answer for a user who asks the
+window for an overlap on such a GNOME: GNOME will not place two monitors so
+that they share area,
 and the closest thing available is a **mirrored region**, where the pixels
 match exactly, the copy takes the clicks that land on it instead of passing
 them to the window they came from, and a screen lock ends it where it is made

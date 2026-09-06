@@ -255,23 +255,34 @@ made:
   ordinary way first;
 * an extension that is not on the bus, answered with the line that installs it.
 
-**3. The warning**, in full, on stderr, before the call, on every invocation,
-and there is no way to silence it: what moves and to where, that eight bytes
-per monitor are going into `gnome-shell`'s own memory, which checks stand
-between that and a dead session, that nothing is saved, the exact `wxrandr`
-line that undoes it — built from the layout running *now*, and going through
-DisplayConfig, so the way back does not depend on the dangerous half still
-working — and the way back from a session that will not start.
+**3. The warning**, in full, on stderr, before the call: what moves and to
+where, that eight bytes per monitor are going into `gnome-shell`'s own memory,
+which checks stand between that and a dead session, that nothing is saved, the
+exact `wxrandr` line that undoes it — built from the layout running *now*, and
+going through DisplayConfig, so the way back does not depend on the dangerous
+half still working — and the way back from a session that will not start.
 
-There is **no confirmation prompt**, and that is a decision rather than an
-omission. The flag is the confirmation: it cannot be typed by accident and it
-appears in no `xrandr` manual. A prompt would have to be skippable to keep the
-tool usable from a script and from `warandr`, and a guard with a documented
+It is printed on every invocation until it is *agreed to*, once, for the build
+it was measured on: see [Agreeing once](#agreeing-once-and-withdrawing) below.
+An agreement changes nothing but this paragraph; every guard in the two lists
+below runs whether or not one exists.
+
+There is **no confirmation prompt on the command line**, and that is a decision
+rather than an omission. The flag is the confirmation: it cannot be typed by
+accident and it appears in no `xrandr` manual. A prompt would have to be
+skippable to keep the tool usable from a script, and a guard with a documented
 bypass protects nobody, while the guards that do the work run whether or not a
 human answered a question. GNOME's own "are you sure" is the *Keep changes?*
 dialog with its 20-second revert, and this path cannot have it, because it does
 not go through the D-Bus method that arms the timer. What is offered instead is
 a printed undo and a printed way back.
+
+`warandr` does ask, once, and for the same reason turned round: a GUI has no
+flag to type, so its dialog *is* the flag — the deliberate act that the command
+line gets from the spelling of the option. It is not a guard either, and it
+skips nothing: what it can record is this agreement, and this agreement decides
+what is printed. [WARANDR.md § Overlapping monitors on
+GNOME](WARANDR.md#overlapping-monitors-on-gnome).
 
 **4. The write.** `fuckwayland-overlap@fuckwayland`
 ([gnome/README.md](../gnome/README.md#the-other-extension-fuckwayland-overlap))
@@ -306,6 +317,102 @@ mutated configuration as a **positive control**, and it has to *refuse* it: if
 Mutter's own validator accepts what was built, the write did not land on the
 field that validator reads, and nothing is applied. The line under it is the
 saved configuration file's digest, compared before and after the call.
+
+#### Agreeing once, and withdrawing
+
+The paragraph above is right the first time somebody does this and noise the
+fiftieth, and a warning that is noise is not read. So it can be agreed to —
+deliberately, once, and *for one build*:
+
+```console
+$ wxrandr --gnome-overlap-allow
+check shell-version: GNOME Shell 50.1, libmutter-18
+check typelib: FwOverlap18, MetaMonitorsConfig 128 bytes as declared
+check sentinel: switch_config round-tripped at the declared offset
+check pending-dialog: nothing holds a modal grab, so GNOME is not asking "Keep changes?"
+check bounded-read: 2 logical monitors, every address range-checked
+check public-view: identical to Mutter's public view (global.display + MetaMonitorManager.get_monitors)
+
+Agreeing to --unsafe-gnome-overlap on GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 128 bytes).
+
+  What it does:         places monitors GNOME's own validator refuses, by writing
+                        ...
+  What is agreed:       this build and no other.  The agreement records
+                            GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 128 bytes)
+                        and stops applying the moment any of that changes, which
+                        is what a distribution upgrade does.
+  What is not agreed:   any of the checking.  Every check above runs again on
+                        every single apply, agreed or not, and a build this does
+                        not recognise is refused however old the agreement is.
+  To withdraw:          wxrandr --gnome-overlap-forget
+  ...
+recorded in /home/test/.config/fuckwayland/overlap-consent.json
+```
+
+**The probe comes first and the record second**, never the other way round:
+`--gnome-overlap-allow` runs all six checks and writes nothing to the record
+unless they pass, so there is no way to agree to a compositor they have not just
+run on. The three numbers it stores are the three they *measured* — the Shell
+version string, libmutter's generation, and the size this build's
+`MetaMonitorsConfig` turned out to be — read out of the running GType registry
+and relayed by the extension, not typed anywhere in this tree.
+
+**Where it lives.** `$XDG_CONFIG_HOME/fuckwayland/overlap-consent.json`, else
+`~/.config/fuckwayland/overlap-consent.json`. Per user, because it is the user's
+own session a wrong offset ends and root's answer must not stand in for anybody
+else's. A plain file rather than GSettings or dconf, because `wxrandr` has to be
+able to read it with no GLib bindings and no schema installed, because you should
+be able to see what you agreed to, and because withdrawing it has to be possible
+with `rm` from a text console when the session will not start.
+
+**What a later run then says** — one line, and it is the last one:
+
+```console
+$ wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
+xrandr: --unsafe-gnome-overlap: applying a layout GNOME refuses ("logical monitors not adjacent (an overlap counts, and so does a gap)"), as agreed on 2026-09-06
+```
+
+The validator's positive control and the `monitors.xml: unchanged` line go with
+the paragraph: they are reassurance, and reassurance is what somebody who has
+agreed does not need every time. What survives is the line that is *not*
+reassurance — a saved configuration file that moved when it cannot have is still
+shouted about. `--dryrun` is never quiet either: it exists to be read.
+
+**On a different build it asks again.** The Shell version is compared before
+anything is read out of `gnome-shell`, because that comparison decides whether
+the paragraph is printed *before* the write; libmutter's generation and the
+struct size are audited against the answer that comes back, and if they disagree
+the record is deleted on the spot and the next run asks in full. Reaching that
+second case needs a build that kept its version string and moved its private
+layout, which the extension's own `typelib` guard turns into a refusal rather
+than a bad write — so it is bookkeeping, not a guard.
+
+**Withdrawing** is `wxrandr --gnome-overlap-forget`, which opens no session and
+no socket at all: the moment somebody most needs it is from a text console with
+a session that will not start.
+
+**Asking** is `wxrandr --gnome-overlap-status`, whose first line is a token for
+scripts and for `warandr` — `agreed`, `available` or `unavailable` — followed by
+what is behind it. It reads the Shell's public version property and a bus name
+and *nothing* out of `gnome-shell`: a GUI runs it at startup, and answering
+"would this work?" must not cost a walk of Mutter's heap. It also answers where
+there is no session to ask at all — `unavailable`, the reason, and the record
+read back — for the same reason `--gnome-overlap-forget` does.
+
+```console
+$ wxrandr --gnome-overlap-status
+agreed
+shell: 50.1
+extension: running
+agreed on: 2026-09-06T09:12:44Z
+agreed for: GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 128 bytes)
+agreed by: wxrandr --gnome-overlap-allow
+file: /home/test/.config/fuckwayland/overlap-consent.json
+```
+
+None of the three turns the flag on. `--unsafe-gnome-overlap` is still typed on
+every invocation that uses it, and an overlapping layout without it is still
+GNOME's refusal, agreement or no agreement.
 
 #### Every guard, and what it catches
 
@@ -471,12 +578,19 @@ extension refuses on its own account if it somehow runs there.
 
 #### What it deliberately does not have
 
-No `warandr` button and no GUI anywhere. No environment variable and no config
-file, so a layout script cannot acquire this by accident. No `Restore` method
-on the extension, because the undo is a plain validated `wxrandr` line that
-does not depend on the dangerous half. No reconfiguration beyond positions. No
-place in the `.deb`, and its own installer and its own enable step. No support
-for GNOME 47 to 49 or 51.
+No environment variable, so a layout script cannot acquire this by accident, and
+no setting that turns it on: the recorded agreement makes the tool quieter and
+never more capable. No `Restore` method on the extension, because the undo is a
+plain validated `wxrandr` line that does not depend on the dangerous half. No
+reconfiguration beyond positions. No place in the `.deb`, and its own installer
+and its own enable step. No support for GNOME 47 to 49 or 51.
+
+`warandr` has no button for it either. What it has is a dialog, the first time
+somebody drags two monitors into an overlap and presses Apply on a GNOME where
+the extension is installed — the explanation at the moment it is about something
+the user has actually asked for, with a box that records the same agreement this
+section describes. [WARANDR.md § Overlapping monitors on
+GNOME](WARANDR.md#overlapping-monitors-on-gnome) is that half.
 
 #### What it was measured doing
 

@@ -514,6 +514,7 @@ class Application:
                           "forced": self.backend.forced,
                           "indicator": self.backend.indicator(),
                           "overlap": self.backend.overlap_note(),
+                          "overlap_state": self.backend.overlap_state(),
                           "word": self.backend.run_word,
                           "available": {k: v["available"]
                                         for k, v in self.backends.items()},
@@ -668,7 +669,12 @@ class Application:
         _dump("status", {"text": self.status_text()})
 
     def command_text(self):
-        return self.layout.command_line(self.backend.run_word)
+        # run_word_for, not run_word: on GNOME an overlapping layout is applied
+        # with --unsafe-gnome-overlap, and the status bar's promise is that it
+        # shows the command Apply runs, flag included.  A saved script still
+        # gets the bare word (do_properties, do_save): a layout script must run
+        # on any desktop, and that flag means nothing off GNOME.
+        return self.layout.command_line(self.backend.run_word_for(self.layout))
 
     def overlap_message(self, name):
         """What a drop that landed `name` on top of another output means on the backend in use — the status
@@ -1175,6 +1181,89 @@ class Application:
         self.show_status(text)
         _dump("saved", {"path": path})
 
+    # -- the one question about an overlapping layout -------------------------
+    #
+    # On GNOME, and only there, an overlapping layout is applied by a route that
+    # writes inside gnome-shell (see docs/WXRANDR.md).  That is worth being
+    # asked about -- once.  A dialog at the moment of the first Apply is where
+    # the question belongs: it is when the user has actually asked for the thing,
+    # and it is the only moment at which the explanation is about something they
+    # want rather than something they might one day want.  A preference buried in
+    # a menu would be read by nobody and found by nobody.
+    #
+    # The box on it is what makes it once rather than every time.  It is not
+    # ticked by default: agreeing has to be a second, deliberate act, and a
+    # single overlapping layout without agreeing to anything stays possible.
+
+    def overlap_shared(self, layout=None):
+        """"DP-1 and DP-2 share 1280x720 at +320+180", per overlapping pair --
+        the same sentence a saved script carries in its header.  `layout`
+        defaults to the one on screen; the message after an Apply passes the one
+        that was applied, which is not the same thing if something was loaded
+        while the worker thread was busy."""
+        layout = layout or self.layout
+        out = []
+        for a, b in layout.overlaps():
+            x, y, w, h = layout.shared_region(a, b)
+            out.append("%s and %s share %dx%d at +%d+%d" % (a, b, w, h, x, y))
+        return out
+
+    def _ask_overlap(self):
+        """`(apply it, remember the agreement)`.  Cancel is the default response:
+        Return on a dialog nobody read must not be a yes."""
+        d = Gtk.MessageDialog(transient_for=self.window, modal=True,
+                              message_type=Gtk.MessageType.WARNING,
+                              buttons=Gtk.ButtonsType.NONE,
+                              text="GNOME will not place these monitors.")
+        d.set_title("Overlapping monitors")
+        d.format_secondary_text(
+            "%s.\n\n"
+            "GNOME's Mutter refuses monitors that are not edge-adjacent, so this "
+            "layout cannot be applied the way every other one is.\n\n"
+            "warandr can apply it anyway, through the fuckwayland-overlap GNOME "
+            "Shell extension: it writes the two numbers that are a monitor's "
+            "position inside gnome-shell -- 8 bytes per monitor -- and then asks "
+            "Mutter to apply the result.\n\n"
+            "The risk is that those 8 bytes go where this build of libmutter keeps "
+            "a position. The extension re-checks that this really is such a build "
+            "before every write, and refuses if anything disagrees. If all of that "
+            "were wrong anyway, gnome-shell would crash -- and on Wayland "
+            "gnome-shell is the session.\n\n"
+            "Nothing is saved: the layout is gone at the next login."
+            % "; ".join(self.overlap_shared()))
+        cancel = d.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+        d.add_button("Apply _anyway", Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.CANCEL)
+        cancel.grab_focus()
+        check = Gtk.CheckButton(label="Do not ask again on this GNOME")
+        note = Gtk.Label(label="The checks run on every apply, agreed or not. A GNOME upgrade "
+                               "withdraws this by itself,\nand wxrandr --gnome-overlap-forget "
+                               "withdraws it now.")
+        note.set_xalign(0.0)
+        note.set_margin_start(24)
+        for w in (check, note):
+            d.get_message_area().pack_start(w, False, False, 0)
+        d.show_all()
+        GLib.idle_add(self._dump_overlap_dialog, d, check)
+        r = d.run()
+        remember = check.get_active()
+        d.destroy()
+        return r == Gtk.ResponseType.OK, remember
+
+    def _dump_overlap_dialog(self, dialog, check, attempt=0):
+        """Test hook, the same shape as the layout dump: root-window pixels for
+        the two buttons and the box, so a driver clicks the real thing."""
+        if not DUMP:
+            return False
+        spots = {"check": _root_origin(check)}
+        for w in dialog.get_action_area().get_children():
+            spots[w.get_label().replace("_", "").lower()] = _root_origin(w)
+        if any(v is None for v in spots.values()) and attempt < 40:
+            GLib.timeout_add(50, self._dump_overlap_dialog, dialog, check, attempt + 1)
+            return False
+        _dump("overlap_dialog", {"spots": spots, "shared": self.overlap_shared()})
+        return False
+
     def do_apply(self):
         if self._busy or self.layout is None:
             return
@@ -1185,9 +1274,17 @@ class Application:
                      Gtk.ButtonsType.YES_NO)
             if r != Gtk.ResponseType.YES:
                 return
+        remember = False
+        if self.backend.overlap_needs_asking(self.layout):
+            go, remember = self._ask_overlap()
+            _dump("overlap_answer", {"apply": go, "remember": remember})
+            if not go:
+                self.show_message("not applied")
+                return
         self._set_busy(True)
         self.show_status("running: " + self.command_text())
         layout = self.layout
+        overlapping = bool(self.backend.overlap_flag(layout))
 
         def work():
             # `except Exception`, for the same reason as the reader thread above: whatever this one fails to
@@ -1202,7 +1299,16 @@ class Application:
                     fresh = self.backend.snapshot()
                 except Exception as e:
                     exc = e
-            GLib.idle_add(self._applied, layout, rc, out, err, fresh, exc)
+            agreed = None
+            if rc == 0 and remember:
+                # After the apply, never before it.  If this write were the one
+                # that ended the session, the honest state to wake up in is one
+                # where nothing was agreed and the question is asked again.
+                try:
+                    agreed = self.backend.allow_overlap()
+                except Exception as e:              # noqa: BLE001 - same reason as above
+                    agreed = (False, str(e))
+            GLib.idle_add(self._applied, layout, rc, out, err, fresh, exc, overlapping, agreed)
         threading.Thread(target=work, name="warandr-apply", daemon=True).start()
 
     def _set_busy(self, busy):
@@ -1210,10 +1316,11 @@ class Application:
         self.toolbuttons["apply"].set_sensitive(not busy)
         self.apply_item.set_sensitive(not busy)
 
-    def _applied(self, layout, rc, out, err, fresh, exc):
+    def _applied(self, layout, rc, out, err, fresh, exc, overlapping=False, agreed=None):
         """Back on the main loop with the worker's result."""
         self._set_busy(False)
-        _dump("applied", {"rc": rc, "stderr": err})
+        _dump("applied", {"rc": rc, "stderr": err, "overlap": overlapping,
+                          "agreed": list(agreed) if agreed else None})
         if rc != 0 or fresh is None:
             self.redraw()                # the edited layout stays
             _msg(self.window, Gtk.MessageType.ERROR,
@@ -1225,7 +1332,25 @@ class Application:
         fresh.template = layout.template
         if self.layout is layout:        # nothing was loaded meanwhile
             self.set_layout(fresh)
+        if agreed is not None:
+            # the status bar already says which backend is in use; this is the
+            # other unusual thing the window has just done, said out loud
+            self._refresh_backend()
+        if overlapping:
+            self.show_message(self._overlap_applied_message(layout, agreed))
         return False
+
+    def _overlap_applied_message(self, layout, agreed):
+        """What the status bar says after warandr has done the unusual thing:
+        that it was unusual, that it is temporary, and what became of the box."""
+        text = ("applied through the fuckwayland-overlap extension a layout GNOME "
+                "refuses (%s); not saved, gone at the next login"
+                % "; ".join(self.overlap_shared(layout)))
+        if agreed is None:
+            return text
+        ok, why = agreed
+        return text + (" - agreed, warandr will not ask again on this GNOME" if ok
+                       else " - but the agreement was NOT recorded: %s" % (why or "?"))
 
     def do_properties(self):
         if self.layout is None:
