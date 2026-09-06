@@ -28,14 +28,40 @@ OPT = re.compile(r"""["'](--[a-z][a-z0-9-]{2,})["']""")
 
 
 def options_in_code(tool):
-    """Every long option spelled in the package's own source."""
+    """Every long option spelled in the package's own code.
+
+    Comments and docstrings are stripped first, because they discuss options
+    rather than declaring them: one of them explains what happens to
+    `--anything`, which is prose about unknown options and not an option. A
+    checker that reports one thing nobody can act on gets ignored, and then it
+    reports nothing."""
+    import io
+    import tokenize
     found = set()
     d = os.path.join(ROOT, tool)
     for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
         if not name.endswith(".py"):
             continue
         with open(os.path.join(d, name), encoding="utf-8") as f:
-            found |= set(OPT.findall(f.read()))
+            text = f.read()
+        code = []
+        try:
+            prev = tokenize.INDENT
+            for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+                if tok.type == tokenize.COMMENT:
+                    continue
+                # a string alone on its line is a docstring, not a value
+                if (tok.type == tokenize.STRING
+                        and prev in (tokenize.INDENT, tokenize.NEWLINE,
+                                     tokenize.NL, tokenize.DEDENT)):
+                    continue
+                if tok.type not in (tokenize.NL, tokenize.NEWLINE,
+                                    tokenize.INDENT, tokenize.DEDENT):
+                    prev = tok.type
+                code.append(tok.string)
+        except (tokenize.TokenError, IndentationError):
+            code = [text]                       # unparsable: fall back to all of it
+        found |= set(OPT.findall(" ".join(code)))
     return found
 
 
