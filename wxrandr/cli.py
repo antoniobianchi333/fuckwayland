@@ -11,7 +11,7 @@ Byte-parity notes, against xrandr 1.5.4:
   silently like the real thing.
 - wxrandr's own options stay out of the usage text, so `--help` is still
   xrandr's bytes: `--persistent`, `--backend NAME`, `--print-backend`,
-  `--backends`.
+  `--backends`, `--unsafe-gnome-overlap`.
 """
 
 import math
@@ -20,8 +20,15 @@ import re
 import sys
 
 from fwcommon import passthrough, stdio
-from wxrandr import core
+from wxrandr import core, gnome_overlap
 from wxrandr.core import ArgErr, Fatal, Stanza
+
+_PERSIST_CONFLICT = (
+    "--persistent and %s cannot be used together: %s applies a layout GNOME's "
+    "own validator refuses, and the file --persistent saves to is read back "
+    "through that same validator -- one entry it refuses discards the whole "
+    "file, every other saved monitor arrangement with it, at every boot\n"
+    % (gnome_overlap.FLAG, gnome_overlap.FLAG))
 
 USAGE = """usage: xrandr [options]
   where options are:
@@ -105,6 +112,7 @@ class Opts:
         self.dpi = None             # float or output name
         self.noprimary = False
         self.persistent = False     # --persistent (Mutter: write monitors.xml)
+        self.overlap = False        # --unsafe-gnome-overlap (see wxrandr/gnome_overlap.py)
         self.backend = None         # --backend NAME (None: auto)
         self.print_backend = False  # --print-backend
         self.list_backends = False  # --backends
@@ -400,7 +408,18 @@ def parse(argv: list) -> Opts:
         elif a == "--persistent":
             # wxrandr extension (not in xrandr's usage): on Mutter apply with
             # method 2 so the layout lands in ~/.config/monitors.xml
+            if o.overlap:
+                raise ArgErr(_PERSIST_CONFLICT)
             o.persistent = True
+        elif a == gnome_overlap.FLAG:
+            # wxrandr extension, off by default, and the one flag in this tree
+            # that can end a session.  It does nothing unless the layout being
+            # applied is one GNOME's own validator refuses; see
+            # wxrandr/gnome_overlap.py for what it then does and why there is no
+            # confirmation prompt.
+            if o.persistent:
+                raise ArgErr(_PERSIST_CONFLICT)
+            o.overlap = True
         elif a == "--backends":
             # wxrandr extension: one line per backend with its availability
             o.list_backends = True
@@ -797,6 +816,10 @@ class Session:
     # other way (the backend tests stub __init__ with their own fake) is still closeable
     impl = None
     probes: dict = {}
+    #: --unsafe-gnome-overlap, and never anything else: no environment variable
+    #: sets it, no default turns it on, and a Session built any other way (the
+    #: backend tests stub __init__) still reads False here.
+    overlap = False
 
     def __init__(self, forced=None):
         from fwcommon import session as wsession
@@ -833,6 +856,8 @@ class Session:
                 p.close()
         self.impl = None
         self.persistent = os.environ.get("WXRANDR_PERSIST", "") not in ("", "0")
+        # No environment variable turns this on.  It is a typed flag or nothing.
+        self.overlap = False
         # OSError as well as Fatal: WlConn's connect() can raise ConnectionRefusedError on a stale-but-present
         # socket, and sway IPC can drop mid-handshake — both must read as "Can't open display", never a
         # traceback.
@@ -920,6 +945,15 @@ class Session:
             probe.close()
 
     def apply(self, targets):
+        # --unsafe-gnome-overlap is not an apply of its own: it is asked first,
+        # and answers None for every layout GNOME would accept -- which is every
+        # layout but the one the flag exists for.  The ordinary path below is
+        # what actually runs unless a user typed that flag AND asked for
+        # something Mutter refuses.
+        if self.overlap and self.backend == "mutter":
+            fresh = self.impl.apply_overlap(self.state, targets)
+            if fresh is not None:
+                return fresh
         return self.impl.apply(self.state, targets, self.persistent)
 
     @property
@@ -1150,6 +1184,10 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
         if s.primary and any(t.name == s.name and t.stanza is s for t in targets):
             sess.state.primary = s.name
     if opts.dryrun:
+        if opts.overlap and sess.backend == "mutter" and sess.impl.overlap_dryrun(sess.state, targets):
+            sess.state.primary = primary_before
+            sess.state.save()
+            return outputs
         # what a verify can promise is the backend's business: Mutter really validates, with method 0, the exact
         # call a real run would make (adjacency, overlap, primary, scales), and a rejection is the same one-line
         # `xrandr: <mutter message>` the apply would give; KWin has no such request and re-runs the plan
@@ -1272,6 +1310,12 @@ def _run(argv) -> int:
 def _run_session(sess: Session, opts: Opts) -> int:
     if opts.persistent:
         sess.persistent = True
+    if opts.overlap:
+        if sess.backend != "mutter":
+            raise Fatal("%s only means anything on GNOME; this session is %s, "
+                        "which places overlapping monitors without it\n"
+                        % (gnome_overlap.FLAG, sess.backend))
+        sess.overlap = True
     if opts.screen > 0:
         sys.stderr.write("Invalid screen number %d (display has 1)\n" % opts.screen)
         return 1

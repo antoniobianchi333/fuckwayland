@@ -63,7 +63,7 @@ import struct
 
 from fwcommon import session as wsession
 from fwcommon.dbus_mini import Bus, DBusError, Variant
-from wxrandr import core, monitors_xml
+from wxrandr import core, gnome_overlap, monitors_xml
 from wxrandr.core import Fatal, Mode, OutputState, round_half_away, warn  # noqa: F401
 
 DEST = "org.gnome.Mutter.DisplayConfig"
@@ -85,6 +85,8 @@ BACKUP_NOTE = "the saved display configuration as it was is kept in %s\n"
 # saved monitor set with it.  The layout is valid, Mutter accepted it, Mutter wrote it;
 # it is the meaning of the numbers that changed.  Nothing on either side can prevent
 # that, so the answer is to say so at the one moment the user is choosing to save.
+NOTHING_TO_DO = ("--unsafe-gnome-overlap: the monitors are already where this asks "
+                 "for them; nothing was written\n")
 LAYOUT_MODE_WARNING = (
     "saved as physical-pixel positions (this session has Fractional Scaling off): if "
     "it is ever turned on, a scaled output changes width, this layout stops being "
@@ -635,6 +637,117 @@ class MutterOutputs:
             rects.append((p["x"], p["y"])
                          + logical_size(w, h, tf, p["scale"], LAYOUT_LOGICAL))
         return bool(monitors_xml.fault(rects))
+
+    # -- the overlap route ---------------------------------------------------
+    #
+    # Everything below runs only for `wxrandr --unsafe-gnome-overlap`, and only
+    # for a layout Mutter's own validator refuses.  The ordinary apply never
+    # reaches it, does not import it and cannot enter it: `overlap_route`
+    # returns None for every layout GNOME accepts, and `Session.apply` then
+    # takes the same DisplayConfig path it always did.  See
+    # wxrandr/gnome_overlap.py.
+
+    def current_groups(self) -> list:
+        """The running layout as connector groups, from the snapshot -- what the
+        extension is told to expect, and what the printed undo command is built
+        from."""
+        return sorted(({"connectors": sorted(c for c, _mid, _us in entry[5]),
+                        "x": int(entry[0]), "y": int(entry[1])}
+                       for entry in self.current_config),
+                      key=lambda g: (g["x"], g["y"], g["connectors"]))
+
+    def overlap_route(self, state: core.State, targets: list):
+        """`(plan, fault)` when this layout is one Mutter refuses on geometry, or
+        None when Mutter would take it -- in which case nothing unsafe is needed
+        and nothing unsafe happens.  Mutter's own rules, in Mutter's order
+        (monitors_xml.fault, the verifier this tree already had)."""
+        plan = self.plan(state, targets)
+        dims = {}
+        for t in targets:
+            if not t.enabled:
+                continue
+            m = self.resolve_mode(t, state)
+            dims[t.name] = logical_size(m.w, m.h, t.sway_tf,
+                                        self._scale_for(t, m), self.layout_mode)
+        rects = gnome_overlap.rects(plan, dims)
+        fault = monitors_xml.fault(rects) if rects else None
+        if fault is None:
+            return None
+        return plan, fault
+
+    def _overlap_client(self, plan):
+        """The checks that happen out here, before the extension is asked
+        anything: is this a GNOME whose private layout has been measured, is the
+        extension actually running, and is a position really the only thing this
+        invocation changes.  Returns `(client, shell_version, want, expect)`."""
+        ov = gnome_overlap.Overlap(self.bus)
+        version = ov.shell_version()
+        why = gnome_overlap.unsupported_reason(version)
+        if why:
+            raise Fatal("%s: %s.  Nothing was changed; this layout needs a "
+                        "compositor that will place it (KDE, wlroots and X all "
+                        "do).\n" % (gnome_overlap.FLAG, why))
+        if not gnome_overlap.only_positions_differ(plan, self.current_config):
+            raise Fatal("%s: this invocation changes more than where the monitors "
+                        "are (a mode, a scale, a rotation, the primary or which "
+                        "outputs mirror). That has to go through GNOME's own "
+                        "configuration first: apply it without this flag, then "
+                        "move the monitors with it.\n" % gnome_overlap.FLAG)
+        if not ov.running():
+            raise Fatal("%s: %s" % (gnome_overlap.FLAG, gnome_overlap.INSTALL_HINT))
+        return ov, version, gnome_overlap.groups(plan), self.current_groups()
+
+    def overlap_dryrun(self, state: core.State, targets: list) -> bool:
+        """--dryrun --unsafe-gnome-overlap: print what a real run would do and
+        run every guard inside the extension, writing nothing at all.  False
+        when Mutter would accept the layout, so the ordinary dryrun answers."""
+        route = self.overlap_route(state, targets)
+        if route is None:
+            return False
+        plan, fault = route
+        ov, version, want, expect = self._overlap_client(plan)
+        moves = gnome_overlap.moves_text(expect, want)
+        if not moves:
+            warn(NOTHING_TO_DO)
+            return True
+        core.warn_bare(gnome_overlap.warning(
+            version, moves, gnome_overlap.undo_command(expect)))
+        warn("GNOME's rule this breaks: %s\n" % fault)
+        reply = ov.probe(self.layout_mode, expect)
+        if not reply.get("ok"):
+            raise Fatal("%s: %s" % (gnome_overlap.FLAG,
+                                    gnome_overlap.refusal_text(reply)))
+        for check in reply.get("checks") or []:
+            warn("overlap check %s: %s\n" % (check.get("name"), check.get("detail")))
+        warn("dryrun: nothing was written\n")
+        return True
+
+    def apply_overlap(self, state: core.State, targets: list):
+        """Apply a layout GNOME refuses, through the overlap extension.  None
+        when Mutter would accept the layout: the caller then applies it the
+        ordinary way, which is what happens for every layout but this one."""
+        route = self.overlap_route(state, targets)
+        if route is None:
+            return None
+        plan, fault = route
+        ov, version, want, expect = self._overlap_client(plan)
+        moves = gnome_overlap.moves_text(expect, want)
+        if not moves:
+            # already where it was asked to be: nothing to write, and so
+            # nothing written.  The unchanged temporary apply above does the
+            # same for every ordinary layout.
+            warn(NOTHING_TO_DO)
+            return self.snapshot(state)
+        core.warn_bare(gnome_overlap.warning(
+            version, moves, gnome_overlap.undo_command(expect)))
+        warn("GNOME's rule this breaks: %s\n" % fault)
+        core.record_lastmodes(state, targets)
+        reply = ov.apply(self.layout_mode, expect, want)
+        if not reply.get("ok"):
+            raise Fatal("%s: %s" % (gnome_overlap.FLAG,
+                                    gnome_overlap.refusal_text(reply)))
+        core.warn_bare(gnome_overlap.applied_text(reply))
+        return self.snapshot(state)
 
     def apply(self, state: core.State, targets: list, persistent: bool = False) -> list:
         """One ApplyMonitorsConfig for the whole layout, then wait for MonitorsChanged (<= 5 s) and return the

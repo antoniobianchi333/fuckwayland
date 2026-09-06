@@ -627,6 +627,21 @@ file back through the same validator and throws away the **whole file** when any
 of it fails, so one bad entry silently takes every other monitor arrangement you had
 saved down with it, at every boot, and the only trace is a line in the system journal.
 
+There is one way through, and it is off, it is not in the package, and it is not in
+this window. `wxrandr --unsafe-gnome-overlap` places the layout anyway, by writing
+eight bytes per monitor into the running `gnome-shell` through a second Shell
+extension you install by hand. It does nothing unless GNOME refuses the layout. It
+re-checks the running Mutter before every write and refuses on any build it has not
+been measured on, which today means GNOME 46 and GNOME 50 and nothing else. It saves
+nothing, so the layout goes at the next login and `~/.config/monitors.xml` is never
+written on that path. It prints what it is about to do and the exact command that
+undoes it. And if every one of those checks is wrong anyway, `gnome-shell` dies, and
+on Wayland `gnome-shell` is the session, so every program running in it dies too.
+That is the honest price, and this is the only thing here that can charge it. The
+long form, with each guard, what it was measured catching, and what risk is left, is
+[docs/WXRANDR.md § --unsafe-gnome-overlap](docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
+If you are not sure you want it, you do not.
+
 One more GNOME habit worth knowing: an Apply that switches a monitor on or off makes
 the desktop move keyboard focus off the window, so click it again before the next
 Ctrl+S. And a monitor plugged in while the window is open shows up after New
