@@ -48,6 +48,32 @@ the point, not an afterthought. House rules per Technical.md.
   kscreen-doctor and the System Settings KCM take. Plasma 5.27 (Ubuntu 24.04)
   through 6.7+, no extension, no root.
 
+## xrandr options that mean nothing here
+
+The usage text is xrandr's, byte for byte, so it lists options that describe an X
+server rather than a compositor. They are accepted rather than refused, because a
+script written for an X11 machine should keep working, and what each one does is:
+
+| option | what happens |
+|---|---|
+| `--nograb` | accepted, ignored. It asks the X server not to grab, and there is no X server |
+| `--screen N` | accepted, ignored. Wayland has one screen and it is 0 |
+| `--display D`, `-d D` | the compositor to talk to, not an X display: a Wayland socket name such as `wayland-1`. On an X11 session it is handed to the real xrandr and means what it always meant |
+| `--q12`, `--q1` | accepted, ignored. They pick an X extension version to speak |
+| `--fb WxH` | accepted, ignored: the desktop size follows the monitors, and no compositor lets a client set it directly |
+| `--fbmm WxH` | accepted, ignored, as above but in millimetres |
+| `--dpi N` | accepted, ignored. Scaling is `--scale` and the compositor's own factor |
+| `--crtc N` | accepted, ignored, and still refused before `--output` as xrandr refuses it. A CRTC is a piece of X server bookkeeping |
+| `--prop`, `--properties` | **does something**: adds each output's properties under it, the way xrandr does |
+| `--delmonitor NAME` | accepted, ignored: the monitor list is the compositor's and cannot be edited |
+| `--orientation R` | xrandr's own spelling of `--rotate`, taken as an alias for it |
+| `--refresh N` | xrandr's own spelling of `--rate`, taken as an alias for it |
+| `--panning` | parsed and refused by name, because a compositor that could pan would have to be asked for it and none of the four can |
+
+Ignored means exactly that: the option is consumed, nothing changes, and the rest of
+the command runs. Nothing here warns about them, because a script that carries
+`--nograb` is not asking a question.
+
 ## Backend selection
 
 Precedence, one rule: **`--backend NAME` beats `WXRANDR_BACKEND=NAME` beats

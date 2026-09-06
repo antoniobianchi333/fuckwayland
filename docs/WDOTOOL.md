@@ -43,6 +43,21 @@ interface.
   is the contract, including the four "not us" guards and what stays ours (`keys`,
   `__keymap`, `--layout`, `--vkbd`).
 
+## `click --repeat`
+
+`click --repeat N` sends the button N times rather than once, and `--repeat-delay MS`
+is the gap between them, both spelled and defaulted as xdotool spells and defaults
+them. It is the one option of `click` that is easy to miss, because a double click is
+what people reach for it for:
+
+```console
+$ wdotool click --repeat 2 1        # a double click, left button
+$ wdotool click --repeat 3 --repeat-delay 120 1
+```
+
+The gap is real time, so a repeat is not instantaneous, and the tool waits for it
+before exiting the way xdotool does.
+
 ## Compatibility
 
 All 48 xdotool commands are implemented, with output byte-compatible against
