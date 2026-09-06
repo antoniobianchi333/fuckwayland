@@ -745,7 +745,7 @@ reader does is the `.deb`, and that was measured separately, on a fresh `resolut
 instance with two heads at 1280x800. Baseline: no tool on `PATH`, `/dev/uinput`
 `crw------- root root`, no extension, no rule.
 
-`apt-get install -y ./fuckwayland_0.3.0_all.deb` → **rc 0**, and the package's own note about
+`apt-get install -y ./fuckwayland_0.4.0_all.deb` → **rc 0**, and the package's own note about
 the one logout, the udev rule and the X11 originals. Straight away, with nothing else typed:
 `/dev/uinput` is `crw-rw----+` with `user:test:rw-` in its ACL and no reboot, and the six tools
 answer exactly what the README's *Check it worked* block says, `Server reports RandR version

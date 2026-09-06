@@ -1436,7 +1436,9 @@ class BuildScript(unittest.TestCase):
             env.pop("PYTHONPATH", None)
             p = subprocess.run([sys.executable, pyz, "--version"],
                                capture_output=True, text=True, timeout=60)
-            self.assertEqual((p.returncode, p.stdout), (0, "warandr 0.3.0\n"))
+            import warandr
+            self.assertEqual((p.returncode, p.stdout),
+                             (0, warandr.VERSION + "\n"))
             p = subprocess.run([sys.executable, pyz, "--command"], env=env,
                                capture_output=True, text=True, timeout=60)
             self.assertEqual((p.returncode, p.stdout.strip()),
