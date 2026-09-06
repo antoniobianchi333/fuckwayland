@@ -1761,7 +1761,7 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2541 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2618 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite
