@@ -544,6 +544,22 @@ def _check_force(o):
                      "build every check passed on, and forcing is what is done "
                      "when they have not\n"
                      % (gnome_overlap.ALLOW_FLAG, gnome_overlap.FORCE_FLAG))
+    if o.dryrun:
+        # Measured, on a real GNOME 51: a forced --dryrun ended the session.
+        # Forcing selects a description by its size, that description names the
+        # library it was built for, GIRepository cannot open that library on
+        # another build, and gjs aborts instead of raising -- so gnome-shell
+        # dies before anything of ours decides whether to write. A dry run is
+        # asked for by somebody being careful, and it cannot be made safe here
+        # while the description carries a library name, so it is refused rather
+        # than offered and hoped for.
+        raise ArgErr("%s cannot be rehearsed with --dryrun: reaching an "
+                     "unmeasured build means loading a description built for "
+                     "another one, which can end the session before anything "
+                     "is decided, dry run or not. Run it for real, on a "
+                     "machine you can afford to lose the session on, or add "
+                     "the build first (the refusal without %s says how)\n"
+                     % (gnome_overlap.FORCE_FLAG, gnome_overlap.FORCE_FLAG))
 
 
 # -- backends -----------------------------------------------------------------
