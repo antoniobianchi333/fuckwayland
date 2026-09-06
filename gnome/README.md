@@ -188,7 +188,12 @@ measured on: it runs every guard against the running libmutter and changes nothi
 session can see, the only write anywhere being the sentinel into a throwaway
 configuration object of the extension's own making. On
 a stock 26.04 it says `FwOverlap18, MetaMonitorsConfig 80 bytes as declared`, and on
-24.04 `FwOverlap14 … 72 bytes`.
+24.04 `FwOverlap14 … 72 bytes`. Those two numbers held across every update either
+release can deliver today — eight version pairs, seven distinct libmutter builds,
+including 26.04's `-proposed` pair and the GA library under a newer shell — so an
+ordinary update is not what this breaks on; a release upgrade is, and there it refuses
+at `shell-version` ([docs/WXRANDR.md § What ordinary updates actually
+do](../docs/WXRANDR.md#what-ordinary-updates-actually-do)).
 
 Once it is installed, `wxrandr` prints the whole risk paragraph before every
 overlapping apply until it is agreed to, once, for the build the checks passed on
@@ -198,8 +203,12 @@ applied. The agreement covers the *risk* and never the *checking*: every check i
 extension runs on every call whatever is recorded, which is
 [docs/WXRANDR.md § Agreeing once](../docs/WXRANDR.md#agreeing-once-and-withdrawing).
 The extension's answer carries `instance_size`, the `MetaMonitorsConfig` size the
-struct-size check just read out of this build's GType registry, so what is agreed to is
-what was measured rather than a number written somewhere else.
+struct-size check just read out of this build's GType registry, and `libmutter_build`,
+the GNU build id of the library it ran them against, so what is agreed to is what was
+measured rather than a number written somewhere else. The build id is in there because
+`ShellVersion` cannot see an `apt upgrade` that replaces libmutter alone, which Ubuntu
+does inside a stable release: with it, the first overlapping run after such an update
+says which build replaced which and asks in full again next time.
 
 To get rid of it from a text console, when there is no desktop to do it from:
 `gnome-extensions disable fuckwayland-overlap@fuckwayland` works from a real login

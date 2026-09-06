@@ -744,6 +744,9 @@ class MutterOutputs:
                                     gnome_overlap.refusal_text(reply)))
         for check in reply.get("checks") or []:
             warn("overlap check %s: %s\n" % (check.get("name"), check.get("detail")))
+        notes = gnome_overlap.notes_text(reply)
+        if notes:
+            warn(notes)
         warn("dryrun: nothing was written\n")
         return True
 
@@ -781,6 +784,9 @@ class MutterOutputs:
         if not reply.get("ok"):
             raise Fatal("%s: %s" % (gnome_overlap.FLAG,
                                     gnome_overlap.refusal_text(reply)))
+        notes = gnome_overlap.notes_text(reply)
+        if notes:
+            warn(notes)
         core.warn_bare(gnome_overlap.applied_text(reply, quiet=quiet))
         # The audit the version string alone could not do: libmutter's
         # generation and MetaMonitorsConfig's size, as the checks have just

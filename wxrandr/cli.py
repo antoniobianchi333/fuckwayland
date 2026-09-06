@@ -931,6 +931,7 @@ def _do_overlap_allow(sess) -> int:
         raise Fatal("%s: %s" % (flag, gnome_overlap.refusal_text(reply)))
     for check in reply.get("checks") or []:
         print("check %s: %s" % (check.get("name"), check.get("detail")))
+    print(gnome_overlap.notes_text(reply), end="")
     facts = gnome_overlap.facts(reply)
     if not facts["shell"] or facts["struct_size"] is None:
         raise Fatal("%s: the extension did not say which build it verified "

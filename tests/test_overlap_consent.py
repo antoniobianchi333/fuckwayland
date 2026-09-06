@@ -137,6 +137,27 @@ class Recording(ConsentCase):
         self.assertEqual(rec["how"], "wxrandr " + ALLOW)
         self.assertRegex(rec["agreed"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
+    def test_the_library_it_agrees_to_is_the_one_the_checks_ran_against(self):
+        """Four facts, not three: the version string cannot see a libmutter
+        swapped under it, and Ubuntu swaps one inside a stable release."""
+        self.mock.overlap.build_id = "c0ffee" + "0" * 34
+        out = self.agree()
+        with open(self.path()) as fh:
+            rec = json.load(fh)
+        self.assertEqual(rec["libmutter_build"], "c0ffee" + "0" * 34)
+        # and it is in the words the user is shown before it is written
+        self.assertIn("build c0ffee000000", out)
+
+    def test_a_library_that_will_not_say_its_build_is_still_agreeable(self):
+        """The build id is read out of an ELF note.  A library without one is
+        odd, not dangerous, and this feature does not refuse on odd."""
+        self.mock.overlap.build_id = None
+        out = self.agree()
+        with open(self.path()) as fh:
+            rec = json.load(fh)
+        self.assertIsNone(rec["libmutter_build"])
+        self.assertIn("libmutter-18,", out)
+
     def test_the_size_is_read_back_from_the_check_when_the_field_is_missing(self):
         """An extension from before the field existed still reports the size in
         the check that measured it, and that is a number this may record."""
@@ -157,7 +178,8 @@ class Recording(ConsentCase):
                      "bounded-read", "public-view"):
             self.assertIn("check %s: " % name, out)
         self.assertIn("Agreeing to --unsafe-gnome-overlap on GNOME Shell 50.1 "
-                      "(libmutter-18, MetaMonitorsConfig 80 bytes).", out)
+                      "(libmutter-18 build 0f3a1b2c3d4e, MetaMonitorsConfig 80 "
+                      "bytes).", out)
         self.assertIn("What it risks:", out)
         self.assertIn("gnome-shell is the\n                        session", out)
         self.assertIn("What is agreed:", out)
@@ -307,6 +329,45 @@ class ADifferentBuild(ConsentCase):
         self.mock.overlap.instance_size = self.mock.overlap.declared_size = 96
         code, out, err = self.run_cli(FLAG, *MOVE)
         self.assertTrue(err.startswith(WARNING), err[:300])
+
+    def test_a_new_libmutter_under_the_same_shell_withdraws_it(self):
+        """The update a user actually receives.
+
+        `ShellVersion` cannot see this: Ubuntu 24.04 ships mutter 46.2 under
+        GNOME Shell 46.0, and 46.0 -> 46.2 under one unchanged shell version was
+        measured applying with all six checks green.  Nothing about the layout
+        moved -- four libmutter builds on each release, one layout -- so this is
+        not a danger signal and does not refuse anything.  What it is is the end
+        of what was agreed to, and the agreement text promises exactly this:
+        "stops applying the moment any of that changes"."""
+        self.record(shell="50.1", libmutter=18, libmutter_build="a" * 40)
+        self.mock.overlap.build_id = "b" * 40
+        code, out, err = self.run_cli(FLAG, *MOVE)
+        self.assertEqual(code, 0, err)
+        self.assertIn("libmutter build bbbbbbbbbbbb, not aaaaaaaaaaaa", err)
+        self.assertIn("the next run will ask again", err)
+        self.assertFalse(os.path.exists(self.path()))
+        # and the next run does ask, in full
+        code, out, err = self.run_cli(FLAG, *MOVE)
+        self.assertTrue(err.startswith(WARNING), err[:300])
+
+    def test_the_same_library_is_not_a_difference(self):
+        self.record(shell="50.1", libmutter=18,
+                    libmutter_build=self.mock.overlap.build_id)
+        code, out, err = self.run_cli(FLAG, *MOVE)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("not the one that was agreed to", err)
+        self.assertTrue(os.path.exists(self.path()))
+
+    def test_an_agreement_from_before_the_build_was_recorded_still_stands(self):
+        """A file written by an older wxrandr names no build.  That is not a
+        difference, because it is not a disagreement: only two things that both
+        say something can differ."""
+        self.record(shell="50.1", libmutter=18, struct_size=80)
+        code, out, err = self.run_cli(FLAG, *MOVE)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("not the one that was agreed to", err)
+        self.assertTrue(os.path.exists(self.path()))
 
     def test_a_moved_generation_withdraws_it_too(self):
         self.record(shell="50.1", libmutter=18)
@@ -523,8 +584,8 @@ class Status(ConsentCase):
         self.agree()
         lines = self.lines()
         self.assertEqual(lines[0], "agreed")
-        self.assertIn("agreed for: GNOME Shell 50.1 (libmutter-18, "
-                      "MetaMonitorsConfig 80 bytes)", lines)
+        self.assertIn("agreed for: GNOME Shell 50.1 (libmutter-18 build "
+                      "0f3a1b2c3d4e, MetaMonitorsConfig 80 bytes)", lines)
         self.assertIn("agreed by: wxrandr --gnome-overlap-allow", lines)
 
     def test_available_again_when_the_agreement_is_for_another_build(self):

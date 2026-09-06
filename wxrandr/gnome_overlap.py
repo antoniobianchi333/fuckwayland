@@ -291,6 +291,17 @@ def refusal_text(reply):
             % (check, reply.get("reason") or "no reason given"))
 
 
+def notes_text(reply):
+    """Anything the extension noticed that decides nothing.
+
+    There is exactly one today and it is worth its own line: libmutter replaced
+    on disk under a live session, which `apt upgrade` does routinely and which
+    nothing in a session can otherwise see.  Notes are printed whether or not an
+    agreement is recorded, because unlike the paragraph they are news rather
+    than reassurance."""
+    return "".join("note: %s\n" % n for n in (reply.get("notes") or []) if n)
+
+
 def applied_text(reply, quiet=False):
     """What to print after a successful apply: what Mutter's validator said (a
     positive control that the write landed on the field it reads), and the proof
@@ -385,13 +396,29 @@ def facts(reply):
                     size = int(m.group(1))
     return {"shell": str(reply.get("shell") or ""),
             "libmutter": reply.get("libmutter"),
-            "struct_size": int(size) if size else None}
+            "struct_size": int(size) if size else None,
+            # The GNU build id of the libmutter this session has mapped, as the
+            # extension read it out of the file the mapping came from.  It is
+            # here because the GNOME Shell version string demonstrably cannot
+            # see a library change: Ubuntu 24.04 carries mutter 46.2 under shell
+            # 46.0, and 46.0 -> 46.2 under one unchanged shell version was
+            # measured applying with every check green.  An agreement that names
+            # only the version string therefore outlives the build it was given
+            # for.  None on an extension too old to report it, or on a library
+            # that would not say -- and then it is simply not compared.
+            "libmutter_build": reply.get("libmutter_build") or None}
 
 
 def describe_build(f):
-    """"GNOME Shell 50.1 (libmutter-18, MetaMonitorsConfig 80 bytes)"."""
-    return ("GNOME Shell %s (libmutter-%s, MetaMonitorsConfig %s bytes)"
+    """"GNOME Shell 50.1 (libmutter-18 build 0f3a…, MetaMonitorsConfig 80 bytes)".
+
+    The build id is in there because it is the only one of the four that moves
+    when a distribution replaces libmutter without touching the shell, which is
+    a thing that happens inside a stable release."""
+    build = f.get("libmutter_build")
+    return ("GNOME Shell %s (libmutter-%s%s, MetaMonitorsConfig %s bytes)"
             % (f.get("shell") or "?", f.get("libmutter") if f.get("libmutter") is not None else "?",
+               (" build %s" % str(build)[:12]) if build else "",
                f.get("struct_size") if f.get("struct_size") is not None else "?"))
 
 
@@ -479,6 +506,14 @@ def consent_drift(rec, f):
         want, got = rec.get(k), f.get(k)
         if want is not None and got is not None and int(want) != int(got):
             bad.append("%s %s, not %s" % (word, got, want))
+    # The one that a routine `apt upgrade` actually moves.  Measured: four
+    # libmutter builds on 24.04 and four on 26.04, every one of them a different
+    # binary and every one of them the same private layout -- so this is not a
+    # danger signal, it is the end of what was agreed to.  The next run asks in
+    # full about the build that is there now.
+    want, got = rec.get("libmutter_build"), f.get("libmutter_build")
+    if want and got and str(want) != str(got):
+        bad.append("libmutter build %s, not %s" % (str(got)[:12], str(want)[:12]))
     if not bad:
         return None
     return ("this GNOME is not the one that was agreed to (%s); the agreement "

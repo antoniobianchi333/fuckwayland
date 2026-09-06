@@ -39,7 +39,8 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 // Every decision with a right answer lives next door, in a file with no gi
 // imports, so that tests/test_gnome_overlap.py can run it under plain node.
-import {SUPPORTED, generationFor, mutterFault, modalVerdict, key, cmpRegion, le32, compare, drift} from './rules.js';
+import {SUPPORTED, generationFor, mutterFault, modalVerdict, libmutterNote} from './rules.js';
+import {parseMutterMappings, key, cmpRegion, le32, compare, drift} from './rules.js';
 
 const BUS_NAME = 'org.fuckwayland.Overlap';
 const OBJECT_PATH = '/org/fuckwayland/Overlap';
@@ -127,6 +128,101 @@ class Maps {
             found.add(m[1]);
         return [...found];
     }
+
+    // The same mappings with the rest of the line: the path, the inode the
+    // kernel says that mapping came from, and whether the file behind it has
+    // been unlinked since.  Nothing here is a guard -- the guards all run
+    // against the library in memory, which is the one being written to -- it is
+    // what lets the answer say which build that was.  See libmutterNote().
+    mutterMappings() {
+        return parseMutterMappings(this.text);
+    }
+}
+
+// -- which build of libmutter this session is running ------------------------
+//
+// Two file reads and no compositor state: the ELF note in the mapped library,
+// and the inode of the path it was mapped from.  Every failure is a null, never
+// a refusal -- this identifies the build for the answer and for the agreement
+// wxrandr records against it, and a library that will not say its build id is
+// not a library that is unsafe to write to.
+
+const ELF_PREFIX = 1 << 16;     // the GNU note lives in the first pages
+const PT_NOTE = 4;
+const NT_GNU_BUILD_ID = 3;
+
+function elfBuildId(path) {
+    let u8;
+    try {
+        const stream = Gio.File.new_for_path(path).read(null);
+        try {
+            u8 = stream.read_bytes(ELF_PREFIX, null).get_data();
+        } finally {
+            stream.close(null);
+        }
+    } catch (e) {
+        return null;
+    }
+    if (!u8 || u8.length < 64)
+        return null;
+    // ELF64, little-endian, and nothing else: this is the only shape Ubuntu
+    // ships and guessing at another one has no value here.
+    if (u8[0] !== 0x7f || u8[1] !== 0x45 || u8[2] !== 0x4c || u8[3] !== 0x46 ||
+        u8[4] !== 2 || u8[5] !== 1)
+        return null;
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const u16 = o => dv.getUint16(o, true);
+    const u32 = o => dv.getUint32(o, true);
+    const u64 = o => Number(dv.getBigUint64(o, true));
+    const inside = (o, n) => o >= 0 && n >= 0 && o + n <= u8.length;
+    const phoff = u64(0x20), phentsize = u16(0x36), phnum = u16(0x38);
+    if (!phentsize || !inside(phoff, phentsize * phnum))
+        return null;
+    for (let i = 0; i < phnum; i++) {
+        const ph = phoff + i * phentsize;
+        if (u32(ph) !== PT_NOTE)
+            continue;
+        let off = u64(ph + 8), end = off + u64(ph + 32);
+        if (!inside(off, end - off))
+            continue;
+        while (off + 12 <= end) {
+            const namesz = u32(off), descsz = u32(off + 4), type = u32(off + 8);
+            const name = off + 12, desc = name + ((namesz + 3) & ~3);
+            if (!inside(desc, descsz))
+                break;
+            if (type === NT_GNU_BUILD_ID && namesz === 4 &&
+                u8[name] === 0x47 && u8[name + 1] === 0x4e && u8[name + 2] === 0x55) {
+                let hex = '';
+                for (let j = 0; j < descsz; j++)
+                    hex += u8[desc + j].toString(16).padStart(2, '0');
+                return hex;
+            }
+            off = desc + ((descsz + 3) & ~3);
+        }
+    }
+    return null;
+}
+
+function libmutterIdentity(mapping) {
+    if (!mapping)
+        return null;
+    const ident = {path: mapping.path, build_id: null, replaced: !!mapping.deleted};
+    try {
+        const info = Gio.File.new_for_path(mapping.path).query_info(
+            'unix::inode', Gio.FileQueryInfoFlags.NONE, null);
+        const onDisk = Number(info.get_attribute_uint64('unix::inode'));
+        // dpkg replaces a library by writing a new file over the name, so the
+        // running session keeps the old inode mapped while the path resolves to
+        // a new one.  Reading the ELF at that path would then describe a
+        // library this session is not running, so it is not read at all.
+        if (onDisk && mapping.inode && onDisk !== mapping.inode)
+            ident.replaced = true;
+    } catch (e) {
+        ident.replaced = true;          // the path is gone: it was replaced
+    }
+    if (!ident.replaced)
+        ident.build_id = elfBuildId(mapping.path);
+    return ident;
 }
 
 // -- the reader --------------------------------------------------------------
@@ -276,7 +372,22 @@ class Guarded {
         this.generation = generation;
         this.maps = maps;
         this.repo = repo;
-        this._pass('shell-version', `GNOME Shell ${shell}, libmutter-${generation}`);
+        // Which build, not only which generation.  `ShellVersion` cannot see a
+        // libmutter replaced under it -- noble shipped mutter 46.2 under shell
+        // 46.0 for most of its life -- so the answer carries the identity of the
+        // library the checks are about to run against, and the caller records
+        // its agreement against that rather than against a version string.
+        // Nothing here can refuse: a null is a null.
+        try {
+            this.libmutter = libmutterIdentity(
+                maps.mutterMappings().find(m => m.gen === generation));
+        } catch (e) {
+            this.libmutter = null;
+        }
+        const build = this.libmutter && this.libmutter.build_id;
+        this._pass('shell-version',
+                   `GNOME Shell ${shell}, libmutter-${generation}` +
+                   (build ? ` (build ${build.slice(0, 12)})` : ''));
         return this;
     }
 
@@ -393,6 +504,7 @@ class Guarded {
         const bad = modalVerdict(modal);
         if (bad)
             refuse('pending-dialog', bad);
+        this.modalCount = modal;
         this._pass('pending-dialog',
                    'nothing holds a modal grab, so GNOME is not asking "Keep changes?"');
         return this;
@@ -512,6 +624,17 @@ class Guarded {
             // agreement against it (wxrandr/gnome_overlap.py): what was agreed to
             // has to be what was measured, not a number typed anywhere else.
             instance_size: this.instanceSize,
+            // The build of libmutter every check above ran against, so that an
+            // agreement can name it: `ShellVersion` cannot see this change and
+            // Ubuntu makes it inside a release (measured: 46.0 -> 46.2 under
+            // one unchanged shell version).  Null when it could not be read,
+            // which is not an error and never a refusal.
+            libmutter_build: (this.libmutter && this.libmutter.build_id) || null,
+            libmutter_path: (this.libmutter && this.libmutter.path) || null,
+            modal_count: this.modalCount,
+            // Advisory, not a verdict.  Everything that decides anything is a
+            // check above; this is news the caller should pass on.
+            notes: [libmutterNote(this.libmutter)].filter(Boolean),
             checks: this.checks,
             monitors: this.monitors(),
         }, extra || {});

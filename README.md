@@ -675,12 +675,14 @@ wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
 The first step installs `fuckwayland-overlap@fuckwayland`, which is not the bridge
 extension the other tools use and is installed by hand for exactly that reason. The
 second prints what the flag does, what it risks and what it saves, runs every check
-against the GNOME that is running, and records what those checks measured, so that
-later runs say one line instead of the paragraph. The third is an ordinary `wxrandr`
-line with the flag added, and the flag does nothing at all unless the layout is one
-GNOME refuses. In `warandr` there is no flag to type: drag two monitors into an
-overlap and press Apply, and the window explains it once, in a dialog with a *Do not
-ask again on this GNOME* box.
+against the GNOME that is running, and records what those checks measured — down to
+the build id of the `libmutter` they ran against, because a version number does not
+change when Ubuntu replaces that library — so that later runs say one line instead of
+the paragraph, and an update ends the agreement rather than outliving it. The third is
+an ordinary `wxrandr` line with the flag added, and the flag does nothing at all unless
+the layout is one GNOME refuses. In `warandr` there is no flag to type: drag two
+monitors into an overlap and press Apply, and the window explains it once, in a dialog
+with a *Do not ask again on this GNOME* box.
 
 What it looks like when it works:
 
@@ -710,10 +712,43 @@ The honest part: this works by writing eight bytes per monitor into the running
 `gnome-shell`, at a place that is a private detail of one build of it, and if that
 place is ever wrong `gnome-shell` dies and takes every program in your session with
 it. Six checks run before every write and refuse any build they do not recognise,
-which today means GNOME 46 and GNOME 50 and nothing else, so what a GNOME upgrade
-normally does is make this refuse and say why, with the agreement no longer applying
-and nothing changed. The long form, with every check, what each was measured catching
-and what risk is left, is
+which today means GNOME 46 and GNOME 50 and nothing else.
+
+**So does it survive a GNOME update? Measured, and yes — so far, and only so far.**
+Every update Ubuntu can deliver today was tried on desktops the Ubuntu installer
+built: eight version pairs across 24.04 and 26.04, including the pair each ISO ships,
+the newest in `-updates`, the 26.04 update sitting in `-proposed` that nobody has
+received yet, and — the case a version number cannot see — the GA library swapped
+under a newer shell. All eight applied with all six checks passing, and the private
+structure this depends on had not moved in any of them. No session was lost, none was
+damaged, nothing was ever written to the file GNOME saves layouts in, and an `apt
+upgrade` performed while an overlap was on screen changed nothing. Inside one Ubuntu
+release it cannot break by a GNOME change at all, because Ubuntu ships one `libmutter`
+generation per release and keeps it for the release's life. What moves it is a release
+upgrade, 24.04 → 26.04, and there this is meant to refuse until somebody measures the
+new GNOME.
+
+**And when it is wrong it refuses rather than breaking anything.** Nine deliberately
+wrong descriptions of that structure have been installed on purpose across the two
+releases — wrong generation, fields of the same size swapped, the list read out of the
+wrong slot — and every one was refused by name, before any write, with `gnome-shell`
+still running afterwards. That is the bet this feature makes, and it has not lost it
+yet. It is still a bet: nine caught is not proof that a tenth would be, and what would
+beat all of it is an Ubuntu update that moves that structure without moving the
+version number the checks read. Nothing in 24.04's 28 months has done it, and one
+26.04 update in `-proposed` today does exactly that to a *different* private
+structure, so the mechanism is real.
+
+**What to expect after an update**, which is the part worth knowing before you enable
+this: almost always nothing — the same command keeps working. Once per library update,
+one line saying the agreement has been withdrawn, because what you agreed to was one
+measured build of GNOME and that build is gone; run it again and read the paragraph
+again. Once per release upgrade, a refusal naming the check that refused. And, seen
+once in all the testing, a refusal saying something holds a modal grab with nothing on
+screen, seconds after a post-update login: run the command again a moment later.
+
+The long form, with every check, what each was measured catching, what every update
+did and what risk is left, is
 [docs/WXRANDR.md § --unsafe-gnome-overlap](docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through),
 and the maintainer's account is
 [docs/Technical.md § 6](docs/Technical.md#why-mutter-refuses-monitors-that-share-area).
