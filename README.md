@@ -706,7 +706,7 @@ Every option, safe ones and dangerous ones together:
 | `--gnome-overlap-forget` | wxrandr | withdraws the agreement. Needs no desktop, so it works from a text console |
 | `--unsafe-gnome-overlap` | wxrandr | **the one that applies it.** Ignored unless the layout really overlaps and the route is really there. Every check still runs |
 | `--unsafe-gnome-overlap` | warandr | applies overlapping layouts without ever asking, for a window started from a hotkey or a desktop entry. Waives the question, not the checks, and records no agreement |
-| `--unsafe-gnome-overlap-unmeasured N` | wxrandr | **the only thing here that gets past a refusal.** On a GNOME nobody has measured, and only there, it says *I know this machine, try anyway*, and `N` is the GNOME Shell major that is running, so a line copied from a forum is refused on your machine. It skips that one check and no other, is never remembered, and can end your session, `--dryrun` included, because the remaining checks run inside `gnome-shell`. `warandr` has no way to reach it |
+| `--unsafe-gnome-overlap-unmeasured N` | wxrandr | **the only thing here that gets past a refusal.** On a GNOME nobody has measured, and only there, it says *I know this machine, try anyway*, and `N` is the GNOME Shell major that is running, so a line copied from a forum is refused on your machine. It skips that one check and no other, is never remembered, and can end your session, which is why `--dryrun` is refused with it rather than offered: the remaining checks run inside `gnome-shell`, so a dry run of a forced run is not dry. `warandr` has no way to reach it |
 
 The checks are what stands between this and a lost session, so read what they are
 before reaching for anything that gets past them. There is exactly one thing that
@@ -722,12 +722,16 @@ records nothing, and asks in full again next time. If a refusal names any other
 check, there is nothing to force: something is missing or has just proved itself
 wrong, and the answer stays no.
 
-**`--dryrun` is not a safe rehearsal of a forced run.** It writes nothing, and that
-is all it promises. The checks it runs happen inside `gnome-shell` and read through
-a description nobody has proved on this build, so a forced dryrun can end the
-session exactly like a forced apply. That is measured rather than theoretical: the
-first forced run ever attempted on a real GNOME 51 was a dryrun, and it took the
-session with it.
+**`--dryrun` cannot rehearse a forced run, so it is refused with it.** The checks a
+forced run makes happen inside `gnome-shell` and read through a description nobody
+has proved on this build, so they can end the session before anything of ours decides
+whether to write, and writing nothing is all a dry run ever promised. That is
+measured rather than theoretical: the first forced run ever attempted on a real GNOME
+51 was a dryrun, and it took the session with it. The two flags together are now one
+line saying so, and pointing at the two honest answers, which are to run it for real
+on a machine you can afford to lose the session on, or to add the build to the table
+first. A `--dryrun` **without** the forcing flag is unaffected: on a measured build it
+runs every guard and writes nothing, which is what it is for.
 
 What it looks like when it works:
 

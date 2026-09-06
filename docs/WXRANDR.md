@@ -614,15 +614,32 @@ and then the ordinary warning underneath it — what moves, what it risks, what 
 saves, the undo line — because forcing adds a paragraph and replaces nothing. If
 it works, the apply says which description it used and that nothing was recorded.
 
-**`--dryrun` is not a safe rehearsal of a forced run.** It writes nothing, and
-that is all it promises: the checks it runs happen *inside* `gnome-shell` and
-read through a description nobody has proved on this build, so a forced dryrun
-can end the session exactly like a forced apply. Measured, on the first forced
-run ever attempted on a real GNOME 51: `gnome-shell` aborted during the checks,
-on a `--dryrun`, and the session went with it. The cause was a description that
-named `libmutter-18.so.0` — see the next paragraph — and it is fixed, but the
-shape of the risk is not: on an unmeasured build the checks themselves are the
-dangerous part, because they are the first thing to read private memory.
+**`--dryrun` cannot rehearse a forced run, and the two together are refused.**
+Writing nothing is all a dry run ever promised, and it is not the thing at risk
+here: the checks a forced run makes happen *inside* `gnome-shell` and read
+through a description nobody has proved on this build, so they can end the
+session before anything of ours decides whether to write. Measured, on the first
+forced run ever attempted on a real GNOME 51: `gnome-shell` aborted during the
+checks, on a `--dryrun`, and the session went with it. The cause was a
+description that named `libmutter-18.so.0` — see the next paragraph — and it is
+fixed, but the shape of the risk is not: on an unmeasured build the checks
+themselves are the dangerous part, because they are the first thing to read
+private memory. Somebody who types a dry run is being careful, so what they get
+is one line rather than a rehearsal that is not one:
+
+```console
+$ wxrandr --dryrun --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured 52 \
+      --output Virtual-2 --pos 960x0
+xrandr: --unsafe-gnome-overlap-unmeasured cannot be rehearsed with --dryrun: reaching an
+unmeasured build means loading a description built for another one, which can end the
+session before anything is decided, dry run or not. Run it for real, on a machine you can
+afford to lose the session on, or add the build first (the refusal without
+--unsafe-gnome-overlap-unmeasured says how)
+```
+
+`--dryrun` on a **measured** build is untouched, and is
+[below](#--dryrun-and-unrecognised-builds): every guard runs, nothing is
+written.
 
 **A description names no shared library, since 0.4 and because of that crash.**
 A `shared-library` in a `.gir` makes GIRepository `dlopen` exactly that file, and
@@ -886,7 +903,9 @@ is printed in the warning anyway:
 #### `--dryrun`, and unrecognised builds
 
 `--dryrun --unsafe-gnome-overlap` prints the same warning and runs every guard
-inside the extension against the running libmutter, writing nothing:
+inside the extension against the running libmutter, writing nothing. (On a build
+the table does not name it refuses, as it always did, and adding the forcing flag
+to a dry run is refused too: [above](#forcing-past-a-refusal-on-a-gnome-nobody-has-measured).)
 
 ```console
 xrandr: overlap check shell-version: GNOME Shell 46.0, libmutter-14.so.0 (build 9e23feb34618)

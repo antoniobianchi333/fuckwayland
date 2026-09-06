@@ -51,8 +51,9 @@ by using the tools on one rather than by reading them.
   refusal: it skips the check that the build is in the table and no other, takes the
   running GNOME's major as its argument so a command line copied from a forum is
   refused by number, is remembered nowhere, and cannot be reached from `warandr` at
-  all. `--dryrun` is not a rehearsal of it, because the remaining checks run inside
-  `gnome-shell`.
+  all. `--dryrun` is refused together with it rather than offered as a rehearsal it
+  cannot be: the remaining checks run inside `gnome-shell` and can end the session
+  before anything of ours decides whether to write.
 - **GNOME 51 was measured by following that procedure and nothing else**, on Ubuntu
   26.10 with `libmutter-51.so.0`: 80 bytes, three tail slots, taken from mutter 51's
   own header and confirmed against the live GType registry, then an overlap applied on
@@ -76,8 +77,9 @@ by using the tools on one rather than by reading them.
   had a table to read, which is what `tests/test_release_deb.py` noticed.
 - **2618 tests**, up from 2262, the new ones being the daemon's two ways of ending,
   the chord the layout cannot produce, the pin carried on the request, the guards
-  around the saved display configuration, and every refusal of the overlap route
-  classified and then re-run with the forcing option to see which of them it changes.
+  around the saved display configuration, every refusal of the overlap route
+  classified and then re-run with the forcing option to see which of them it changes,
+  and the dry run that cannot rehearse a forced one.
 - **The documents were read against the code again**, which is the check this release
   exists to keep passing: `scripts/check-docs.py` reads the options out of the source,
   out of every help text each tool prints (the subcommands included) and out of every
