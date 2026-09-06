@@ -99,22 +99,11 @@ exports, where it puts itself and which hotkey chords Mutter will not hand to a
 script are in [gnome/README.md](gnome/README.md), and what installing it grants, to
 whom, is [Threat model](#threat-model).
 
-There is a **second, separate** extension, and almost nobody needs it. GNOME refuses
-to place two monitors so that they share screen area, and it is the only desktop of
-the four that does. The [.deb](#install) puts this one on disk too, but nothing turns
-it on and nothing uses it: it is not enabled for anybody, it does nothing at login
-even once enabled, and no layout reaches it without a flag typed on purpose and an
-agreement given on purpose. From a clone, or if you want it enabled:
-
-```sh
-sh gnome/install-overlap.sh          # enable it, then log out and back in
-sh gnome/install-overlap.sh --check  # is it loaded? is the route there?
-wxrandr --gnome-overlap-allow        # read what it risks, agree once
-```
-
-It is the only thing here that can cost you the session you are sitting in. Read
-[Overlapping monitors on GNOME](#overlapping-monitors-on-gnome) before you use it,
-which is where every option is listed and where what it risks is spelled out.
+The package carries a **second, separate** extension that almost nobody needs, for
+the one thing GNOME will not do at all: place two monitors so that they share screen
+area. Nothing turns it on and nothing uses it, and it is the only thing here that can
+cost you the session you are sitting in, so it has a section of its own:
+[Overlapping monitors on GNOME](#overlapping-monitors-on-gnome).
 
 #### KDE Plasma
 
@@ -540,11 +529,9 @@ unlike X, allows neither gaps nor overlaps, an output that changes size keeps it
 neighbours touching it, with a warning. Changes are temporary like xrandr's and write
 nothing. `--persistent` makes GNOME ask *Keep changes?*, and only a confirmed dialog
 writes `monitors.xml`, and that dialog is the only safe way that file is ever
-written. Why Mutter refuses monitors that share area, and what to reach for instead,
-is under
-[What your desktop will not let warandr do](#what-your-desktop-will-not-let-warandr-do),
-and the one opt-in route to having the overlap anyway is
-[Overlapping monitors on GNOME](#overlapping-monitors-on-gnome).
+written. Why Mutter refuses monitors that share area, what to reach for instead, and the one
+opt-in route to having the overlap anyway are under
+[What your desktop will not let warandr do](#what-your-desktop-will-not-let-warandr-do).
 
 Which backend it is using is never a guess: `--print-backend` prints the token
 (`--verbose` adds the session, why it was chosen, the compositor and the protocol
@@ -634,10 +621,9 @@ different resolutions are refused by name, saying which two differ and how. KWin
 the one desktop that will scale a mirrored copy onto a differently shaped panel. On
 wlroots the copy crops instead, which is the gap [`wmirror`](#wmirror) fills.
 
-Short of the route below, there is an honest substitute, and it is not an overlap.
-GNOME will not place two monitors so that they share area, and the closest thing to be
-had is a mirrored region: the same pixels in two places, matching exactly, and that is
-the whole of it. The copy is a copy, so it takes the clicks that land on it rather
+Short of the route below, there is an honest substitute, and it is not an overlap:
+a mirrored region, the same pixels in two places, matching exactly, and that is the
+whole of it. The copy is a copy, so it takes the clicks that land on it rather
 than passing them to the window they came from, and where it is made by screen capture
 instead of by the layout it lasts only as long as that capture session, which a screen
 lock ends. Whole monitor mirroring is the layout doing it, above. A region of one
@@ -649,11 +635,9 @@ file back through the same validator and throws away the **whole file** when any
 of it fails, so one bad entry silently takes every other monitor arrangement you had
 saved down with it, at every boot, and the only trace is a line in the system journal.
 
-Since 0.4 there is one route through the adjacency rule, off by default and installed
-by hand, and it is [Overlapping monitors on GNOME](#overlapping-monitors-on-gnome)
-below. With it in place, dragging two monitors into an overlap and pressing Apply asks
-once and then does it. Without it nothing changes: the drop is refused in Mutter's own
-name exactly as before.
+Since 0.4 there is one route through the adjacency rule, off by default:
+[Overlapping monitors on GNOME](#overlapping-monitors-on-gnome). With it in place,
+dragging two monitors into an overlap and pressing Apply asks once and then does it.
 
 One more GNOME habit worth knowing: an Apply that switches a monitor on or off makes
 the desktop move keyboard focus off the window, so click it again before the next
