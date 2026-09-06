@@ -51,8 +51,9 @@ by using the tools on one rather than by reading them.
   refusal: it skips the check that the build is in the table and no other, takes the
   running GNOME's major as its argument so a command line copied from a forum is
   refused by number, is remembered nowhere, and cannot be reached from `warandr` at
-  all. `--dryrun` is not a rehearsal of it, because the remaining checks run inside
-  `gnome-shell`.
+  all. `--dryrun` is refused together with it rather than offered as a rehearsal it
+  cannot be: the remaining checks run inside `gnome-shell` and can end the session
+  before anything of ours decides whether to write.
 - **GNOME 51 was measured by following that procedure and nothing else**, on Ubuntu
   26.10 with `libmutter-51.so.0`: 80 bytes, three tail slots, taken from mutter 51's
   own header and confirmed against the live GType registry, then an overlap applied on
@@ -76,12 +77,17 @@ by using the tools on one rather than by reading them.
   had a table to read, which is what `tests/test_release_deb.py` noticed.
 - **2618 tests**, up from 2262, the new ones being the daemon's two ways of ending,
   the chord the layout cannot produce, the pin carried on the request, the guards
-  around the saved display configuration, and every refusal of the overlap route
-  classified and then re-run with the forcing option to see which of them it changes.
+  around the saved display configuration, every refusal of the overlap route
+  classified and then re-run with the forcing option to see which of them it changes,
+  and the dry run that cannot rehearse a forced one.
 - **The documents were read against the code again**, which is the check this release
   exists to keep passing: `scripts/check-docs.py` reads the options out of the source,
-  out of each tool's help and out of every markdown file and reports where the three
-  disagree.
+  out of every help text each tool prints (the subcommands included) and out of every
+  markdown file, and reports where the three disagree. Everything it reports is a real
+  disagreement now: an option that is accepted and deliberately unprinted, or that a
+  package writes for another program's command line, is a table entry with its reason
+  written down, and an entry that has stopped being true is itself reported. It exits
+  non-zero when there is anything to say, and today it says nothing.
 
 Measured on the same rig, now thirteen images: eleven built from an Ubuntu cloud image
 plus a desktop metapackage, GNOME 51 on 26.10 among them, and two installed by the

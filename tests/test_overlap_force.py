@@ -423,13 +423,20 @@ class WhatForcingPrints(Case):
         self.assertIn("applied on an unmeasured GNOME through %s" % _by_size(), err)
         self.assertIn("MetaMonitorsConfig is 80 bytes here", err)
 
-    def test_a_dryrun_prints_it_and_writes_nothing(self):
+    def test_a_dryrun_is_refused_rather_than_rehearsed(self):
+        """It used to Probe and print the paragraph.  It cannot: the checks a
+        forced run makes happen inside gnome-shell, so a dry run of one is not
+        dry -- it can end the session before anything of ours decides whether
+        to write.  So nothing is asked of the extension at all, and the answer
+        is one line naming the two honest alternatives.  The unit test of the
+        rule itself is `ADryRunCannotBeForced` below."""
         unmeasured(self.mock, UMV)
         code, out, err = self.run_cli("--dryrun", FLAG, FORCE, UM, *MOVE)
-        self.assertEqual(code, 0, err)
-        self.assertIn("forcing past the one check", err)
-        self.assertIn("dryrun: nothing was written", err)
-        self.assertEqual(self.ext_calls(), ["Probe"])
+        self.assertEqual(code, 1, err)
+        self.assertIn("cannot be rehearsed with --dryrun", err)
+        self.assertIn("add the build first", err)
+        self.assertNotIn("forcing past the one check", err)
+        self.assertEqual(self.ext_calls(), [])
         self.assertEqual(self.applied(), [])
 
 

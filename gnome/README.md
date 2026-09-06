@@ -2,9 +2,11 @@
 
 `fuckwayland-bridge@fuckwayland` is a small GNOME Shell extension that exports
 Mutter's window, workspace and monitor state — and the actions on them — over
-the session D-Bus. It is what lets `wdotool`, `wwmctl`, `wxprop` and `wxrandr`
-work on a stock GNOME Wayland session (Ubuntu 24.04 / GNOME 46 and Ubuntu 26.04
-/ GNOME 50, plus everything in between).
+the session D-Bus. It is what lets `wdotool`, `wwmctl` and `wxprop` work on a
+stock GNOME Wayland session (Ubuntu 24.04 / GNOME 46 and Ubuntu 26.04 / GNOME
+50, plus everything in between). `wxrandr` and `warandr` never touch it: no
+module of theirs names this interface, because monitors go through Mutter's own
+DisplayConfig.
 
 ## Why an extension
 
@@ -18,7 +20,7 @@ same dead ends in
 [Exploring the Fragmentation of Wayland, an xdotool adventure](https://www.semicomplete.com/blog/xdotool-and-exploring-wayland-fragmentation/):
 on Wayland the compositor decides what a tool may know and do, and on GNOME the
 only supported way to ask is code running inside the shell. So that is what
-this is: about 1100 lines of ESM JavaScript that run inside gnome-shell and
+this is: about 1500 lines of ESM JavaScript that run inside gnome-shell and
 answer D-Bus calls with JSON.
 
 The Python tools talk to it with a stdlib D-Bus client; no `gi`, no `gdbus`
@@ -29,7 +31,8 @@ spawns on the hot path.
 ```
 gnome/
   fuckwayland-bridge@fuckwayland/
-    metadata.json                 uuid, shell-version generated from the table
+    metadata.json                 uuid, and the shell-version list, written by hand
+                                  (45 to 50 today; the other extension's is generated)
     extension.js                  the extension (ESM)
     org.fuckwayland.Bridge1.xml   introspection XML (also embedded in extension.js)
   install-bridge.sh               POSIX sh installer / checker / uninstaller (+ --udev)
@@ -130,9 +133,10 @@ Nobody gets this one by accident, and nothing else in fuckwayland needs it.
 Why separate, in one line each:
 
 * the bridge calls **public** Shell API and feature-detects everything, so it works on
-  46 through 50 and will probably work on 51. This one ships a **compiled type
-  description of a private structure layout** and works on exactly the two builds it
-  has been measured on;
+  45 through 50, which is the whole of its `shell-version` list — GNOME 51 is not in
+  that list, so `gnome-shell` 51 will not load it until somebody adds the line and
+  runs it there. This one ships a **compiled type description of a private structure
+  layout** and works on exactly the three builds it has been measured on;
 * the bridge is a dependency of three tools and is installed by the package. This one
   is a dependency of nothing, is installed by hand, and is off in the tool as well;
 * the worst a bridge bug can do is answer wrongly. The worst this one can do is kill
@@ -159,7 +163,9 @@ gnome/
                                   tests do)
     org.fuckwayland.Overlap1.xml  Probe / ApplyOverlap, JSON in, JSON out
     typelib/FwOverlap14-1.0.typelib   the description for libmutter 14 (GNOME 46)
-    typelib/FwOverlap18-1.0.typelib   ... and for libmutter 18 (GNOME 50)
+    typelib/FwOverlap18-1.0.typelib   ... for libmutter 18 (GNOME 50)
+    typelib/FwOverlap51-1.0.typelib   ... and for libmutter 51 (GNOME 51), which is
+                                      mutter 18's layout under a new soname
   overlap-typelib/gen-gir.py      reads the table and writes all three of those:
                                   the .gir, the .typelib and metadata.json.
                                   `--check` proves none of them has gone stale

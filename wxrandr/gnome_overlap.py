@@ -114,11 +114,18 @@ TABLE_FIELDS = ("shell_major", "libmutter", "soname", "meta_typelib",
 #: derived, never written down: the allowlist is the table's keys.
 SUPPORTED_MAJORS = tuple(g["shell_major"] for g in GENERATIONS)
 
+#: Both routes, because the message has to be right whichever way this was
+#: installed: from a clone the extension has to be copied first, and from the
+#: .deb its files are already in /usr/share/gnome-shell/extensions and only the
+#: enable is missing.  Naming the clone's script alone sent package users to a
+#: file they do not have.
 INSTALL_HINT = (
-    "the overlap extension is not running: install it with\n"
+    "the overlap extension is not running.  From the package:\n"
+    "    gnome-extensions enable %s\n"
+    "From a clone:\n"
     "    sh gnome/install-overlap.sh\n"
-    "and log out and back in once (gnome-shell reads extension directories "
-    "only at login)\n")
+    "Either way, log out and back in once (gnome-shell reads extension "
+    "directories only at login)\n" % UUID)
 
 #: where a maintainer puts the answer, and what has to be run afterwards.  It is
 #: in the refusal itself because somebody meeting this for the first time is

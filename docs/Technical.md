@@ -751,7 +751,7 @@ the identical layout is taken as drawn by KWin, by wlroots and by X.
 |---|---|
 | `ApplyMonitorsConfig` (D-Bus) | validates **before** it applies, on every method: 0 verify, 1 temporary, 2 persistent. `--dryrun` therefore gets exactly the answer an apply would |
 | `~/.config/monitors.xml` | the parser calls the **same verifier**, and a failure discards the **entire file** — see the warning below |
-| a GNOME Shell extension | **the one route that works**, and since 0.4 it is packaged, opt-in and off: it reaches the non-introspected libmutter symbols by shipping a type description of its own. Measured working on **both** versions, shared region byte-identical. It also encodes a private struct offset and the library SONAME, and a wrong offset **writes into the compositor's heap** rather than raising an error, which on Wayland means the user loses the session. What makes that shippable is below |
+| a GNOME Shell extension | **the one route that works**, and since 0.4 it is packaged, opt-in and off: it reaches the non-introspected libmutter symbols by shipping a type description of its own. Measured working on all **three** measured generations (GNOME 46, 50 and 51), shared region byte-identical. It also encodes a private struct offset and the library SONAME, and a wrong offset **writes into the compositor's heap** rather than raising an error, which on Wayland means the user loses the session. What makes that shippable is below |
 
 #### The extension, and the three properties that make it shippable
 
@@ -763,8 +763,10 @@ typelib pinned to one libmutter generation's private structure layout. Different
 of thing, its own uuid, its own installer (`gnome/install-overlap.sh`) and its own enable
 step. Since 0.4 the package carries its files, because a route nobody can reach from
 the way almost everybody installs is not a route; what it does not carry is any step
-that turns it on. Installed, it is inert: nothing enables it, and the tool refuses the
-flag until `--gnome-overlap-allow` has been run against this build of GNOME.
+that turns it on. Installed, it is inert: nothing enables it, nothing calls it, and
+the flag that does is off. `--gnome-overlap-allow` is not a gate in front of it —
+the agreement is read between the last refusal and the call, and all it decides is
+whether the risk is printed in full or in one line.
 
 `nm -D` on the shipped library lists `meta_monitor_manager_apply_monitors_config`,
 `meta_monitor_manager_get_config_manager`, `meta_monitor_config_manager_get_current`,
@@ -789,7 +791,7 @@ step to the next struct is `g_memdup2(ptr, n)` — a bounded copy of exactly n b
 and `g_strndup(ptr, 63)` for the connector names, with the address range-checked
 against `/proc/self/maps` first and list walks capped at 16. With pointers declared as
 pointers, a wrong offset killed gnome-shell outright (measured, 50.1, a node whose
-`next` was `0x1`); with them declared as numbers, all thirteen wrong descriptions tried
+`next` was `0x1`); with them declared as numbers, all twelve wrong descriptions tried
 across the three releases completed and none crashed.
 
 **3. Every check runs before every write, never once at install**, because a
@@ -1028,7 +1030,7 @@ typelibs must be present and which shells to warn about. There is no fourth plac
    ```console
    $ apt source mutter        # or the .orig.tar.xz from the archive
    $ python3 gnome/overlap-typelib/gen-gir.py --from-header \
-         mutter-51/src/backends/meta-monitor-config-manager.h --shell 51
+         mutter-52/src/backends/meta-monitor-config-manager.h --shell 52
        0  24  GObject parent
       24   8  MetaMonitorsConfig * parent_config
       32   8  MetaMonitorsConfigKey * key
@@ -1040,11 +1042,14 @@ typelibs must be present and which shells to warn about. There is no fourth plac
       72   4  MetaMonitorSwitchConfigType switch_config
      instance size 80
      the two numbers a record needs:  "struct_size": 80, "tail_slots": 3
-     GNOME 51 is not in the table.  Adding it is one record in each of …
+     GNOME 52 is not in the table.  Adding it is one record in each of …
    ```
 
-   It fails closed three ways: a type whose size it does not know is an error
-   naming that type, a header that has moved anything in the head of the struct is
+   (On a release already in the table the last line is
+   `agrees with the record shipped for GNOME 51 (FwOverlap51, 80 bytes, 3 4-byte
+   slots)` instead, which is how the shipped records are re-checked against upstream
+   source.) It fails closed three ways: a type whose size it does not know is an
+   error naming that type, a header that has moved anything in the head of the struct is
    refused outright (the description's *shape* is then wrong, not only its
    numbers), and a `--shell` it has no record for prints the record to add rather
    than inventing one. `--gen`, which used to take the libmutter generation, is now
@@ -1341,15 +1346,16 @@ Ubuntu installer, three virtio heads, nothing patched.
   shifted by 8 (`public-view`, `private read has 0 monitors, Mutter reports 3`), and a
   same-size field swap that read garbage (`public-view`). **`gnome-shell` survived all
   five**: no crash, no core dump, the desktop still running afterwards. Four more went
-  in during the update testing below, on both releases and on other libmutter builds —
-  a wrong-generation description on 24.04, and on 26.04 a 72-byte tail as `FwOverlap18`
-  (`struct-size`), `layout_mode` and `switch_config` swapped at the same size
-  (`sentinel`, `switch_config reads 1 at the offset this description believes, not
-  24410`) and the list read out of the `key` slot (`bounded-read`). Four more went in
-  with GNOME 51 and the `shared-library` guard that measuring it produced, among them
-  descriptions naming a library that is not mapped, which is the refusal that guard
-  exists to give. **Thirteen in all, thirteen refused by name, thirteen sessions still
-  running.**
+  in during the update testing below, on both LTS releases and on other libmutter
+  builds — a wrong-generation description on 24.04, and on 26.04 a 72-byte tail as
+  `FwOverlap18` (`struct-size`), `layout_mode` and `switch_config` swapped at the same
+  size (`sentinel`, `switch_config reads 1 at the offset this description believes, not
+  24410`) and the list read out of the `key` slot (`bounded-read`). Three more went in
+  with GNOME 51: a 72-byte description under the GNOME 51 name (`struct-size`), `key`
+  and `logical_monitor_configs` exchanged (`bounded-read`), and a description naming a
+  `libmutter` that is not mapped (`shared-library`, the guard that measuring GNOME 51
+  produced, and the one input that had taken a session down before it existed).
+  **Twelve in all, twelve refused by name, twelve sessions still running.**
 * **The consent path was measured too**, on 50.1: first apply asks and the second says
   one line; the agreement survives a reboot while the layout does not; a recorded
   `50.0` against a live `50.1` brings the whole paragraph back; a recorded struct size
@@ -1389,8 +1395,9 @@ layout alone on both releases, and nothing persisted across a reboot.
 
 **The generation cannot move inside a release.** One `libmutter-N-0` per Ubuntu
 release across release+updates+security+backports, every time: bionic 2, focal 6,
-jammy 10, noble 14, plucky 16, questing 17, resolute 18, and `-backports` has
-never carried mutter or gnome-shell at all. The generation moves at a release
+jammy 10, noble 14, plucky 16, questing 17, resolute 18, stonking 51 — mutter 51
+renumbered the library to the GNOME major, so the counting stops there — and
+`-backports` has never carried mutter or gnome-shell at all. The generation moves at a release
 upgrade and nowhere else.
 
 **Two independent confirmations of the offsets.** `gen-gir.py --from-header`
@@ -1480,9 +1487,10 @@ check it, and none of it needs a debugger:
    type rather than a guess, and a header that has moved anything in the head of the
    struct is refused outright, because then the description's shape is wrong and not
    only its numbers. Both are exercised by `tests/test_gnome_overlap.py`, which also
-   runs it against both releases' real headers and demands the two shipped
-   descriptions back — so the offsets this feature rests on now have upstream source
-   and a live compositor agreeing about them.
+   runs it against the mutter 46 and mutter 50 headers in `tests/fixtures/mutter/` and
+   demands those two of the three shipped descriptions back — so the offsets this
+   feature rests on now have upstream source and a live compositor agreeing about
+   them.
 4. **`sentinel`** — the size is right and the *tail* moved. This is the dangerous
    shape, the one that would write into somebody else's field, and it is why the
    sentinel goes through Mutter's own `set_switch_config` on a throwaway
@@ -1509,15 +1517,15 @@ Stated plainly, because a reader has to be able to decide against this:
 
 * **A wrong write is not a wrong answer, it is a dead compositor.** The checks turn
   nearly every wrong description into a refusal, and every one that was tried was
-  refused, but *nearly* is the honest word. Thirteen deliberate breakages caught is
-  not a proof that a fourteenth would be.
+  refused, but *nearly* is the honest word. Twelve deliberate breakages caught is
+  not a proof that a thirteenth would be.
 * **The case the design cannot close by construction** is two fields of the same size
   swapped by an upstream change. The size gate passes, the sentinel may pass, and what
   is left is the bounded reader refusing an address that is not mapped, or the
   public-view comparison noticing that the numbers are nonsense. Both were measured
   catching exactly that, on two different swaps, and both are checks rather than
   certainties.
-* **The allowlist is a claim about two builds this project measured.** A distribution
+* **The allowlist is a claim about three builds this project measured.** A distribution
   that backports a Mutter change without moving the Shell's major version can make the
   version gate say yes to a library nobody has seen. What stands behind it then is the
   structure size, the sentinel and the public-view comparison, in that order. This is
@@ -1528,8 +1536,8 @@ Stated plainly, because a reader has to be able to decide against this:
   `_MetaMonitorManagerPrivate` under an unchanged 50.1 Shell version — and it happens
   not to be aimed at this struct.
 * **The measurement has a shelf life.** All of it was true of the archive on the day it
-  was run, on x86-64, on Ubuntu. A check that has been right nine times is a check that
-  has been right nine times.
+  was run, on x86-64, on Ubuntu. A check that has been right twelve times is a check
+  that has been right twelve times.
 * **If `gnome-shell` dies, everything in the session dies with it**: not the layout, the
   browser, the editor, the unsaved buffer, the terminal it was typed in. On Wayland the
   compositor is the session and there is no restarting it in place.
@@ -1630,9 +1638,9 @@ where a `GList` head is. Those are exactly the facts a wrong description gets wr
 exactly the facts a running compositor will not tell you. A generator would have to
 guess them — on the build it is about to write into.
 
-**The evidence does not transfer, either.** Thirteen wrong descriptions were caught,
+**The evidence does not transfer, either.** Twelve wrong descriptions were caught,
 but every one of them was caught *by disagreeing with the build*. A self-derived
-description cannot disagree with the build, so "the guards caught thirteen" says
+description cannot disagree with the build, so "the guards caught twelve" says
 nothing about it.
 
 The supportable half of the idea is real and is what `--from-header` is: derive the

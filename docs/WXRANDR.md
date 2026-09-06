@@ -340,7 +340,7 @@ what it is given without validating it.
 Say that plainly: **this is not an API.** It is one program editing another
 program's memory, using knowledge of a structure layout that nobody promised
 would stay put, in a process whose death takes the desktop with it. It is true
-of the two builds it has been measured on and of nothing else.
+of the three builds it has been measured on and of nothing else.
 
 ```console
 $ wxrandr --unsafe-gnome-overlap --output Virtual-2 --pos 960x0
@@ -551,9 +551,14 @@ tie between the shell and the libmutter it is supposed to carry, because on a
 build nobody has measured there is no supposed to. The description to write
 through is then picked by the size the running build's own GType registry reports
 for `MetaMonitorsConfig`. That is a *selection*, not a relaxation: the size still
-has to be exactly a shipped description's, two descriptions of one size would be
-a refusal rather than a coin toss, and a size nothing here describes is a refusal
-saying so — forcing cannot invent a description.
+has to be exactly a shipped description's, and a size nothing here describes is a
+refusal saying so — forcing cannot invent a description. Two shipped descriptions
+*can* be the same size: GNOME 50 and GNOME 51 are both 80 bytes with the same
+three tail slots, and where descriptions of one size agree on their shape like
+that the newest is picked and the message names the others (`the size FwOverlap51
+describes … and the same bytes as FwOverlap18`). Two that disagreed on their
+shape would be a refusal rather than a coin toss, because then the size cannot
+say which one this build is.
 
 **What it cannot skip is everything else**, and that is a rule rather than a list
 of exceptions. A refusal here is either *cautious* — this is a build nobody has
@@ -609,15 +614,32 @@ and then the ordinary warning underneath it — what moves, what it risks, what 
 saves, the undo line — because forcing adds a paragraph and replaces nothing. If
 it works, the apply says which description it used and that nothing was recorded.
 
-**`--dryrun` is not a safe rehearsal of a forced run.** It writes nothing, and
-that is all it promises: the checks it runs happen *inside* `gnome-shell` and
-read through a description nobody has proved on this build, so a forced dryrun
-can end the session exactly like a forced apply. Measured, on the first forced
-run ever attempted on a real GNOME 51: `gnome-shell` aborted during the checks,
-on a `--dryrun`, and the session went with it. The cause was a description that
-named `libmutter-18.so.0` — see the next paragraph — and it is fixed, but the
-shape of the risk is not: on an unmeasured build the checks themselves are the
-dangerous part, because they are the first thing to read private memory.
+**`--dryrun` cannot rehearse a forced run, and the two together are refused.**
+Writing nothing is all a dry run ever promised, and it is not the thing at risk
+here: the checks a forced run makes happen *inside* `gnome-shell` and read
+through a description nobody has proved on this build, so they can end the
+session before anything of ours decides whether to write. Measured, on the first
+forced run ever attempted on a real GNOME 51: `gnome-shell` aborted during the
+checks, on a `--dryrun`, and the session went with it. The cause was a
+description that named `libmutter-18.so.0` — see the next paragraph — and it is
+fixed, but the shape of the risk is not: on an unmeasured build the checks
+themselves are the dangerous part, because they are the first thing to read
+private memory. Somebody who types a dry run is being careful, so what they get
+is one line rather than a rehearsal that is not one:
+
+```console
+$ wxrandr --dryrun --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured 52 \
+      --output Virtual-2 --pos 960x0
+xrandr: --unsafe-gnome-overlap-unmeasured cannot be rehearsed with --dryrun: reaching an
+unmeasured build means loading a description built for another one, which can end the
+session before anything is decided, dry run or not. Run it for real, on a machine you can
+afford to lose the session on, or add the build first (the refusal without
+--unsafe-gnome-overlap-unmeasured says how)
+```
+
+`--dryrun` on a **measured** build is untouched, and is
+[below](#--dryrun-and-unrecognised-builds): every guard runs, nothing is
+written.
 
 **A description names no shared library, since 0.4 and because of that crash.**
 A `shared-library` in a `.gir` makes GIRepository `dlopen` exactly that file, and
@@ -652,8 +674,8 @@ that is the better ending. See below.
 The tool's three refusals above are the cheap half. The rest run inside the
 extension, **on every call and never once at install** — a distribution upgrade
 can replace libmutter under a running session — and every one of them has been
-made to fire on purpose, on both releases, by installing a deliberately wrong
-type description over the shipped one:
+made to fire on purpose, across the three releases, by installing a deliberately
+wrong type description over the shipped one:
 
 | guard | what it catches | what it did when made to fire |
 |---|---|---|
@@ -675,11 +697,15 @@ publicly, which pins the same tail with a public number: on GNOME 46, whose
 default is physical, claiming logical gets `layout_mode reads 2 … DisplayConfig
 says 1`.
 
-**In every one of those deliberate breakages, `gnome-shell` survived.** Thirteen
+**In every one of those deliberate breakages, `gnome-shell` survived.** Twelve
 of them now across the three releases — five while this was being built, four more
-during the update testing below, and four more with GNOME 51 and the
-`shared-library` guard that measuring it produced — each refused by name, no crash,
-no core dump, and the desktop still running afterwards.
+during the update testing below, and three with GNOME 51 (a 72-byte description
+under the GNOME 51 name, `key` and `logical_monitor_configs` exchanged, and a
+description naming a `libmutter` that is not mapped, which is the `shared-library`
+guard that measuring GNOME 51 produced) — each refused by name, no crash, no core
+dump, and the desktop still running afterwards. The one input that ever did take
+a session down is the last of those, and it did it *before* that guard existed:
+see `--dryrun` above.
 
 #### The one false refusal, and why the guard was not loosened
 
@@ -739,14 +765,17 @@ received yet:
 bounded read agreed with Mutter's public view field for field. Independently, at
 source level, `src/backends/meta-monitor-config-manager.h` is byte-identical
 between the mutter 46.0 and 46.2 tarballs, and
-`gnome/overlap-typelib/gen-gir.py --from-header` lays both releases' own headers
-out and arrives at exactly the two shipped descriptions.
+`gnome/overlap-typelib/gen-gir.py --from-header` lays the mutter 46 and mutter 50
+headers out and arrives at exactly those two of the three shipped descriptions
+(`tests/fixtures/mutter/` carries those two headers; GNOME 51's was derived the
+same way on the machine it was measured on).
 
 **It cannot break by a generation change inside a release.** One
 `libmutter-N-0` soname per Ubuntu release, for the life of the release — bionic
-2, focal 6, jammy 10, noble 14, plucky 16, questing 17, resolute 18 — and
-`-backports` has never carried mutter or gnome-shell at all. The generation
-moves at a release upgrade and nowhere else.
+2, focal 6, jammy 10, noble 14, plucky 16, questing 17, resolute 18, stonking 51
+(mutter 51 renumbered the library to the GNOME major, which is why that last one
+is not 19) — and `-backports` has never carried mutter or gnome-shell at all. The
+generation moves at a release upgrade and nowhere else.
 
 **In every measured update, the shared region stayed byte-identical**: head 0's
 right 960 px and head 1's left 960 px with the same SHA-256 as raw RGB, `AE` and
@@ -765,8 +794,8 @@ Not softened, because a reader has to be able to decide against this:
 
 * **A wrong write is not a wrong answer, it is a dead compositor.** The guards
   turn nearly every wrong description into a refusal, and the ones tried were
-  all refused, but *nearly* is the honest word. Thirteen deliberate breakages
-  caught is not a proof that a fourteenth would be.
+  all refused, but *nearly* is the honest word. Twelve deliberate breakages
+  caught is not a proof that a thirteenth would be.
 * **The residual case the design cannot close by construction** is two fields
   of the same size swapped by an upstream change. The size gate passes and the
   sentinel may pass, and what is left is the bounded reader refusing an address
@@ -777,8 +806,8 @@ Not softened, because a reader has to be able to decide against this:
   layout: the browser, the editor, the unsaved buffer, the terminal you typed
   this in. On Wayland the compositor is the session, and there is no restarting
   it in place.
-* **The allowlist is a claim about two builds this project measured**, stock
-  Ubuntu 24.04 and 26.04. A distribution that backports a Mutter change without
+* **The allowlist is a claim about three builds this project measured**, stock
+  Ubuntu 24.04, 26.04 and 26.10. A distribution that backports a Mutter change without
   moving the shell's major version can make the version gate say yes to a
   library it has never seen. What stands behind it then is the structure size,
   the sentinel and the public-view comparison, in that order. **This is the live
@@ -874,7 +903,9 @@ is printed in the warning anyway:
 #### `--dryrun`, and unrecognised builds
 
 `--dryrun --unsafe-gnome-overlap` prints the same warning and runs every guard
-inside the extension against the running libmutter, writing nothing:
+inside the extension against the running libmutter, writing nothing. (On a build
+the table does not name it refuses, as it always did, and adding the forcing flag
+to a dry run is refused too: [above](#forcing-past-a-refusal-on-a-gnome-nobody-has-measured).)
 
 ```console
 xrandr: overlap check shell-version: GNOME Shell 46.0, libmutter-14.so.0 (build 9e23feb34618)
@@ -904,6 +935,7 @@ xrandr: --unsafe-gnome-overlap: GNOME Shell 52.0 is not a build this has been me
                         MetaMonitorsConfig 80 bytes, from this build's GType registry
   What is shipped:      GNOME 46 -> libmutter-14.so.0, FwOverlap14, Meta typelib 14, MetaMonitorsConfig 72 bytes
                         GNOME 50 -> libmutter-18.so.0, FwOverlap18, Meta typelib 18, MetaMonitorsConfig 80 bytes
+                        GNOME 51 -> libmutter-51.so.0, FwOverlap51, Meta typelib 51, MetaMonitorsConfig 80 bytes
   To add this build:    one record in each of these two, keyed by the GNOME major, and
                         nothing else anywhere:
                             gnome/fuckwayland-overlap@fuckwayland/generations.json
@@ -1475,6 +1507,15 @@ accepted. What each group does here:
   sway (see *Known limitations*).
 - Errors are byte styled like xrandr's (`cannot find output`, `cannot find mode`) and
   carry its exit codes.
+- **The options that are ours are accepted and not printed**, because that help text
+  is xrandr's own bytes and adding to it would end the parity. They are, in full:
+  `--persistent`, `--backend NAME`, `--backends`, `--print-backend`,
+  `--gnome-overlap-status`, `--gnome-overlap-allow`, `--gnome-overlap-forget`,
+  `--unsafe-gnome-overlap` and `--unsafe-gnome-overlap-unmeasured MAJOR`. That is the
+  whole list, and `scripts/check-docs.py` holds it to the parser: an option of ours
+  that stops being accepted, or that starts appearing in the help, is reported.
+  (`--q1` and `--q12` are xrandr's own compatibility tokens, accepted and ignored,
+  and absent from its usage text as well.)
 
 ## Known limitations
 

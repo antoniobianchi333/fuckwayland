@@ -30,9 +30,12 @@ What is installed where
         dconf touches it, which is deliberate, because it is the only thing
         in this package that can cost you the session you are sitting in.
         Turning it on is `gnome-extensions enable
-        fuckwayland-overlap@fuckwayland` and a re-login, by hand, and then
-        `wxrandr --gnome-overlap-allow` before it will do anything.  See
-        Overlapping monitors on GNOME in
+        fuckwayland-overlap@fuckwayland` and a re-login, by hand.  Even then
+        nothing calls it until an apply carries
+        `wxrandr --unsafe-gnome-overlap`, which prints what it is about to do
+        in full every time until `wxrandr --gnome-overlap-allow` records an
+        agreement -- that agreement changes what is printed and nothing else.
+        See Overlapping monitors on GNOME in
         /usr/share/doc/fuckwayland/README.md.gz.
   /usr/lib/fuckwayland/enable-bridge
   /usr/lib/fuckwayland/enable-bridge.desktop
