@@ -645,15 +645,57 @@ measured catching, and what risk is left, is
 [docs/WXRANDR.md § --unsafe-gnome-overlap](docs/WXRANDR.md#--unsafe-gnome-overlap-the-one-route-through).
 If you are not sure you want it, you do not.
 
+**Does it survive a GNOME update? Measured, and yes — so far, and only so far.** Every
+update Ubuntu can deliver today was tried on a default desktop the Ubuntu installer
+built: eight version pairs across 24.04 and 26.04, including the pair the ISO ships,
+the newest in `-updates`, the 26.04 update sitting in `-proposed` that nobody has
+received yet, and — the case a version number cannot see — the GA library swapped under
+a newer shell. All eight applied, with all six checks passing, and the private
+structure this depends on was in the same place in every one of them: 72 bytes on
+GNOME 46, 80 on GNOME 50, the monitor list at the same offset, the tail where it was
+measured. No session was lost, none was damaged, nothing was ever written to
+`monitors.xml`, and an `apt upgrade` performed while an overlap was on screen changed
+nothing. Inside one Ubuntu release it cannot break by a GNOME change, because Ubuntu
+ships exactly one `libmutter` generation per release and keeps it for the life of that
+release. What moves the generation is a release upgrade — 24.04 → 26.04 — and there it
+is designed to refuse until somebody repeats the measurement.
+
+**And when it is wrong it refuses rather than breaking anything.** Nine deliberately
+wrong type descriptions have now been installed on purpose across the two releases —
+wrong generation, swapped fields of the same size, the list read out of the wrong slot
+— five while this was being built and four more during the update testing, and every
+one of them was refused by name, before any write, with `gnome-shell` still running
+afterwards. That is the whole bet this feature makes and it has not lost it yet. It is
+still a bet: nine caught is not a proof that a tenth would be, and the thing that would beat all of it is an
+Ubuntu update that changes that private structure without changing the version number
+the check reads. Nothing in 24.04's 28 months has done that. It is not impossible: one
+26.04 update in `-proposed` today adds a field to a *different* private structure under
+an unchanged version.
+
+**So what should you expect after an update?** Almost always nothing: the same command
+keeps working. Twice a year, at a release upgrade, expect a refusal naming the check
+that refused — that is the design working, not a bug — and the feature stays off until
+this project measures the new GNOME. One thing to know: an ordinary `apt upgrade` that
+replaces `libmutter` ends the agreement below, because what was agreed to was one
+measured build, so the full paragraph comes back once. And a refusal that says
+something holds a modal grab when nothing is on screen has been seen once, seconds
+after a post-update login; running the same command again a moment later worked.
+
 Since 0.4 that paragraph can be **agreed to once**, for the build it was measured on:
 `wxrandr --gnome-overlap-allow` runs all six checks and, only if they pass, records
 what they found — the GNOME Shell version, libmutter's generation and the size this
 build's private configuration struct turned out to be — in
-`~/.config/fuckwayland/overlap-consent.json`. A later overlapping apply then says one
-line instead of the paragraph. It records the *risk* and never the *checking*: every
-check still runs on every apply, and a GNOME upgrade makes the agreement stop applying
-by itself. `wxrandr --gnome-overlap-status` says where you stand and
-`wxrandr --gnome-overlap-forget` withdraws it, from a text console if need be.
+`~/.config/fuckwayland/overlap-consent.json`, together with the GNU build id of the
+`libmutter` those checks ran against. A later overlapping apply then says one line
+instead of the paragraph. It records the *risk* and never the *checking*: every check
+still runs on every apply, and a GNOME upgrade makes the agreement stop applying by
+itself — including the kind of upgrade the version string cannot see, which is why the
+build id is in there. Ubuntu 24.04 has shipped `mutter` 46.2 under GNOME Shell 46.0 for
+most of its life, and swapping that library was measured leaving the version string
+untouched and every check green; without the build id the agreement would quietly have
+carried over to a binary nobody agreed to. `wxrandr --gnome-overlap-status` says where
+you stand and `wxrandr --gnome-overlap-forget` withdraws it, from a text console if
+need be.
 
 And with that extension installed, this window can use it: drag two monitors into an
 overlap and press Apply, and `warandr` explains what it is about to do once, in a
