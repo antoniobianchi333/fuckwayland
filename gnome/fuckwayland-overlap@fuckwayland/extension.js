@@ -39,8 +39,10 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 // Every decision with a right answer lives next door, in a file with no gi
 // imports, so that tests/test_gnome_overlap.py can run it under plain node.
-import {SUPPORTED, generationFor, mutterFault, modalVerdict, libmutterNote} from './rules.js';
-import {parseMutterMappings, key, cmpRegion, le32, compare, drift} from './rules.js';
+import {generations, generationFor, knownMajors, describeTable} from './rules.js';
+import {shellMajor, sonameToken, forceGate, selectByStructSize, TABLE_FIELDS} from './rules.js';
+import {mutterFault, modalVerdict, libmutterNote, isForceable} from './rules.js';
+import {parseMutterMappings, mutterSonames, key, cmpRegion, le32, compare, drift} from './rules.js';
 
 const BUS_NAME = 'org.fuckwayland.Overlap';
 const OBJECT_PATH = '/org/fuckwayland/Overlap';
@@ -76,14 +78,20 @@ const IFACE_XML = `
 // -- refusals ----------------------------------------------------------------
 
 class Refused extends Error {
-    constructor(check, detail) {
+    // `found` is what had been measured when this refusal happened, if
+    // anything: the versions in the room, the size the GType registry reports.
+    // It is carried out to the caller so that a refusal on a build nobody has
+    // measured prints what a maintainer needs to add it, instead of sending
+    // them back to a debugger for numbers this already had.
+    constructor(check, detail, found) {
         super(detail);
         this.check = check;
+        this.found = found || null;
     }
 }
 
-const refuse = (check, detail) => {
-    throw new Refused(check, detail);
+const refuse = (check, detail, found) => {
+    throw new Refused(check, detail, found);
 };
 
 // -- /proc/self/maps ---------------------------------------------------------
@@ -121,12 +129,12 @@ class Maps {
         return hit();
     }
 
-    // Every libmutter mapped into this process, by soname.
+    // Every libmutter mapped into this process, by soname -- the string, not a
+    // number parsed out of it: since mutter 51 the number in that name is the
+    // GNOME major rather than a generation of its own, and the table is keyed
+    // on names for exactly that reason.
     mutters() {
-        const found = new Set();
-        for (const m of this.text.matchAll(/\/\S*libmutter-(\d+)\.so\.0/g))
-            found.add(m[1]);
-        return [...found];
+        return mutterSonames(this.text);
     }
 
     // The same mappings with the rest of the line: the path, the inode the
@@ -333,6 +341,65 @@ function savedConfigDigest() {
 const sameDigest = (a, b) =>
     a.state === b.state && a.sha256 === b.sha256 && a.size === b.size;
 
+// -- the table ---------------------------------------------------------------
+//
+// generations.json ships beside this file and is the only place a
+// version-specific fact lives: the soname to match in /proc/self/maps, the Meta
+// typelib version, the namespace of the description to load, the struct size to
+// demand, and where each was measured.  It is read HERE, at call time, and
+// never at enable: rule 1 at the top of this file is that a login touches
+// nothing, and a login that has to parse a file is a login that can fail.
+//
+// A missing or malformed table is a refusal like any other.  It cannot be
+// forced -- there is nothing to force with.
+
+function loadGenerations(extensionPath) {
+    const path = GLib.build_filenamev([extensionPath, 'generations.json']);
+    let text;
+    try {
+        const [ok, bytes] = GLib.file_get_contents(path);
+        if (!ok)
+            refuse('table', `cannot read ${path}`);
+        text = new TextDecoder().decode(bytes);
+    } catch (e) {
+        refuse('table', `cannot read ${path}: ${e}`);
+    }
+    let table;
+    try {
+        table = JSON.parse(text);
+    } catch (e) {
+        refuse('table', `${path} is not JSON: ${e}`);
+    }
+    const list = generations(table);
+    if (!list.length)
+        refuse('table', `${path} names no generations at all`);
+    for (const g of list) {
+        for (const f of TABLE_FIELDS) {
+            if (g[f] === undefined || g[f] === null)
+                refuse('table', `${path}: the GNOME ${g.shell_major} record has no ${f}`);
+        }
+    }
+    return table;
+}
+
+// GObject.type_query(MetaMonitorsConfig).instance_size, or null.
+//
+// Public API all the way down -- a type name out of a header and the GType
+// registry -- so it is safe to ask on a GNOME nobody has measured, which is
+// exactly when a maintainer needs the number.  It is asked once, in version(),
+// and the typelib check below compares the same value it reports.
+function metaMonitorsConfigSize() {
+    try {
+        const gtype = GObject.type_from_name('MetaMonitorsConfig');
+        if (!gtype)
+            return null;
+        const n = GObject.type_query(gtype).instance_size;
+        return Number.isInteger(n) && n > 0 ? n : null;
+    } catch (e) {
+        return null;
+    }
+}
+
 // -- the guarded session -----------------------------------------------------
 
 class Guarded {
@@ -346,30 +413,85 @@ class Guarded {
     }
 
     // 1. Is this a build whose private layout has been measured?
-    version() {
+    //
+    // `force` is `{shell_major: N}` and nothing else, and it is the ONE thing
+    // in this file that can be skipped past: the requirement that this GNOME be
+    // in the table.  When it is used, the description to read through is chosen
+    // by the size the compositor's own GType registry reports, which is a
+    // selection and not a relaxation -- the size still has to be exactly a
+    // shipped description's, the sentinel still has to round-trip at that
+    // description's offsets, and every other check below is untouched.
+    version(force) {
         const shell = `${Config.PACKAGE_VERSION}`;
-        const generation = generationFor(shell);
-        if (!generation) {
-            refuse('shell-version',
-                   `GNOME Shell ${shell}: this extension knows the private ` +
-                   `layout of ${Object.keys(SUPPORTED).join(' and ')} only`);
-        }
+        const table = this.table = loadGenerations(this.path);
         const maps = new Maps();
         const loaded = maps.mutters();
-        if (loaded.length !== 1 || Number(loaded[0]) !== generation) {
-            refuse('libmutter',
-                   `GNOME Shell ${shell} should carry libmutter-${generation}, ` +
-                   `this process has [${loaded.join(', ')}]`);
-        }
         const repo = GIRepository.Repository.dup_default
             ? GIRepository.Repository.dup_default() : GIRepository.Repository.get_default();
         const meta = repo.get_version ? repo.get_version('Meta') : null;
-        if (meta !== null && Number(meta) !== generation) {
+        // Everything a maintainer needs to add this build, measured before
+        // anything can refuse and carried out with the refusal if one happens.
+        // All of it is public: a version string, the file names in
+        // /proc/self/maps, GIRepository, and GObject.type_query() on a type
+        // whose name is in a header.  Nothing private is read to fill it in.
+        const found = this.found = {
+            shell,
+            shell_major: shellMajor(shell),
+            sonames: loaded,
+            meta_typelib: meta === null ? null : `${meta}`,
+            instance_size: metaMonitorsConfigSize(),
+            known: describeTable(table),
+        };
+        let generation = generationFor(table, shell);
+        let forced = null;
+        if (!generation) {
+            const no = forceGate(force, shell);
+            if (no) {
+                refuse('shell-version',
+                       `GNOME Shell ${shell}: this extension knows the private ` +
+                       `layout of GNOME ${knownMajors(table).join(' and ')} only` +
+                       (no === 'not forced' ? '' : ` (${no})`),
+                       found);
+            }
+            const picked = selectByStructSize(table, found.instance_size);
+            if (picked.refusal) {
+                // Not a forceable refusal and it never becomes one: there is no
+                // description of this build to try, and forcing does not write
+                // one.
+                refuse('struct-size', picked.refusal, found);
+            }
+            generation = picked.generation;
+            forced = {shell_major: found.shell_major,
+                      using: generation.namespace,
+                      because: `MetaMonitorsConfig is ${found.instance_size} bytes ` +
+                               `here, which is the size ${generation.namespace} ` +
+                               `describes (measured on GNOME ${generation.shell_major})`};
+        }
+        if (loaded.length !== 1) {
+            refuse('libmutter',
+                   `exactly one libmutter has to be mapped into gnome-shell; ` +
+                   `this process has [${loaded.join(', ')}]`, found);
+        }
+        // Unforced, the mapped library has to be the one the table says this
+        // shell carries.  Forced, there is no such claim to make -- that is the
+        // claim being skipped -- so what is left is that the Meta typelib and
+        // the mapped library agree with each other, which is mutter's own build
+        // convention and not anything this project measured.
+        if (!forced && loaded[0] !== generation.soname) {
+            refuse('libmutter',
+                   `GNOME Shell ${shell} should carry ${generation.soname}, ` +
+                   `this process has [${loaded.join(', ')}]`, found);
+        }
+        const wantMeta = forced ? sonameToken(loaded[0]) : generation.meta_typelib;
+        if (meta !== null && wantMeta !== null && `${meta}` !== `${wantMeta}`) {
             refuse('meta-typelib',
-                   `the Meta typelib says ${meta}, libmutter says ${generation}`);
+                   `the Meta typelib says ${meta}, ${loaded[0]} says ${wantMeta}`,
+                   found);
         }
         this.shell = shell;
         this.generation = generation;
+        this.libmutterLabel = sonameToken(loaded[0]) || generation.libmutter;
+        this.forced = forced;
         this.maps = maps;
         this.repo = repo;
         // Which build, not only which generation.  `ShellVersion` cannot see a
@@ -380,14 +502,15 @@ class Guarded {
         // Nothing here can refuse: a null is a null.
         try {
             this.libmutter = libmutterIdentity(
-                maps.mutterMappings().find(m => m.gen === generation));
+                maps.mutterMappings().find(m => m.soname === loaded[0]));
         } catch (e) {
             this.libmutter = null;
         }
         const build = this.libmutter && this.libmutter.build_id;
         this._pass('shell-version',
-                   `GNOME Shell ${shell}, libmutter-${generation}` +
-                   (build ? ` (build ${build.slice(0, 12)})` : ''));
+                   `GNOME Shell ${shell}, ${loaded[0]}` +
+                   (build ? ` (build ${build.slice(0, 12)})` : '') +
+                   (forced ? ` -- FORCED: ${forced.because}` : ''));
         return this;
     }
 
@@ -395,7 +518,7 @@ class Guarded {
     //    for MetaMonitorsConfig is the size the GType registry reports.  Read
     //    back from our own typelib, so there is no constant to go stale.
     typelib() {
-        const ns = `FwOverlap${this.generation}`;
+        const ns = this.generation.namespace;
         const dir = GLib.build_filenamev([this.path, 'typelib']);
         if (!GLib.file_test(GLib.build_filenamev([dir, `${ns}-1.0.typelib`]),
                             GLib.FileTest.EXISTS))
@@ -428,14 +551,28 @@ class Guarded {
         const declared = structSize(this.repo, ns, 'ConfigN');
         if (!declared)
             refuse('struct-size', `cannot read the size of ${ns}.ConfigN back from its own typelib`);
-        const gtype = GObject.type_from_name('MetaMonitorsConfig');
-        if (!gtype)
-            refuse('struct-size', 'MetaMonitorsConfig is not a registered GType');
-        const actual = GObject.type_query(gtype).instance_size;
+        // Three numbers, arrived at three ways, and all three have to agree:
+        // the compiled description's own record size, the size the table
+        // records as measured, and the size this build's GType registry
+        // reports.  The middle one is new with the table, and it is not
+        // ceremony -- a forced run picks its description BY that number, so a
+        // table that disagreed with the typelib beside it would be a wrong
+        // description chosen on purpose.
+        if (declared !== this.generation.struct_size) {
+            refuse('struct-size',
+                   `${ns} describes a ${declared}-byte struct, generations.json ` +
+                   `records ${this.generation.struct_size} for GNOME ` +
+                   `${this.generation.shell_major}: the table and the description ` +
+                   'beside it disagree, and neither can be trusted until they do not');
+        }
+        const actual = this.found.instance_size;
+        if (!actual)
+            refuse('struct-size', 'MetaMonitorsConfig is not a registered GType', this.found);
         if (declared !== actual) {
             refuse('struct-size',
                    `this build's MetaMonitorsConfig is ${actual} bytes, the ` +
-                   `description shipped for libmutter-${this.generation} is ${declared}`);
+                   `description shipped for ${this.generation.soname} is ${declared}`,
+                   this.found);
         }
         this.lib = lib;
         this.instanceSize = actual;
@@ -618,7 +755,13 @@ class Guarded {
             ok: true,
             version: VERSION,
             shell: this.shell,
-            libmutter: this.generation,
+            libmutter: this.libmutterLabel,
+            // null on an ordinary run.  Present, and named, when the version
+            // gate was forced past: what was skipped, which description was
+            // picked and why.  wxrandr refuses to record an agreement for a
+            // reply that carries this.
+            forced: this.forced || null,
+            found: this.found || null,
             // The size the struct-size check just read out of this build's GType
             // registry.  It is in the answer because the caller records an
             // agreement against it (wxrandr/gnome_overlap.py): what was agreed to
@@ -715,10 +858,15 @@ export default class FwOverlap extends Extension {
 
     _answer(request, write) {
         const checks = [];
+        let g = null;
         try {
             const req = JSON.parse(request || '{}');
-            const g = new Guarded(this.path);
-            g.version().typelib().sentinel().noPendingDialog()
+            // The only thing a caller can ask to skip, and it has to be asked
+            // for by name on every single call: nothing is remembered here, and
+            // an absent `force` is a refusal on an unmeasured build.
+            const force = req.force || null;
+            g = new Guarded(this.path);
+            g.version(force).typelib().sentinel().noPendingDialog()
                 .read(req.layout_mode, req.expect);
             checks.push(...g.checks);
             if (!write)
@@ -733,6 +881,15 @@ export default class FwOverlap extends Extension {
                 version: VERSION,
                 check: refused ? e.check : 'internal',
                 reason: `${e.message || e}`,
+                // Whether this refusal is one forcing could get past, decided
+                // here rather than by the caller reading the wording: today
+                // that is `shell-version` and nothing else.  Everything else is
+                // a refusal because something is wrong, and forcing does not
+                // make a wrong thing right.
+                forceable: refused ? isForceable(e.check) : false,
+                // The measurements a maintainer needs to add this build, when
+                // the refusal happened somewhere that had them.
+                found: (refused && e.found) || (g && g.found) || null,
                 checks,
             });
         }

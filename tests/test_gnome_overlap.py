@@ -118,17 +118,65 @@ class FakeOverlap:
         # extension noticed that decides nothing (see gnome_overlap.notes_text)
         self.build_id = "0f3a1b2c3d4e5f60718293a4b5c6d7e8f9012345"
         self.notes = []
+        # what the version gate measures before it can refuse, and what a
+        # refusal on an unmeasured build hands back for the maintainer message
+        self.sonames = ["libmutter-18.so.0"]
+        self.meta_typelib = "18"
+
+    def found(self):
+        """The public measurements the real extension carries out with a
+        refusal: version strings, the libmutter mapped, and the size the GType
+        registry reports.  Nothing private is read to produce them, which is why
+        they exist on a build it has just refused to write to."""
+        return {"shell": self.shell,
+                "shell_major": gnome_overlap.shell_major(self.shell),
+                "sonames": list(self.sonames),
+                "meta_typelib": self.meta_typelib,
+                "instance_size": self.instance_size,
+                "known": gnome_overlap.describe_table()}
+
+    def _refuse(self, check, reason, forceable):
+        return {"ok": False, "version": 1, "check": check, "reason": reason,
+                "forceable": forceable, "found": self.found(), "checks": []}
 
     def answer(self, member, req):
         self.calls.append((member, req))
         if self.reply is not None:
             return self.reply
+        # The version gate, modelled: this is the one refusal forcing can get
+        # past, and the fake has to reproduce it or the forced path is never
+        # exercised end to end.
+        forced = None
+        if gnome_overlap.generation_for(self.shell) is None:
+            force = req.get("force")
+            no = (gnome_overlap.force_reason(force, self.shell) if force
+                  else "not forced")
+            if no:
+                return self._refuse(
+                    "shell-version",
+                    "GNOME Shell %s: this extension knows the private layout of "
+                    "GNOME 46 and 50 only" % self.shell, True)
+            picked = [g for g in gnome_overlap.GENERATIONS
+                      if g["struct_size"] == self.instance_size]
+            if len(picked) != 1:
+                return self._refuse(
+                    "struct-size",
+                    "this build's MetaMonitorsConfig is %s bytes and no "
+                    "description shipped here describes a struct that size"
+                    % self.instance_size, False)
+            forced = {"shell_major": gnome_overlap.shell_major(self.shell),
+                      "using": picked[0]["namespace"],
+                      "because": "MetaMonitorsConfig is %s bytes here, which is "
+                                 "the size %s describes (measured on GNOME %s)"
+                                 % (self.instance_size, picked[0]["namespace"],
+                                    picked[0]["shell_major"])}
         monitors = [dict(g, w=1920, h=1080, scale=1, transform=0,
                          primary=(g["x"] == 0))
                     for g in (req.get("want") or req.get("expect") or [])]
         out = {
             "ok": True, "version": 1, "shell": self.shell,
             "libmutter": self.libmutter, "instance_size": self.instance_size,
+            "forced": forced, "found": self.found(),
             "checks": [{"name": "shell-version", "ok": True,
                         "detail": "GNOME Shell %s, libmutter-%s"
                                   % (self.shell, self.libmutter)},
@@ -517,13 +565,30 @@ class Refusals(Case):
             self.assertIn(backend, err)
             self.assertEqual(self.ext_calls(), [])
 
-    def test_an_unmeasured_shell_is_refused_before_the_extension_is_asked(self):
+    def test_an_unmeasured_shell_is_refused_with_what_a_maintainer_needs(self):
+        """The one *cautious* refusal, and the only one whose message is written
+        for somebody who is going to add a generation rather than for somebody
+        who is going to stop.
+
+        The extension is asked exactly one thing here, and it is a Probe whose
+        first check refuses: nothing private is read and nothing is written, and
+        what comes back is the public measurements -- the versions in the room
+        and the size the GType registry reports -- which is the half of the
+        message this process cannot produce on its own."""
         self.mock.overlap.shell = "48.3"
         code, out, err = self.run_cli(FLAG, "--output", "Virtual-2", "--pos", "960x0")
         self.assertEqual(code, 1)
         self.assertIn("GNOME Shell 48.3 is not a build this has been measured on", err)
-        self.assertIn("Nothing was changed", err)
-        self.assertEqual(self.ext_calls(), [])
+        self.assertIn("Nothing was read out of gnome-shell and nothing was written", err)
+        # the versions found, the size reported, what was expected
+        self.assertIn("libmutter-18.so.0", err)
+        self.assertIn("MetaMonitorsConfig 80 bytes, from this build's GType registry", err)
+        self.assertIn("GNOME 46 -> libmutter-14.so.0, FwOverlap14", err)
+        # and where the answer goes
+        self.assertIn("gnome/fuckwayland-overlap@fuckwayland/generations.json", err)
+        self.assertIn("wxrandr/gnome_overlap.py", err)
+        self.assertIn('docs/Technical.md section 6, "Adding a GNOME generation"', err)
+        self.assertEqual(self.ext_calls(), ["Probe"])
         self.assertEqual(self.applied(), [])
 
     def test_a_shell_that_will_not_say_its_version_is_refused(self):
@@ -612,6 +677,7 @@ class TheOrdinaryPathIsUntouched(Case):
 
     def test_a_session_built_without_the_flag_has_it_off(self):
         self.assertIs(cli.Session.overlap, False)
+        self.assertIsNone(cli.Session.overlap_force)
 
 
 class Applying(Case):
@@ -851,7 +917,8 @@ class ShippedExtension(unittest.TestCase):
 
     def test_one_description_per_measured_generation(self):
         got = sorted(os.listdir(os.path.join(EXT_DIR, "typelib")))
-        self.assertEqual(got, ["FwOverlap14-1.0.typelib", "FwOverlap18-1.0.typelib"])
+        self.assertEqual(got, sorted("%s-1.0.typelib" % g["namespace"]
+                                     for g in gnome_overlap.GENERATIONS))
 
     def test_every_pointer_is_declared_as_a_number(self):
         """The one property that turns a wrong offset from a SIGSEGV into a
@@ -868,7 +935,9 @@ class ShippedExtension(unittest.TestCase):
     def test_the_metadata_is_narrow_and_says_what_it_is(self):
         meta = json.load(open(os.path.join(EXT_DIR, "metadata.json")))
         self.assertEqual(meta["uuid"], gnome_overlap.UUID)
-        self.assertEqual(meta["shell-version"], ["46", "50"])
+        # derived from the table by gen-gir.py, not kept beside it
+        self.assertEqual(meta["shell-version"],
+                         [str(g["shell_major"]) for g in gnome_overlap.GENERATIONS])
         self.assertIn("unsupported", meta["name"])
         self.assertIn("nothing at all until it is called", meta["description"])
 
@@ -934,7 +1003,7 @@ class TheLibraryIdentity(unittest.TestCase):
         """A guard that cannot fire is worse than no guard; a *note* that can
         fire is worse than no note, because it would stop an apply that every
         check had passed."""
-        body = self.js[self.js.index("    version() {"):]
+        body = self.js[self.js.index("    version(force) {"):]
         body = body[:body.index("\n    }\n") + 6]
         at = body.index("libmutterIdentity(")
         self.assertIn("try {", body[:at])
@@ -971,11 +1040,13 @@ class HeaderDerivation(unittest.TestCase):
                     encoding="utf-8").read()
 
     def test_the_two_headers_derive_the_two_shipped_descriptions(self):
-        for name, gen, size in (("meta-monitors-config-46.h", 14, 72),
-                                ("meta-monitors-config-50.h", 18, 80)):
+        table = {g["shell_major"]: g for g in self.gen.load_table()}
+        for name, gen, size, major in (("meta-monitors-config-46.h", 14, 72, 46),
+                                       ("meta-monitors-config-50.h", 18, 80, 50)):
             ints, rows, got = self.gen.build_from_header(self.header(name))
             self.assertEqual(got, size, name)
-            self.assertEqual(ints, self.gen.BUILDS[gen][1], name)
+            self.assertEqual(got, table[major]["struct_size"], name)
+            self.assertEqual(ints, table[major]["tail_slots"], name)
             at = {f: off for off, _sz, _t, f in rows}
             self.assertEqual(at["logical_monitor_configs"], 40, name)
             self.assertEqual(at["disabled_monitor_specs"], 48, name)
@@ -1085,13 +1156,20 @@ class RulesJS(unittest.TestCase):
                 self.assertTrue(py.startswith(js), (js, py, rects))
 
     def test_the_version_gate_is_the_same_on_both_sides(self):
+        """One table, read by both halves: rules.js is handed the JSON the
+        extension loads, and Python has its own copy of the same records."""
         script = self.run_js(
-            "console.log(JSON.stringify(input.map(v => R.generationFor(v))));\n")
+            "console.log(JSON.stringify(input.versions.map("
+            "v => R.generationFor(input.table, v))));\n")
         versions = ["46.0", "46", "50.1", "50", "47.1", "45.4", "51.0", "banana", ""]
-        got = self.call(script, versions)
+        table = json.load(open(os.path.join(EXT_DIR, "generations.json")))
+        got = self.call(script, {"table": table, "versions": versions})
         for v, gen in zip(versions, got):
             self.assertEqual(gen is not None,
                              gnome_overlap.unsupported_reason(v) is None, v)
+            if gen is not None:
+                self.assertEqual(gen["shell_major"],
+                                 gnome_overlap.generation_for(v)["shell_major"], v)
 
     def test_the_comparison_rejects_every_single_field(self):
         script = self.run_js(
@@ -1185,9 +1263,11 @@ class RulesJS(unittest.TestCase):
             "console.log(JSON.stringify(R.parseMutterMappings(input)));\n")
         got = self.call(script, maps)
         self.assertEqual(got, [
-            {"gen": 14, "path": "/usr/lib/x86_64-linux-gnu/libmutter-14.so.0.0.0",
+            {"soname": "libmutter-14.so.0",
+             "path": "/usr/lib/x86_64-linux-gnu/libmutter-14.so.0.0.0",
              "inode": 534233, "deleted": False},
-            {"gen": 18, "path": "/usr/lib/x86_64-linux-gnu/mutter-18/libmutter-18.so.0",
+            {"soname": "libmutter-18.so.0",
+             "path": "/usr/lib/x86_64-linux-gnu/mutter-18/libmutter-18.so.0",
              "inode": 111111, "deleted": True},
         ])
         # cogl, clutter and the rest of the family are not libmutter

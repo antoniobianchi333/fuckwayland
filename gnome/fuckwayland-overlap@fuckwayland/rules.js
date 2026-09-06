@@ -8,17 +8,144 @@
 // copying bounded byte ranges, writing the two words -- and asks this file
 // every question that has a right answer.
 
-// -- which builds are known --------------------------------------------------
+// -- which builds are known: THE TABLE ---------------------------------------
+//
+// generations.json, beside this file, is the whole of what is version-specific,
+// and it is read rather than restated here: extension.js loads it (at call
+// time, never at enable) and hands it to the functions below.  Adding a GNOME
+// release is one record there, one record in GENERATIONS in
+// wxrandr/gnome_overlap.py, and one run of gen-gir.py, which writes the .gir,
+// the .typelib and metadata.json's shell-version out of the same file.  Tests
+// hold the two records together field for field.
+//
+// An allowlist, deliberately: a wrong offset does not raise an error, it writes
+// into the compositor's heap.  `--unsafe-gnome-overlap-unmeasured` is the one
+// way past this particular gate and past nothing else; see forceGate() below.
+//
+// NOTHING HERE COMPUTES A NAME FROM A NUMBER, and that is the point of the
+// rewrite.  Through GNOME 50 libmutter's API version was a counter of its own
+// (46 -> libmutter-14, 50 -> libmutter-18), so `libmutter-${major - 32}.so.0`
+// happened to work; mutter 51 sets libmutter_api_version to the GNOME major
+// itself and ships libmutter-51.so.0 with Meta-51.typelib beside it.  A record
+// spells the soname, the typelib version and the namespace out, so a generation
+// whose names follow no scheme at all is still one record.
 
-// GNOME Shell major -> libmutter generation, for the two releases whose
-// private MetaMonitorsConfig layout has been measured (docs/Technical.md
-// section 6).  An allowlist, deliberately: a wrong offset does not raise an
-// error, it writes into the compositor's heap.
-export const SUPPORTED = {46: 14, 50: 18};
+export const TABLE_FIELDS = ['shell_major', 'libmutter', 'soname',
+                             'meta_typelib', 'namespace', 'struct_size',
+                             'tail_slots'];
 
-export function generationFor(shellVersion) {
+export function generations(table) {
+    const list = (table && table.generations) || [];
+    return list.slice().sort((a, b) => a.shell_major - b.shell_major);
+}
+
+export function shellMajor(shellVersion) {
     const major = parseInt(`${shellVersion}`.split('.')[0], 10);
-    return SUPPORTED[major] || null;
+    return Number.isInteger(major) ? major : null;
+}
+
+export function generationFor(table, shellVersion) {
+    const major = shellMajor(shellVersion);
+    return generations(table).find(g => g.shell_major === major) || null;
+}
+
+export function knownMajors(table) {
+    return generations(table).map(g => g.shell_major);
+}
+
+// One line per shipped generation, for the refusal a maintainer reads.
+export function describeTable(table) {
+    return generations(table).map(
+        g => `GNOME ${g.shell_major} -> ${g.soname}, ${g.namespace}, ` +
+             `Meta typelib ${g.meta_typelib}, MetaMonitorsConfig ` +
+             `${g.struct_size} bytes`);
+}
+
+// The token in a libmutter file name: `libmutter-18.so.0` -> `18`.  Used only
+// where there is no table entry to consult, which is a forced run.
+export function sonameToken(soname) {
+    const m = /^libmutter-([^/\s-]+)\.so\.0$/.exec(`${soname}`);
+    return m ? m[1] : null;
+}
+
+// -- forcing past the version gate -------------------------------------------
+//
+// `wxrandr --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured <major>`.
+// It skips ONE thing: the requirement that this GNOME be one of the builds in
+// the table.  Everything else -- one libmutter mapped, the Meta typelib
+// agreeing with it, the struct size, every symbol callable, the sentinel, the
+// modal-grab check, the bounded read, the layout mode, the public-view
+// comparison, the read-back, Mutter's own validator as a positive control, and
+// the monitors.xml digest -- runs exactly as it does on a measured build, and
+// none of it can be forced.  A refusal from any of those means something is
+// wrong that forcing cannot make right.
+//
+// The argument is the GNOME Shell major of the machine in front of you, and it
+// is compared against the one that is running.  That is what stops a command
+// line being pasted out of a forum: it names the poster's GNOME, and on
+// anybody else's it is refused by number before anything is read.
+
+export const FORCE_FLAG = '--unsafe-gnome-overlap-unmeasured';
+
+//: the checks a forced run may skip, and nothing else is skippable anywhere.
+export const FORCEABLE_CHECKS = ['shell-version'];
+
+export function isForceable(check) {
+    return FORCEABLE_CHECKS.indexOf(check) >= 0;
+}
+
+// Why this force request does not apply to this session, or null when it does.
+// Fails closed on everything: no request, an unreadable request, a major that
+// is not a whole number, or one that is not the major that is running.
+export function forceGate(force, shellVersion) {
+    if (force === undefined || force === null || force === false)
+        return 'not forced';
+    const asked = force && force.shell_major;
+    const running = shellMajor(shellVersion);
+    if (!Number.isInteger(asked)) {
+        return `${FORCE_FLAG} was given no whole GNOME Shell major to confirm ` +
+               `(got ${JSON.stringify(asked)}), and a confirmation that names ` +
+               'nothing confirms nothing';
+    }
+    if (running === null) {
+        return `this shell does not report a version this can read ` +
+               `(${JSON.stringify(`${shellVersion}`)}), so there is nothing for ` +
+               `${FORCE_FLAG} ${asked} to agree with`;
+    }
+    if (asked !== running) {
+        return `${FORCE_FLAG} ${asked} names GNOME Shell ${asked}; this session ` +
+               `is GNOME Shell ${shellVersion}.  It has to name the GNOME in ` +
+               'front of you, so that a command line copied from somewhere else ' +
+               'is refused here rather than run';
+    }
+    return null;
+}
+
+// Which shipped description a forced run may use: the one whose declared
+// MetaMonitorsConfig size is the size this build's GType registry reports.
+// Returns {generation} or {refusal}.  It is a selection, not a relaxation --
+// the size still has to be exactly equal, the sentinel still has to round-trip
+// at that description's offsets, and an ambiguous answer is a refusal.
+export function selectByStructSize(table, size) {
+    const all = generations(table);
+    if (!Number.isInteger(size) || size <= 0) {
+        return {refusal: 'this build does not report a MetaMonitorsConfig size ' +
+                         '(the GType registry does not know the type), so there ' +
+                         'is no description to pick'};
+    }
+    const hits = all.filter(g => g.struct_size === size);
+    if (hits.length === 1)
+        return {generation: hits[0]};
+    if (!hits.length) {
+        return {refusal: `this build's MetaMonitorsConfig is ${size} bytes and ` +
+                         `no description shipped here describes a struct that ` +
+                         `size (${all.map(g => `${g.namespace} ${g.struct_size}`)
+                             .join(', ')}).  Forcing cannot invent a description: ` +
+                         'this needs a new one, from the release\'s own header'};
+    }
+    return {refusal: `${hits.length} shipped descriptions declare ${size} bytes ` +
+                     `(${hits.map(g => g.namespace).join(', ')}), so the size ` +
+                     'cannot say which one this build is'};
 }
 
 // -- Mutter's own geometry rule ----------------------------------------------
@@ -153,18 +280,35 @@ export function modalVerdict(modalCount) {
 // pattern anchored on `.so.0` silently matches nothing at all -- which is how
 // the first cut of this reported "no build id" on every machine it ran on.
 //
-// [{gen, path, inode, deleted}], first mapping of each path.  Everything it
+// [{soname, path, inode, deleted}], first mapping of each path.  Everything it
 // feeds is bookkeeping, so a line it cannot read is simply not in the list.
+//
+// `soname` and not a number since 0.4: mutter 51's library is
+// libmutter-51.so.0, where the number is the GNOME major rather than a
+// generation counter, and a scan that returns integers has already thrown away
+// the thing the table is keyed on.  The token may not contain a dash, which is
+// what keeps `mutter-51/libmutter-clutter-51.so.0` -- mapped into the same
+// process, and not the library this writes to -- out of the answer.
+
+//: address perms offset dev inode pathname; groups: inode, path, soname.
+const MAPS_LINE = new RegExp(
+    '^[0-9a-f]+-[0-9a-f]+ \\S+ \\S+ \\S+ +(\\d+) +' +
+    '(/\\S*(libmutter-[^/\\s-]+\\.so\\.0)\\S*?)( \\(deleted\\))?$');
 
 export function parseMutterMappings(mapsText) {
     const out = new Map();
     for (const line of `${mapsText}`.split('\n')) {
-        // address perms offset dev inode pathname
-        const m = line.match(/^[0-9a-f]+-[0-9a-f]+ \S+ \S+ \S+ +(\d+) +(\/\S*libmutter-(\d+)\.so\.0\S*?)( \(deleted\))?$/);
+        const m = line.match(MAPS_LINE);
         if (m && !out.has(m[2]))
-            out.set(m[2], {gen: Number(m[3]), path: m[2], inode: Number(m[1]), deleted: !!m[4]});
+            out.set(m[2], {soname: m[3], path: m[2], inode: Number(m[1]), deleted: !!m[4]});
     }
     return [...out.values()];
+}
+
+// The distinct libmutter sonames mapped into this process.  Exactly one is the
+// only answer any run accepts, forced or not.
+export function mutterSonames(mapsText) {
+    return [...new Set(parseMutterMappings(mapsText).map(m => m.soname))];
 }
 
 export function libmutterNote(ident) {

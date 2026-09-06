@@ -23,7 +23,11 @@ gnome-shell, and on Wayland a dead compositor is the whole session, so:
   request GNOME would take goes down the same DisplayConfig path it always did,
   and the extension is not even asked whether it is there;
 * **it refuses on a compositor it does not recognise**, before it asks the
-  extension anything, and the extension refuses again on its own account;
+  extension anything, and the extension refuses again on its own account.  That
+  one refusal, and no other, can be forced past by somebody who knows their
+  machine, with a second flag that names the GNOME in front of them:
+  `--unsafe-gnome-overlap-unmeasured 51`.  See "forcing" below for what it
+  skips, what it cannot skip and why the argument is not decoration;
 * **the warning is printed before the call, in full,** on every invocation until it
   is agreed to -- once, deliberately, and only for the build the checks passed on;
   see "the agreement" at the foot of this file for why that changes what is
@@ -41,6 +45,7 @@ the agreement below.
 import json
 import os
 import re
+import textwrap
 import time
 
 from fwcommon.dbus_mini import Bus, DBusError
@@ -54,17 +59,64 @@ SHELL_NAME = "org.gnome.Shell"
 SHELL_PATH = "/org/gnome/Shell"
 CALL_TIMEOUT = 30.0
 
-#: GNOME Shell releases whose private `MetaMonitorsConfig` layout has been
-#: measured (docs/Technical.md section 6).  Everything else is refused before a
-#: single byte is read: the extension's own guards would very probably catch a
-#: stranger, but "very probably" is not a thing to spend somebody's session on.
-SUPPORTED_MAJORS = (46, 50)
+#: THE TABLE.  One record per GNOME generation whose private
+#: `MetaMonitorsConfig` layout has been measured (docs/Technical.md section 6),
+#: and the only place in this file a version-specific fact lives.
+#:
+#: It is the same table as
+#: `gnome/fuckwayland-overlap@fuckwayland/generations.json`, which is what the
+#: extension itself reads; `tests/test_overlap_force.py` proves the two
+#: identical, field for field, and names the file to fix when they are not.
+#: Two copies rather than one because the extension is installed into
+#: `~/.local/share/gnome-shell/extensions` and wxrandr is installed into a venv
+#: or a .deb, and neither can read the other's files at runtime.
+#:
+#: EVERY NAME IS WRITTEN OUT, none is computed.  Through GNOME 50 libmutter's
+#: API version was a counter of its own -- 46 carried libmutter-14, 50 carried
+#: libmutter-18 -- and code that spelled `libmutter-%d.so.0 % (major - 32)`
+#: worked by accident of that arithmetic.  mutter 51 sets
+#: `libmutter_api_version = '51'` (meson.build, line 10 of the 51~rc tarball),
+#: so the next Ubuntu ships `libmutter-51.so.0` with `Meta-51.typelib` beside it
+#: and the arithmetic is gone.  A generation whose names follow no scheme at all
+#: is still exactly one record.
+GENERATIONS = (
+    {"shell_major": 46,
+     "libmutter": "14",
+     "soname": "libmutter-14.so.0",
+     "meta_typelib": "14",
+     "namespace": "FwOverlap14",
+     "struct_size": 72,
+     "tail_slots": 1,
+     "measured_on": "Ubuntu 24.04, GNOME Shell 46.0, mutter 46.0 and 46.2"},
+    {"shell_major": 50,
+     "libmutter": "18",
+     "soname": "libmutter-18.so.0",
+     "meta_typelib": "18",
+     "namespace": "FwOverlap18",
+     "struct_size": 80,
+     "tail_slots": 3,
+     "measured_on": "Ubuntu 26.04, GNOME Shell 50.1, mutter 50.1"},
+)
+
+#: what a record must have.  A record missing one of these is not a record.
+TABLE_FIELDS = ("shell_major", "libmutter", "soname", "meta_typelib",
+                "namespace", "struct_size", "tail_slots")
+
+#: derived, never written down: the allowlist is the table's keys.
+SUPPORTED_MAJORS = tuple(g["shell_major"] for g in GENERATIONS)
 
 INSTALL_HINT = (
     "the overlap extension is not running: install it with\n"
     "    sh gnome/install-overlap.sh\n"
     "and log out and back in once (gnome-shell reads extension directories "
     "only at login)\n")
+
+#: where a maintainer puts the answer, and what has to be run afterwards.  It is
+#: in the refusal itself because somebody meeting this for the first time is
+#: looking at a terminal, not at a document, and the document is one line down.
+TABLE_FILES = ("gnome/fuckwayland-overlap@fuckwayland/generations.json",
+               "wxrandr/gnome_overlap.py  (GENERATIONS)")
+TABLE_DOC = 'docs/Technical.md section 6, "Adding a GNOME generation"'
 
 
 # -- what the flag is allowed to do ------------------------------------------
@@ -77,20 +129,126 @@ def shell_major(version):
         return None
 
 
-def unsupported_reason(version):
+def generation_for(version):
+    """The table record for a GNOME Shell version string, or None."""
+    major = shell_major(version)
+    for g in GENERATIONS:
+        if g["shell_major"] == major:
+            return g
+    return None
+
+
+def describe_table():
+    """One line per shipped generation, for the refusal a maintainer reads."""
+    return ["GNOME %s -> %s, %s, Meta typelib %s, MetaMonitorsConfig %s bytes"
+            % (g["shell_major"], g["soname"], g["namespace"],
+               g["meta_typelib"], g["struct_size"])
+            for g in GENERATIONS]
+
+
+def unsupported_reason(version, force=None):
     """Why this compositor is not one to write into, or None if it is one.
 
     Deliberately a version *allowlist* rather than a blocklist.  The offsets
     this depends on are private, they already differ between the two releases
     that are supported, and a wrong one does not raise an error -- it writes
     into the compositor's heap.
+
+    `force` is a `--unsafe-gnome-overlap-unmeasured` request, and it is the one
+    thing that turns this particular refusal into a yes.  It cannot turn any
+    other refusal into a yes: see `FORCEABLE` below.
     """
-    major = shell_major(version)
-    if major is None:
+    if generation_for(version) is not None:
+        return None
+    if shell_major(version) is None:
+        # Not forceable, and this is the reason: forcing is somebody vouching
+        # for the build in front of them by naming it, and a version string
+        # nothing can read is not a build anybody can name.
         return ("cannot tell which GNOME Shell this is (%r)" % (version,))
-    if major not in SUPPORTED_MAJORS:
-        return ("GNOME Shell %s is not a build this has been measured on "
-                "(%s are)" % (version, " and ".join(str(m) for m in SUPPORTED_MAJORS)))
+    if force is not None and force_reason(force, version) is None:
+        return None
+    return ("GNOME Shell %s is not a build this has been measured on "
+            "(%s are)" % (version, " and ".join(str(m) for m in SUPPORTED_MAJORS)))
+
+
+# -- forcing -----------------------------------------------------------------
+#
+# `--unsafe-gnome-overlap-unmeasured <major>`, and it is a second flag rather
+# than a value of the first on purpose: `--unsafe-gnome-overlap` stays the only
+# thing that turns the feature on at all, and this one only ever *widens* it.
+# Typed alone it is a usage error, so there is no arrangement of the CLI in
+# which forcing is the thing that enables anything.
+#
+# THE ARGUMENT IS THE POINT.  It is the GNOME Shell major of the machine in
+# front of you, and it is compared with the one that is running, out here and
+# again inside gnome-shell.  A command line pasted out of a forum names the
+# GNOME that person had; on anybody else's it is refused by number, before a
+# byte is read.  That is the property a bare `--force` cannot have.
+#
+# What it skips: the check that this GNOME is one of the builds in the table
+# above, and with it the check that the mapped libmutter is the one that GNOME
+# is supposed to carry -- because on a build nobody has measured there is no
+# "supposed to".  The description to read through is then chosen by the size
+# this build's own GType registry reports for MetaMonitorsConfig, which is a
+# selection and not a relaxation: the size still has to be exactly a shipped
+# description's, and the sentinel still has to round-trip at that description's
+# offsets before anything is written.
+#
+# What it cannot skip: everything else, and the list is not negotiable because
+# each entry refuses for a reason forcing does not answer.  See FORCEABLE.
+
+FORCE_FLAG = "--unsafe-gnome-overlap-unmeasured"
+
+#: The refusals forcing may get past, by the name the check reports.  One entry,
+#: and the shape of the rule is what matters: a *cautious* refusal -- "this is a
+#: build nobody here has measured" -- is what forcing is for.  A *certain*
+#: refusal -- a symbol that is not there, an extension that is not there, a
+#: compositor that is not GNOME, a struct nothing describes, a read that does
+#: not agree with Mutter -- is not, because there is nothing to force: the code
+#: could not run, or it just proved itself wrong.
+FORCEABLE = ("shell-version",)
+
+
+def is_forceable(check):
+    """Is a refusal named `check` one that forcing is allowed to get past?"""
+    return check in FORCEABLE
+
+
+def parse_force(value):
+    """`--unsafe-gnome-overlap-unmeasured 51` -> `{"shell_major": 51}`.
+
+    Raises ValueError for anything that is not a whole GNOME Shell major.  A
+    version string is refused rather than truncated: the flag asks what major
+    this is, and somebody who types `51.0` has not read the sentence that told
+    them what to type."""
+    text = str(value).strip()
+    if not re.fullmatch(r"[0-9]{1,3}", text):
+        raise ValueError(
+            "%s takes the GNOME Shell major version that is running here, as a "
+            "whole number (for example: %s 51).  It got %r.\n"
+            % (FORCE_FLAG, FORCE_FLAG, value))
+    return {"shell_major": int(text)}
+
+
+def force_reason(force, version):
+    """Why this force request does not apply to this session, or None when it
+    does.  Fails closed on everything, and the comparison is the whole guard."""
+    if not force:
+        return "not forced"
+    asked = force.get("shell_major")
+    # bool is an int in Python and is not a GNOME Shell major in any language
+    if not isinstance(asked, int) or isinstance(asked, bool):
+        return ("%s was given no whole GNOME Shell major to confirm" % FORCE_FLAG)
+    running = shell_major(version)
+    if running is None:
+        return ("this shell does not report a version this can read (%r), so "
+                "there is nothing for %s %s to agree with"
+                % (version, FORCE_FLAG, asked))
+    if asked != running:
+        return ("%s %s names GNOME Shell %s; this session is GNOME Shell %s.  It "
+                "has to name the GNOME in front of you, so that a command line "
+                "copied from somewhere else is refused here rather than run"
+                % (FORCE_FLAG, asked, asked, version))
     return None
 
 
@@ -208,6 +366,141 @@ def warning(shell, moves, undo):
     return "".join(lines)
 
 
+
+# -- the refusal a maintainer reads ------------------------------------------
+
+def _found_lines(found):
+    """What is running, out of the extension's `found` block -- the facts it
+    measured before anything could refuse.  All of them are public: a version
+    string, file names in /proc/self/maps, GIRepository, and
+    `GObject.type_query()` on a type whose name is in a header.  Nothing private
+    is read to produce them, which is why they are available on a build this has
+    refused to write to."""
+    found = found or {}
+    out = ["GNOME Shell %s" % (found.get("shell") or "?")]
+    for soname in found.get("sonames") or []:
+        out.append(str(soname))
+    if not found.get("sonames"):
+        out.append("no libmutter found in gnome-shell's mappings")
+    if found.get("meta_typelib"):
+        out.append("Meta typelib %s" % found["meta_typelib"])
+    if found.get("instance_size"):
+        out.append("MetaMonitorsConfig %s bytes, from this build's GType registry"
+                   % found["instance_size"])
+    else:
+        out.append("MetaMonitorsConfig size unknown (the GType registry does not "
+                   "have the type)")
+    return out
+
+
+def unmeasured_refusal(version, found=None, force_hint=True):
+    """The whole of what an unmeasured GNOME prints, and the one message in this
+    file written for a maintainer rather than for a user.
+
+    The brief it answers: somebody who has never seen this code has to be able
+    to add a generation from this message and the document it names.  So it says
+    the versions found, the structure size this build reports, what is shipped
+    to compare that against, which two files the answer goes in, what to run
+    afterwards, and where the procedure is written down.
+
+    `found` is the extension's own measurements when it could be asked (it
+    refuses at the same gate, and carries them out with the refusal); None when
+    there was no extension to ask, and then the block is one line and says so.
+    """
+    lines = ["%s: GNOME Shell %s is not a build this has been measured on.\n"
+             "  Nothing was read out of gnome-shell and nothing was written.\n\n"
+             % (FLAG, version)]
+
+    def block(title, items):
+        for i, item in enumerate(items):
+            lines.append("  %s %s\n"
+                         % (("%-21s" % title) if i == 0 else " " * 21, item))
+
+    if found:
+        block("What is running:", _found_lines(found))
+    else:
+        block("What is running:",
+              ["GNOME Shell %s" % version,
+               "the rest needs the extension, which is not on the bus here:",
+               "sh gnome/install-overlap.sh, log in again, and run this again"])
+    block("What is shipped:", (found or {}).get("known") or describe_table())
+    block("To add this build:",
+          ["one record in each of these two, keyed by the GNOME major, and"]
+          + ["nothing else anywhere:"]
+          + ["    %s" % f for f in TABLE_FILES]
+          + ["then"]
+          + ["    python3 gnome/overlap-typelib/gen-gir.py --from-header \\",
+             "        <mutter source>/src/backends/meta-monitor-config-manager.h",
+             "    python3 gnome/overlap-typelib/gen-gir.py"]
+          + ["which derives the offsets from that release's own header and then",
+             "writes the description, its typelib and the extension's",
+             "metadata.json out of the table.  The procedure, and the three-head",
+             "measurement that has to follow it before anything ships, is",
+             TABLE_DOC + "."])
+    if force_hint:
+        block("To try it here now:",
+              ["wxrandr %s %s %s <the rest of the line>"
+               % (FLAG, FORCE_FLAG, shell_major(version)),
+               "which skips this one check and no other, records nothing, and",
+               "may end this session.  It prints what it is doing first; read",
+               "that before you type it."])
+    return "".join(lines)
+
+
+# -- forcing: what is printed before it is done ------------------------------
+
+def forcing_warning(version, reply_or_forced=None):
+    """Printed before the ordinary warning, on every forced invocation, with no
+    way to silence it: a forced run never reads the agreement and never records
+    one, so there is no "as agreed" line this can collapse into.
+
+    It says the two things a warning has to say -- what may happen, and what to
+    do if it does -- and one more that this particular warning owes the reader:
+    exactly what is being skipped and exactly what is not, so that "I forced it"
+    is not mistaken for "the checks are off"."""
+    forced = reply_or_forced or {}
+    if isinstance(forced, dict) and forced.get("forced"):
+        forced = forced["forced"]
+    picked = forced.get("because") if isinstance(forced, dict) else None
+    lines = ["xrandr: %s %s: forcing past the one check that says this GNOME has\n"
+             "  been measured.  This session may end.\n"
+             % (FORCE_FLAG, shell_major(version))]
+
+    def block(title, items):
+        for i, item in enumerate(items):
+            lines.append("  %s %s\n"
+                         % (("%-21s" % title) if i == 0 else " " * 21, item))
+
+    block("What is skipped:",
+          ["one thing: that GNOME Shell %s is a build this project has" % version,
+           "measured, and with it that the libmutter mapped into gnome-shell is",
+           "the one this GNOME is supposed to carry -- on a build nobody has",
+           "measured there is no supposed to.  The description to write through",
+           "is chosen instead by the size this build's own GType registry",
+           "reports for MetaMonitorsConfig."]
+          + (textwrap.wrap(picked, 56) if picked else []))
+    block("What is not skipped:",
+          ["everything else, and none of it can be forced: exactly one libmutter",
+           "mapped, the Meta typelib agreeing with it, the struct size equal to",
+           "the description's, every symbol callable, the sentinel through",
+           "Mutter's own setter, the modal-grab check, the bounded read, the",
+           "layout mode, the field-by-field comparison against Mutter's public",
+           "view, the read-back of the two words, Mutter's own validator as a",
+           "positive control, and the digest of ~/.config/monitors.xml."])
+    block("What may happen:",
+          ["the two words go where this description believes a logical monitor's",
+           "position is.  On a build nobody has measured that belief is the thing",
+           "being forced past.  If it is wrong, gnome-shell crashes, and on",
+           "Wayland gnome-shell is the session: every program running in it goes",
+           "with it, unsaved work included."])
+    block("What is recorded:",
+          ["nothing.  A forced run neither reads nor writes the agreement, so",
+           "this is printed every single time, and %s" % ALLOW_FLAG,
+           "refuses while this flag is in use."])
+    lines.append(RECOVERY.replace("  If the session dies:  ", "  If it happens:        ", 1))
+    return "".join(lines)
+
+
 def moves_text(before, after):
     """"Virtual-2 from +1920+0 to +960+0" per monitor that actually moves."""
     was = {tuple(g["connectors"]): (g["x"], g["y"]) for g in before}
@@ -266,21 +559,26 @@ class Overlap:
             raise OverlapError("the overlap extension answered something that "
                                "is not JSON\n")
 
-    def probe(self, layout_mode=None, expect=None):
-        return self._call("Probe", _request(layout_mode, expect))
+    def probe(self, layout_mode=None, expect=None, force=None):
+        return self._call("Probe", _request(layout_mode, expect, force))
 
-    def apply(self, layout_mode, expect, want):
-        req = _request(layout_mode, expect)
+    def apply(self, layout_mode, expect, want, force=None):
+        req = _request(layout_mode, expect, force)
         req["want"] = want
         return self._call("ApplyOverlap", req)
 
 
-def _request(layout_mode, expect):
+def _request(layout_mode, expect, force=None):
     req = {}
     if layout_mode:
         req["layout_mode"] = int(layout_mode)
     if expect is not None:
         req["expect"] = expect
+    # Never present unless this invocation typed the flag.  The extension
+    # refuses on an unmeasured build when the key is absent, so the default is
+    # the safe one at both ends and forcing has to be asked for on every call.
+    if force:
+        req["force"] = dict(force)
     return req
 
 
@@ -289,6 +587,18 @@ def refusal_text(reply):
     check = reply.get("check") or "?"
     return ("the overlap extension refused (%s): %s\n"
             % (check, reply.get("reason") or "no reason given"))
+
+
+def refusal_is_forceable(reply):
+    """Does this refusal name a check that `--unsafe-gnome-overlap-unmeasured`
+    could get past?  The extension answers for itself (`forceable`), and this
+    falls back to the same list here for an extension too old to say.
+
+    It decides what is *offered*, never what is done: a forced run still asks
+    for the whole thing again and the extension decides again."""
+    if "forceable" in reply:
+        return bool(reply.get("forceable"))
+    return is_forceable(reply.get("check"))
 
 
 def notes_text(reply):
@@ -312,6 +622,15 @@ def applied_text(reply, quiet=False):
     time.  What survives `quiet` is the one line that is not reassurance: a
     saved configuration file that moved when it cannot have."""
     out = []
+    forced = reply.get("forced")
+    if forced:
+        # Never suppressed by `quiet`, because a forced run never has one -- and
+        # because "this was applied on a build nobody measured, through a
+        # description picked by size" is news on every single invocation.
+        out.append("applied on an unmeasured GNOME through %s: %s.  "
+                   "Nothing was recorded; the next run asks in full again.\n"
+                   % (forced.get("using") or "a shipped description",
+                      forced.get("because") or "picked by MetaMonitorsConfig size"))
     verify = reply.get("verify")
     if verify and not quiet:
         out.append("mutter's own validator on the result: %s\n" % verify)
@@ -397,6 +716,11 @@ def facts(reply):
     return {"shell": str(reply.get("shell") or ""),
             "libmutter": reply.get("libmutter"),
             "struct_size": int(size) if size else None,
+            # True when the version gate was forced past on this call.  It is
+            # here so that `save_consent()` can refuse rather than trust its
+            # caller: an agreement is an agreement to a *measured* risk, and a
+            # forced run is the definition of the unmeasured one.
+            "forced": bool(reply.get("forced")),
             # The GNU build id of the libmutter this session has mapped, as the
             # extension read it out of the file the mapping came from.  It is
             # here because the GNOME Shell version string demonstrably cannot
@@ -445,9 +769,22 @@ def save_consent(f, how, env=None):
     `f` is a `facts()` dict that came back from a *successful* probe or apply, so
     nothing can be recorded for a build the six checks have not just passed on;
     `how` is the words for how it was given, kept so that `--gnome-overlap-status`
-    can say it back."""
+    can say it back.
+
+    A forced run can never reach here -- `--gnome-overlap-allow` and
+    `--unsafe-gnome-overlap-unmeasured` are refused together at parse time, and
+    the applying path in wxrandr/mutter.py does not read or write the
+    agreement at all when it is forcing -- and this refuses anyway, from the reply rather than from the
+    caller's word for it.  A yes that was only ever given on a build nobody
+    measured is not a yes anybody can be held to."""
+    if f.get("forced"):
+        raise ValueError(
+            "refusing to record an agreement for a run that used %s: an "
+            "agreement names a build the checks passed on, and a forced run is "
+            "the one that did not\n" % FORCE_FLAG)
     path = consent_path(env)
     rec = dict(f)
+    rec.pop("forced", None)
     rec.update({"format": CONSENT_FORMAT,
                 "agreed": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "how": how})
@@ -501,10 +838,16 @@ def consent_drift(rec, f):
     if not rec:
         return None
     bad = []
-    for k, word in (("libmutter", "libmutter generation"),
-                    ("struct_size", "MetaMonitorsConfig size")):
+    # `libmutter` is compared as text since 0.4: it is the table's label for the
+    # generation, and a label is not arithmetic (mutter 51's is "51", which is
+    # also its GNOME major).  `str()` on both sides keeps records written when
+    # it was a number reading identically.
+    for k, word, same in (("libmutter", "libmutter generation",
+                           lambda a, b: str(a).strip() == str(b).strip()),
+                          ("struct_size", "MetaMonitorsConfig size",
+                           lambda a, b: int(a) == int(b))):
         want, got = rec.get(k), f.get(k)
-        if want is not None and got is not None and int(want) != int(got):
+        if want is not None and got is not None and not same(want, got):
             bad.append("%s %s, not %s" % (word, got, want))
     # The one that a routine `apt upgrade` actually moves.  Measured: four
     # libmutter builds on 24.04 and four on 26.04, every one of them a different

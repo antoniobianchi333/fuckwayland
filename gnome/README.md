@@ -144,21 +144,33 @@ then asks Mutter to apply the result.
 ```
 gnome/
   fuckwayland-overlap@fuckwayland/
-    metadata.json                 uuid, shell-version ["46", "50"] — and no others
+    generations.json              THE TABLE: one record per measured GNOME, holding
+                                  the soname, the Meta typelib version, the
+                                  namespace, the struct size and where it was
+                                  measured.  Everything else here is generated
+                                  from it, or read from it at run time
+    metadata.json                 uuid, and shell-version generated from the table
     extension.js                  the guards, the bounded reader, the write
     rules.js                      the pure decisions (no gi: node can run it, and the
                                   tests do)
     org.fuckwayland.Overlap1.xml  Probe / ApplyOverlap, JSON in, JSON out
     typelib/FwOverlap14-1.0.typelib   the description for libmutter 14 (GNOME 46)
     typelib/FwOverlap18-1.0.typelib   ... and for libmutter 18 (GNOME 50)
-  overlap-typelib/gen-gir.py      generates and compiles both, and `--check` proves
-                                  the checked-in .typelib matches the .gir beside it
-  install-overlap.sh              install / --check / --uninstall
+  overlap-typelib/gen-gir.py      reads the table and writes all three of those:
+                                  the .gir, the .typelib and metadata.json.
+                                  `--check` proves none of them has gone stale
+  install-overlap.sh              install / --check / --uninstall; reads the table
+                                  for which typelibs to require and which shells to
+                                  warn about
 ```
 
 The typelibs are checked in because compiling one needs `g-ir-compiler`, which no
 desktop has installed. `python3 gnome/overlap-typelib/gen-gir.py` rebuilds them from
-the `.gir` sources, and `--check` is what notices a `.gir` edited without a rebuild.
+the table, and `--check` is what notices a `.gir` edited without a rebuild.  Adding a
+GNOME release is one record in `generations.json`, the same record in `GENERATIONS`
+in `wxrandr/gnome_overlap.py` (a test proves the two identical), one run of that
+script, and then the measurement:
+[docs/Technical.md § The table](../docs/Technical.md#the-table-and-adding-a-gnome-generation).
 The structure they describe, field by field and offset by offset on both generations,
 and what to do to add a third, is
 [docs/Technical.md § The private structure](../docs/Technical.md#the-private-structure-and-the-descriptions-that-describe-it);

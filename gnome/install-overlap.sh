@@ -184,7 +184,7 @@ copy_files() {
     fi
     mkdir -p "$DEST/typelib"
     cp -f "$SRC/metadata.json" "$SRC/extension.js" "$SRC/rules.js" \
-          "$SRC/org.fuckwayland.Overlap1.xml" "$DEST/"
+          "$SRC/generations.json" "$SRC/org.fuckwayland.Overlap1.xml" "$DEST/"
     cp -f "$SRC"/typelib/*.typelib "$DEST/typelib/"
     if [ "$SYSTEM" = 0 ] && [ "$ME" = 0 ] && [ "$TARGET_UID" != 0 ]; then
         chown -R "$TARGET_USER" "$TARGET_HOME/.local/share/gnome-shell" 2>/dev/null || true
@@ -192,26 +192,46 @@ copy_files() {
     echo "install-overlap.sh: installed into $DEST"
 }
 
+# Everything version-specific comes out of the table, so this script has no
+# list of its own to fall out of step with it.  Two greps over one file, which
+# this project generates and keeps one record per line: the namespaces (one
+# typelib each must be present) and the GNOME majors (which shells this has been
+# measured on).
+TABLE="$SRC/generations.json"
+
+table_field() {
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",]*\).*/\1/p" "$TABLE"
+}
+
 case $MODE in
 install)
     [ -d "$SRC" ] || { echo "install-overlap.sh: $SRC is missing" >&2; exit 1; }
-    for t in "$SRC"/typelib/FwOverlap14-1.0.typelib "$SRC"/typelib/FwOverlap18-1.0.typelib; do
+    [ -f "$TABLE" ] || { echo "install-overlap.sh: $TABLE is missing" >&2; exit 1; }
+    for ns in $(table_field namespace); do
+        t="$SRC/typelib/$ns-1.0.typelib"
         [ -f "$t" ] || {
             echo "install-overlap.sh: $t is missing; run" \
                  "python3 gnome/overlap-typelib/gen-gir.py" >&2
             exit 1
         }
     done
+    MAJORS=$(table_field shell_major | tr '\n' ' ')
     v=$(shell_version || true)
-    case ${v:-} in
-        46.*|50.*|46|50) ;;
-        '') echo "install-overlap.sh: no running GNOME Shell to ask; installing anyway" >&2 ;;
-        *)  echo "install-overlap.sh: GNOME Shell $v: this extension has been" \
-                 "measured on 46 and 50 only and refuses to write on anything" \
+    if [ -z "${v:-}" ]; then
+        echo "install-overlap.sh: no running GNOME Shell to ask; installing anyway" >&2
+    else
+        known=no
+        for m in $MAJORS; do
+            case ${v:-} in "$m"|"$m".*) known=yes ;; esac
+        done
+        [ "$known" = yes ] || \
+            echo "install-overlap.sh: GNOME Shell $v: this extension has been" \
+                 "measured on ${MAJORS% } only and refuses to write on anything" \
                  "else.  Installing it is harmless -- it does nothing until it is" \
                  "called -- but wxrandr --unsafe-gnome-overlap will say this" \
-                 "compositor is not supported." >&2 ;;
-    esac
+                 "compositor is not measured, and will print what a maintainer" \
+                 "needs to add it." >&2
+    fi
     copy_files
     if [ "$DO_ENABLE" = 1 ]; then
         enable_setting || true
@@ -234,6 +254,7 @@ EOM
 check)
     echo "uuid:         $UUID"
     echo "files:        $([ -f "$DEST/extension.js" ] && echo "$DEST" || echo 'not installed')"
+    echo "table:        $([ -f "$DEST/generations.json" ] && echo installed || echo MISSING)"
     echo "typelibs:     $(ls "$DEST/typelib" 2>/dev/null | tr '\n' ' ' || echo none)"
     echo "shell:        $(shell_version || echo unknown)"
     echo "enabled:      $(setting_has enabled-extensions && echo yes || echo no)"

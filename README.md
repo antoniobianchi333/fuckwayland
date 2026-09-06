@@ -693,9 +693,20 @@ Every option, safe ones and dangerous ones together:
 | `--gnome-overlap-forget` | wxrandr | withdraws the agreement. Needs no desktop, so it works from a text console |
 | `--unsafe-gnome-overlap` | wxrandr | **the one that applies it.** Ignored unless the layout really overlaps and the route is really there. Every check still runs |
 | `--unsafe-gnome-overlap` | warandr | applies overlapping layouts without ever asking, for a window started from a hotkey or a desktop entry. Waives the question, not the checks, and records no agreement |
+| `--unsafe-gnome-overlap-unmeasured N` | wxrandr | **the only thing here that gets past a refusal.** On a GNOME nobody has measured, and only there, it says *I know this machine, try anyway* — `N` is the GNOME Shell major that is running, so a line copied from a forum is refused on your machine. It skips that one check and no other, is never remembered, and can end your session. `warandr` has no way to reach it |
 
 The checks are what stands between this and a lost session, so read what they are
-before reaching for anything that gets past them.
+before reaching for anything that gets past them. There is exactly one thing that
+gets past one of them, and it is the last row of that table: on a GNOME this
+project has not measured — which is what a release upgrade produces —
+`--unsafe-gnome-overlap-unmeasured 51` says *this is my machine, try anyway*. It
+skips the check that says the build is known and nothing else: the struct size,
+the sentinel, the modal-grab guard, the bounded read, the comparison against
+GNOME's own view of the monitors and Mutter's own validator all still run, and
+still refuse. It prints what may happen and how to get back before it happens,
+records nothing, and asks in full again next time. If a refusal names any other
+check, there is nothing to force: something is missing or has just proved itself
+wrong, and the answer stays no.
 
 What it looks like when it works:
 
@@ -726,6 +737,19 @@ The honest part: this works by writing eight bytes per monitor into the running
 place is ever wrong `gnome-shell` dies and takes every program in your session with
 it. Six checks run before every write and refuse any build they do not recognise,
 which today means GNOME 46 and GNOME 50 and nothing else.
+
+**Adding the next GNOME is meant to be small.** Everything version-specific — the
+library's file name, the typelib version, the type description, the size that
+structure has to be — is one record per release in
+`gnome/fuckwayland-overlap@fuckwayland/generations.json`, and the refusal on an
+unmeasured build prints the versions it found, the size that build reports, what
+was expected, and the two files a record goes in. Every name in a record is
+written out rather than computed, because the next Ubuntu is where computing one
+stops working: mutter 51 renumbered its library to match the GNOME version, so
+GNOME 51 carries `libmutter-51.so.0` and not the `libmutter-19` the old counting
+would have produced. The procedure, including how to regenerate a type
+description from the release's own source and how to prove it before trusting it,
+is [docs/Technical.md § 6](docs/Technical.md#the-table-and-adding-a-gnome-generation).
 
 **So does it survive a GNOME update? Measured, and yes — so far, and only so far.**
 Every update Ubuntu can deliver today was tried on desktops the Ubuntu installer

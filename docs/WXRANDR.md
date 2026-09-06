@@ -246,9 +246,15 @@ made:
   refuses discards every other saved arrangement at every boot, for ever;
 * any backend but `mutter`. KDE, wlroots and X place the layout as drawn, so
   there is nothing here for them to buy;
-* a GNOME Shell whose private layout has not been measured — an allowlist of
-  46 and 50, read from the shell's public `ShellVersion` property, because a
-  wrong offset does not raise an error, it writes into the heap;
+* a GNOME Shell whose private layout has not been measured — the table,
+  read from the shell's public `ShellVersion` property, because a wrong offset
+  does not raise an error, it writes into the heap. This is the one refusal that
+  can be overruled, deliberately and per invocation, by
+  [`--unsafe-gnome-overlap-unmeasured`](#forcing-past-a-refusal-on-a-gnome-nobody-has-measured);
+  it is also the one whose message is written for a maintainer, and it costs one
+  extra call: a `Probe` that refuses at its own first check, having read nothing
+  private, so that the message can name the `MetaMonitorsConfig` size this build
+  reports;
 * an invocation that changes anything but positions: a mode, a scale, a
   rotation, the primary, which outputs mirror. The extension writes two words
   per monitor and can do none of that, so the answer is to make that change the
@@ -461,6 +467,112 @@ file: /home/test/.config/fuckwayland/overlap-consent.json
 None of the three turns the flag on. `--unsafe-gnome-overlap` is still typed on
 every invocation that uses it, and an overlapping layout without it is still
 GNOME's refusal, agreement or no agreement.
+
+#### Forcing past a refusal, on a GNOME nobody has measured
+
+`--unsafe-gnome-overlap-unmeasured <major>`, and it is the only thing in this
+repository that gets past a refusal. It exists because "we have not measured
+your GNOME" is a statement about *us*, and somebody who knows their machine is
+entitled to disagree with it — at their own risk, having read what that risk is.
+
+```console
+$ wxrandr --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured 51 \
+      --output Virtual-2 --pos 960x0
+```
+
+**The name, and the argument.** It is a second flag, never a value of the first:
+`--unsafe-gnome-overlap` stays the only option that turns any of this on, and
+typing the unmeasured one alone is a usage error, so there is no command line in
+which forgetting the dangerous flag and typing this one does anything. It begins
+`--unsafe-`, which nothing else in this CLI does, and it says `unmeasured`, which
+is the word the refusal it answers uses — so it reads as what it is: an admission
+about the machine, not a demand. And its argument is the GNOME Shell major that
+is *running here*, compared with the real one out in `wxrandr` and again inside
+`gnome-shell`. That is the part a bare `--force` cannot have: a line copied out
+of a forum names the GNOME the poster had, and on anybody else's machine it is
+refused by number before a byte is read.
+
+```console
+xrandr: --unsafe-gnome-overlap-unmeasured 49 names GNOME Shell 49; this session is
+GNOME Shell 51.0.  It has to name the GNOME in front of you, so that a command line
+copied from somewhere else is refused here rather than run
+```
+
+**It is not a default and it is never remembered.** No environment variable sets
+it, nothing in a state file sets it, and it cannot be recorded: a forced run
+neither reads nor writes the agreement, so the paragraph is printed every single
+time, and `--gnome-overlap-allow` is refused while it is in use — an agreement
+names a build every check passed on, and forcing is what is done when they have
+not. **`warandr` has no way to reach it, on purpose**: what makes forcing
+defensible is that somebody typed the version of the GNOME in front of them out
+of the refusal they had just read, and a checkbox is a click. The window keeps
+reporting GNOME's refusal on an unmeasured build, exactly as it did before any of
+this existed, and the way to overrule that is a terminal.
+
+**What it skips: one check.** That this GNOME is in the table — and with it the
+tie between the shell and the libmutter it is supposed to carry, because on a
+build nobody has measured there is no supposed to. The description to write
+through is then picked by the size the running build's own GType registry reports
+for `MetaMonitorsConfig`. That is a *selection*, not a relaxation: the size still
+has to be exactly a shipped description's, two descriptions of one size would be
+a refusal rather than a coin toss, and a size nothing here describes is a refusal
+saying so — forcing cannot invent a description.
+
+**What it cannot skip is everything else**, and that is a rule rather than a list
+of exceptions. A refusal here is either *cautious* — this is a build nobody has
+measured — or *certain* — something is missing, or has just proved itself wrong.
+Only the cautious one is forceable, and there is exactly one of them:
+
+| refusal | kind | with the flag typed |
+|---|---|---|
+| the Shell major is not in the table | **cautious** | **forced**: the description is picked by struct size, and every other guard runs |
+| `--persistent` | certain | still refused: that file is read back through the validator this exists to get past |
+| the session is not GNOME | certain | still refused: KDE, wlroots and X place the layout as drawn |
+| the shell will not say its version | certain | still refused: forcing is vouching for a build by naming it, and a version nothing can read is not a build anybody can name |
+| the extension is not on the bus | certain | still refused: there is nothing there to talk to |
+| the invocation changes a mode, scale, rotation, primary or mirroring | certain | still refused: the extension writes two words and can do none of that |
+| `symbols` — libmutter no longer exports something declared | certain | still refused: the code cannot run |
+| `struct-size` — no shipped description is this size | certain | still refused: forcing picks a description, it does not write one |
+| `sentinel`, `bounded-read`, `layout-mode`, `public-view` | certain | still refused: the read has just disagreed with Mutter, which is the guard working |
+| `read-back`, `positive-control` | certain | still refused, and the old bytes are put back |
+| `pending-dialog` | certain | still refused, and this one must never be forceable: it is what keeps an overlap out of `~/.config/monitors.xml` for ever |
+
+The extension decides which of its own refusals is forceable and says so in its
+answer; `wxrandr` reads that flag rather than parsing the wording.
+
+**What it prints before it does anything**, always, in full:
+
+```console
+xrandr: --unsafe-gnome-overlap-unmeasured 51: forcing past the one check that says this GNOME has
+  been measured.  This session may end.
+  What is skipped:      one thing: that GNOME Shell 51.0 is a build this project has
+                        measured, and with it that the libmutter mapped into gnome-shell is
+                        the one this GNOME is supposed to carry ...
+                        MetaMonitorsConfig is 80 bytes here, which is the size
+                        FwOverlap18 describes (measured on GNOME 50)
+  What is not skipped:  everything else, and none of it can be forced: exactly one libmutter
+                        mapped, the Meta typelib agreeing with it, the struct size equal to
+                        the description's, every symbol callable, the sentinel through
+                        Mutter's own setter, the modal-grab check, the bounded read, the
+                        layout mode, the field-by-field comparison against Mutter's public
+                        view, the read-back of the two words, Mutter's own validator as a
+                        positive control, and the digest of ~/.config/monitors.xml.
+  What may happen:      ... If it is wrong, gnome-shell crashes, and on
+                        Wayland gnome-shell is the session: every program running in it goes
+                        with it, unsaved work included.
+  What is recorded:     nothing.  A forced run neither reads nor writes the agreement, so
+                        this is printed every single time, and --gnome-overlap-allow
+                        refuses while this flag is in use.
+  If it happens:        ...Ctrl+Alt+F3 ... gnome-extensions disable ...
+```
+
+and then the ordinary warning underneath it — what moves, what it risks, what it
+saves, the undo line — because forcing adds a paragraph and replaces nothing. If
+it works, the apply says which description it used and that nothing was recorded.
+
+**And when it is not what you want**, which is most of the time: the refusal it
+answers is also the message that says how to make this GNOME a measured one, and
+that is the better ending. See below.
 
 #### Every guard, and what it catches
 
@@ -704,16 +816,44 @@ xrandr: dryrun: nothing was written
 and is the honest way to ask whether your GNOME is one of the two this has been
 measured on.
 
-On anything else it refuses before it reads a byte — 47, 48, 49, 51, a shell
-that will not name its version:
+On anything else it refuses without reading anything private — 47, 48, 49, 51,
+a shell that will not name its version — and the refusal is written for whoever
+is going to add that release:
 
-```
-xrandr: --unsafe-gnome-overlap: GNOME Shell 48.3 is not a build this has been
-measured on (46 and 50 are).  Nothing was changed; this layout needs a
-compositor that will place it (KDE, wlroots and X all do).
+```console
+xrandr: --unsafe-gnome-overlap: GNOME Shell 51.0 is not a build this has been measured on.
+  Nothing was read out of gnome-shell and nothing was written.
+
+  What is running:      GNOME Shell 51.0
+                        libmutter-51.so.0
+                        Meta typelib 51
+                        MetaMonitorsConfig 80 bytes, from this build's GType registry
+  What is shipped:      GNOME 46 -> libmutter-14.so.0, FwOverlap14, Meta typelib 14, MetaMonitorsConfig 72 bytes
+                        GNOME 50 -> libmutter-18.so.0, FwOverlap18, Meta typelib 18, MetaMonitorsConfig 80 bytes
+  To add this build:    one record in each of these two, keyed by the GNOME major, and
+                        nothing else anywhere:
+                            gnome/fuckwayland-overlap@fuckwayland/generations.json
+                            wxrandr/gnome_overlap.py  (GENERATIONS)
+                        then
+                            python3 gnome/overlap-typelib/gen-gir.py --from-header \
+                                <mutter source>/src/backends/meta-monitor-config-manager.h
+                            python3 gnome/overlap-typelib/gen-gir.py
+                        which derives the offsets from that release's own header and then
+                        writes the description, its typelib and the extension's
+                        metadata.json out of the table.  The procedure, and the three-head
+                        measurement that has to follow it before anything ships, is
+                        docs/Technical.md section 6, "Adding a GNOME generation".
+  To try it here now:   wxrandr --unsafe-gnome-overlap --unsafe-gnome-overlap-unmeasured 51 <the rest of the line>
+                        which skips this one check and no other, records nothing, and
+                        may end this session.  It prints what it is doing first; read
+                        that before you type it.
 ```
 
-Nothing is contacted and nothing is read. The extension's `metadata.json` says
+The versions found, the size this build reports, what was expected, where the
+answer goes and what to run: enough to add a generation without having seen this
+code. Nothing private is read to produce any of it — a version string, the file
+names in `/proc/self/maps`, `GIRepository`, and `GObject.type_query()` on a type
+whose name is in a public header. The extension's `metadata.json` says
 `["46", "50"]` as well, so `gnome-shell` will not load it elsewhere, and the
 extension refuses on its own account if it somehow runs there.
 
@@ -726,29 +866,35 @@ of it needs a debugger:
    that is fine, and the answer to it is a retry (above).
 2. **`sh gnome/install-overlap.sh --check`.** Every guard against the running
    libmutter, writing nothing.
-3. **`shell-version`** — this GNOME is not one of the two that were measured.
-   Nothing to fix: the feature is off here until somebody measures this release.
-   That is what a release upgrade produces, and it is the intended outcome.
+3. **`shell-version`** — this GNOME is not one of the ones that were measured.
+   The refusal prints what to add and where (above). That is what a release
+   upgrade produces and it is the intended outcome: the feature is off here until
+   somebody measures this release. If you know this machine and want it anyway,
+   [`--unsafe-gnome-overlap-unmeasured <major>`](#forcing-past-a-refusal-on-a-gnome-nobody-has-measured)
+   skips this check and no other.
 4. **`typelib` or `sentinel`** — same generation, different structure. This is
    the case regeneration exists for, and the route is the release's own header
    rather than the running compositor:
 
    ```console
    $ python3 gnome/overlap-typelib/gen-gir.py --from-header \
-         mutter-51.0/src/backends/meta-monitor-config-manager.h --gen 19
+         mutter-51/src/backends/meta-monitor-config-manager.h --shell 51
      0  24  GObject parent
      …
      instance size 80
-     BUILDS entry:  <generation>: ("libmutter-<generation>.so.0", 3),
+     the two numbers a record needs:  "struct_size": 80, "tail_slots": 3
    ```
 
    It lays the struct out under the x86-64 rules, refuses on any type it does
    not know the size of rather than guessing, and refuses outright if the head
    of the struct has moved, because then the description's *shape* is wrong and
-   not just its numbers. Adding a generation is that line in `BUILDS`, three
-   allowlists (`rules.js`, `wxrandr/gnome_overlap.py`, `metadata.json`) and the
-   three-head measurement — [Technical.md § 6](Technical.md#if-a-gnome-upgrade-breaks-this)
-   has the order.
+   not just its numbers. Adding a generation is one record in
+   `gnome/fuckwayland-overlap@fuckwayland/generations.json`, the same record in
+   `GENERATIONS` in `wxrandr/gnome_overlap.py`, one run of the script above —
+   which writes the `.gir`, the `.typelib` and `metadata.json`'s `shell-version`
+   out of the table — and then the three-head measurement.
+   [Technical.md § 6](Technical.md#the-table-and-adding-a-gnome-generation) has the
+   order and what to prove at each step.
 5. **`public-view`** — the read is nonsense. Do not adjust offsets until the
    numbers agree; that is how a same-size field swap ships.
 
@@ -770,9 +916,14 @@ no setting that turns it on: the recorded agreement makes the tool quieter and
 never more capable. No `Restore` method on the extension, because the undo is a
 plain validated `wxrandr` line that does not depend on the dangerous half. No
 reconfiguration beyond positions. No place in the `.deb`, and its own installer
-and its own enable step. No support for GNOME 47 to 49 or 51.
+and its own enable step. No support for GNOME 47 to 49 or 51 — only a way for
+somebody who knows their own machine to overrule that refusal, per invocation,
+having read what it may cost, with nothing remembered afterwards.
 
-`warandr` has no button for it either. What it has is a dialog, the first time
+`warandr` has no button for it either, and none for
+`--unsafe-gnome-overlap-unmeasured` at all: forcing rests on somebody typing the
+version of the GNOME in front of them out of the refusal they just read, and a
+checkbox carries none of that. What it has is a dialog, the first time
 somebody drags two monitors into an overlap and presses Apply on a GNOME where
 the extension is installed — the explanation at the moment it is about something
 the user has actually asked for, with a box that records the same agreement this

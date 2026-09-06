@@ -11,7 +11,8 @@ Byte-parity notes, against xrandr 1.5.4:
   silently like the real thing.
 - wxrandr's own options stay out of the usage text, so `--help` is still
   xrandr's bytes: `--persistent`, `--backend NAME`, `--print-backend`,
-  `--backends`, `--unsafe-gnome-overlap` and the three
+  `--backends`, `--unsafe-gnome-overlap`, its one modifier
+  `--unsafe-gnome-overlap-unmeasured MAJOR`, and the three
   `--gnome-overlap-{allow,forget,status}` that manage its agreement.
 """
 
@@ -116,6 +117,12 @@ class Opts:
         self.noprimary = False
         self.persistent = False     # --persistent (Mutter: write monitors.xml)
         self.overlap = False        # --unsafe-gnome-overlap (see wxrandr/gnome_overlap.py)
+        #: --unsafe-gnome-overlap-unmeasured MAJOR: {"shell_major": N}, or None.
+        #: None is the only default there is or can be -- nothing else in this
+        #: class, no environment variable and no file sets it, and it is a usage
+        #: error without the flag above, so it can never be what turns the
+        #: feature on.
+        self.overlap_force = None
         #: the three that manage the *agreement* to the above, and change no layout
         self.overlap_allow = False   # --gnome-overlap-allow
         self.overlap_forget = False  # --gnome-overlap-forget
@@ -427,6 +434,17 @@ def parse(argv: list) -> Opts:
             if o.persistent:
                 raise ArgErr(_PERSIST_CONFLICT)
             o.overlap = True
+        elif a == gnome_overlap.FORCE_FLAG:
+            # wxrandr extension, and the only thing in this tree that gets past
+            # a refusal.  It widens `--unsafe-gnome-overlap` and never replaces
+            # it (see the check after the loop), it takes the GNOME Shell major
+            # that is running as a required argument so that a line copied from
+            # a forum is refused on anybody else's machine, and it is off unless
+            # it is typed.  wxrandr/gnome_overlap.py says what it skips.
+            try:
+                o.overlap_force = gnome_overlap.parse_force(need())
+            except ValueError as e:
+                raise ArgErr(str(e))
         elif a in (gnome_overlap.ALLOW_FLAG, gnome_overlap.FORGET_FLAG,
                    gnome_overlap.STATUS_FLAG):
             # wxrandr extension: the agreement to the flag above, given once
@@ -496,7 +514,36 @@ def parse(argv: list) -> Opts:
         else:
             raise ArgErr("unrecognized option '%s'\n" % a)
         i += 1
+    _check_force(o)
     return o
+
+
+def _check_force(o):
+    """`--unsafe-gnome-overlap-unmeasured` on its own is a usage error, and so
+    is pairing it with the agreement.
+
+    Two rules, and both of them are about reachability rather than taste:
+
+    * it is a *modifier*, never an entry point.  `--unsafe-gnome-overlap` stays
+      the only option in this program that turns the overlap route on, so there
+      is no arrangement of a command line in which forgetting the dangerous flag
+      and typing this one does anything at all;
+    * `--gnome-overlap-allow` records an agreement to a build the checks have
+      just passed on, and a forced run is by definition the one where they did
+      not.  Recording one for it would be recording a yes nobody can be held to,
+      so the two cannot be typed together.
+    """
+    if o.overlap_force is None:
+        return
+    if not o.overlap:
+        raise ArgErr("%s only means something together with %s, which is the "
+                     "only option that turns this on at all\n"
+                     % (gnome_overlap.FORCE_FLAG, gnome_overlap.FLAG))
+    if o.overlap_allow:
+        raise ArgErr("%s and %s cannot be used together: an agreement names a "
+                     "build every check passed on, and forcing is what is done "
+                     "when they have not\n"
+                     % (gnome_overlap.ALLOW_FLAG, gnome_overlap.FORCE_FLAG))
 
 
 # -- backends -----------------------------------------------------------------
@@ -526,7 +573,7 @@ _ARITY = {
     "--above": 1, "--below": 1, "--same-as": 1, "--scale": 1,
     "--scale-from": 1, "--transform": 1, "--filter": 1, "--crtc": 1,
     "--panning": 1, "--gamma": 1, "--brightness": 1, "--rmmode": 1,
-    "--delmonitor": 1, "--backend": 1,
+    "--delmonitor": 1, "--backend": 1, gnome_overlap.FORCE_FLAG: 1,
     "--set": 2, "--addmode": 2, "--delmode": 2,
     "--setprovideroutputsource": 2, "--setprovideroffloadsink": 2,
     "--setmonitor": 3,
@@ -971,6 +1018,10 @@ class Session:
     #: sets it, no default turns it on, and a Session built any other way (the
     #: backend tests stub __init__) still reads False here.
     overlap = False
+    #: --unsafe-gnome-overlap-unmeasured, likewise: None is the default here,
+    #: in Opts, and in every method that takes it, so forgetting to pass it
+    #: anywhere makes a run safer rather than more dangerous.
+    overlap_force = None
 
     def __init__(self, forced=None):
         from fwcommon import session as wsession
@@ -1009,6 +1060,7 @@ class Session:
         self.persistent = os.environ.get("WXRANDR_PERSIST", "") not in ("", "0")
         # No environment variable turns this on.  It is a typed flag or nothing.
         self.overlap = False
+        self.overlap_force = None
         # OSError as well as Fatal: WlConn's connect() can raise ConnectionRefusedError on a stale-but-present
         # socket, and sway IPC can drop mid-handshake — both must read as "Can't open display", never a
         # traceback.
@@ -1102,7 +1154,7 @@ class Session:
         # what actually runs unless a user typed that flag AND asked for
         # something Mutter refuses.
         if self.overlap and self.backend == "mutter":
-            fresh = self.impl.apply_overlap(self.state, targets)
+            fresh = self.impl.apply_overlap(self.state, targets, self.overlap_force)
             if fresh is not None:
                 return fresh
         return self.impl.apply(self.state, targets, self.persistent)
@@ -1335,7 +1387,8 @@ def _do_setit_1_2(sess: Session, opts: Opts, outputs):
         if s.primary and any(t.name == s.name and t.stanza is s for t in targets):
             sess.state.primary = s.name
     if opts.dryrun:
-        if opts.overlap and sess.backend == "mutter" and sess.impl.overlap_dryrun(sess.state, targets):
+        if (opts.overlap and sess.backend == "mutter"
+                and sess.impl.overlap_dryrun(sess.state, targets, opts.overlap_force)):
             sess.state.primary = primary_before
             sess.state.save()
             return outputs
@@ -1473,6 +1526,7 @@ def _run_session(sess: Session, opts: Opts) -> int:
                         "which places overlapping monitors without it\n"
                         % (gnome_overlap.FLAG, sess.backend))
         sess.overlap = True
+        sess.overlap_force = opts.overlap_force
     if opts.screen > 0:
         sys.stderr.write("Invalid screen number %d (display has 1)\n" % opts.screen)
         return 1
