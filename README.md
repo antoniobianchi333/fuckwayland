@@ -1133,7 +1133,7 @@ nothing configured and no wdotool on either: a session switched to German typed 
 byte for byte on both, where the build before it typed `zy""` on KDE and `zy"` on
 GNOME. Both desktops report their active layout there, `wayland + kwin` on one and
 `wayland + gnome input-sources` on the other, and stderr is silent on both. The suite
-stands at **2661 tests**.
+stands at **2668 tests**.
 
 <!-- release-notes: 0.3 -->
 ### 0.3
@@ -1182,7 +1182,7 @@ Developed against real desktops, not against a model of them. `vm/` is the rig:
 `vmctl` builds and runs thirteen golden images, each with up to four virtual monitors
 that can be plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/README.md` documents the whole thing and `vm/SETUP.md` is how to
-set the rig up on a machine of your own. `tests/` holds the suite, 2661 tests: unit
+set the rig up on a machine of your own. `tests/` holds the suite, 2668 tests: unit
 tests, wire-level fake compositors and X servers, live-compositor integration,
 hostile-input torture, byte-parity oracles against the real xdotool, wmctrl, xprop
 and xrandr, and one static check that no package ever reaches for PolicyKit or for
