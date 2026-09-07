@@ -13,6 +13,12 @@ Every Wayland client is handed the full keymap as a file descriptor on
 `wl_keyboard.keymap`, so `fetch()` binds the seat, takes the keyboard and
 reads the fd — no protocol extension, no privileges, nothing to install.
 
+*Which* of that keymap's groups is active is the one thing the protocol keeps
+from us: `wl_keyboard.modifiers` carries it and reaches only the window with
+keyboard focus. sway sends it anyway; KWin answers the same question on the
+session bus (see `KwinLayouts`); everywhere else the group is inferred, and
+`Snapshot.group_known` says which of the two happened.
+
     snap = fetch()                               # text + active group
     if not active_group_is_plain_us(snap.text, snap.group):
         rmap = build(snap.text, snap.group)      # else: keep the US table
@@ -20,6 +26,7 @@ reads the fd — no protocol extension, no privileges, nothing to install.
 
 Layout of this module:
   * fetch()                      Wayland: keymap text + active group
+  * kwin_group()                 KDE: the active group, off the session bus
   * parse()                      keymap text -> Keymap (keycodes/types/groups)
   * build()                      Keymap + group -> ReverseMap
   * ReverseMap.lookup_char()     char -> [(evdev keycode, modifier mask)]
@@ -40,6 +47,8 @@ Env overrides (see README):
 import os
 import re
 import struct
+import threading
+import time
 import unicodedata
 
 from wdotool.keysyms import KEYSYM_TO_UNICODE, NAME_TO_KEYSYM
@@ -115,7 +124,9 @@ def fetch(timeout: float = 2.0, mods_wait: float = 0.08, keymap: str | None = No
     `mods_wait` is how long to keep dispatching after the keymap arrives in the hope of a
     `wl_keyboard.modifiers` event carrying the active group. Mutter (and wlroots, and KWin) only send that event
     to the client that holds keyboard focus, which a headless injector never does -- so the wait usually expires
-    and the group has to be inferred; see `choose_group`.
+    and the group has to be inferred; see `choose_group`. On KDE it does not have to be inferred: where the
+    inference would be a guess, KWin is asked outright (`kwin_group`), and the answer is a group as known as the
+    one sway puts on the wire.
 
     `keymap` and `group` are what --keymap/--group pass; each falls back to WDOTOOL_XKB_KEYMAP /
     WDOTOOL_XKB_GROUP when the caller says nothing.
@@ -139,6 +150,14 @@ def fetch(timeout: float = 2.0, mods_wait: float = 0.08, keymap: str | None = No
         return Snapshot(text, forced, "wayland (group pinned)", True, mods_seen)
     if group is None:
         group, known = choose_group(text, None)
+        if not known:
+            # The keymap alone cannot say which of its groups is live. KDE
+            # publishes exactly that (and nothing else does), so ask before
+            # settling for group 1 -- and only here, so the sessions that
+            # already know the answer never open a bus.
+            told = kwin_group(text)
+            if told is not None:
+                return Snapshot(text, told, "wayland + kwin", True, mods_seen)
         return Snapshot(text, group, "wayland", known, mods_seen)
     return Snapshot(text, group, "wayland", True, mods_seen)
 
@@ -834,6 +853,10 @@ def choose_group(text: str, from_modifiers=None) -> tuple:
         `us` fallback group after the user's sources, so "de,us" is a session
         with one German source, and group 1 is right.
 
+    "Assumed" is where `fetch()` goes and asks KWin (`kwin_group`), so on KDE
+    this function's second case is a fallback rather than the answer. It stays
+    the answer everywhere else.
+
     Deliberately regex-only: choosing a group must not need the parser, or
     the parser would run on a plain US layout, which the bypass promises it
     does not (see `active_group_is_plain_us`).
@@ -852,6 +875,191 @@ def _groups_agree(text: str) -> bool:
         if len(lists) > 1 and any(sym != lists[0] for sym in lists[1:]):
             return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# KDE: which layout is active, asked of KWin itself
+#
+# The one thing the Wayland protocol will not tell an injector, KWin publishes
+# on the session bus: `org.kde.KWin` `/Layouts` `org.kde.KeyboardLayouts`
+# `getLayout()` answers with the 0-based index of the active layout in the
+# list the user configured -- and that list IS the keymap's group order, name
+# for name (`getLayoutsList()`'s long name is character-for-character the
+# keymap's `name[GroupN]`). So the active group is that index plus one, with
+# nothing to translate.
+#
+# Measured on Plasma 6.6.6 and 5.27.12: the same object, the same members and
+# the same meaning on both, tracking every way a user switches (the applet,
+# setLayout, switchToNext/PreviousLayout, the global shortcut, and the chord
+# pressed through wdotool itself) and, under per-window layouts, reporting the
+# focused window's layout -- which is where our keystrokes land, so that is
+# the answer we want. KDE truncates the configured list at four, which is
+# XKB's MAX_GROUPS, so the index can never legitimately outrun the keymap.
+#
+# Two rules, both measured rather than assumed:
+#
+#   * ask KWin, never kded. `org.kde.kded6 /modules/keyboard` and the kded5
+#     one declare this same interface and CRASH on getLayout -- every call
+#     answered NoReply and the bus name changed owner, on both generations.
+#     There is no fallback to them and there must never be one.
+#   * never send a method call to a name nobody owns: that asks the bus to
+#     START the service, and a GNOME box with kwin installed must not have
+#     one launched at it. NameHasOwner first; it activates nothing.
+#
+# Everything here is best effort, and the caller keeps its guess whenever the
+# answer does not arrive: no session bus, no KWin, an older KWin without
+# /Layouts, a KWin that has gone away, an index that does not fit the keymap
+# we just read. A layout wdotool cannot ask about is exactly the layout it
+# used to assume, notice and all.
+
+KWIN_BUS_NAME = "org.kde.KWin"
+KWIN_LAYOUTS_PATH = "/Layouts"
+KWIN_LAYOUTS_IFACE = "org.kde.KeyboardLayouts"
+KWIN_TIMEOUT = 2.0       # KWin answers in ~0.3 ms; this only bounds a wedge
+KWIN_RETRY_AFTER = 10.0  # monotonic seconds before re-dialling a bus that failed
+
+# Error names that describe the session rather than the moment: this KWin
+# does not have this interface, or this bus will not let us at it. Asking
+# again would be asking the same question. A name that is momentarily
+# unowned (KWin restarting) is deliberately NOT in here.
+_KWIN_FATAL = ("UnknownObject", "UnknownMethod", "UnknownInterface",
+               "UnknownProperty", "AccessDenied", "NotSupported")
+
+
+class KwinLayouts:
+    """KWin's answer to "which of the configured layouts is active?", over one
+    connection kept for the life of the process.
+
+    One instance is enough: the daemon asks from inside its own lock, a client
+    asks once and exits, and the object serialises itself anyway. The bus is
+    dialled lazily on the first question that needs an answer, so a plain-US
+    session, a one-layout session and the ordinary GNOME `us,us` session never
+    open one at all (`choose_group` already knows the group there).
+
+    Failure is silence: `group()` returns None and never raises, and a bus
+    that refuses is not dialled again for KWIN_RETRY_AFTER seconds. A call
+    that fails once is retried on a fresh connection -- a KWin restart takes
+    the old one down with it -- and then given up on.
+    """
+
+    def __init__(self, address=None):
+        self.address = address   # None: the graphical session's bus
+        self.bus = None
+        self.absent = False      # nothing to talk to here; stop asking
+        self.retry_at = 0.0      # monotonic deadline of the connect backoff
+        self.asked = 0           # answers received, for the tests
+        self._lock = threading.Lock()
+
+    def group(self, text: str):
+        """The active group (1-based) or None.
+
+        `text` is the keymap the index has to fit: an index past its last
+        group is not an answer but a race with a layout list the user has
+        just edited, and the caller's own guess is the better one."""
+        with self._lock:
+            try:
+                idx = self._ask()
+                if idx is None:
+                    return None
+                n = int(idx) + 1
+                return n if 1 <= n <= group_count(text) else None
+            except Exception:
+                # Nothing about typing may depend on this working (B13).
+                return None
+
+    def close(self):
+        with self._lock:
+            self._drop()
+
+    # -- the bus
+
+    def _drop(self):
+        bus, self.bus = self.bus, None
+        if bus is not None:
+            try:
+                bus.close()
+            except Exception:
+                pass
+
+    def _connect(self):
+        """The session bus, with KWin on it, or None. Root gets there the way
+        every other tool here does -- dbus_mini retries a refused EXTERNAL
+        auth through a forked child owning the socket (measured at 3 ms)."""
+        if self.bus is not None:
+            return self.bus
+        from fwcommon.dbus_mini import Bus
+        try:
+            bus = Bus(self.address, timeout=KWIN_TIMEOUT)
+        except Exception:
+            return None          # no session bus (yet): the backoff catches it
+        try:
+            if not bus.name_has_owner(KWIN_BUS_NAME):
+                bus.close()
+                # Nobody owns it. On a GNOME or wlroots session that is
+                # permanent, and worth remembering: the alternative is a
+                # connect and a GetNameOwner on every command a non-US GNOME
+                # session types. If KWin has answered us before, though, this
+                # is a restart and it will be back -- the backoff covers it.
+                self.absent = not self.asked
+                return None
+        except Exception:
+            # Anything at all here -- the bus answering nonsense included --
+            # and the connection is ours to close, or the next command opens
+            # a second one on top of it.
+            bus.close()
+            return None
+        self.bus = bus
+        return bus
+
+    def _ask(self):
+        """getLayout(), or None. One reconnect: KWin restarting must not
+        poison the rest of the session, and a stale socket looks exactly like
+        a wedged one from here."""
+        now = time.monotonic()
+        if self.absent or now < self.retry_at:
+            return None
+        for attempt in (0, 1):
+            bus = self._connect()
+            if bus is None:
+                self.retry_at = now + KWIN_RETRY_AFTER
+                return None
+            try:
+                out = bus.call(KWIN_BUS_NAME, KWIN_LAYOUTS_PATH, KWIN_LAYOUTS_IFACE,
+                               "getLayout", timeout=KWIN_TIMEOUT)
+            except Exception as e:
+                # DBusError carries the bus's own error name; anything else
+                # (a socket, a body we cannot read) has none, and none of
+                # those are permanent.
+                self._drop()
+                if any(getattr(e, "name", "").endswith(w) for w in _KWIN_FATAL):
+                    self.absent = True
+                    return None
+                if attempt:
+                    self.retry_at = now + KWIN_RETRY_AFTER
+                    return None
+                continue         # once more, on a new connection
+            if len(out) != 1 or not isinstance(out[0], int) or isinstance(out[0], bool):
+                return None      # not the `u` this interface promises
+            self.asked += 1
+            return out[0]
+        return None
+
+
+_kwin = None
+_kwin_lock = threading.Lock()
+
+
+def kwin_group(text: str):
+    """The active group KWin reports, or None where nothing answers.
+
+    The module-level connection is the point: the daemon is long-lived and
+    asks on every command whose group it would otherwise have to guess."""
+    global _kwin
+    with _kwin_lock:
+        if _kwin is None:
+            _kwin = KwinLayouts()
+        reader = _kwin
+    return reader.group(text)
 
 
 # ---------------------------------------------------------------------------
