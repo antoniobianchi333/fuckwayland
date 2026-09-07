@@ -725,11 +725,16 @@ def _is_help_request(tool, args):
     return False
 
 
-def _missing_message(tool):
+def _missing_message(tool, x11=True):
+    """Exit 127's line.  `x11` is False when the session is not an X11 one and the handover was asked for
+    anyway (`FUCKWAYLAND_PASSTHROUGH=always`, `wxrandr --backend x11`): the reason to install the original
+    is then the request rather than the session, and "this is an X11 session" would be untrue there."""
+    why = ("this is an X11 session" if x11
+           else "a handover to the real tool was asked for")
     return (
-        "%s: this is fuckwayland's clone and this is an X11 session, but no "
+        "%s: this is fuckwayland's clone and %s, but no "
         "real %s was found on PATH -- install it (apt install %s) or set "
-        "%s=/path/to/%s\n" % (tool, tool, _PACKAGE.get(tool, tool),
+        "%s=/path/to/%s\n" % (tool, why, tool, _PACKAGE.get(tool, tool),
                               _OVERRIDE.get(tool, ""), tool)
     )
 
@@ -868,6 +873,9 @@ def maybe_exec_real(tool, args=None, *, fallback_native=False, entry=True,
     if real is None:
         if fallback_native or _is_help_request(tool, args):
             return None
-        sys.stderr.write(_missing_message(tool))
+        # respect_override=False: the variables say what to do about the handover, and the question
+        # here is what the session really is, which is what the line about to be printed claims.
+        sys.stderr.write(_missing_message(
+            tool, session_kind(tool, e, respect_override=False) == "x11"))
         return 127
     return exec_real(tool, real, args, e)

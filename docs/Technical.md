@@ -1769,7 +1769,7 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2618 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2619 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite
@@ -2020,6 +2020,9 @@ and neither is visible on the cloud image flavors, which switch both off:
 * **it has no `xdotool` and no `wmctrl`**, so the X11 handover has nothing to hand to
   until `sudo apt install xdotool wmctrl`. On a Wayland session nothing hands over,
   so this only bites on an X11 session or under `FUCKWAYLAND_PASSTHROUGH=always`.
+  The exit 127 line names whichever of the two it is: on an X11 session it says so,
+  and on a Wayland one it says a handover was asked for, because the session it is
+  refusing to hand over in is not an X11 session at all.
 
 ## 12. The threat model in full
 

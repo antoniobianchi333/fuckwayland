@@ -10,6 +10,13 @@ fuckwayland, `/usr/bin/xdotool` -> the distribution's).
 directories in this process, which is how a subprocess test describes a whole
 session with a temporary directory (the module constants are the seams; a
 child process cannot be monkeypatched).
+
+``_RUN_USER_DIR`` is applied to ``fwcommon.session.RUN_USER_DIR`` as well, so
+that the seamed tree describes the session for *backend* discovery too. Both
+scan ``/run/user/*`` rather than trusting the environment, so without this a
+wlroots or KWin session belonging to any user of the build machine answers
+``--backend sway`` and the test asking for the refusal fails on that machine
+and nowhere else.
 """
 
 import json
@@ -31,9 +38,12 @@ MODULES = {
 def main():
     seams = os.environ.get("FW_SHIM_SEAMS")
     if seams:
-        from fwcommon import passthrough
-        for k, v in json.loads(seams).items():
+        from fwcommon import passthrough, session
+        seams = json.loads(seams)
+        for k, v in seams.items():
             setattr(passthrough, k, v)
+        if "_RUN_USER_DIR" in seams:
+            session.RUN_USER_DIR = seams["_RUN_USER_DIR"]
         passthrough.reset_cache()
     name = os.path.basename(sys.argv[0] or "")
     try:

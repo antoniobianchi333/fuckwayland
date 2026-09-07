@@ -75,7 +75,12 @@ by using the tools on one rather than by reading them.
   the 0.3 build, so a user who installed the way the README says got none of this. The
   package is built from this tree, and was rebuilt again once the overlap extension
   had a table to read, which is what `tests/test_release_deb.py` noticed.
-- **2618 tests**, up from 2262, the new ones being the daemon's two ways of ending,
+- **The exit 127 line names the reason that applies.** Handing over to a real tool that
+  is not installed said "this is an X11 session" whoever asked, including the two ways
+  of asking for the handover on a Wayland desktop (`FUCKWAYLAND_PASSTHROUGH=always` and
+  `wxrandr --backend x11`), where it is not one. It now says a handover was asked for
+  instead. Found by running the release package on the 26.04 default install.
+- **2619 tests**, up from 2262, the new ones being the daemon's two ways of ending,
   the chord the layout cannot produce, the pin carried on the request, the guards
   around the saved display configuration, every refusal of the overlap route
   classified and then re-run with the forcing option to see which of them it changes,
