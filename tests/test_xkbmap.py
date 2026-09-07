@@ -14,14 +14,20 @@ import contextlib
 import io
 import os
 import re
+import socket
 import sys
+import threading
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from fwcommon import dbus_mini
+from fwcommon.dbus_mini import ERR, Bus, DBusError
 from support import RecorderDev, env
-from wdotool import cli, daemon, keymap, xkbmap
+from test_dbus_mini import MockBus
+from wdotool import cli, daemon, keymap, keys_cmds, xkbmap
 
 # The suite never hands a tool over to the real X11 one: see
 # tests/conftest.py (which covers pytest) and tests/test_passthrough.py.
@@ -33,7 +39,8 @@ KEYMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "keymaps")
 FIXTURES = ("us", "de", "fr", "es", "gb", "dvorak", "us_de", "de_fr",
             "noble_de", "sway_de", "us_swapescape", "us_grptoggle",
-            "kde_us", "kde_de", "kde_gr", "kde_us_de", "kde5_de")
+            "kde_us", "kde_de", "kde_gr", "kde_us_de", "kde_us_de_fr",
+            "kde5_de")
 
 
 def text(name: str) -> str:
@@ -43,6 +50,16 @@ def text(name: str) -> str:
 
 def rmap(name: str, group: int = 1) -> xkbmap.ReverseMap:
     return xkbmap.build(text(name), group)
+
+
+def setUpModule():
+    """No test in this file may open the *developer's* session bus. The KWin
+    reader is a module-level connection made on first use (see
+    xkbmap.KwinLayouts); park one that has already given up in its place, and
+    let TestTheActiveGroupFromKwin below hand out readers pointed at a mock
+    bus instead."""
+    xkbmap._kwin = xkbmap.KwinLayouts()
+    xkbmap._kwin.absent = True
 
 
 def make_daemon():
@@ -455,11 +472,25 @@ class TestKwinKeymaps(unittest.TestCase):
             self.assertEqual(xkbmap.group_count(text(name)), 1, name)
             self.assertEqual(xkbmap.choose_group(text(name)), (1, True), name)
 
-    def test_two_configured_layouts_are_a_guess_on_kde_too(self):
+    def test_three_configured_layouts_are_three_groups_in_order(self):
+        """`us, de, fr`, captured with KWin reporting index 2. Three groups in
+        the order System Settings lists them, so the bus index and the keymap
+        group differ by exactly one past a pair too -- the length at which an
+        off-by-one stops being visible as a swap and starts being a layout
+        nobody configured."""
+        self.assertEqual(xkbmap.parse(text("kde_us_de_fr")).group_names,
+                         ["English (US)", "German", "French"])
+        fr = xkbmap.build(text("kde_us_de_fr"), 3)
+        self.assertEqual(fr.name, "French")
+        self.assertEqual(fr.lookup_char("a"), [(16, 0)])   # azerty: US <AD01>
+
+    def test_two_configured_layouts_are_a_guess_from_the_keymap_alone(self):
         """`us, de` in System Settings, switched to German with the layout
         switcher: KWin does not reorder the groups and does not tell an
-        unfocused client which one is live, so group 1 is a guess -- and on
-        this one it is the wrong one."""
+        unfocused client which one is live, so from the keymap group 1 is a
+        guess -- and on this one it is the wrong one. This is where KDE stops
+        guessing and asks (TestTheActiveGroupFromKwin, below); the keymap
+        text on its own still says exactly what it always said."""
         self.assertEqual(xkbmap.choose_group(text("kde_us_de")), (1, False))
         self.assertTrue(xkbmap.active_group_is_plain_us(text("kde_us_de"), 1))
         self.assertEqual(xkbmap.build(text("kde_us_de"), 2).name, "German")
@@ -1523,6 +1554,344 @@ class GroupCountIsBounded(unittest.TestCase):
         self.assertEqual(xkbmap.group_count(text("sway_de")), 1)
         self.assertEqual(xkbmap.group_count(text("de")), 2)
         self.assertEqual(len(xkbmap.parse(text("us_de")).groups), 3)
+
+
+# ---------------------------------------------------------------------------
+# KDE: the active layout, asked of KWin
+
+
+class _FakeService:
+    """A service on the MockBus, on a thread of its own: own a well-known
+    name, record every call that arrives, answer what the test says."""
+
+    def __init__(self, address, name):
+        self.bus = Bus(address)
+        self.bus.serve_calls = True
+        self.name = name
+        self.calls = []            # (path, interface, member) as received
+        assert self.bus.request_name(name) == 1
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def dispatch(self, m):
+        raise DBusError(ERR + "UnknownObject", "no object at %s" % m.path)
+
+    def _serve(self):
+        try:
+            for m in self.bus.messages(None):
+                if m.type != dbus_mini.METHOD_CALL:
+                    continue
+                self.calls.append((m.path, m.interface, m.member))
+                try:
+                    sig, out = self.dispatch(m)
+                except DBusError as e:
+                    self.bus.error_reply(m, e.name, e.message)
+                    continue
+                if sig is None:
+                    continue       # silence: the caller waits out its timeout
+                self.bus.reply(m, sig, out)
+        except Exception:          # noqa: BLE001 -- the socket, shut down by close()
+            pass
+
+    def close(self, mock=None):
+        if self.bus.sock is None:
+            return
+        unique = self.bus.unique_name
+        try:
+            self.bus.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.thread.join(3)
+        self.bus.close()
+        if mock is not None and not mock.wait_dropped(unique):
+            raise AssertionError("the mock bus still holds %s" % unique)
+
+
+class KwinLayoutsService(_FakeService):
+    """KWin's `/Layouts`, as measured on Plasma 6.6.6 and 5.27.12: getLayout
+    answers `u` with a 0-based index into getLayoutsList, whose long names are
+    the keymap's group names in the keymap's order.
+
+    `answer` bends that: "u" is KWin, "s" is an interface that answers with
+    something else entirely, "none" is one that never answers at all."""
+
+    def __init__(self, address, index=0, answer="u", error=None,
+                 layouts=(("us", "", "English (US)"), ("de", "", "German"))):
+        self.index = index
+        self.answer = answer
+        self.error = error
+        self.layouts = [tuple(x) for x in layouts]
+        self.answers = 0           # replies actually sent
+        _FakeService.__init__(self, address, xkbmap.KWIN_BUS_NAME)
+
+    def dispatch(self, m):
+        if m.path != xkbmap.KWIN_LAYOUTS_PATH or m.interface != xkbmap.KWIN_LAYOUTS_IFACE:
+            return _FakeService.dispatch(self, m)
+        if m.member == "getLayout":
+            if self.error:
+                raise DBusError(self.error, "no")
+            if self.answer == "none":
+                return None, None
+            self.answers += 1
+            if self.answer == "s":
+                return "s", ("the second one",)
+            return "u", (self.index,)
+        if m.member == "getLayoutsList":
+            return "a(sss)", (self.layouts,)
+        if m.member == "setLayout":
+            self.index = m.args()[0]
+            return "b", (True,)
+        raise DBusError(ERR + "UnknownMethod", "no %s" % m.member)
+
+
+class KdedLandmine(_FakeService):
+    """`org.kde.kded6 /modules/keyboard` declares org.kde.KeyboardLayouts too,
+    and getLayout on it CRASHES kded -- measured on both generations, every
+    call answering NoReply with the bus name changing owner afterwards. It is
+    on the bus in every test here so that a call to it would be recorded; the
+    assertion is that nothing ever reaches it."""
+
+    def __init__(self, address):
+        _FakeService.__init__(self, address, "org.kde.kded6")
+
+
+def fake_wayland(name, group=None, mods=False):
+    """A stand-in for _fetch_wayland: the fixture's keymap, and the silence an
+    unfocused client really gets from KWin (no group, no modifiers event)."""
+    body = text(name)
+
+    def _fetch(timeout, mods_wait):
+        return body, group, mods
+
+    return _fetch
+
+
+# `wdotool type 'yz@'` -- the string from the 0.4 retest, whose three
+# characters all move between the two layouts. Group 1 is `us` (the bypass
+# takes it, so these are the built-in table's keycodes) and group 2 is `de`.
+US_TAPS = [(21, 1), (21, 0), (44, 1), (44, 0), (42, 1), (3, 1), (3, 0), (42, 0)]
+DE_TAPS = [(44, 1), (44, 0), (21, 1), (21, 0), (100, 1), (16, 1), (16, 0), (100, 0)]
+
+
+class TestTheActiveGroupFromKwin(unittest.TestCase):
+    """KWin publishes what wl_keyboard will not tell an injector: which of the
+    configured layouts is live (`org.kde.KWin` `/Layouts`
+    `org.kde.KeyboardLayouts.getLayout`, a 0-based index into the configured
+    list, which is the keymap's group order).
+
+    Four things can happen to that call -- it answers, it is not there, it
+    answers nonsense, it changes between two commands -- and every one of them
+    but the first has to leave typing exactly as it was before this existed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mock = MockBus()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.mock.close()
+
+    def setUp(self):
+        self.addCleanup(setattr, xkbmap, "_kwin", xkbmap._kwin)
+        self.addCleanup(setattr, xkbmap, "KWIN_TIMEOUT", xkbmap.KWIN_TIMEOUT)
+        self.addCleanup(setattr, xkbmap, "_fetch_wayland", xkbmap._fetch_wayland)
+        self.kded = KdedLandmine(self.mock.address)
+        self.addCleanup(self.kded.close, self.mock)
+        self.addCleanup(self.assertEqual, [], self.kded.calls,
+                        "kded was called: getLayout crashes it")
+        self.reader = xkbmap._kwin = xkbmap.KwinLayouts(self.mock.address)
+
+    def kwin(self, **kw):
+        svc = KwinLayoutsService(self.mock.address, **kw)
+        self.addCleanup(svc.close, self.mock)
+        return svc
+
+    def snapshot(self, name):
+        xkbmap._fetch_wayland = fake_wayland(name)
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=None, WDOTOOL_LAYOUT=None):
+            return xkbmap.fetch()
+
+    def typed(self, name, daemon_=None, group=None):
+        """`wdotool type 'yz@'` through the daemon's own layout path."""
+        d = daemon_ if daemon_ is not None else make_daemon()
+        xkbmap._fetch_wayland = fake_wayland(name)
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=group, WDOTOOL_LAYOUT=None):
+            warns = d.op_type("yz@", 0, False)
+        return d, warns
+
+    # -- it answers
+
+    def test_the_index_is_the_group(self):
+        """0-based on the bus, 1-based in the keymap, and nothing else to
+        translate: the configured list and the group list are the same list."""
+        svc = self.kwin(index=0)
+        self.assertEqual(xkbmap.kwin_group(text("kde_us_de")), 1)
+        svc.index = 1
+        self.assertEqual(xkbmap.kwin_group(text("kde_us_de")), 2)
+        self.assertEqual(svc.answers, 2)
+
+    def test_the_third_of_three_layouts(self):
+        """The fixture is this session, byte for byte: `us, de, fr` with KWin
+        answering 2. French `a` is on the key US calls `q`, so the keystroke
+        says which group was really used."""
+        self.kwin(index=2, layouts=(("us", "", "English (US)"),
+                                    ("de", "", "German"),
+                                    ("fr", "", "French")))
+        snap = self.snapshot("kde_us_de_fr")
+        self.assertEqual((snap.group, snap.group_known), (3, True))
+        d = make_daemon()
+        xkbmap._fetch_wayland = fake_wayland("kde_us_de_fr")
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=None, WDOTOOL_LAYOUT=None):
+            self.assertEqual(d.op_type("a", 0, False), [])
+        self.assertEqual(taps(d.kb), [(16, 1), (16, 0)])
+
+    def test_fetch_knows_the_group_and_says_where_it_came_from(self):
+        self.kwin(index=1)
+        snap = self.snapshot("kde_us_de")
+        self.assertEqual((snap.group, snap.group_known, snap.source),
+                         (2, True, "wayland + kwin"))
+        self.assertEqual(xkbmap.build(snap.text, snap.group).name, "German")
+
+    def test_explain_reports_the_real_group_rather_than_an_assumption(self):
+        self.kwin(index=1)
+        xkbmap._fetch_wayland = fake_wayland("kde_us_de")
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=None, WDOTOOL_LAYOUT=None):
+            line = keys_cmds.Layout.load().describe()[0]
+        self.assertEqual(line, "layout: German -- group 2 of 2, from wayland + kwin")
+        self.assertNotIn("assumed", line)
+
+    def test_the_measured_defect(self):
+        """The 0.4 retest, in one test: `us,de` switched to German, `wdotool
+        type 'yz@'`. It arrived as `zy\"` because group 1 was assumed; with
+        KWin asked, the keystrokes are the German ones -- and the notice that
+        said which layout had been assumed says nothing, because nothing is."""
+        svc = self.kwin(index=1)
+        d, warns = self.typed("kde_us_de")
+        self.assertEqual(taps(d.kb), DE_TAPS)
+        self.assertEqual(warns, [])
+        svc.index = 0                       # the user switches back to US
+        d2, warns2 = self.typed("kde_us_de")
+        self.assertEqual(taps(d2.kb), US_TAPS)
+        self.assertEqual(warns2, [])
+
+    def test_a_switch_between_two_commands_on_one_daemon(self):
+        """The daemon caches the layout by (keymap, group), and the group is
+        re-read on every command: a user switching layouts between two
+        `wdotool type`s gets two different keymaps out of one daemon."""
+        svc = self.kwin(index=0)
+        d, _ = self.typed("kde_us_de")
+        self.assertEqual(taps(d.kb), US_TAPS)
+        d.kb.events.clear()
+        svc.index = 1                       # Meta+Alt+K, as a user does it
+        _, warns = self.typed("kde_us_de", daemon_=d)
+        self.assertEqual(taps(d.kb), DE_TAPS)
+        self.assertEqual(warns, [])
+
+    # -- it is not there
+
+    def test_no_kwin_on_the_bus_leaves_todays_behaviour_exactly(self):
+        """A GNOME or wlroots session: nothing owns org.kde.KWin, so the group
+        is the guess it always was, the notice is printed, and the negative is
+        remembered rather than re-dialled on every keystroke."""
+        snap = self.snapshot("kde_us_de")
+        self.assertEqual((snap.group, snap.group_known, snap.source), (1, False, "wayland"))
+        self.assertTrue(self.reader.absent)
+        self.reader._connect = lambda: self.fail("dialled the bus a second time")
+        d, warns = self.typed("kde_us_de")
+        self.assertEqual(taps(d.kb), US_TAPS)
+        self.assertEqual(len(warns), 1)
+        self.assertIn("assuming 'English (US)'", warns[0])
+
+    def test_an_old_kwin_without_the_object_is_not_asked_twice(self):
+        """Plasma before /Layouts existed: the object is missing, which is a
+        permanent no rather than a transient one."""
+        svc = self.kwin(error=ERR + "UnknownObject")
+        self.assertIsNone(xkbmap.kwin_group(text("kde_us_de")))
+        self.assertIsNone(xkbmap.kwin_group(text("kde_us_de")))
+        self.assertEqual(len(svc.calls), 1)
+        self.assertTrue(self.reader.absent)
+
+    def test_a_kwin_that_will_not_answer_is_waited_for_once(self):
+        xkbmap.KWIN_TIMEOUT = 0.2
+        self.kwin(answer="none")
+        t0 = time.monotonic()
+        self.assertIsNone(xkbmap.kwin_group(text("kde_us_de")))
+        first = time.monotonic() - t0
+        self.assertGreaterEqual(first, 0.2)      # it really waited...
+        t0 = time.monotonic()
+        self.assertIsNone(xkbmap.kwin_group(text("kde_us_de")))
+        self.assertLess(time.monotonic() - t0, 0.1)   # ...and then backed off
+        self.assertFalse(self.reader.absent)     # a wedge is not an absence
+
+    # -- it answers nonsense
+
+    def test_an_index_the_keymap_cannot_hold_is_not_an_answer(self):
+        """A layout list edited between the keymap read and the call, or a
+        compositor that is not the one whose keymap we read: clamp to what the
+        keymap really has, and where it does not fit, keep the guess."""
+        svc = self.kwin(index=4)
+        self.assertIsNone(xkbmap.kwin_group(text("kde_us_de")))    # 5 of 2
+        svc.index = 1
+        self.assertIsNone(xkbmap.kwin_group(text("kde_de")))       # 2 of 1
+        self.assertEqual(xkbmap.kwin_group(text("kde_us_de")), 2)  # and it recovers
+
+    def test_an_answer_that_is_not_a_number(self):
+        self.kwin(answer="s")
+        self.assertIsNone(xkbmap.kwin_group(text("kde_us_de")))
+        self.assertEqual(self.snapshot("kde_us_de").group_known, False)
+
+    def test_an_error_reply_is_a_shrug_not_a_traceback(self):
+        self.kwin(error=ERR + "Failed")
+        self.assertIsNone(xkbmap.kwin_group(text("kde_us_de")))
+        self.assertFalse(self.reader.absent)     # transient: ask again later
+
+    # -- it goes away and comes back
+
+    def test_a_dead_connection_is_redialled_once(self):
+        """KWin restarting takes our connection with it. The next command must
+        reconnect rather than type the wrong characters for the rest of the
+        session."""
+        svc = self.kwin(index=1)
+        self.assertEqual(xkbmap.kwin_group(text("kde_us_de")), 2)
+        self.reader.bus.sock.close()             # the bus went away under us
+        self.assertEqual(xkbmap.kwin_group(text("kde_us_de")), 2)
+        self.assertEqual(svc.answers, 2)
+
+    def test_kwin_restarting_and_taking_the_name_back(self):
+        svc = self.kwin(index=1)
+        self.assertEqual(xkbmap.kwin_group(text("kde_us_de")), 2)
+        svc.close(self.mock)
+        self.assertIsNone(xkbmap.kwin_group(text("kde_us_de")))
+        self.assertFalse(self.reader.absent)     # gone for a moment, not missing
+        self.reader.retry_at = 0.0               # (the backoff, not the point here)
+        self.kwin(index=0)
+        self.assertEqual(xkbmap.kwin_group(text("kde_us_de")), 1)
+
+    # -- and the sessions that must never pay for any of it
+
+    def test_the_bus_is_not_dialled_when_the_group_is_already_known(self):
+        """A plain US session, a one-layout KDE session and GNOME's `us,us`
+        all know their group from the keymap alone. The reader is not even
+        connected for them -- which is also what keeps `--layout us` honest."""
+        svc = self.kwin(index=1)
+        self.reader._connect = lambda: self.fail("dialled the bus for a group we know")
+        for name in ("us", "kde_us", "kde_de", "sway_de"):
+            self.assertTrue(self.snapshot(name).group_known, name)
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP="2", WDOTOOL_LAYOUT=None):
+            xkbmap._fetch_wayland = fake_wayland("kde_us_de")
+            self.assertEqual(xkbmap.fetch().source, "wayland (group pinned)")
+        self.assertEqual(svc.calls, [])
+        self.assertIsNone(self.reader.bus)
+
+    def test_a_pinned_group_still_beats_kwin(self):
+        """WDOTOOL_XKB_GROUP is what people were told to set; a daemon they
+        already pinned must not start disagreeing with them."""
+        self.kwin(index=1)
+        d, warns = self.typed("kde_us_de", group="1")
+        self.assertEqual(taps(d.kb), US_TAPS)
+        self.assertEqual(warns, [])
+
 
 if __name__ == "__main__":
     unittest.main()

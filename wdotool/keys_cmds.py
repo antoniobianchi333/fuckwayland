@@ -185,7 +185,9 @@ class Layout:
     @classmethod
     def load(cls, keymap=None, group=None):
         """The layout, chosen by exactly the rules the typing path uses: `WDOTOOL_LAYOUT`, then the compositor's
-        keymap, then the US bypass, and the built-in US table as the floor (see daemon._layout).
+        keymap, then the US bypass, and the built-in US table as the floor (see daemon._layout). That includes
+        where the active group came from, so `explain` reports the group `type` would really use and names its
+        source -- "wayland" is the keymap alone, "wayland + kwin" is KWin having been asked.
 
         `keymap`/`group` are --keymap/--group, passed rather than exported."""
         mode = xkbmap.layout_mode()

@@ -171,14 +171,20 @@ layout reaches only through a Compose *sequence* that is not a dead-key pair (`�
 German, say) is skipped with the warning above — wdotool composes nothing itself, it
 presses keys. And **which of several configured layouts is active**:
 `wl_keyboard.modifiers` carries that and every compositor sends it only to the window
-with keyboard focus, which an injector never is. Where the keymap holds more than one
-group and they do not bind the same symbols, wdotool uses the **first** and says so —
-on every command that types, not once per session — so a `us, de` session that has
-switched to German types US characters until you pin the group:
+with keyboard focus, which an injector never is. **On KDE that no longer decides
+anything** — KWin publishes the live layout on the session bus and wdotool reads it,
+below — and on sway the event arrives anyway. Everywhere else the keymap is all there
+is: where it holds more than one group and they do not bind the same symbols, wdotool
+uses the **first** and says so — on every command that types, not once per session —
+so a GNOME session with two sources types the first one's characters until you pin the
+group:
 
 ```console
 $ WDOTOOL_XKB_GROUP=2 wdotool type 'Grüße'   # the second configured layout
 ```
+
+The pin still outranks everything, KDE included: a script that sets it keeps saying
+what it means.
 
 **On GNOME that notice appears with a single layout configured too**, and it is not
 wrong to. Mutter compiles its own `us` fallback group after your sources, so one
@@ -190,16 +196,40 @@ noise, and `WDOTOOL_XKB_GROUP=1` silences it. KDE and sway compile one group for
 source and say nothing. A lone `us` source is the case nobody hears from at all: its
 two groups bind the same symbols, so there is nothing to choose between.
 
-That is a limitation of the Wayland protocol, and on **KDE it is a limitation we have
-not lifted rather than one the protocol imposes**: KWin publishes the live layout
-index on the session bus (`org.kde.KeyboardLayouts` `getLayout` on Plasma 6,
-`org.kde.kded5 /modules/keyboard` on 5.27), measured answering correctly across a
-layout switch, and wdotool does not read it yet. Until it does, `WDOTOOL_XKB_GROUP`
-is the answer on KDE as everywhere else. Measured end to end in a real Kate window on
-Plasma 6.6 and 5.27 (`repro/kde-keys-1-group-guess.sh`): with one `de` layout
-configured, plain text, AltGr, dead keys and chords all arrive byte for byte; with
-`us, de` and German switched on, `Grüße yz @` arrives as `Gre zy ""` until the group
-is pinned, and then arrives whole.
+**On KDE the guess is gone, because KWin answers the question.** `org.kde.KWin`
+`/Layouts` `org.kde.KeyboardLayouts.getLayout` returns the 0-based index of the active
+layout in the list you configured, and that list *is* the keymap's group order, name
+for name (`getLayoutsList`'s long name is the keymap's `name[GroupN]`) — so the active
+group is that index plus one, with nothing to translate. Same object, same members,
+same meaning on Plasma 6.6 and 5.27, and it follows every way a layout is switched:
+the applet, the keyboard shortcut, `setLayout`, `switchToNextLayout`, and per-window
+layouts (`SwitchMode=Window`), where it reports the focused window's layout — which is
+where the keystrokes are going, so that is the right answer too.
+
+Three rules keep that safe. wdotool asks **only where it would otherwise guess**, so a
+plain US session, a one-layout session and GNOME's `us,us` never open a bus at all. It
+asks **KWin itself and never kded**: `org.kde.kded6 /modules/keyboard` and the kded5
+one declare the same interface and *crash kded* on `getLayout` — measured on both
+generations, every call answering `NoReply` with the name changing owner afterwards —
+so there is no fallback to them and there must never be one. And **every failure keeps
+the old behaviour**: no session bus, no KWin, an older KWin without the object, a KWin
+that stops answering, an index the keymap cannot hold — each of them leaves group 1
+assumed and the notice printed, exactly as before.
+
+Measured end to end in a real Kate window on Plasma 6.6 and 5.27
+(`repro/kde-keys-3-live-layout.sh`), with `us, de` configured and German switched on:
+
+```
+wdotool type 'yz@'   ->  arrived 'zy""'   (0.4: group 1 assumed)
+wdotool type 'yz@'   ->  arrived 'yz@'    (now: KWin asked)
+```
+
+byte-exact on both generations, with no notice on stderr at all, and
+`wdotool keys explain` reporting `German -- group 2 of 2, from wayland + kwin`.
+Switching layouts under a daemon that is already running is followed command by
+command, because the group is re-read on every one. The one-layout case
+(`repro/kde-keys-1-group-guess.sh`) is unchanged: plain text, AltGr, dead keys and
+chords all arrive byte for byte, as they did in 0.4.
 
 The measured engineering behind all of it — the reverse map, the US bypass, the group
 guess, the cache — is [the active layout](#the-input-daemon), below.
@@ -564,6 +594,11 @@ level keys: shift = key 42 <LFSH>   level3 = key 100 <RALT>   level5 = key 195 <
     wdotool key 108+21 key 54                  (keycodes)
     wdotool type 'ç'                           (characters)
 ```
+
+The first line is the layout question above, answered for this session: `(assumed)`
+appears only where the group really was a guess, and the source says how it was
+settled — `wayland` is the keymap alone, `wayland + kwin` is KWin having been asked on
+KDE, and on sway the group arrives on the wire and the marker is gone too.
 
 That is the awkward case in full: a dead key that is itself on the third level. `ç`
 on a German keyboard is AltGr held down across the `´` key, both let go of, and
@@ -1044,6 +1079,26 @@ Daemon notes:
     that types the wrong characters after a switch to its second layout. The
     notice is made once per layout state and again on every change.
     `WDOTOOL_XKB_GROUP=<n>` pins it.
+  - **the group, on KDE** (`xkbmap.KwinLayouts`): exactly where the paragraph
+    above would flag an assumption, KWin is asked instead —
+    `org.kde.KWin` `/Layouts` `org.kde.KeyboardLayouts.getLayout`, a 0-based
+    index into the configured list, which is the keymap's group order, so the
+    group is `index + 1` and the index is clamped against `group_count` (KDE
+    truncates that list at four itself, which is XKB's `MAX_GROUPS`). The
+    snapshot's source becomes `wayland + kwin` and `group_known` becomes true,
+    which is what silences the notice and drops `(assumed)` from
+    `keys explain`. One connection for the life of the process, opened on the
+    first question that needs it (so the sessions that know their group never
+    open one, and `--layout us` still runs no layout code at all); the daemon
+    is root and gets there the way the KWin *window* backend does, through
+    `dbus_mini`'s forked auth (~3 ms to connect, ~0.3 ms per call). `NameHasOwner`
+    before the first call, because a method call to an unowned name would ask
+    the bus to *start* KWin on a desktop that is not KDE; a call that fails is
+    retried once on a fresh connection (a KWin restart takes ours down with it)
+    and then backed off for ten seconds; a bus with no KWin on it is remembered
+    as such and never dialled again. Every failure returns None and the guess
+    stands. Never kded: both `/modules/keyboard` copies of this interface crash
+    on `getLayout`.
   - **cache**: keyed on (sha256 of the keymap text, group), re-read on *every*
     `type`/`key` — the user can switch layout between two commands, and a
     long-lived daemon has to notice. A rebuild costs ~15ms; a hit is a Wayland

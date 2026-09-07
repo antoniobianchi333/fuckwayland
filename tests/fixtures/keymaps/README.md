@@ -24,6 +24,7 @@ point of them.
 | `kde_de.xkb` | `de` | `German` |
 | `kde_gr.xkb` | `gr` | `Greek` |
 | `kde_us_de.xkb` | `us`, `de` | `English (US)`, `German` |
+| `kde_us_de_fr.xkb` | `us`, `de`, `fr` | `English (US)`, `German`, `French` |
 | `kde5_de.xkb` | `de` | `German` |
 
 `us_swapescape.xkb` and `us_grptoggle.xkb` are plain `us` sessions with a
@@ -42,7 +43,7 @@ It puts `ISO_Level3_Shift` on `<CAPS>` and `<BKSL>` and `ISO_Level5_Shift` on
 — is false in it, and `wdotool keys watch` has to report the key that was
 really pressed rather than the one the layout nominates (`<LVL3>`, 84).
 
-Everything but the `kde*` five, `noble_de.xkb`, `sway_de.xkb` and `neo.xkb`
+Everything but the `kde*` six, `noble_de.xkb`, `sway_de.xkb` and `neo.xkb`
 comes from GNOME 50 / Mutter on Ubuntu 26.04 (libxkbcommon 1.11, which writes
 every keysym as a hex number). `noble_de.xkb` comes from GNOME 46 / Mutter on
 Ubuntu 24.04 (libxkbcommon 1.6, which writes keysym *names*) — the same layout
@@ -51,7 +52,7 @@ the same layout again from sway/wlroots, which compiles **only** the
 configured layout: one group, so there is nothing to guess about which one is
 active.
 
-The four `kde_*.xkb` are KWin's, from Plasma 6.6 on Ubuntu 26.04, and
+The five `kde_*.xkb` are KWin's, from Plasma 6.6 on Ubuntu 26.04, and
 `kde5_de.xkb` is KWin's from Plasma 5.27 on 24.04, each captured with the
 layout set the way a KDE user sets it (System Settings writes `kxkbrc`; on
 5.27 the session has to restart before KWin re-reads it). KWin compiles
@@ -72,8 +73,13 @@ Two facts these files record, both load-bearing for `wdotool/xkbmap.py`:
   source therefore has two groups, and group 1 is the one the user picked.
   KWin and sway do not: one source is one group. `kde_us_de.xkb` is what a
   KDE user who adds a second layout gets — two groups, no fallback — and
-  which of the two is live is still a guess, because no compositor sends
-  `wl_keyboard.modifiers` to a client that is not focused.
+  which of the two is live is not in the file at all, because no compositor
+  sends `wl_keyboard.modifiers` to a client that is not focused. On KDE that
+  is the question `xkbmap.KwinLayouts` puts to KWin on the session bus, and
+  `kde_us_de_fr.xkb` is what pins the answer beyond a pair: three groups,
+  captured with KWin reporting index 2, so "the bus index plus one is the
+  keymap group" is checked where an off-by-one would still land inside the
+  keymap. Everywhere else it is still group 1, assumed and said so.
 * A key that binds fewer groups than the keymap has (`<SPCE>`, `<RTRN>`,
   every key that is the same on every layout) repeats its own groups — XKB's
   default `groupsWrap`. Group 2 of `us.xkb` is a full US layout even though

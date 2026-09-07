@@ -559,8 +559,10 @@ class _Daemon:
         self._keystate_logged = False
         self.pos_known = False    # has px/py ever been established? (B6)
         self.geom_fallback = False  # last geometry() used FALLBACK_GEOMETRY
-        # Active-layout state (B13). `_layout_cache` is ((keymap digest, group), ReverseMap or None); None means
-        # "the fixed US table is the answer", which is both the bypass and every failure mode.
+        # Active-layout state (B13). `_layout_cache` is ((keymap digest, group, group known?), ReverseMap or
+        # None); None means "the fixed US table is the answer", which is both the bypass and every failure mode.
+        # A layout switch changes the group, which changes the key, so the cache follows the user's switcher --
+        # on KDE, where xkbmap asks KWin which layout is live, that is on every command.
         self._layout_cache = None
         self._xkb_backoff = 0.0    # monotonic: don't re-try a failing read
         self._xkb_mods_wait = 0.08  # seconds to wait for a modifiers event
@@ -1350,6 +1352,10 @@ class _Daemon:
                 # Which layout is active was a guess. Say so on the bypass path too: a `us,de` session sitting
                 # on its German group is precisely the one that types the wrong characters, and it is the bypass
                 # that takes it (B1). Once per layout state, so a switch is announced again.
+                #
+                # It is a guess in ever fewer places: sway puts the group on the wire and KWin answers for it on
+                # the session bus (xkbmap.kwin_group), so what is left here is GNOME and any compositor that
+                # will neither send nor be asked. Where wdotool knows, it says nothing.
                 name = rmap.name if rmap is not None else xkbmap.group_name(snap.text, snap.group)
                 self._xkb_say_group(
                     key,

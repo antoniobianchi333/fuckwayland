@@ -4,6 +4,29 @@ Every claim in this file was measured on the VM rig, or on a real desktop, befor
 was written down. The README keeps one short section per version; this is the long
 form.
 
+## Unreleased
+
+- **wdotool reads the active keyboard layout on KDE instead of assuming it.** A
+  session with two layouts configured and the second one switched on typed the first
+  one's characters and printed a notice saying which layout it had assumed: measured on
+  Plasma 6.6 with `us, de` switched to German, `wdotool type 'yz@'` arrived in Kate as
+  `zy""`. KWin publishes the live layout on the session bus — `org.kde.KWin` `/Layouts`
+  `org.kde.KeyboardLayouts.getLayout`, a 0-based index into the configured list, which
+  is the keymap's group order name for name — so the active group is that index plus
+  one, and wdotool now asks. The same string arrives as `yz@`, byte-exact, on Plasma
+  6.6 *and* 5.27 (the earlier claim that 5.27 needed `org.kde.kded5
+  /modules/keyboard` was wrong: KWin 5.27 has `/Layouts` too), a switch made while the
+  daemon is running is followed command by command, and the notice says nothing where
+  nothing is assumed — `wdotool keys explain` reports `group 2 of 2, from wayland +
+  kwin` rather than `group 1 of 2 (assumed)`. The bus is opened only where the group
+  would otherwise be a guess, so a plain US session, a one-layout session and GNOME's
+  `us,us` never open one; KWin is asked and kded never is, because both kded copies of
+  that interface crash on `getLayout`; and every failure — no bus, no KWin, an older
+  KWin without the object, an index the keymap cannot hold — leaves the old guess and
+  the old notice exactly as they were, measured unchanged on a two-source GNOME
+  session. `WDOTOOL_XKB_GROUP` still outranks it. Nothing changes on GNOME, sway or
+  X11.
+
 ## Version 0.4
 
 Everything here was measured on the rig or on a real desktop, and most of it was found
