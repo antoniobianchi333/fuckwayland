@@ -24,8 +24,48 @@ form.
   that interface crash on `getLayout`; and every failure — no bus, no KWin, an older
   KWin without the object, an index the keymap cannot hold — leaves the old guess and
   the old notice exactly as they were, measured unchanged on a two-source GNOME
-  session. `WDOTOOL_XKB_GROUP` still outranks it. Nothing changes on GNOME, sway or
-  X11.
+  session. `WDOTOOL_XKB_GROUP` still outranks it. (GNOME is the entry below; nothing
+  changes on sway or X11.)
+- **And on GNOME, from the setting the shell keeps.** The same defect, the same
+  measurement: `us, de` configured and German switched on, `wdotool type 'yz@'`
+  arrived in a real `gnome-text-editor` window as `zy"` on GNOME 50.1 *and* 46.0.
+  GNOME publishes the answer in `org.gnome.desktop.input-sources`, which
+  `xdg-desktop-portal` serves on the session bus, so wdotool now reads it before every
+  `type` and `key` with the D-Bus client it already ships — no new dependency, and
+  nothing to install on a default Ubuntu desktop. The head of `mru-sources` is the
+  live source, written on every switch by every means a user has, and `current` is
+  deprecated and ignored by the shell whatever it looks like; Mutter appends its own
+  `us` group after the user's sources and compiles them in chunks of three, so the
+  active group is the source's index within its chunk. The string arrives as `yz@`,
+  byte-exact, on both generations — after `Super+Space`, after the panel menu, and on
+  the first command of a session rebooted with German last used, where the old build
+  typed `zy"` before the user had touched anything. With five sources and the fifth
+  picked, where the old guess assumed Russian and typed **nothing at all**, it types.
+  A switch made under a running daemon is followed command by command, and it costs
+  1.2 ms a command as the session user, 6.3 ms as root, where the read has to happen
+  in a forked child because the portal answers the session user only.
+- **The layout notice is gone wherever the layout is known.** It existed because we
+  were guessing, and on GNOME it fired on every command of every non-US desktop —
+  with a *single* layout configured too, because Mutter's appended `us` fallback makes
+  a one-layout session look exactly like a two-layout one in the keymap. The setting
+  tells them apart, so a one-layout GNOME session now says nothing at all, and
+  `wdotool keys explain` reports `group 1 of 2, from wayland + gnome input-sources`
+  where 0.4 said `group 1 of 2 (assumed), from wayland`. Everything that cannot be
+  read leaves 0.4's behaviour exactly as it was, notice included: no GNOME Shell on
+  the bus, no portal, a setting that will not parse, an input source that is an IBus
+  engine rather than an `xkb` layout, an index that does not fit the keymap,
+  per-window layouts turned on, and a `mru-sources` head that is no longer in
+  `sources`.
+- **One portal call is now made, and the no-dialog guarantee is narrowed to say so.**
+  `org.freedesktop.portal.Settings.ReadAll` is the interface every GTK and Qt
+  application calls at start-up for the colour scheme: read-only, answered with no
+  permission check, and with no entry in the portal's permission store to allow or
+  deny. Watched with `dbus-monitor` on both generations, one `wdotool type` makes
+  exactly that one call to the portal and no other, nothing appears on screen, and
+  the permission store lists nothing for `settings`. `tests/test_no_portal.py` now
+  exempts that one interface by name, keeps every other interface on the same bus
+  name a failure — `RemoteDesktop` and `InputCapture` first among them — and has a
+  test of its own for the width of the hole.
 
 ## Version 0.4
 

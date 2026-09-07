@@ -1815,7 +1815,7 @@ hold across all of them and are enforced by tests of their own:
 | `warandr/` | `test_warandr_model`, `test_warandr_parse`, `test_warandr_gui`, `test_overlap_consent` | `tests/fixtures/fake_xrandr.py`, a RandR simulator (which also simulates a GNOME with the overlap extension and its agreement); Xvfb plus xdotool driving the real editor, dialog included |
 | `wmirror/` | `test_wmirror_cli`, `test_wmirror_lifetime` | a fake `wl-mirror` binary, and the detach protocol driven for real |
 | `procs.py`, `stdio.py` | `test_wmirror_lifetime`, `test_stdout_gone` | real forks; `>/dev/full`, `\| head -1`, `>&-` |
-| the no-dialog guarantee | `test_no_portal` | nothing — it is a static check that no package here names the portal or PolicyKit |
+| the no-dialog guarantee | `test_no_portal` | nothing — it is a static check that no package here names PolicyKit or any portal interface but `Settings`, the one read with no consent step |
 | what actually ships | `test_release_deb` | nothing — it unpacks the .deb committed in `release/` and compares its payload with the tree, because a binary in the repository is the one thing no other test here runs. It was the v0.3 build at 0.4 HEAD |
 
 Two environments run these. **In the development shell** (`nix develop`), a container
@@ -1868,11 +1868,23 @@ as root, as a plain user with the udev rule, and as a plain user with neither.
 Watching throughout: the session bus for portal traffic, the system bus for polkit
 `CheckAuthorization` and `BeginAuthentication`, the window list for windows we did not
 open, and both screens compared pixel by pixel around every command. On all six, and
-for the installer and the udev rule as well as the tools: **no prompt, no window we
-did not open, and not one portal call from anything of ours.** The same rig pointed at
-a real portal client and at `pkexec` produced both dialogs on every image, so it does
-see one when there is one. `tests/test_no_portal.py` is the static half of the same
-guarantee, and it runs everywhere.
+for the installer and the udev rule as well as the tools: **no prompt and no window we
+did not open.** The same rig pointed at a real portal client and at `pkexec` produced
+both dialogs on every image, so it does see one when there is one.
+`tests/test_no_portal.py` is the static half of the same guarantee, and it runs
+everywhere.
+
+**One portal call is ours, and the measurement covers it too.** On GNOME `wdotool`
+reads `org.gnome.desktop.input-sources` through
+`org.freedesktop.portal.Settings.ReadAll`, to learn which keyboard layout is active
+rather than assume it and type the wrong characters (docs/WDOTOOL.md § Keyboard
+layouts). `Settings` is the interface every GTK and Qt application calls at start-up
+for the colour scheme: read-only, answered with no permission check, and with no
+entry in the portal's permission store to allow or deny. Re-measured on GNOME 46.0
+and 50.1 with the same watchers on: the call answers in 1–3 ms, no window appears,
+and no `RemoteDesktop`, `InputCapture` or `impl.portal` traffic follows it. The
+static half is exempted at exactly that width — one interface, by name — and
+`test_no_portal.py` has its own test for the width of the hole.
 
 ## 11. Installing: what each route costs
 
@@ -2066,9 +2078,11 @@ mechanics, because "granted once and standing" is the design and not an accident
   tools find the graphical session by scanning `/run/user/*` and logind, and talk to
   that user's compositor as root.
 
-**What is never asked at run time.** Nothing here uses the desktop portal, so GNOME's
-and KDE's *Remote Desktop* consent dialog never appears, and nothing here uses
-PolicyKit, so no polkit agent window does either. That is a deliberate choice, and
+**What is never asked at run time.** Nothing here asks the desktop portal for a
+capability, so GNOME's and KDE's *Remote Desktop* consent dialog never appears, and
+nothing here uses PolicyKit, so no polkit agent window does either. (The one portal
+call anywhere is `Settings.ReadAll` on GNOME, a read of the desktop's own settings
+with no consent step and nothing granted; see § 10.) That is a deliberate choice, and
 this section is its cost: with no per-use prompt, everything is granted once and
 standing, by the bullets above, whether that is the udev rule, the bridge extension
 or `sudo`. The only prompt any of it can raise is GNOME's *Keep these display

@@ -16,7 +16,8 @@ reads the fd — no protocol extension, no privileges, nothing to install.
 *Which* of that keymap's groups is active is the one thing the protocol keeps
 from us: `wl_keyboard.modifiers` carries it and reaches only the window with
 keyboard focus. sway sends it anyway; KWin answers the same question on the
-session bus (see `KwinLayouts`); everywhere else the group is inferred, and
+session bus (see `KwinLayouts`) and GNOME publishes it as a setting the portal
+serves (see `GnomeInputSources`); everywhere else the group is inferred, and
 `Snapshot.group_known` says which of the two happened.
 
     snap = fetch()                               # text + active group
@@ -27,6 +28,8 @@ session bus (see `KwinLayouts`); everywhere else the group is inferred, and
 Layout of this module:
   * fetch()                      Wayland: keymap text + active group
   * kwin_group()                 KDE: the active group, off the session bus
+  * gnome_group()                GNOME: the active group, from its setting
+  * desktop_group()              both of those, tried in turn
   * parse()                      keymap text -> Keymap (keycodes/types/groups)
   * build()                      Keymap + group -> ReverseMap
   * ReverseMap.lookup_char()     char -> [(evdev keycode, modifier mask)]
@@ -46,10 +49,12 @@ Env overrides (see README):
 
 import os
 import re
+import signal
 import struct
 import threading
 import time
 import unicodedata
+import warnings
 
 from wdotool.keysyms import KEYSYM_TO_UNICODE, NAME_TO_KEYSYM
 
@@ -124,9 +129,9 @@ def fetch(timeout: float = 2.0, mods_wait: float = 0.08, keymap: str | None = No
     `mods_wait` is how long to keep dispatching after the keymap arrives in the hope of a
     `wl_keyboard.modifiers` event carrying the active group. Mutter (and wlroots, and KWin) only send that event
     to the client that holds keyboard focus, which a headless injector never does -- so the wait usually expires
-    and the group has to be inferred; see `choose_group`. On KDE it does not have to be inferred: where the
-    inference would be a guess, KWin is asked outright (`kwin_group`), and the answer is a group as known as the
-    one sway puts on the wire.
+    and the group has to be inferred; see `choose_group`. On KDE and on GNOME it does not have to be inferred:
+    where the inference would be a guess, the desktop is asked outright (`desktop_group`), and the answer is a
+    group as known as the one sway puts on the wire.
 
     `keymap` and `group` are what --keymap/--group pass; each falls back to WDOTOOL_XKB_KEYMAP /
     WDOTOOL_XKB_GROUP when the caller says nothing.
@@ -151,13 +156,13 @@ def fetch(timeout: float = 2.0, mods_wait: float = 0.08, keymap: str | None = No
     if group is None:
         group, known = choose_group(text, None)
         if not known:
-            # The keymap alone cannot say which of its groups is live. KDE
-            # publishes exactly that (and nothing else does), so ask before
-            # settling for group 1 -- and only here, so the sessions that
-            # already know the answer never open a bus.
-            told = kwin_group(text)
+            # The keymap alone cannot say which of its groups is live. KDE and
+            # GNOME each publish exactly that, so ask before settling for
+            # group 1 -- and only here, so the sessions that already know the
+            # answer never open a bus.
+            told = desktop_group(text)
             if told is not None:
-                return Snapshot(text, told, "wayland + kwin", True, mods_seen)
+                return Snapshot(text, told[0], "wayland + " + told[1], True, mods_seen)
         return Snapshot(text, group, "wayland", known, mods_seen)
     return Snapshot(text, group, "wayland", True, mods_seen)
 
@@ -853,9 +858,9 @@ def choose_group(text: str, from_modifiers=None) -> tuple:
         `us` fallback group after the user's sources, so "de,us" is a session
         with one German source, and group 1 is right.
 
-    "Assumed" is where `fetch()` goes and asks KWin (`kwin_group`), so on KDE
-    this function's second case is a fallback rather than the answer. It stays
-    the answer everywhere else.
+    "Assumed" is where `fetch()` goes and asks the desktop (`desktop_group`),
+    so on KDE and on GNOME this function's second case is a fallback rather
+    than the answer. It stays the answer everywhere else.
 
     Deliberately regex-only: choosing a group must not need the parser, or
     the parser would run on a plain US layout, which the bypass promises it
@@ -1060,6 +1065,375 @@ def kwin_group(text: str):
             _kwin = KwinLayouts()
         reader = _kwin
     return reader.group(text)
+
+
+# ---------------------------------------------------------------------------
+# GNOME: which layout is active, read from the setting the shell keeps
+#
+# Mutter tells an unfocused client no more than KWin does, but GNOME Shell
+# keeps the answer in GSettings, and xdg-desktop-portal serves GSettings on
+# the session bus -- `org.freedesktop.portal.Settings.ReadAll` with the
+# namespace `org.gnome.desktop.input-sources`. Measured on GNOME 46.0 and
+# 50.1, default installs, where `xdg-desktop-portal` and
+# `xdg-desktop-portal-gnome` are both already there:
+#
+#   * `mru-sources` is the live truth: its head is the active source, written
+#     on every switch by every means a user has -- the Super+Space shortcut,
+#     the panel indicator's menu -- and it is what a login restores, so the
+#     very first command of a fresh session can already be on the second
+#     layout. It is `[]` only in a session that has never switched, and there
+#     `sources[0]` is active.
+#   * `current` is DEAD. `gsettings describe` ends "DEPRECATED: This key is
+#     deprecated and ignored" on both generations, `dconf watch` across a
+#     session of switching shows the shell writing only `mru-sources`, and
+#     writing `current` switches nothing. Never read it.
+#   * dconf itself is not readable over the bus at all: `ca.desrt.dconf`
+#     publishes `Init`, `Change` and the `Notify` signal and no read method.
+#     The portal is the only route, and it needs nothing installed and no new
+#     dependency -- `fwcommon/dbus_mini.py` speaks it as it stands.
+#
+# Turning the source's index into a keymap group is one rule with one wrinkle.
+# Mutter compiles the sources in order and ALWAYS appends its own `us` group
+# after them, even when `us` is already a source (`us,de` -> `us, de, us`);
+# that appended group is why a one-layout GNOME session looks exactly like a
+# two-layout one from the keymap alone, and why 0.4 printed its notice on
+# every command of every non-US GNOME desktop. XKB allows four groups, so
+# beyond three sources Mutter recompiles around whichever source is in use:
+# with `de,fr,gr,ru,es` the keymap is `de, fr, gr, us` until Spanish is
+# picked, and then it is `ru, es, us` with group 2 active. So the group is the
+# source's index within its chunk of three, plus one -- `tests/fixtures/
+# keymaps/five_es.xkb` is that keymap, captured.
+#
+# Two states are refused rather than answered, because there the setting
+# describes no single live layout:
+#
+#   * `per-window` true (Settings > Keyboard > "Let each window use its own
+#     layout"): measured with `mru-sources` saying German while a newly opened
+#     window was on US.
+#   * a `mru-sources` head that is no longer in `sources` -- the list was
+#     edited under us.
+#
+# and so is a source that is not an `xkb` layout (an IBus engine), which is
+# the one shape here that was never measured. Every refusal, and every failure
+# of the read, returns None and leaves the caller with the guess and the
+# notice it had before this existed.
+
+GNOME_BUS_NAME = "org.gnome.Shell"
+GNOME_SCHEMA = "org.gnome.desktop.input-sources"
+PORTAL_BUS_NAME = "org.freedesktop.portal.Desktop"
+PORTAL_PATH = "/org/freedesktop/portal/desktop"
+PORTAL_IFACE = "org.freedesktop.portal.Settings"
+GNOME_TIMEOUT = 2.0        # the read is 1-3 ms; this only bounds a wedge
+GNOME_RETRY_AFTER = 10.0   # monotonic seconds before re-dialling a bus that failed
+GNOME_FORK_GRACE = 2.0     # extra seconds before a silent child is killed
+
+# Mutter fits this many of the user's sources into one keymap (XKB's four
+# groups, less the `us` it appends). Beyond that it compiles in chunks.
+GNOME_SOURCES_PER_KEYMAP = 3
+
+# The same rule as KWin's: an answer that describes the session rather than
+# the moment. No portal on this bus at all, or one that will not answer us.
+_GNOME_FATAL = ("ServiceUnknown", "UnknownObject", "UnknownMethod",
+                "UnknownInterface", "AccessDenied", "NotSupported")
+
+
+class GnomeInputSources:
+    """GNOME's answer to "which of the configured layouts is active?", read
+    through the portal over one connection kept for the life of the process.
+
+    The same shape as `KwinLayouts`, and for the same reasons: dialled lazily
+    from the one place the group would otherwise be a guess, so a plain US
+    session and a session with one thing in its keymap never open a bus;
+    `NameHasOwner` on GNOME Shell before anything else, so a KDE or sway box
+    is one round trip away from a permanent no rather than a portal call on
+    every keystroke; failure is silence, and a bus that refuses is not
+    re-dialled for GNOME_RETRY_AFTER seconds.
+
+    One thing is GNOME's own. Typing here always goes through `/dev/uinput`,
+    so the daemon is the session user under the udev rule and **root** under
+    `sudo` -- and the portal answers the session user and nobody else, because
+    it identifies its caller by opening `/proc/<pid>/root`. So when we are not
+    that user the ReadAll happens in a forked child that has dropped to them
+    (`_read_all_as`); the bus this object keeps is still ours, and still does
+    the name check, because that much root may ask.
+    """
+
+    def __init__(self, address=None, uid=None):
+        # A caller that hands us an address is handing us one it can already
+        # use as itself (the tests); otherwise both come from the session.
+        self.address = address
+        self.uid = os.geteuid() if (uid is None and address is not None) else uid
+        self.bus = None
+        self.absent = False      # no GNOME here; stop asking
+        self.retry_at = 0.0      # monotonic deadline of the connect backoff
+        self.asked = 0           # answers received, for the tests
+        self._lock = threading.Lock()
+
+    def group(self, text: str):
+        """The active group (1-based) or None.
+
+        `text` is the keymap the answer has to fit: an index past its last
+        group describes a keymap we did not read -- a layout list edited a
+        moment ago -- and the caller's own guess is the better one."""
+        with self._lock:
+            try:
+                n = _group_of_sources(self._ask())
+                return n if n is not None and 1 <= n <= group_count(text) else None
+            except Exception:
+                # Nothing about typing may depend on this working (B13).
+                return None
+
+    def close(self):
+        with self._lock:
+            self._drop()
+
+    # -- the bus
+
+    def _drop(self):
+        bus, self.bus = self.bus, None
+        if bus is not None:
+            try:
+                bus.close()
+            except Exception:
+                pass
+
+    def _target(self):
+        """(uid, bus address) of the graphical session, or None."""
+        if self.address is not None:
+            return self.uid, self.address
+        from fwcommon import session
+        hit = session.find_user_bus()
+        if hit is None:
+            return None
+        uid, addr = hit
+        self.uid, self.address = uid, addr
+        return uid, addr
+
+    def _connect(self):
+        """The session bus, with GNOME Shell on it, or None."""
+        if self.bus is not None:
+            return self.bus
+        hit = self._target()
+        if hit is None:
+            return None
+        from fwcommon.dbus_mini import Bus
+        try:
+            bus = Bus(hit[1], timeout=GNOME_TIMEOUT)
+        except Exception:
+            return None          # no session bus (yet): the backoff catches it
+        try:
+            if not bus.name_has_owner(GNOME_BUS_NAME):
+                bus.close()
+                # Nobody owns it: this is not a GNOME session, which is
+                # permanent and worth remembering. If the shell has answered
+                # us before this is a restart, and the backoff covers it.
+                self.absent = not self.asked
+                return None
+        except Exception:
+            bus.close()          # ours to close, or the next command opens a second
+            return None
+        self.bus = bus
+        return bus
+
+    def _ask(self):
+        """The `org.gnome.desktop.input-sources` namespace, or None. One
+        reconnect, for the same reason KWin gets one: a shell restart takes
+        our connection with it and a stale socket looks like a wedged one."""
+        now = time.monotonic()
+        if self.absent or now < self.retry_at:
+            return None
+        for attempt in (0, 1):
+            bus = self._connect()
+            if bus is None:
+                self.retry_at = now + GNOME_RETRY_AFTER
+                return None
+            try:
+                if self.uid is not None and os.geteuid() != self.uid:
+                    out = _read_all_as(self.uid, self.address, GNOME_TIMEOUT)
+                else:
+                    out = _read_all(bus, GNOME_TIMEOUT)
+            except Exception as e:
+                self._drop()
+                if any(getattr(e, "name", "").endswith(w) for w in _GNOME_FATAL):
+                    self.absent = True
+                    return None
+                if attempt:
+                    self.retry_at = now + GNOME_RETRY_AFTER
+                    return None
+                continue         # once more, on a new connection
+            self.asked += 1
+            return out
+        return None
+
+
+def _read_all(bus, timeout: float):
+    """`org.freedesktop.portal.Settings.ReadAll` for our one namespace. The
+    values arrive already unmarshalled: `sources` and `mru-sources` as lists
+    of (type, id) pairs, `per-window` as a bool."""
+    (all_,) = bus.call(PORTAL_BUS_NAME, PORTAL_PATH, PORTAL_IFACE, "ReadAll",
+                       "as", ([GNOME_SCHEMA],), timeout=timeout)
+    return all_.get(GNOME_SCHEMA)
+
+
+def _read_all_as(uid: int, addr: str, timeout: float):
+    """`_read_all` from a live process owned by `uid`, JSON back over a pipe.
+
+    `Bus(as_uid=)` cannot serve here even though it exists: its child hands
+    the socket back and exits, and the portal, which identifies its caller by
+    opening `/proc/<pid>/root`, then has no process left to identify. So the
+    connection AND the call both happen in a child that stays alive for them.
+    The child also has to put PR_SET_DUMPABLE back: setuid() clears it, and a
+    process that is not dumpable has a `/proc/self` only root may open --
+    which is precisely what the portal is not."""
+    import json
+    from fwcommon.dbus_mini import Bus, DBusError, ERR
+    r, w = os.pipe()
+    with warnings.catch_warnings():
+        # 3.12 warns about fork() in a threaded process; the child does socket
+        # I/O and _exit()s, and never touches the interpreter's locks.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        pid = os.fork()
+    if pid == 0:                                      # child
+        try:
+            os.close(r)
+            from fwcommon.dbus_mini import _drop_privileges
+            _drop_privileges(uid)
+            _set_dumpable()
+            with Bus(addr, timeout=timeout) as bus:
+                out = {"ok": True, "settings": _read_all(bus, timeout)}
+        except BaseException as e:
+            out = {"ok": False, "name": getattr(e, "name", "") or (ERR + "Failed"),
+                   "error": "%s: %s" % (type(e).__name__, e)}
+        try:
+            os.write(w, json.dumps(out).encode())
+        except BaseException:
+            pass
+        os._exit(0)
+    os.close(w)
+    try:
+        raw = _read_until_eof(r, pid, timeout + GNOME_FORK_GRACE)
+    finally:
+        os.close(r)
+        _reap(pid)
+    try:
+        out = json.loads(raw) if raw else None
+    except ValueError:
+        out = None
+    if not isinstance(out, dict):
+        raise DBusError(ERR + "NoReply", "the reader for uid %d said nothing" % uid)
+    if not out.get("ok"):
+        raise DBusError(out.get("name") or (ERR + "Failed"), out.get("error") or "")
+    return out.get("settings")
+
+
+def _set_dumpable():
+    """PR_SET_DUMPABLE = 1. Best effort: a libc without it leaves the portal
+    unable to see us, which is a read that fails, which is the guess."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(4, 1, 0, 0, 0)
+    except Exception:
+        pass
+
+
+def _read_until_eof(fd: int, pid: int, timeout: float) -> bytes:
+    """Everything the child writes before it closes, or b"" if it outstays
+    `timeout` -- it holds every fd we had, so it does not get to hang us."""
+    import select
+    deadline = time.monotonic() + timeout
+    buf = b""
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            _kill(pid)
+            return b""
+        try:
+            if not select.select([fd], [], [], left)[0]:
+                continue
+            chunk = os.read(fd, 65536)
+        except OSError:
+            return buf
+        if not chunk:
+            return buf
+        buf += chunk
+
+
+def _kill(pid: int):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _reap(pid: int):
+    try:
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
+
+
+def _group_of_sources(d):
+    """The active keymap group from the setting, or None where the setting
+    describes no single one. Pure: this is the whole mapping, and the part
+    most worth pinning in a test."""
+    if not isinstance(d, dict):
+        return None
+    sources, mru = d.get("sources"), d.get("mru-sources")
+    if not isinstance(sources, (list, tuple)) or not sources or mru is None:
+        return None
+    if d.get("per-window"):
+        return None
+    src = [tuple(s) for s in sources
+           if isinstance(s, (list, tuple)) and len(s) == 2]
+    if len(src) != len(sources) or any(t != "xkb" for t, _ in src):
+        return None
+    if len(src) == 1:
+        i = 0            # one source: the keymap's second group is Mutter's
+    elif not isinstance(mru, (list, tuple)) or not mru:
+        i = 0            # nothing switched in this session: still the first
+    else:
+        try:
+            i = src.index(tuple(mru[0]))
+        except (ValueError, TypeError):
+            return None  # a head that names a source the list no longer has
+    return i % GNOME_SOURCES_PER_KEYMAP + 1
+
+
+_gnome = None
+_gnome_lock = threading.Lock()
+
+
+def gnome_group(text: str):
+    """The active group GNOME's setting names, or None where nothing answers.
+
+    The module-level connection is the point, as it is for KWin: the daemon is
+    long-lived and asks on every command whose group it would otherwise guess."""
+    global _gnome
+    with _gnome_lock:
+        if _gnome is None:
+            _gnome = GnomeInputSources()
+        reader = _gnome
+    return reader.group(text)
+
+
+# ---------------------------------------------------------------------------
+# the desktops, in turn
+
+
+def desktop_group(text: str):
+    """(group, who said so) -- the active group read from the desktop, or
+    None where no desktop answers.
+
+    The two readers are independent and each is its own gate: the first
+    command of a GNOME session asks KWin, finds nothing owning `org.kde.KWin`
+    and never asks again, and the first command of a KDE session does the
+    same to GNOME Shell. So the loop costs one round trip per session, once,
+    and after that only the desktop that answers is spoken to."""
+    for ask, who in ((kwin_group, "kwin"), (gnome_group, "gnome input-sources")):
+        told = ask(text)
+        if told is not None:
+            return told, who
+    return None
 
 
 # ---------------------------------------------------------------------------

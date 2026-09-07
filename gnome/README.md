@@ -585,38 +585,53 @@ repo can fix; the bugs that *were* fixable have been.
 
 **Keyboard**
 
-* **L1 — which of several configured layouts is active is not readable.**
-  `key`/`type` send evdev keycodes and the compositor reads them through the
-  session's active layout, so wdotool reads that layout's keymap off
-  `wl_keyboard.keymap` and works out which key produces the character asked
-  for (see **Keyboard layouts** in the top-level README) — `type ü`, `type y`
-  and `key ctrl+z` are all right on a German session now. What Mutter will
-  not tell an unfocused client is *which group* of a multi-layout keymap is
-  active: `wl_keyboard.modifiers` carries the group and Mutter sends it only
-  to the window with keyboard focus (`focus_resource_list`), which an
-  injector never is. With one input source configured there is nothing to
-  guess: GNOME appends its own `us` fallback group *after* your sources, so a
-  single `de` source compiles as "de,us" and the first group is the one you
-  picked. With several, wdotool uses the **first** and says so once per
-  layout state — on both paths, the US bypass included, so a session
-  configured `us, de` and switched to German tells you it is assuming
-  `English (US)` while it types US characters. Pin it with
-  `WDOTOOL_XKB_GROUP=2`, which is read from the environment of the
-  **command** and carried to the daemon with the text it is to type, so a
-  script that sets it mid-run is obeyed by the daemon that is already
-  running. (Before 0.4 the daemon read it only from the environment it was
-  spawned with, so the pin this notice asks for was ignored by any daemon
-  already up, and the notice kept printing.) The notice itself reaches every
-  command: the daemon's own log carries it once per layout state, and every
-  client's stderr carries it every time, because a session typing the wrong
-  characters on every command is not told by one line to whoever asked
-  first. Three rig facts worth having:
-  `gsettings set org.gnome.desktop.input-sources current 1` does **not** move
-  Mutter's active group (the keyboard shortcut does — `Super+Space` by
-  default); `gsettings get org.gnome.desktop.input-sources current` is the
-  index of the active source, `n - 1`; and `xkb-options` is re-read only when
-  the `sources` setting itself changes, so an option set on its own leaves
-  the compiled keymap byte-identical.
+* **L1 (lifted in 0.5) — which of several configured layouts is active is
+  not on the wire, and is read from the shell instead.** `key`/`type` send
+  evdev keycodes and the compositor reads them through the session's active
+  layout, so wdotool reads that layout's keymap off `wl_keyboard.keymap` and
+  works out which key produces the character asked for (see **Keyboard
+  layouts** in the top-level README) — `type ü`, `type y` and `key ctrl+z`
+  are all right on a German session. What Mutter will not tell an unfocused
+  client is *which group* of a multi-layout keymap is active:
+  `wl_keyboard.modifiers` carries the group and Mutter sends it only to the
+  window with keyboard focus (`focus_resource_list`), which an injector never
+  is. GNOME publishes it anyway, and since 0.5 wdotool reads it before every
+  command, so a session configured `us, de` and switched to German types
+  German and says nothing. `WDOTOOL_XKB_GROUP=<n>` still outranks it, and is
+  read from the environment of the **command** and carried to the daemon with
+  the text it is to type, so a script that sets it mid-run is obeyed by a
+  daemon that is already running. Where the setting cannot be read, or
+  describes no one layout, 0.4's behaviour stands unchanged: group 1,
+  the notice on every command that types, and the pin as the answer. Rig
+  facts worth having:
+  - **`mru-sources` is the live truth and `current` is dead.** The head of
+    `mru-sources` is the active source, written on every switch by every
+    means — `Super+Space`, the panel indicator's menu — and it is what a
+    login restores, so the *first* command of a fresh session can already be
+    on the second layout. It is `[]` only in a session that has never
+    switched, and there `sources[0]` is active. `gsettings describe
+    org.gnome.desktop.input-sources current` ends "DEPRECATED: This key is
+    deprecated and ignored" on both generations, `dconf watch` across a
+    session of switching shows the shell writing only `mru-sources`, and
+    `gsettings set ... current 1` moves nothing. (Through 0.4 this file said
+    `current` was the index of the active source. It is not, and never was on
+    either of these generations.)
+  - **dconf is not readable over the bus; the portal is.** `ca.desrt.dconf`
+    publishes `Init`, `Change` and the `Notify` signal and no read method at
+    all. `org.freedesktop.portal.Settings` version 2 answers
+    `ReadAll(["org.gnome.desktop.input-sources"])` live on both generations,
+    and `xdg-desktop-portal` and `xdg-desktop-portal-gnome` are both in the
+    default 24.04 and 26.04 installs. A `SettingChanged` signal carries every
+    switch too; wdotool re-reads per command and subscribes to nothing.
+  - **Mutter appends its own `us` group** after your sources, always, even
+    when `us` is already one of them — so one `de` source compiles as
+    "de,us", and from the keymap alone one layout and two are the same thing.
+    Beyond three sources it compiles in chunks of three around the one in
+    use: `de,fr,gr,ru,es` is `de, fr, gr, us` until Spanish is picked and
+    then `ru, es, us`.
+  - **`xkb-options` is re-read only when the `sources` setting itself
+    changes**, so an option set on its own leaves the compiled keymap
+    byte-identical.
 * **L2 — `type` skips characters the active layout cannot produce**, with one
   warning per character ("Can't type character 'ß' (not on the French
   layout). Skipping."), and types the rest of the string. Dead-key pairs are
