@@ -11,8 +11,8 @@
 // Targets GNOME Shell 45..50 (Ubuntu 24.04 = 46, Ubuntu 26.04 = 50), ESM.
 // Every Mutter API that drifted between those releases is feature-detected at
 // runtime. Verified live on Ubuntu 24.04 (gnome-shell 46.0) and 26.04
-// (gnome-shell 50.1); the few places that could not be exercised there are
-// still marked TODO-VERIFY (see gnome/README.md "Verified live").
+// (gnome-shell 50.1); every method here has now been exercised on both, and
+// nothing is left marked TODO-VERIFY (see gnome/README.md "Verified live").
 //
 // Wire: well-known name org.fuckwayland.Bridge (the object also answers under
 // org.gnome.Shell because it lives on gnome-shell's own connection), object
@@ -474,9 +474,18 @@ function findXauthority() {
 // The "Keep these display settings?" dialog is a ModalDialog created in
 // gnome-shell's windowManager.js and not stored anywhere public; find it by
 // class name in the modal dialog group.
-// TODO-VERIFY (46+50): DisplayChangeDialog is a ModalDialog parented to
-// Main.layoutManager.modalDialogGroup, its constructor name survives GObject
-// registration, and _onSuccess/_onFailure are the Keep/Revert handlers.
+// VERIFIED (46.0 and 50.1, identical source on both): windowManager.js has
+// `GObject.registerClass(class DisplayChangeDialog extends
+// ModalDialog.ModalDialog)`, and ModalDialog._init ends in
+// `Main.layoutManager.modalDialogGroup.add_child(this)` -- so the dialog is a
+// direct child of the first group below, and Main.uiGroup is only insurance
+// for a release that moves it. Registration keeps the JS name: on gjs 1.80.2
+// and 1.88.0 `constructor.name` is 'DisplayChangeDialog' and
+// `constructor.$gtype.name` is 'Gjs_DisplayChangeDialog', so either half of
+// the pair below matches. `_onSuccess` and `_onFailure` are the `action:` of
+// the "Keep Changes" and "Revert Settings" buttons, so calling one is what
+// pressing that button does -- measured against a live dialog raised by
+// `wxrandr --persistent` on both releases (gnome/README.md "Verified live").
 function findDisplayChangeDialog() {
     const groups = [
         safe(() => Main.layoutManager.modalDialogGroup, null),
@@ -1467,10 +1476,16 @@ export default class FuckwaylandBridge extends Extension {
                 dialog._onFailure();
             return true;
         }
-        // TODO-VERIFY (46+50): Shell.WM.complete_display_change(bool) is what
-        // the dialog's _onSuccess/_onFailure call (shell-wm.c ->
-        // meta_plugin_complete_display_change) and is a no-op with nothing
-        // pending. Probed, so a missing method just means "not handled".
+        // VERIFIED (46.0 and 50.1): Shell.WM.complete_display_change(ok) is
+        // what the dialog's _onSuccess/_onFailure call (shell-wm.c ->
+        // meta_plugin_complete_display_change), and it is in the Shell-14 /
+        // Shell-18 typelib on both -- the probe passes, so the call below is
+        // really made rather than skipped. Harmless with nothing pending:
+        // seven calls per release with no dialog on screen, and two more
+        // straight after a keep had been confirmed, left the layout,
+        // ~/.config/monitors.xml and the shell exactly as they were (the
+        // confirmed layout was still up 20 s later). Still probed, so a shell
+        // without the method just means "not handled".
         if (isFn(global.window_manager, 'complete_display_change'))
             safe(() => global.window_manager.complete_display_change(keep));
         return false;

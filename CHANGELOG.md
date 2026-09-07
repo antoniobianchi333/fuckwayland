@@ -145,7 +145,23 @@ by using the tools on one rather than by reading them.
   of asking for the handover on a Wayland desktop (`FUCKWAYLAND_PASSTHROUGH=always` and
   `wxrandr --backend x11`), where it is not one. It now says a handover was asked for
   instead. Found by running the release package on the 26.04 default install.
-- **2661 tests**, up from 2262, the new ones being the daemon's two ways of ending,
+- **The one method nothing had ever exercised is exercised now.**
+  `ConfirmDisplayChange` answers GNOME's "Keep these display settings?" dialog, the one
+  a `--persistent` apply raises for twenty seconds, and it shipped on two assumptions
+  about a dialog no measurement had ever put on screen. Both hold, on GNOME 46.0 and
+  50.1 alike, and the code now says what was measured rather than what was assumed: the
+  dialog is `DisplayChangeDialog`, a `ModalDialog` that `ModalDialog._init` adds
+  straight to `Main.layoutManager.modalDialogGroup`, which keeps its JS class name
+  through GObject registration, and whose `_onSuccess`/`_onFailure` are the actions of
+  its Keep and Revert buttons. Asking to keep answers the dialog in about a second and
+  a half, leaves the layout up long past the countdown that would have taken it away,
+  and gets `~/.config/monitors.xml` written; asking to revert puts the previous layout
+  back and writes nothing; with no dialog on screen the answer is `false` and neither
+  the layout, the file nor the shell moves, which is what the second assumption --
+  that `Shell.WM.complete_display_change` is a no-op with nothing pending -- had
+  claimed with no evidence behind it. The dialog's own buttons still work afterwards.
+  Nothing needed fixing, and `gnome/README.md` no longer lists this as never exercised.
+- **2668 tests**, up from 2262, the new ones being the daemon's two ways of ending,
   the chord the layout cannot produce, the pin carried on the request, the guards
   around the saved display configuration, every refusal of the overlap route
   classified and then re-run with the forcing option to see which of them it changes,
@@ -154,7 +170,9 @@ by using the tools on one rather than by reading them.
   nonsense, refusing (per-window layouts, a stale `mru-sources` head, an IBus source),
   an index the keymap cannot hold, a switch between two commands on one daemon, the
   forked read itself, and a kded landmine on the mock bus that fails the test if
-  anything ever calls it.
+  anything ever calls it -- and the answer to GNOME's display-change dialog: found and
+  pressed either way, found by nothing when a second call comes too late, and the two
+  halves of the lookup held to the shell source they were measured against.
 - **The documents were read against the code again**, which is the check this release
   exists to keep passing: `scripts/check-docs.py` reads the options out of the source,
   out of every help text each tool prints (the subcommands included) and out of every

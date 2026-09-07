@@ -519,8 +519,56 @@ again, `remove` of the pair when only one axis was set, and the two axes as
 two separate `wdotool windowstate` commands (two processes, so the client has
 answered in between — which is why that route never showed the bug).
 
-Not exercised live yet: `ConfirmDisplayChange` (no display change was
-triggered) and the Looking-Glass probes of §6 of the checklist.
+`ConfirmDisplayChange` was measured on the default installs of both
+releases (26.04 / GNOME Shell 50.1, gjs 1.88.0; 24.04 / GNOME Shell 46.0,
+gjs 1.80.2), two 1920x1080 heads, the bridge installed the documented way
+(copy → reboot → `--check` state 1, name owned, version 3, installed
+`extension.js` md5-identical to the tree's). The dialog was raised by
+`wxrandr --output Virtual-1 --mode 1920x1080 --pos 0x0 --output Virtual-2
+--mode 1280x1024 --right-of Virtual-1 --persistent` and every end state
+screendumped. What it is, on both
+releases from the shell's own gresource and identical between them:
+`GObject.registerClass(class DisplayChangeDialog extends
+ModalDialog.ModalDialog)` in `windowManager.js`, added to
+`Main.layoutManager.modalDialogGroup` by `ModalDialog._init`, holding
+"Revert Settings" (`action: this._onFailure`, `key: Escape`) and "Keep
+Changes" (`action: this._onSuccess`, `default: true`); each handler is one
+`this._wm.complete_display_change(bool)` and one `this.close()`. The screen
+shows *Keep these display settings? / Settings changes will revert in 20
+seconds* over a dimmed desktop.
+
+* **Nothing pressed** (the control): the layout applies at once and 32 s
+  later it is back where it started, with no `~/.config/monitors.xml` at
+  all — which is what the two calls below are measured against.
+* **`ConfirmDisplayChange(true)`** → `true` about 1.5 s after the apply: the
+  next screendump is a plain undimmed desktop, `monitors.xml` appears in that
+  same second (Mutter's writer; nothing existed while the dialog was up) with
+  exactly the applied layout in it, and the layout is still the new one 34 s
+  later — long past the 20 s the countdown would have taken.
+* **`ConfirmDisplayChange(false)`** → `true`: two seconds later the previous
+  layout is back on screen and `monitors.xml` is byte-identical, same md5 and
+  same mtime. Nothing written.
+* **No dialog on screen** → `false`, seven calls of both verdicts per release:
+  layout, `monitors.xml` and the shell all untouched, journal clean, the
+  bridge still answering. `Shell.WM.complete_display_change` is in the
+  `Shell-14`/`Shell-18` typelib on both, so the probe passes and the verdict
+  really is forwarded — that is what "a no-op when nothing is pending" was
+  measured to mean. A second `true` on a dialog already answered is `false`,
+  and a `false` straight after a confirmed keep does **not** undo it: the kept
+  layout was still there 20 s on, and the saved file unchanged.
+* **The dialog's own buttons afterwards**, with the bridge having answered one
+  moments before: Escape on the next dialog reverts and leaves the file
+  untouched, a click on "Keep Changes" keeps and rewrites it, on both
+  releases. GNOME Shell 50.1 logs `Source ID N was not found when attempting
+  to remove it` when the dialog is dismissed through its *own* button or key
+  (four presses out of five) and never through the bridge; 46.0 logs nothing
+  either way. That one is gnome-shell's, on the path we do not take.
+* No `JS ERROR` or `JS WARNING` in any of it. One thing worth knowing while
+  testing: the 5-minute idle blank puts the shell in `unlock-dialog` mode,
+  which disables the extension (as documented under **lock screen** above) —
+  the bridge comes back on unlock.
+
+Not exercised live yet: the Looking-Glass probes of §6 of the checklist.
 
 Review fixes re-verified on Ubuntu 24.04 / GNOME Shell 46.0 (fresh instance,
 systemd 255): the uaccess-only rule gives `root:root 0600` plus

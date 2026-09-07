@@ -52,6 +52,7 @@ the real compositor: unpack a tree at `/home/test/<name>` and
 | `disp-layout2-wlr-scale-placement.sh` | `--right-of` off by 1-10 px at 149 of 201 fractional scales on the wlr backend | a headless sway (`$SWAYENV`) |
 | `disp-sway-vm.sh before\|after` | the five sway/wlr findings in one pass, against the real compositor | `resolute-sway` |
 | `disp-gnome-vm.sh before\|after` | `--same-as` relocating the primary, and the adjacency message | `noble-gnome` |
+| `gnome-confirm-display-change.sh` | the bridge answering GNOME's own *Keep these display settings?* dialog, the one `--persistent` raises for 20 s: the countdown reverting a layout nobody confirmed, `ConfirmDisplayChange(true)` keeping it and getting `monitors.xml` written, `(false)` putting it back and writing nothing, the same calls with no dialog on screen changing nothing at all, and the dialog's own Escape still working after the bridge has pressed one. Needs the bridge installed and re-logged-in; screendump case 1 from the host to see the dialog | `resolute-gnome-iso`, `noble-gnome-iso` |
 
 ## The scaling pass
 

@@ -137,6 +137,11 @@ class MockBridge:
         self.version = self.VERSION if version is None else version
         self.xinfo = (":0", "/run/user/1000/.mutter-Xwaylandauth.AB12CD")
         self.pointer = (640, 400, 0)
+        #: is gnome-shell's "Keep these display settings?" dialog on screen?
+        #: True between a persistent ApplyMonitorsConfig and its answer.
+        self.display_change_pending = False
+        #: every verdict that reached the bridge, dialog or no dialog
+        self.display_change_verdicts = []
         self._show_desktop_wins = []   # ShowDesktop(true)'s restore set
         self.shell_version = shell_version
         if own_shell:
@@ -513,7 +518,15 @@ class MockBridge:
         return "ss", self.xinfo
 
     def m_ConfirmDisplayChange(self, m, keep):
-        return "b", (False,)
+        # What the extension does, measured on GNOME 46.0 and 50.1 (see
+        # gnome/README.md "Verified live"): with the dialog up it invokes the
+        # Keep or Revert handler and answers true; with nothing pending it
+        # still forwards the verdict to Mutter -- harmless there -- and
+        # answers false. The dialog is gone either way it was answered.
+        found = self.display_change_pending
+        self.display_change_pending = False
+        self.display_change_verdicts.append(bool(keep))
+        return "b", (found,)
 
     def m_GetVersion(self, m):
         return "u", (self.version,)
@@ -1009,6 +1022,64 @@ class BackendTests(_Base):
         with self.assertRaises(CmdError) as cm:
             self.b._call("SetState", "tss", (XTERM, "FULLSCREEN", "flip"))
         self.assertIn("action must be add|remove|toggle", str(cm.exception))
+
+
+class ConfirmDisplayChangeTests(_Base):
+    """`ConfirmDisplayChange(b keep) -> b` over the wire, against the fake.
+
+    No command calls it: it exists for a client that has just made a
+    `--persistent` apply and wants to answer GNOME's 20-second "Keep these
+    display settings?" dialog without a human at the screen. What the live
+    runs on GNOME 46.0 and 50.1 measured -- true when a dialog was found and
+    pressed, false when there was none, the verdict reaching the bridge
+    either way, and a second call on an answered dialog being false -- is
+    what these pin, so a change to the interface has to change them too."""
+
+    def setUp(self):
+        self.bridge = MockBridge(self.mock)
+        self.b = GnomeBackend(settle=0.3)
+
+    def tearDown(self):
+        self.b.bus.close()
+        self.bridge.close()
+
+    def confirm(self, keep):
+        (found,) = self.b.bus.call(BUS_NAME, OBJECT_PATH, IFACE,
+                                   "ConfirmDisplayChange", "b", (keep,))
+        return found
+
+    def test_keep_answers_the_dialog_and_says_it_found_one(self):
+        self.bridge.display_change_pending = True
+        self.assertIs(self.confirm(True), True)
+        self.assertEqual(self.bridge.display_change_verdicts, [True])
+        self.assertFalse(self.bridge.display_change_pending)
+
+    def test_revert_answers_it_the_other_way(self):
+        self.bridge.display_change_pending = True
+        self.assertIs(self.confirm(False), True)
+        self.assertEqual(self.bridge.display_change_verdicts, [False])
+        self.assertFalse(self.bridge.display_change_pending)
+
+    def test_no_dialog_is_false_and_not_an_error(self):
+        # the harmless case: nothing pending, both verdicts, still no error
+        self.assertIs(self.confirm(True), False)
+        self.assertIs(self.confirm(False), False)
+        self.assertEqual(self.bridge.display_change_verdicts, [True, False])
+
+    def test_a_second_call_on_an_answered_dialog_is_false(self):
+        self.bridge.display_change_pending = True
+        self.assertIs(self.confirm(True), True)
+        self.assertIs(self.confirm(True), False)
+        self.assertIs(self.confirm(False), False)
+        # the verdicts all arrived; only the first one had a dialog to press
+        self.assertEqual(self.bridge.display_change_verdicts,
+                         [True, True, False])
+
+    def test_the_call_is_one_round_trip_with_the_right_signature(self):
+        self.bridge.display_change_pending = True
+        self.confirm(True)
+        self.assertEqual([a for m, a in self.bridge.calls
+                          if m == "ConfirmDisplayChange"], [(True,)])
 
 
 class SessionReadinessTests(_Base):
@@ -1560,6 +1631,44 @@ class ShippedFilesTests(unittest.TestCase):
         self.assertIn("ERR_UNSUPPORTED", conf)
         # an unreadable monitor list is not a refusal, and Revert never is
         self.assertIn(", -1)", conf)
+
+    def test_the_dialog_is_looked_for_where_gnome_shell_puts_it(self):
+        """Settled live on GNOME 46.0 and 50.1 (gnome/README.md "Verified
+        live"): gnome-shell registers DisplayChangeDialog over
+        ModalDialog.ModalDialog, whose _init adds it straight to
+        Main.layoutManager.modalDialogGroup; GObject registration leaves
+        constructor.name as 'DisplayChangeDialog' (and $gtype.name as
+        'Gjs_DisplayChangeDialog'), and _onSuccess/_onFailure are the actions
+        of the Keep and Revert buttons. The lookup has to keep asking for all
+        of that, because each half is what makes it the right object."""
+        js = self._extension_js()
+        find = js[js.index("function findDisplayChangeDialog() {"):]
+        find = find[:find.index("\n}\n")]
+        self.assertIn("Main.layoutManager.modalDialogGroup", find)
+        self.assertIn("Main.uiGroup", find)          # only the fallback
+        self.assertIn("c.constructor.name", find)
+        self.assertIn("c.constructor.$gtype.name", find)
+        self.assertIn("/DisplayChangeDialog/.test(name)", find)
+        self.assertIn("isFn(c, '_onSuccess') && isFn(c, '_onFailure')", find)
+
+    def test_a_missing_dialog_still_forwards_the_verdict_and_says_false(self):
+        """The other half of the live measurement: with no dialog on screen
+        the verdict goes to Shell.WM.complete_display_change (present in the
+        Shell-14 and Shell-18 typelibs, a no-op with nothing pending) and the
+        answer is false, so a caller can tell "pressed it" from "there was
+        nothing to press"."""
+        js = self._extension_js()
+        conf = js[js.index("    _confirmDisplayChange(keep) {"):]
+        conf = conf[:conf.index("\n    }\n")]
+        self.assertIn("dialog._onSuccess();", conf)
+        self.assertIn("dialog._onFailure();", conf)
+        self.assertIn("return true;", conf)
+        # probed, never assumed -- a shell without it must not throw
+        self.assertIn("isFn(global.window_manager, 'complete_display_change')",
+                      conf)
+        self.assertIn("global.window_manager.complete_display_change(keep)",
+                      conf)
+        self.assertTrue(conf.rstrip().endswith("return false;"))
 
     def test_embedded_xml_matches_file_and_has_no_hit_test(self):
         with open(os.path.join(self.EXT, "org.fuckwayland.Bridge1.xml")) as f:
