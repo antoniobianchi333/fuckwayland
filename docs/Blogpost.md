@@ -342,7 +342,7 @@ Mutter and KWin reference count key state across the seat's devices. So it clear
 what it holds itself, and it says which foreign modifier is blocking it when it can
 read that, and it is silent with identical behaviour when it cannot.
 
-## 2619 tests, and what these releases removed
+## 2661 tests, and what these releases removed
 
 The suite is the reason any of the sentences above can be written as facts. It has
 byte parity oracles that run the real `xdotool`, `wmctrl`, `xprop` and `xrandr` and
@@ -425,6 +425,23 @@ cache and returned before ever reaching the line that prints it. It reaches ever
 command now, and the variable it tells you to set is read from the environment of the
 command and carried to the daemon with the text, because the daemon keeps the
 environment it was spawned with and outlives it.
+
+Fixing the notice was the smaller half of that, because what the notice announced was
+a guess, and the guess was wrong on every session whose user had switched layouts.
+`wl_keyboard.modifiers` carries the live group and every compositor sends it to the
+focused window only, which an injector never is. Both of the big desktops publish it
+somewhere else instead. KWin answers a method on the session bus with the index of
+the active layout in the list you configured, and that list is the keymap's group
+order, so the group is the index plus one. GNOME keeps it in the input-sources
+setting its shell writes on every switch, and the desktop portal serves that setting
+to anybody who asks, which is one call with no consent step behind it. Reading it
+turned `wdotool type 'yz@'` on a session switched to German from `zy"` into `yz@`,
+byte for byte, on both Plasma generations and both GNOME ones. The notice went quiet
+with it, because there was nothing left to assume, and a GNOME desktop with a single
+layout configured had been getting that notice on every command it ever ran: Mutter
+appends a `us` group of its own, so one layout and two look identical in the keymap
+and only the setting tells them apart. Where nothing answers, the guess and the
+notice are exactly what they were.
 
 And a saved display configuration. GNOME reads `~/.config/monitors.xml` back through
 the same validator that refuses overlapping monitors, and one entry it does not like

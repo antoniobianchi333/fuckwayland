@@ -8,6 +8,11 @@
 #   2. "us, de" switched to German with the switcher -> group 1 is assumed,
 #      so y/z come out swapped, the umlauts are skipped and @ becomes "
 #
+# Case 2 is the defect as it was.  wdotool asks KWin for the live layout now
+# and case 2 arrives whole: `kde-keys-3-live-layout.sh` is the before and
+# after of that.  This script is kept as the picture of the guess, and case 1
+# as the one-layout session that has to keep working either way.
+#
 # Run as the desktop user on `resolute-kde` (Plasma 6.6) or `noble-kde` (5.27):
 #   vmctl user <vm> -- sh /tmp/kde-keys-1-group-guess.sh
 # wdotool goes through sudo because KDE implements neither virtual-keyboard

@@ -4,8 +4,8 @@
 # a string whose every character moves between them, save it with a chord and
 # read the file back.
 #
-#   wanted 'yz@'  ->  arrived 'zy"'   when group 1 is assumed   (0.4)
-#   wanted 'yz@'  ->  arrived 'yz@'   when KWin is asked        (0.5)
+#   wanted 'yz@'  ->  arrived 'zy"'   when group 1 is assumed
+#   wanted 'yz@'  ->  arrived 'yz@'   when KWin is asked (which it now is)
 #
 # The script does not know which wdotool is installed: run it once with each
 # and compare.  `__keymap --info` names the active group and its source, so the
