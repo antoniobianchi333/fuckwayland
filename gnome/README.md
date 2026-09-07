@@ -585,7 +585,7 @@ repo can fix; the bugs that *were* fixable have been.
 
 **Keyboard**
 
-* **L1 (lifted in 0.5) — which of several configured layouts is active is
+* **L1 (lifted in 0.4) — which of several configured layouts is active is
   not on the wire, and is read from the shell instead.** `key`/`type` send
   evdev keycodes and the compositor reads them through the session's active
   layout, so wdotool reads that layout's keymap off `wl_keyboard.keymap` and
@@ -595,9 +595,9 @@ repo can fix; the bugs that *were* fixable have been.
   client is *which group* of a multi-layout keymap is active:
   `wl_keyboard.modifiers` carries the group and Mutter sends it only to the
   window with keyboard focus (`focus_resource_list`), which an injector never
-  is. GNOME publishes it anyway, and since 0.5 wdotool reads it before every
-  command, so a session configured `us, de` and switched to German types
-  German and says nothing. `WDOTOOL_XKB_GROUP=<n>` still outranks it, and is
+  is. GNOME publishes it anyway, and wdotool reads it before every command, so
+  a session configured `us, de` and switched to German types German and says
+  nothing. `WDOTOOL_XKB_GROUP=<n>` still outranks it, and is
   read from the environment of the **command** and carried to the daemon with
   the text it is to type, so a script that sets it mid-run is obeyed by a
   daemon that is already running. Where the setting cannot be read, or

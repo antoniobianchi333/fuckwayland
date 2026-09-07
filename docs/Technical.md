@@ -20,7 +20,7 @@ system GTK 3 bindings that `warandr` imports at run time.
 
 | package | command | clones | talks to |
 |---|---|---|---|
-| `wdotool/` | `wdotool` | xdotool 4.20260303.1 | `/dev/uinput`, `zwp_virtual_keyboard_v1`, `zwlr_virtual_pointer_v1`, and one window backend |
+| `wdotool/` | `wdotool` | xdotool 4.20260303.1 | `/dev/uinput`, `zwp_virtual_keyboard_v1`, `zwlr_virtual_pointer_v1`, one window backend, and KWin's `/Layouts` or the portal's `Settings` for the active keyboard layout |
 | `wwmctl/` | `wwmctl` | wmctrl 1.07 | one window backend, plus the X plane through `x11_mini` |
 | `wxprop/` | `wxprop` | xprop 1.2.8 | the X plane through `x11_mini`, plus one window backend for native windows |
 | `wxrandr/` | `wxrandr` | xrandr 1.5.4 | sway IPC, `zwlr_output_management_v1`, Mutter's DisplayConfig, KWin's output protocol |
@@ -552,9 +552,61 @@ its overrides as keyword arguments rather than writing `os.environ`, which is wh
 made `WDOTOOL_LAYOUT=us wdotool __keymap --chars z` agree with `type` instead of
 disagreeing with it.
 
+**Which group is live, and who is asked.** `xkbmap.choose_group` settles it out of
+the keymap wherever the keymap can settle it (one group, or several binding the same
+symbols), and returns group 1 *flagged as assumed* where it cannot. That flag is the
+seam. `fetch()` calls `xkbmap.desktop_group` at exactly that point and nowhere else,
+so a plain US session, a one-source session and GNOME's `us,us` never open a bus, and
+`--layout us` still runs no layout code at all. Two readers sit behind it, one per
+desktop, each its own gate: `NameHasOwner` before the first call (a method call to an
+unowned name asks the bus to *start* that desktop, and a GNOME box with `kwin`
+installed must not have one launched at it), one connection kept for the life of the
+process, one reconnect and then a ten-second backoff, a bus without that desktop on
+it remembered as such, and `None` for every failure so the guess and its notice stand
+exactly as they did.
+
+* **KDE** (`xkbmap.KwinLayouts`): `org.kde.KWin` `/Layouts`
+  `org.kde.KeyboardLayouts.getLayout` answers the **0-based index** of the active
+  layout in the configured list, and that list is the keymap's group order name for
+  name, so the group is `index + 1`, clamped against `group_count`. Same object, same
+  meaning on Plasma 6.6 and 5.27.
+  **Never kded, and this is a live hazard rather than a preference.** Two other
+  objects declare the same interface, `org.kde.kded6 /modules/keyboard` and the kded5
+  one, and calling `getLayout` on either **crashes kded** — measured on both
+  generations, every call answered `NoReply` and the bus name changed owner
+  afterwards, taking the user's background service down with it. Nothing here calls
+  them, there is no fallback to them, and there must never be one:
+  `tests/test_xkbmap.py`'s `KdedLandmine` sits on the mock bus beside the fake KWin
+  and fails the test if anything ever calls it.
+* **GNOME** (`xkbmap.GnomeInputSources`): `org.gnome.desktop.input-sources`, read
+  through `org.freedesktop.portal.Settings.ReadAll`. The portal is the route because
+  dconf has none — `ca.desrt.dconf` publishes `Init`, `Change` and the `Notify`
+  signal and **no read method** — and it is the one portal call in the tree (§ 10).
+  `mru-sources[0]` is the live source, written on every switch and restored at login;
+  `current` is deprecated and ignored whatever its name suggests. The mapping is
+  `index % 3 + 1`, clamped the same way, and the `% 3` is Mutter's doing: it appends
+  its own `us` group after the user's sources, XKB allows four groups, so past three
+  sources it recompiles the keymap in chunks of three around whichever source is in
+  use (`de,fr,gr,ru,es` is `de, fr, gr, us` until Spanish is picked and then
+  `ru, es, us`), and the group is the source's index *within its chunk*. Per-window
+  layouts, an `mru-sources` head no longer in `sources`, and a source that is not an
+  `xkb` layout are refused rather than answered.
+
+**The GNOME read costs a fork, and the fork is not an optimisation.** Typing goes
+through `/dev/uinput`, so the daemon is root whenever it was started under `sudo`,
+and the portal identifies its caller by opening `/proc/<pid>/root` and answers the
+session user and nobody else. So `xkbmap._read_all_as()` forks, drops to that user,
+puts `PR_SET_DUMPABLE` back (`setuid()` clears it, and a process that is not dumpable
+has a `/proc/self` only root may open, which is precisely what the portal is not),
+connects, calls, and pipes the answer home as JSON: 6.3 ms against the session user's
+1.2. `Bus(as_uid=)` exists for this shape of problem and cannot serve here, because
+its child hands the socket back and exits, leaving no process for the portal to
+identify (`AccessDenied: Unable to open /proc/N/root`).
+
 The measured behaviour of all of this — the reverse map, the US bypass, the group
-guess, the ceiling map for the absolute axis, the unchanged-`EV_ABS` nudge, the
-`--clearmodifiers` kernel facts, and every defect the live sessions found — is
+read and the guess behind it, the ceiling map for the absolute axis, the
+unchanged-`EV_ABS` nudge, the `--clearmodifiers` kernel facts, and every defect the
+live sessions found — is
 [WDOTOOL.md § The input daemon](WDOTOOL.md#the-input-daemon) and
 [§ Typing and clicking with no privilege](WDOTOOL.md#typing-and-clicking-with-no-privilege---vkbd).
 This file does not repeat it.
@@ -1769,7 +1821,7 @@ themselves. They are not part of the interface.
 
 ## 9. Module → test file → fake
 
-2619 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
+2661 tests, run as `python3 -m unittest discover -s tests` or file by file. Two rules
 hold across all of them and are enforced by tests of their own:
 
 * **every `tests/test_*.py` sets `FUCKWAYLAND_PASSTHROUGH=never`**, or the suite

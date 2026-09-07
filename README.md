@@ -277,7 +277,10 @@ not by what is possible.
 Two dependencies live outside all of this, both optional: `warandr`'s GTK 3 bindings
 (`sudo apt install python3-gi gir1.2-gtk-3.0`, already present on every GNOME, KDE
 and Xfce desktop) and `wmirror`'s helper (`sudo apt install wl-mirror`, Ubuntu
-universe, and only wlroots sessions can use it).
+universe, and only wlroots sessions can use it). Reading the active keyboard layout
+on GNOME was expected to add a third and did not: it goes through
+`xdg-desktop-portal` and `xdg-desktop-portal-gnome`, both already on the default
+desktop, over the D-Bus client this repo has always shipped.
 
 ### Installing over the originals
 
@@ -420,10 +423,15 @@ All 48 commands, byte-parity against xdotool 4.20260303.1, verbatim C bugs inclu
 Non-US keyboard layouts work, by reading the compositor's own keymap and looking the
 character up backwards, and on a plain US layout none of that code runs at all. Which
 of several configured layouts is *active* is the one thing Wayland tells only the
-focused window, so wdotool asks the desktop instead — KWin on KDE, the input-sources
-setting on GNOME — rather than assuming the first one and typing `zy"` for `yz@`.
-`wdotool keys` is the layout machinery pointed the other way: what to press for a
-character, or what you just pressed.
+focused window, so wdotool asks the desktop instead: KWin on KDE, the input-sources
+setting on GNOME, read before every command that types. A session switched to its
+second layout types that layout instead of typing `zy"` when you asked for `yz@`, and
+the notice that used to name the layout wdotool had guessed says nothing wherever the
+answer was read. On sway the answer arrives on the wire to begin with, and where
+nothing answers at all it is the first layout and a notice saying so, as it always
+was. `wdotool keys`
+is the layout machinery pointed the other way: what to press for a character, or what
+you just pressed.
 
 **Everything about it is in [docs/WDOTOOL.md](docs/WDOTOOL.md)**: the honest
 approximations table, keyboard layouts and `--layout`, the two privilege-free
@@ -918,6 +926,12 @@ call anywhere is a GNOME settings *read* with no consent step behind it, and the
 prompting interfaces are never touched.
 [No authorization dialog](#no-authorization-dialog) has the detail.
 
+**Which of your configured keyboard layouts is active** is read from the desktop on
+GNOME and on KDE, arrives on the Wayland wire on sway, and is the real tool's own
+business on an X11 session, so a session switched to its second layout types that
+layout on all four:
+[docs/WDOTOOL.md § Keyboard layouts](docs/WDOTOOL.md#keyboard-layouts).
+
 **(a)** With the differences in
 [docs/WDOTOOL.md § What differs from X on KDE Plasma](docs/WDOTOOL.md#what-differs-from-x-on-kde-plasma)
 (raise, lower, shading, maximize on 5.27, minted window ids), and one pixel per
@@ -1044,13 +1058,14 @@ real X11 tools on an X11 session, which predate portals entirely.
 
 **One portal call is made, and it is a read with no consent step.** On GNOME,
 `wdotool` asks `org.freedesktop.portal.Settings.ReadAll` for
-`org.gnome.desktop.input-sources`, to find out which keyboard layout you have active
-— the one thing Mutter will not tell a program that is not the focused window, and
-which it otherwise has to guess and then type the wrong characters. `Settings` is the
-interface every GTK and Qt application calls at start-up for your colour scheme: it
-serves the desktop's own settings read-only, it is answered without a permission
-check, and it has no entry in the portal's permission store to allow or deny. It
-asks for no capability, grants none, and nothing appears on screen — measured on
+`org.gnome.desktop.input-sources`, to find out which keyboard layout you have
+active, which is the one thing Mutter will not tell a program that is not the focused
+window and which wdotool otherwise guesses before typing the wrong characters.
+`Settings` is the interface every GTK and Qt application calls at start-up for your
+colour scheme: it serves the desktop's own settings read-only, it is answered without
+a permission check, and it has no entry in the portal's permission store to allow or
+deny. It
+asks for no capability, grants none, and nothing appears on screen, measured on
 GNOME 46 and 50 by the same method as the rest of this section.
 `tests/test_no_portal.py` exempts that one interface **by name**, keeps every other
 interface on the same bus name a failure, and pins the width of the hole in its own
@@ -1084,7 +1099,18 @@ combination the active layout cannot produce is refused with a line rather than
 pressed at its US position, which is what made a save shortcut on a Greek layout do
 nothing and exit 0. The notice about which layout wdotool had to assume reaches every
 command instead of the first one only, and the variable that pins the layout is read
-where you set it rather than only by a daemon that may already be running. Keeping a
+where you set it rather than only by a daemon that may already be running. Then the
+guess behind that notice went away on the two desktops that can answer it: KWin
+publishes which of the configured layouts is live, GNOME keeps it in the
+input-sources setting its shell writes on every switch, and wdotool asks both before
+every command that types. A session switched to German types German instead of
+turning `yz@` into `zy"`, measured in a real editor window on Plasma 6.6 and 5.27 and
+on GNOME 50 and 46, and a switch made under a running daemon is followed command by
+command. The notice is silent wherever the answer was read, which includes every
+one-layout GNOME desktop: those had been told on every command that a layout was
+being assumed, because Mutter appends a `us` group of its own and makes one
+configured layout look exactly like two. Nothing that cannot be read changed at all,
+guess and notice included. Keeping a
 layout on GNOME says when GNOME has already thrown its saved file away, warns when the
 layout being saved is one a fractional scaling change would break, and keeps a copy of
 the file it replaces. `--persistent` stopped refusing the whole command on an X11
@@ -1101,7 +1127,7 @@ releases were retested, and the package in `release/` is built from this tree ra
 than left at the previous one. Running that package on a default install found one
 more thing to fix: handing over to a real tool that is not installed said the session
 was an X11 one whoever had asked, and it now names the reason the original was
-wanted. The suite stands at **2619 tests**.
+wanted. The suite stands at **2661 tests**.
 
 <!-- release-notes: 0.3 -->
 ### 0.3
@@ -1150,11 +1176,12 @@ Developed against real desktops, not against a model of them. `vm/` is the rig:
 `vmctl` builds and runs thirteen golden images, each with up to four virtual monitors
 that can be plugged, resized and unplugged from outside the guest, and every head
 screenshotted. `vm/README.md` documents the whole thing and `vm/SETUP.md` is how to
-set the rig up on a machine of your own. `tests/` holds the suite, 2619 tests: unit
+set the rig up on a machine of your own. `tests/` holds the suite, 2661 tests: unit
 tests, wire-level fake compositors and X servers, live-compositor integration,
 hostile-input torture, byte-parity oracles against the real xdotool, wmctrl, xprop
-and xrandr, and one static check that no package ever reaches for the desktop portal
-or PolicyKit.
+and xrandr, and one static check that no package ever reaches for PolicyKit or for
+any portal interface but the settings read named in
+[No authorization dialog](#no-authorization-dialog).
 
 Every line of this repo was written by AI (Claude): the design contracts, the code,
 the torture rigs, the hostile fake X servers, the byte-parity oracles, the VM demo,

@@ -4,8 +4,32 @@ Every claim in this file was measured on the VM rig, or on a real desktop, befor
 was written down. The README keeps one short section per version; this is the long
 form.
 
-## Unreleased
+## Version 0.4
 
+Everything here was measured on the rig or on a real desktop, and most of it was found
+by using the tools on one rather than by reading them.
+
+- **The input daemon ends itself.** It checks its own socket by inode every fifteen
+  seconds and exits when that socket is gone or has been replaced, and it exits after
+  fifteen minutes with no client. Before that it ran for ever: a logout clears
+  `/run/user/<uid>`, and the daemon left behind was unreachable, held
+  `wdotool.sock.lock`, and made every later `wdotool` command in that boot fail with
+  "cannot start wdotool daemon". Measured on GNOME, KDE and sway, including through a
+  real `loginctl terminate-session`: the runtime directory goes at t+15s and the
+  daemon with it, and nothing is left behind.
+- **A key combination the layout cannot produce is refused.** `key ctrl+s` on a Greek
+  layout warns that `s` is not reachable and presses ctrl alone, where it used to press
+  the US position of that key, which on Greek is σ. Measured end to end in Kate on both
+  Plasma generations (nothing saved, exit 0, empty stderr, before) and against a sway
+  binding on the US `s` position, which is the objective oracle: `us` creates the file,
+  `gr` does not and warns, `us,gr` creates it again.
+- **The layout notice reaches every command.** A session with two layouts warned once
+  and then typed the wrong characters in silence. It now warns on every command that
+  types, and `WDOTOOL_XKB_GROUP` is read from the environment of the *command* and
+  carried to the daemon with the text, because the daemon keeps the environment it was
+  spawned with and outlives it: the pin the notice asks for used to be ignored by a
+  daemon that was already running. That notice announced a *guess*: the next three
+  entries are what became of the guess, and the fourth is the one call it costs.
 - **wdotool reads the active keyboard layout on KDE instead of assuming it.** A
   session with two layouts configured and the second one switched on typed the first
   one's characters and printed a notice saying which layout it had assumed: measured on
@@ -50,12 +74,12 @@ form.
   a one-layout session look exactly like a two-layout one in the keymap. The setting
   tells them apart, so a one-layout GNOME session now says nothing at all, and
   `wdotool keys explain` reports `group 1 of 2, from wayland + gnome input-sources`
-  where 0.4 said `group 1 of 2 (assumed), from wayland`. Everything that cannot be
-  read leaves 0.4's behaviour exactly as it was, notice included: no GNOME Shell on
-  the bus, no portal, a setting that will not parse, an input source that is an IBus
-  engine rather than an `xkb` layout, an index that does not fit the keymap,
-  per-window layouts turned on, and a `mru-sources` head that is no longer in
-  `sources`.
+  where it used to report `group 1 of 2 (assumed), from wayland`. Everything that
+  cannot be read leaves the guess and the notice exactly as they were: no GNOME
+  Shell on the bus, no portal, a setting that will not parse, an input source that
+  is an IBus engine rather than an `xkb` layout, an index that does not fit the
+  keymap, per-window layouts turned on, and a `mru-sources` head that is no longer
+  in `sources`.
 - **One portal call is now made, and the no-dialog guarantee is narrowed to say so.**
   `org.freedesktop.portal.Settings.ReadAll` is the interface every GTK and Qt
   application calls at start-up for the colour scheme: read-only, answered with no
@@ -66,32 +90,6 @@ form.
   exempts that one interface by name, keeps every other interface on the same bus
   name a failure — `RemoteDesktop` and `InputCapture` first among them — and has a
   test of its own for the width of the hole.
-
-## Version 0.4
-
-Everything here was measured on the rig or on a real desktop, and most of it was found
-by using the tools on one rather than by reading them.
-
-- **The input daemon ends itself.** It checks its own socket by inode every fifteen
-  seconds and exits when that socket is gone or has been replaced, and it exits after
-  fifteen minutes with no client. Before that it ran for ever: a logout clears
-  `/run/user/<uid>`, and the daemon left behind was unreachable, held
-  `wdotool.sock.lock`, and made every later `wdotool` command in that boot fail with
-  "cannot start wdotool daemon". Measured on GNOME, KDE and sway, including through a
-  real `loginctl terminate-session`: the runtime directory goes at t+15s and the
-  daemon with it, and nothing is left behind.
-- **A key combination the layout cannot produce is refused.** `key ctrl+s` on a Greek
-  layout warns that `s` is not reachable and presses ctrl alone, where it used to press
-  the US position of that key, which on Greek is σ. Measured end to end in Kate on both
-  Plasma generations (nothing saved, exit 0, empty stderr, before) and against a sway
-  binding on the US `s` position, which is the objective oracle: `us` creates the file,
-  `gr` does not and warns, `us,gr` creates it again.
-- **The layout notice reaches every command.** A session with two layouts warned once
-  and then typed the wrong characters in silence. It now warns on every command that
-  types, and `WDOTOOL_XKB_GROUP` is read from the environment of the *command* and
-  carried to the daemon with the text, because the daemon keeps the environment it was
-  spawned with and outlives it: the pin the notice asks for used to be ignored by a
-  daemon that was already running.
 - **Keeping a layout on GNOME says what happened to it.** A persistent apply reports
   when GNOME has already discarded `~/.config/monitors.xml` (one entry that fails the
   adjacency check throws the whole file away, at every boot), warns when the layout
@@ -143,11 +141,16 @@ by using the tools on one rather than by reading them.
   of asking for the handover on a Wayland desktop (`FUCKWAYLAND_PASSTHROUGH=always` and
   `wxrandr --backend x11`), where it is not one. It now says a handover was asked for
   instead. Found by running the release package on the 26.04 default install.
-- **2619 tests**, up from 2262, the new ones being the daemon's two ways of ending,
+- **2661 tests**, up from 2262, the new ones being the daemon's two ways of ending,
   the chord the layout cannot produce, the pin carried on the request, the guards
   around the saved display configuration, every refusal of the overlap route
   classified and then re-run with the forcing option to see which of them it changes,
-  and the dry run that cannot rehearse a forced one.
+  the dry run that cannot rehearse a forced one, and the active layout read from each
+  desktop: the interface answering, absent, wedged, dying and coming back, answering
+  nonsense, refusing (per-window layouts, a stale `mru-sources` head, an IBus source),
+  an index the keymap cannot hold, a switch between two commands on one daemon, the
+  forked read itself, and a kded landmine on the mock bus that fails the test if
+  anything ever calls it.
 - **The documents were read against the code again**, which is the check this release
   exists to keep passing: `scripts/check-docs.py` reads the options out of the source,
   out of every help text each tool prints (the subcommands included) and out of every
