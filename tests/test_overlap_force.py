@@ -406,6 +406,9 @@ class WhatForcingPrints(Case):
         self.assertIn("Ctrl+Alt+F3", err)
         self.assertIn("gnome-extensions disable fuckwayland-overlap@fuckwayland", err)
         self.assertIn("~/.local/share/gnome-shell/extensions/", err)
+        # and the other place the files can be, which is where the .deb puts
+        # them and therefore where almost every reader's copy actually is
+        self.assertIn("/usr/share/gnome-shell/extensions/", err)
 
     def test_the_ordinary_warning_is_printed_as_well(self):
         """Forcing adds a paragraph; it never replaces the one that says what
@@ -961,6 +964,115 @@ class TheDescriptionNamesNoLibrary(unittest.TestCase):
         src = open(os.path.join(EXT_DIR, "extension.js"), encoding="utf-8").read()
         self.assertLess(src.index("this build's MetaMonitorsConfig is ${actual}"),
                         src.index("lib.strn(0, 0)"))
+
+
+class TheInstallerSeesThePackagesCopy(unittest.TestCase):
+    """`install-overlap.sh` writes into the user's extension directory, but the
+    .deb puts the files in the system one and enables nothing -- so on the
+    machine almost every reader has, the script was reporting on a directory
+    that does not exist.  Measured on a default 26.04 desktop that had taken the
+    package: `--check` said `files: not installed, table: MISSING` about an
+    extension gnome-shell had loaded, and `--uninstall` said it had `removed` a
+    path in ~/.local that was never created.  `install-bridge.sh --check`
+    already looks in both directories; this is its sibling catching up.
+
+    The two blocks are run as themselves, sliced out of the script, the way
+    `name_this_shell` is above: the alternative is a test whose answer depends
+    on what is installed on the machine running it."""
+
+    SH = os.path.join(ROOT, "gnome", "install-overlap.sh")
+    UUID = "fuckwayland-overlap@fuckwayland"
+
+    def _slice(self, first, last):
+        src = open(self.SH, encoding="utf-8").read()
+        start = src.index(first)
+        end = src.index(last, start) + len(last)
+        return src[start:end]
+
+    def run_block(self, block, dest, system_dir, system=0):
+        script = ('UUID="%s"\nSYSTEM=%d\nDEST="%s"\nSYSTEM_DIR="%s"\n%s\n'
+                  % (self.UUID, system, dest, system_dir, block))
+        r = subprocess.run(["sh", "-c", script], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def _tree(self, root, uuid_dir=True):
+        """A directory holding an installed extension, as far as these blocks
+        are concerned: `extension.js` is what both of them test for."""
+        d = os.path.join(root, self.UUID) if uuid_dir else root
+        os.makedirs(os.path.join(d, "typelib"), exist_ok=True)
+        for n in ("extension.js", "generations.json"):
+            with open(os.path.join(d, n), "w", encoding="utf-8") as fh:
+                fh.write("{}\n")
+        with open(os.path.join(d, "typelib", "FwOverlap18-1.0.typelib"), "w") as fh:
+            fh.write("x")
+        return d
+
+    # -- where the files are found ------------------------------------------
+
+    FOUND = ("FOUND=\n", 'FOUND=$SYSTEM_DIR/$UUID\nfi')
+
+    def found(self, dest, system_dir):
+        out = self.run_block(self._slice(*self.FOUND) + '\necho "FOUND=$FOUND"',
+                             dest, system_dir)
+        return out.strip().split("FOUND=", 1)[1].strip()
+
+    def test_the_users_copy_is_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            user = self._tree(os.path.join(tmp, "user"), uuid_dir=False)
+            self.assertEqual(self.found(user, os.path.join(tmp, "sys")), user)
+
+    def test_the_packages_copy_is_found_when_there_is_no_users_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sysdir = os.path.join(tmp, "sys")
+            self._tree(sysdir)
+            self.assertEqual(self.found(os.path.join(tmp, "nothing-here"), sysdir),
+                             os.path.join(sysdir, self.UUID))
+
+    def test_a_users_copy_shadows_the_packages_one(self):
+        """gnome-shell prefers the user's, so the report has to name that one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            user = self._tree(os.path.join(tmp, "user"), uuid_dir=False)
+            sysdir = os.path.join(tmp, "sys")
+            self._tree(sysdir)
+            self.assertEqual(self.found(user, sysdir), user)
+
+    def test_neither_is_a_blank_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.found(os.path.join(tmp, "a"),
+                                        os.path.join(tmp, "b")), "")
+
+    # -- what --uninstall says ----------------------------------------------
+
+    UNINST = ('    if [ -e "$DEST" ]; then', '--system --uninstall)."\n    fi')
+
+    def uninstall(self, dest, system_dir):
+        return self.run_block(self._slice(*self.UNINST), dest, system_dir)
+
+    def test_it_says_what_it_removed_when_it_removed_something(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            user = self._tree(os.path.join(tmp, "user"), uuid_dir=False)
+            out = self.uninstall(user, os.path.join(tmp, "sys"))
+            self.assertIn("removed %s" % user, out)
+            self.assertFalse(os.path.exists(user))
+
+    def test_it_claims_no_removal_when_there_was_nothing_there(self):
+        """The line this whole class exists for."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self.uninstall(os.path.join(tmp, "never-created"),
+                                 os.path.join(tmp, "sys"))
+            self.assertIn("nothing of this script's to remove", out)
+            self.assertNotIn("removed", out)
+
+    def test_it_names_the_packages_copy_and_leaves_it_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sysdir = os.path.join(tmp, "sys")
+            kept = self._tree(sysdir)
+            out = self.uninstall(os.path.join(tmp, "never-created"), sysdir)
+            self.assertIn(kept, out)
+            self.assertIn("sudo apt remove fuckwayland", out)
+            self.assertTrue(os.path.exists(os.path.join(kept, "extension.js")),
+                            "another package's files are not this script's to delete")
 
 
 class TheInstallerNamesTheRunningShell(unittest.TestCase):

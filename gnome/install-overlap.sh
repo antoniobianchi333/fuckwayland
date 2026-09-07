@@ -108,6 +108,21 @@ else
     DEST=$TARGET_HOME/.local/share/gnome-shell/extensions/$UUID
 fi
 
+# DEST is where an install of this shape *writes*.  FOUND is where the
+# extension actually is, which is not the same thing on the machine almost
+# everybody has: the .deb puts the files in $SYSTEM_DIR and enables nothing, so
+# a plain --check there read "files: not installed, table: MISSING" about an
+# extension gnome-shell had loaded, and a plain --uninstall printed "removed
+# <a path in ~/.local that was never created>".  Both measured on a default
+# 26.04 desktop that had taken the .deb.  Look in DEST first -- a user copy
+# shadows the system one in gnome-shell too -- then in the system directory.
+FOUND=
+if [ -f "$DEST/extension.js" ]; then
+    FOUND=$DEST
+elif [ -f "$SYSTEM_DIR/$UUID/extension.js" ]; then
+    FOUND=$SYSTEM_DIR/$UUID
+fi
+
 as_user() {
     if [ "$ME" = 0 ] && [ "$TARGET_UID" != 0 ]; then
         if have runuser; then
@@ -334,9 +349,13 @@ EOM
     ;;
 check)
     echo "uuid:         $UUID"
-    echo "files:        $([ -f "$DEST/extension.js" ] && echo "$DEST" || echo 'not installed')"
-    echo "table:        $([ -f "$DEST/generations.json" ] && echo installed || echo MISSING)"
-    echo "typelibs:     $(ls "$DEST/typelib" 2>/dev/null | tr '\n' ' ' || echo none)"
+    if [ -n "$FOUND" ] && [ "$FOUND" != "$DEST" ]; then
+        echo "files:        $FOUND (the .deb's copy; this script installs into $DEST)"
+    else
+        echo "files:        ${FOUND:-not installed}"
+    fi
+    echo "table:        $([ -n "$FOUND" ] && [ -f "$FOUND/generations.json" ] && echo installed || echo MISSING)"
+    echo "typelibs:     $([ -n "$FOUND" ] && ls "$FOUND/typelib" 2>/dev/null | tr '\n' ' ' || echo none)"
     echo "shell:        $(shell_version || echo unknown)"
     echo "enabled:      $(setting_has enabled-extensions && echo yes || echo no)"
     echo "loaded:       $(ext_loaded && echo yes || echo 'no (log out and back in)')"
@@ -363,7 +382,19 @@ uninstall)
     if [ "$SYSTEM" = 1 ] && [ "$ME" != 0 ]; then
         exec sudo -- "$0" --system --uninstall
     fi
-    rm -rf "$DEST"
-    echo "install-overlap.sh: removed $DEST"
+    if [ -e "$DEST" ]; then
+        rm -rf "$DEST"
+        echo "install-overlap.sh: removed $DEST"
+    else
+        echo "install-overlap.sh: nothing of this script's to remove at $DEST"
+    fi
+    # Disabled either way, which is the half that matters, but the .deb's files
+    # are dpkg's and this script does not delete another package's payload.
+    if [ "$SYSTEM" = 0 ] && [ -f "$SYSTEM_DIR/$UUID/extension.js" ]; then
+        echo "install-overlap.sh: the extension is disabled, and its files are still" \
+             "in $SYSTEM_DIR/$UUID, where the fuckwayland package put them."
+        echo "install-overlap.sh: to take the files too: sudo apt remove fuckwayland" \
+             "(or, to delete just this extension, install-overlap.sh --system --uninstall)."
+    fi
     ;;
 esac

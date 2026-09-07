@@ -958,7 +958,13 @@ def overlap_status_lines(sess, unavailable=None) -> list:
         lines.append("shell: %s" % (version or "unknown"))
         if why:
             lines[0] = "unavailable"
-            lines.append("reason: %s" % why.rstrip("\n").replace("\n", " "))
+            # One key per line is the contract, so a multi-line reason folds
+            # onto one -- and folding has to collapse the indentation along
+            # with the newline it belonged to, or a reason whose next line was
+            # an indented command reads "... install it with<five spaces>sh
+            # gnome/install-overlap.sh and log out ...", which is what
+            # `--gnome-overlap-status` printed on 26.04.
+            lines.append("reason: %s" % " ".join(why.split()))
         else:
             lines.append("extension: running")
             covered, no = gnome_overlap.consent_covers(rec, version)

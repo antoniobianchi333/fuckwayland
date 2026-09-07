@@ -119,13 +119,19 @@ SUPPORTED_MAJORS = tuple(g["shell_major"] for g in GENERATIONS)
 #: .deb its files are already in /usr/share/gnome-shell/extensions and only the
 #: enable is missing.  Naming the clone's script alone sent package users to a
 #: file they do not have.
+#:
+#: "if it does not come up" rather than a flat instruction to log out: measured
+#: on default 26.04 and 24.04 desktops that had taken the .deb, `gnome-extensions
+#: enable` brings it up at once, because gnome-shell scanned the directory at the
+#: login the install itself asks for.  It is a fresh clone install, and enabling
+#: it in the same session the package was installed in, that still need one.
 INSTALL_HINT = (
     "the overlap extension is not running.  From the package:\n"
     "    gnome-extensions enable %s\n"
     "From a clone:\n"
     "    sh gnome/install-overlap.sh\n"
-    "Either way, log out and back in once (gnome-shell reads extension "
-    "directories only at login)\n" % UUID)
+    "Either way, log out and back in once if it does not come up (gnome-shell "
+    "reads extension directories only at login)\n" % UUID)
 
 #: where a maintainer puts the answer, and what has to be run afterwards.  It is
 #: in the refusal itself because somebody meeting this for the first time is
@@ -326,9 +332,10 @@ RECOVERY = (
     "                        If a session will not start at all, switch to a text\n"
     "                        console with Ctrl+Alt+F3, log in and run\n"
     "                            gnome-extensions disable %s\n"
-    "                        (or delete\n"
-    "                            ~/.local/share/gnome-shell/extensions/%s ),\n"
-    "                        then Ctrl+Alt+F1 back to the login screen.\n" % (UUID, UUID))
+    "                        (or delete whichever of these two is there:\n"
+    "                            ~/.local/share/gnome-shell/extensions/%s\n"
+    "                            /usr/share/gnome-shell/extensions/%s   <- from the .deb ),\n"
+    "                        then Ctrl+Alt+F1 back to the login screen.\n" % (UUID, UUID, UUID))
 
 
 def warning(shell, moves, undo):

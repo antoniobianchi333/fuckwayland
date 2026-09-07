@@ -86,8 +86,9 @@ xrandr: --unsafe-gnome-overlap: GNOME will not place these monitors, so they are
                         If a session will not start at all, switch to a text
                         console with Ctrl+Alt+F3, log in and run
                             gnome-extensions disable fuckwayland-overlap@fuckwayland
-                        (or delete
-                            ~/.local/share/gnome-shell/extensions/fuckwayland-overlap@fuckwayland ),
+                        (or delete whichever of these two is there:
+                            ~/.local/share/gnome-shell/extensions/fuckwayland-overlap@fuckwayland
+                            /usr/share/gnome-shell/extensions/fuckwayland-overlap@fuckwayland   <- from the .deb ),
                         then Ctrl+Alt+F1 back to the login screen.
 """
 
