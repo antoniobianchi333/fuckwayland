@@ -320,6 +320,25 @@ class NoOriginal(Tree):
         self.assertIn("WDOTOOL_REAL_XDOTOOL", err)
         self.assertEqual(out, "")
 
+    def test_the_reason_named_at_127_is_the_one_that_applies(self):
+        """The line says why the original is wanted, and a forced handover is not an X11 session.
+
+        Reached with FUCKWAYLAND_PASSTHROUGH=always (and by `wxrandr --backend x11`) on a Wayland
+        desktop, where "this is an X11 session" would simply be false."""
+        p, out, err = self.run_tool("xdotool", "key", "a", env=self.env(real=False))
+        self.assertEqual(p.returncode, 127)
+        self.assertIn("this is an X11 session", err)
+
+        open(os.path.join(self.runuser, "wayland-0"), "w").close()
+        env = self.env(real=False, XDG_SESSION_TYPE="wayland",
+                       XDG_RUNTIME_DIR=self.runuser, WAYLAND_DISPLAY="wayland-0",
+                       FUCKWAYLAND_PASSTHROUGH="always")
+        p, out, err = self.run_tool("xdotool", "key", "a", env=env)
+        self.assertEqual(p.returncode, 127)
+        self.assertNotIn("this is an X11 session", err)
+        self.assertIn("a handover to the real tool was asked for", err)
+        self.assertIn("apt install xdotool", err)
+
     def test_help_and_version_still_answer(self):
         """M3: a help request must never exit 127."""
         for args, want in ((["--version"], "xdotool version 4."),
