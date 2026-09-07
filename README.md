@@ -418,7 +418,10 @@ and decimal, like X window ids, so scripts pipe them around unchanged.
 
 All 48 commands, byte-parity against xdotool 4.20260303.1, verbatim C bugs included.
 Non-US keyboard layouts work, by reading the compositor's own keymap and looking the
-character up backwards, and on a plain US layout none of that code runs at all.
+character up backwards, and on a plain US layout none of that code runs at all. Which
+of several configured layouts is *active* is the one thing Wayland tells only the
+focused window, so wdotool asks the desktop instead — KWin on KDE, the input-sources
+setting on GNOME — rather than assuming the first one and typing `zy"` for `yz@`.
 `wdotool keys` is the layout machinery pointed the other way: what to press for a
 character, or what you just pressed.
 
@@ -910,8 +913,10 @@ real tools, whichever desktop is drawing it.
 All of it works **as the desktop user and as root** (`sudo`, `ssh root@box`, cron),
 because the session's compositor socket, session bus, `DISPLAY` and X cookie are
 found for you. **(e)** is the one exception, and it is not one we can fix. And on
-none of these desktops does any of it show an authorization dialog or touch the
-desktop portal: [No authorization dialog](#no-authorization-dialog).
+none of these desktops does any of it show an authorization dialog: the only portal
+call anywhere is a GNOME settings *read* with no consent step behind it, and the
+prompting interfaces are never touched.
+[No authorization dialog](#no-authorization-dialog) has the detail.
 
 **(a)** With the differences in
 [docs/WDOTOOL.md § What differs from X on KDE Plasma](docs/WDOTOOL.md#what-differs-from-x-on-kde-plasma)
@@ -1030,12 +1035,26 @@ the ACL mechanics and every invariant the tests pin, is
 GNOME and KDE both show a consent dialog to an application that injects input through
 the **desktop portal**, the *Remote Desktop* and *Input Capture* prompt every libei
 client has to get past. Nothing here ever raises it, and nothing here ever raises a
-**polkit** prompt either: no tool of ours speaks to the portal at all, and none of
-them defines, calls or needs a PolicyKit action. There is nothing to switch off with
-`sudo`, because there is no consent step on the path to begin with. What is on the
-path instead is the kernel's `/dev/uinput` and the compositor's own session bus
+**polkit** prompt either: no tool of ours asks the portal for a capability, and none
+of them defines, calls or needs a PolicyKit action. There is nothing to switch off
+with `sudo`, because there is no consent step on the path to begin with. What is on
+the path instead is the kernel's `/dev/uinput` and the compositor's own session bus
 interfaces on GNOME and KDE, two unprivileged Wayland protocols on wlroots, and the
 real X11 tools on an X11 session, which predate portals entirely.
+
+**One portal call is made, and it is a read with no consent step.** On GNOME,
+`wdotool` asks `org.freedesktop.portal.Settings.ReadAll` for
+`org.gnome.desktop.input-sources`, to find out which keyboard layout you have active
+— the one thing Mutter will not tell a program that is not the focused window, and
+which it otherwise has to guess and then type the wrong characters. `Settings` is the
+interface every GTK and Qt application calls at start-up for your colour scheme: it
+serves the desktop's own settings read-only, it is answered without a permission
+check, and it has no entry in the portal's permission store to allow or deny. It
+asks for no capability, grants none, and nothing appears on screen — measured on
+GNOME 46 and 50 by the same method as the rest of this section.
+`tests/test_no_portal.py` exempts that one interface **by name**, keeps every other
+interface on the same bus name a failure, and pins the width of the hole in its own
+test.
 
 **Measured, not assumed**, on six images and three ways of running every command,
 with the session bus, the system bus, the window list and both screens watched

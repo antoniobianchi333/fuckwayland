@@ -154,10 +154,11 @@ $ wdotool type 'Grüße, ça va?'      # de, fr, es, dvorak ... all fine
   session `key ctrl+s` warns and presses ctrl alone, because `<AC02>` is σ there and
   Ctrl+σ is not Save. (It used to press it and say nothing, measured in Kate on both
   Plasma versions: nothing saved, exit 0, empty stderr. Configure a Latin layout
-  **first**, or pin its group, and the chord lands: the layout wdotool reaches is the
-  group it assumes, which is group 1. Measured on sway against a binding on the US `s`
-  position: `us,gr` presses it, `gr,us` warns and presses nothing, `WDOTOOL_XKB_GROUP`
-  on the Latin group presses it whichever order they are in.)
+  **first**, or switch to it, and the chord lands: the layout wdotool reaches is the
+  live group, which on GNOME and KDE is read and elsewhere is assumed to be group 1.
+  Measured on sway, which is the elsewhere, against a binding on the US `s` position:
+  `us,gr` presses it, `gr,us` warns and presses nothing, and `WDOTOOL_XKB_GROUP` on
+  the Latin group presses it whichever order they are in.)
 * **When the active layout is plain US, none of this runs.** wdotool checks the
   keymap key by key against its built-in US table and, when they agree, uses the
   built-in table. Keyboard *options* do not spoil that: swapping Caps and Escape, or
@@ -171,30 +172,60 @@ layout reaches only through a Compose *sequence* that is not a dead-key pair (`�
 German, say) is skipped with the warning above — wdotool composes nothing itself, it
 presses keys. And **which of several configured layouts is active**:
 `wl_keyboard.modifiers` carries that and every compositor sends it only to the window
-with keyboard focus, which an injector never is. **On KDE that no longer decides
-anything** — KWin publishes the live layout on the session bus and wdotool reads it,
-below — and on sway the event arrives anyway. Everywhere else the keymap is all there
-is: where it holds more than one group and they do not bind the same symbols, wdotool
-uses the **first** and says so — on every command that types, not once per session —
-so a GNOME session with two sources types the first one's characters until you pin the
-group:
+with keyboard focus, which an injector never is. **On KDE and on GNOME that no longer
+decides anything** — KWin publishes the live layout on the session bus and GNOME keeps
+it in a setting the portal serves, and wdotool reads both, below — and on sway the
+event arrives anyway. Where nothing answers the keymap is all there is: when it holds
+more than one group and they do not bind the same symbols, wdotool uses the **first**
+and says so — on every command that types, not once per session — so a session with
+two layouts types the first one's characters until you pin the group:
 
 ```console
 $ WDOTOOL_XKB_GROUP=2 wdotool type 'Grüße'   # the second configured layout
 ```
 
-The pin still outranks everything, KDE included: a script that sets it keeps saying
-what it means.
+The pin still outranks everything, KDE and GNOME included: a script that sets it keeps
+saying what it means.
 
-**On GNOME that notice appears with a single layout configured too**, and it is not
-wrong to. Mutter compiles its own `us` fallback group after your sources, so one
-German source is the two-group keymap `pc_de_us_2_inet` and one Greek source is
-`pc_gr_us_2_inet`: from the keymap alone a session with one layout and a session with
-two are the same thing. The guess is right there — group 1 is your layout, and typing
-was byte-exact in the measurement — so on a one-layout GNOME desktop the notice is
-noise, and `WDOTOOL_XKB_GROUP=1` silences it. KDE and sway compile one group for one
-source and say nothing. A lone `us` source is the case nobody hears from at all: its
-two groups bind the same symbols, so there is nothing to choose between.
+**On GNOME the guess is gone too, because the shell keeps the answer in a setting.**
+`org.gnome.desktop.input-sources` holds the sources you configured and the order they
+were last used in, and `xdg-desktop-portal` serves it on the session bus, so wdotool
+reads it before every `type` and `key`. The head of `mru-sources` is the live source —
+written on every switch by every means you have, the `Super+Space` shortcut and the
+panel indicator's menu alike, and restored at login, which is why the *first* command
+of a fresh session could already be typing the wrong characters. (`current` looks like
+the answer and is not: `gsettings describe` calls it "deprecated and ignored" on both
+generations, the shell never writes it, and setting it switches nothing.) Nothing to
+install and no new dependency: `xdg-desktop-portal` and `xdg-desktop-portal-gnome` are
+both in the default Ubuntu desktop, and `fwcommon/dbus_mini.py` speaks the call as it
+stands. It costs 1.2 ms a command as you, 6.3 ms as root — where the read has to
+happen in a forked child, because the portal answers the session user and nobody
+else — and neither is visible next to the rest of a `wdotool type`. It is `Settings.ReadAll`, which is the one portal interface with no consent
+step — the same call every GTK application makes for the colour scheme — so
+[No authorization dialog](../README.md#no-authorization-dialog) still holds, measured.
+
+The index of that source is the keymap group, with Mutter's own two habits folded in.
+It **appends its own `us` group** after your sources, so one German source is the
+two-group keymap `pc_de_us_2_inet` and one Greek source is `pc_gr_us_2_inet` — from
+the keymap alone a session with one layout and a session with two are the same thing,
+which is exactly why 0.4 printed its notice on every command of every non-US GNOME
+desktop. The setting tells them apart, so **a one-layout GNOME session now says
+nothing at all**. And beyond three sources Mutter compiles the keymap in chunks of
+three around the one in use: with `de, fr, gr, ru, es` the keymap is `de, fr, gr, us`
+until Spanish is picked and then it is `ru, es, us`, so the group is the source's index
+*within its chunk*, and Spanish is group 2. (0.4 assumed group 1 there — Russian — and
+`type` typed nothing at all.)
+
+Two GNOME states are refused rather than answered, and there the guess and its notice
+stand exactly as they did: **per-window layouts** (Settings ▸ Keyboard ▸ *Let each
+window use its own layout*), where the session-wide setting describes no window in
+particular — measured saying German while a newly opened window was on US — and a
+`mru-sources` head naming a layout the source list no longer has. So does an input
+source that is an **IBus engine** rather than an `xkb` layout, which is the one shape
+here nothing has measured.
+
+A lone `us` source is the case nobody hears from at all, on any desktop: its two groups
+bind the same symbols, so there is nothing to choose between and no bus is opened.
 
 **On KDE the guess is gone, because KWin answers the question.** `org.kde.KWin`
 `/Layouts` `org.kde.KeyboardLayouts.getLayout` returns the 0-based index of the active
@@ -230,6 +261,23 @@ Switching layouts under a daemon that is already running is followed command by
 command, because the group is re-read on every one. The one-layout case
 (`repro/kde-keys-1-group-guess.sh`) is unchanged: plain text, AltGr, dead keys and
 chords all arrive byte for byte, as they did in 0.4.
+
+Measured end to end in a real `gnome-text-editor` window on GNOME 50.1 and 46.0
+(`repro/gnome-keys-1-group-guess.sh`), each case typed once with the build that
+assumed the group and once with this one:
+
+```
+us, de switched to German     type 'yz@'  ->  'zy"'   assumed,  'yz@'  read
+de,fr,gr,ru,es on Spanish     type 'yz'   ->  nothing assumed,  'yz'   read
+one de source                 type 'yz@'  ->  'yz@' both, and the notice is gone
+```
+
+byte-exact on both generations, with `wdotool keys explain` reporting
+`German -- group 2 of 3, from wayland + gnome input-sources` where it used to report
+`English (US) -- group 1 of 3 (assumed), from wayland`. The five-source case is the
+one where the old guess typed *nothing at all*: it assumed Russian, and `y` and `z`
+are not on it. And on a session rebooted with German last used, before anything is
+touched, the first command types German — the old build typed `zy"` there too.
 
 The measured engineering behind all of it — the reverse map, the US bypass, the group
 guess, the cache — is [the active layout](#the-input-daemon), below.
@@ -586,7 +634,7 @@ opens nothing under `/dev/input`. It follows the same layout rules as `type`
 
 ```console
 $ wdotool keys explain 'ç'
-layout: German -- group 1 of 2 (assumed), from wayland
+layout: German -- group 1 of 2, from wayland + gnome input-sources
 level keys: shift = key 42 <LFSH>   level3 = key 100 <RALT>   level5 = key 195 <LVL5>   (what wdotool presses)
 'ç' -- 2 presses on German (a dead-key pair: two presses in order, not a chord)
     1. press key 13 <AE12> with level3 (key 100 <RALT>, ISO_Level3_Shift) -> dead_cedilla
@@ -598,7 +646,9 @@ level keys: shift = key 42 <LFSH>   level3 = key 100 <RALT>   level5 = key 195 <
 The first line is the layout question above, answered for this session: `(assumed)`
 appears only where the group really was a guess, and the source says how it was
 settled — `wayland` is the keymap alone, `wayland + kwin` is KWin having been asked on
-KDE, and on sway the group arrives on the wire and the marker is gone too.
+KDE, `wayland + gnome input-sources` is GNOME's setting having been read (the example
+above is a one-layout German GNOME session, where 0.4 said `group 1 of 2 (assumed)`),
+and on sway the group arrives on the wire and the marker is gone too.
 
 That is the awkward case in full: a dead key that is itself on the third level. `ç`
 on a German keyboard is AltGr held down across the `´` key, both let go of, and
@@ -613,7 +663,7 @@ asked by pressing the key:
 
 ```console
 # wdotool keys watch
-layout: German -- group 1 of 2 (assumed), from wayland
+layout: German -- group 1 of 2, from wayland + gnome input-sources
 level keys: shift = key 42 <LFSH>   level3 = key 100 <RALT>   level5 = key 195 <LVL5>   (what wdotool presses)
 watching 2 keyboards, ignoring 1 of our own; codes are evdev keycodes, the replay column uses X keycodes (evdev+8). Ctrl-C to stop.
     TIME EV     CODE KEY      MODIFIERS       PRODUCES         REPLAY (keycodes)          CHARACTER (portable)
@@ -1069,16 +1119,16 @@ Daemon notes:
   - **the group**: `wl_keyboard.modifiers` carries the active group but every
     compositor sends it only to the *focused* client, which an injector never
     is (measured on Mutter 46/50, and the same is true of wlroots and KWin). So
-    the group is taken from that event if it ever arrives, else group 1 —
-    definitively when every group binds the same symbols (GNOME compiles a lone
-    `us` source as "us,us"), otherwise as a flagged assumption. GNOME appends
-    its own `us` fallback group *after* the user's sources, so a single German
-    source is "de,us" and group 1 is right; a session with several sources whose
-    first one is `us` verifies as plain US and keeps the old behaviour instead
-    of guessing — and says so, on that path too, because that is the session
-    that types the wrong characters after a switch to its second layout. The
-    notice is made once per layout state and again on every change.
-    `WDOTOOL_XKB_GROUP=<n>` pins it.
+    the group is taken from that event if it ever arrives; failing that, from
+    the desktop, which knows even where the protocol will not say
+    (`xkbmap.desktop_group`, the two bullets below); and failing that it is
+    group 1 — definitively when every group binds the same symbols (GNOME
+    compiles a lone `us` source as "us,us"), otherwise as a flagged assumption.
+    A session with several sources whose first one is `us` verifies as plain US
+    and takes the bypass, so the notice is said on that path too, because that
+    is the session that types the wrong characters after a switch to its second
+    layout. The notice is made once per layout state and again on every change.
+    `WDOTOOL_XKB_GROUP=<n>` pins it, ahead of every desktop.
   - **the group, on KDE** (`xkbmap.KwinLayouts`): exactly where the paragraph
     above would flag an assumption, KWin is asked instead —
     `org.kde.KWin` `/Layouts` `org.kde.KeyboardLayouts.getLayout`, a 0-based
@@ -1099,6 +1149,37 @@ Daemon notes:
     as such and never dialled again. Every failure returns None and the guess
     stands. Never kded: both `/modules/keyboard` copies of this interface crash
     on `getLayout`.
+  - **the group, on GNOME** (`xkbmap.GnomeInputSources`): the same seam, one
+    desktop over. Mutter says no more than KWin does, but GNOME Shell keeps
+    the answer in GSettings and `xdg-desktop-portal` serves GSettings on the
+    session bus, so it is one
+    `org.freedesktop.portal.Settings.ReadAll(["org.gnome.desktop.input-sources"])`
+    — 1.2 ms per read in the process that has the connection, and 28 ms for
+    the first one, which pays for the connect and for the bus activating the
+    portal if nothing has yet. `mru-sources[0]` is the live source (`current` is deprecated
+    and ignored — the shell writes only `mru-sources`, on every switch, and
+    `dconf watch` across a session of switching shows nothing else), and its
+    index maps onto the group: Mutter appends its own `us` group after the
+    user's sources and compiles them in chunks of three, so the group is
+    `index % 3 + 1`, clamped against `group_count`. `NameHasOwner` on
+    `org.gnome.Shell` first, for the same reason KDE's does it, and the same
+    remembered no; the same one reconnect and ten-second backoff; the same
+    None for every failure. dconf itself is not an option: `ca.desrt.dconf`
+    publishes `Init`, `Change` and the `Notify` signal and **no read method**.
+    Refused rather than answered: `per-window` layouts, a `mru-sources` head
+    that is no longer in `sources`, and a source that is not an `xkb` layout.
+    **As root it costs a fork.** The portal identifies its caller by opening
+    `/proc/<pid>/root` and answers the session user only, and on GNOME the
+    daemon is root whenever it was started with `sudo` rather than through the
+    udev rule — so the connect *and* the call happen in a child that has
+    dropped to that user and put `PR_SET_DUMPABLE` back (setuid clears it, and
+    a process that is not dumpable has a `/proc/self` only root may open,
+    which is precisely what the portal is not), with the answer piped home as
+    JSON: 6.3 ms a read against the same session's 1.2, measured on GNOME 46
+    with the shipped build. `Bus(as_uid=)` cannot serve here, though it exists
+    for exactly this shape of problem: its child hands the socket back and
+    exits, so by the time the call goes out there is no process for the portal
+    to identify (`AccessDenied: Unable to open /proc/N/root`).
   - **cache**: keyed on (sha256 of the keymap text, group), re-read on *every*
     `type`/`key` — the user can switch layout between two commands, and a
     long-lived daemon has to notice. A rebuild costs ~15ms; a hit is a Wayland

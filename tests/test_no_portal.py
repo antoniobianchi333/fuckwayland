@@ -27,6 +27,23 @@ explains why it refuses to mirror on GNOME and KDE) and the bare word
 "polkit" (`wdotool/backend_kwin.py` and `wxrandr/` note that KWin scripting
 and `kde_output_management_v2` have no polkit action behind them).
 
+**One portal interface is exempt, by name, and only one.**
+`org.freedesktop.portal.Settings` reads the desktop's own GSettings and has
+no consent step at all: it is what every GTK and Qt application calls at
+start-up for the colour scheme, it is answered without a permission check,
+and there is no allow/deny record for it in the portal's permission store.
+`wdotool/xkbmap.py` calls its `ReadAll` on GNOME to learn which keyboard
+layout is active, because Mutter will not tell an unfocused client and dconf
+publishes no read method on the bus (`ca.desrt.dconf` has `Init`, `Change`
+and `Notify` and nothing else). Measured on GNOME 46.0 and 50.1, with the
+whole session bus and both screens watched by the method in README.md's
+"No authorization dialog": the call answers in 1-3 ms and nothing appears on
+screen. So `.Settings` -- and `org.freedesktop.portal.Desktop`, the bus name
+it is reached at -- pass this scan, and every other interface on that same
+bus name is still a failure here, RemoteDesktop and InputCapture first among
+them. The exemption is one lookahead below, and widening it means changing
+README.md's guarantee in the same commit, which is the point.
+
 Not scanned: `tests/` -- this file names every token -- and `vm/`, whose rig
 drives a real portal client and `pkexec` on purpose, as the positive
 controls that prove a dialog would have been seen if there had been one.
@@ -59,7 +76,6 @@ EXTRA_DIRS = ("gnome",)
 DOC_SUFFIXES = (".md",)
 
 FORBIDDEN = (
-    "org.freedesktop.portal",       # the portal's public bus name
     "org.freedesktop.impl.portal",  # the desktop's implementation of it
     "RemoteDesktop",                # the portal interface that injects input
     "InputCapture",                 # its newer sibling, same consent dialog
@@ -67,8 +83,19 @@ FORBIDDEN = (
     "PolicyKit",                    # a polkit action means an agent window
 )
 
+# The portal's public bus name and every interface on it EXCEPT the two the
+# module docstring exempts: `Settings`, which has no consent step, and
+# `Desktop`, which is the bus name Settings is reached at. Anything else
+# under `org.freedesktop.portal` -- including a bare mention that names no
+# interface -- is a hit. (The interface names that prompt are caught by
+# that pattern where they are called; as bare words they are left alone,
+# like "portal" and "polkit" above -- `wxrandr/kwin.py` names screencast
+# in a comment about what KWin blacklists.)
+PORTAL = r"org\.freedesktop\.portal(?!\.(?:Settings|Desktop)\b)"
+
 # Case-insensitive: a different spelling is the same call.
-_RE = re.compile("|".join(re.escape(t) for t in FORBIDDEN), re.IGNORECASE)
+_RE = re.compile("|".join([PORTAL] + [re.escape(t) for t in FORBIDDEN]),
+                 re.IGNORECASE)
 
 SKIP_DIRS = {"__pycache__", ".git", ".mypy_cache", ".pytest_cache"}
 SKIP_SUFFIXES = (".pyc", ".pyo", ".png", ".gif", ".svg")
@@ -88,16 +115,21 @@ def _files(root, skip_docs=False):
     return out
 
 
-def _hits(paths):
-    """(path, lineno, line) for every forbidden token in `paths`."""
+def _hits_of(paths, rx):
+    """(path, lineno, line) for every line of `paths` that `rx` matches."""
     found = []
     for path in paths:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for n, line in enumerate(fh, 1):
-                if _RE.search(line):
+                if rx.search(line):
                     found.append((os.path.relpath(path, ROOT), n,
                                   line.strip()[:120]))
     return found
+
+
+def _hits(paths):
+    """(path, lineno, line) for every forbidden token in `paths`."""
+    return _hits_of(paths, _RE)
 
 
 def _report(hits):
@@ -126,6 +158,34 @@ class NoPortalNoPolkit(unittest.TestCase):
                          "GNOME's and KDE's consent dialog on screen, and "
                          "README.md promises it never appears:\n"
                          + _report(hits))
+
+    def test_the_settings_exemption_is_exactly_one_interface(self):
+        """The one hole in the scan, pinned open at its own width. Settings
+        reads the desktop's GSettings and prompts for nothing; every other
+        interface on the same bus name is still a failure, and so is a bare
+        mention that names no interface at all."""
+        for allowed in ('org.freedesktop.portal.Settings.ReadAll',
+                        'org.freedesktop.portal.Settings',
+                        '"org.freedesktop.portal.Desktop"',
+                        '/org/freedesktop/portal/desktop'):
+            self.assertIsNone(_RE.search(allowed), allowed)
+        for banned in ('org.freedesktop.portal.RemoteDesktop',
+                       'org.freedesktop.portal.InputCapture',
+                       'org.freedesktop.portal.ScreenCast',
+                       'org.freedesktop.portal.Settingsy',
+                       'org.freedesktop.portal.DesktopFoo',
+                       'org.freedesktop.portal',
+                       'org.freedesktop.impl.portal.Settings',
+                       'polkit.PolicyKit1', 'libei_setup', 'RemoteDesktop'):
+            self.assertIsNotNone(_RE.search(banned), banned)
+
+    def test_the_only_portal_call_we_make_is_that_one(self):
+        """And it is where the docstring says it is: one file, one
+        interface. A second caller has to justify itself here first."""
+        callers = sorted({h[0] for h in _hits_of(
+            [f for pkg in PACKAGES for f in _files(os.path.join(ROOT, pkg))],
+            re.compile(r"org\.freedesktop\.portal", re.IGNORECASE))})
+        self.assertEqual(callers, ["wdotool/xkbmap.py"])
 
     def test_the_extension_and_installer_do_not_either(self):
         """`gnome/` is installed too, and the installer runs as root."""

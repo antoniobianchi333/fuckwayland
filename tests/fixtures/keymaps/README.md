@@ -15,6 +15,7 @@ point of them.
 | `dvorak.xkb` | `us+dvorak` | `English (Dvorak)`, `English (US)` |
 | `us_de.xkb` | `us`, `de` | `English (US)`, `German`, `English (US)` |
 | `de_fr.xkb` | `de`, `fr` | `German`, `French`, `English (US)` |
+| `five_es.xkb` | `de`, `fr`, `gr`, `ru`, `es`, on Spanish | `Russian`, `Spanish`, `English (US)` |
 | `noble_de.xkb` | `de` | `German`, `English (US)` |
 | `sway_de.xkb` | `de` | `German` |
 | `us_swapescape.xkb` | `us` + `caps:swapescape` | `English (US)`, `English (US)` |
@@ -70,7 +71,18 @@ Two facts these files record, both load-bearing for `wdotool/xkbmap.py`:
 
 * GNOME always compiles **one more group than the user configured**, an
   `English (US)` fallback appended at the end. A session with a single `de`
-  source therefore has two groups, and group 1 is the one the user picked.
+  source therefore has two groups, and group 1 is the one the user picked —
+  which the file cannot say, because a session with two sources looks exactly
+  the same. That is the question `xkbmap.GnomeInputSources` puts to
+  `org.gnome.desktop.input-sources` through the portal, and `five_es.xkb` is
+  what pins the awkward end of the answer: **more sources than fit one
+  keymap**. XKB allows four groups, Mutter spends one on its appended `us`,
+  and beyond three sources it recompiles around whichever one is in use — with
+  `de, fr, gr, ru, es` configured the keymap is `de, fr, gr, us` until Spanish
+  is picked from the panel menu, and then it is this file,
+  `pc_ru_es_2_us_3_inet(evdev)`. So the group is the source's index *within
+  its chunk of three*, and `es` at index 4 is group 2. Through 0.4 wdotool
+  assumed group 1 there — Russian — and `type yz` typed nothing at all.
   KWin and sway do not: one source is one group. `kde_us_de.xkb` is what a
   KDE user who adds a second layout gets — two groups, no fallback — and
   which of the two is live is not in the file at all, because no compositor

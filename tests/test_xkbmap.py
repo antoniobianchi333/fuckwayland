@@ -24,7 +24,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from fwcommon import dbus_mini
-from fwcommon.dbus_mini import ERR, Bus, DBusError
+from fwcommon.dbus_mini import ERR, Bus, DBusError, Variant
 from support import RecorderDev, env
 from test_dbus_mini import MockBus
 from wdotool import cli, daemon, keymap, keys_cmds, xkbmap
@@ -38,9 +38,9 @@ os.environ["FUCKWAYLAND_PASSTHROUGH"] = "never"
 KEYMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "keymaps")
 FIXTURES = ("us", "de", "fr", "es", "gb", "dvorak", "us_de", "de_fr",
-            "noble_de", "sway_de", "us_swapescape", "us_grptoggle",
-            "kde_us", "kde_de", "kde_gr", "kde_us_de", "kde_us_de_fr",
-            "kde5_de")
+            "five_es", "noble_de", "sway_de", "us_swapescape",
+            "us_grptoggle", "kde_us", "kde_de", "kde_gr", "kde_us_de",
+            "kde_us_de_fr", "kde5_de")
 
 
 def text(name: str) -> str:
@@ -53,13 +53,16 @@ def rmap(name: str, group: int = 1) -> xkbmap.ReverseMap:
 
 
 def setUpModule():
-    """No test in this file may open the *developer's* session bus. The KWin
-    reader is a module-level connection made on first use (see
-    xkbmap.KwinLayouts); park one that has already given up in its place, and
-    let TestTheActiveGroupFromKwin below hand out readers pointed at a mock
-    bus instead."""
+    """No test in this file may open the *developer's* session bus. Both
+    desktop readers are module-level connections made on first use (see
+    xkbmap.KwinLayouts and xkbmap.GnomeInputSources); park ones that have
+    already given up in their place, and let TestTheActiveGroupFromKwin and
+    TestTheActiveGroupFromGnome below hand out readers pointed at a mock bus
+    instead."""
     xkbmap._kwin = xkbmap.KwinLayouts()
     xkbmap._kwin.absent = True
+    xkbmap._gnome = xkbmap.GnomeInputSources()
+    xkbmap._gnome.absent = True
 
 
 def make_daemon():
@@ -1892,6 +1895,363 @@ class TestTheActiveGroupFromKwin(unittest.TestCase):
         self.assertEqual(taps(d.kb), US_TAPS)
         self.assertEqual(warns, [])
 
+
+
+# ---------------------------------------------------------------------------
+# GNOME: the active layout, read from the setting the shell keeps
+
+
+class PortalService(_FakeService):
+    """`org.freedesktop.portal.Desktop` answering ReadAll for one namespace,
+    as measured on GNOME 46.0 and 50.1: a{sa{sv}} of the whole namespace.
+
+    `settings` is the namespace's contents as plain Python; `answer` bends it
+    -- "s" is a portal that replies with something else entirely, "none" one
+    that never replies at all."""
+
+    NS = xkbmap.GNOME_SCHEMA
+
+    def __init__(self, address, sources=(("xkb", "us"), ("xkb", "de")),
+                 mru=(), per_window=False, answer="ok", error=None):
+        self.sources = [tuple(s) for s in sources]
+        self.mru = [tuple(s) for s in mru]
+        self.per_window = per_window
+        self.answer = answer
+        self.error = error
+        self.answers = 0
+        _FakeService.__init__(self, address, xkbmap.PORTAL_BUS_NAME)
+
+    def switch_to(self, i):
+        """What the shell writes when the user picks a layout: the chosen
+        source moves to the head of mru-sources."""
+        self.mru = [self.sources[i]] + [s for s in self.sources if s != self.sources[i]]
+
+    def values(self):
+        return {"sources": Variant("a(ss)", self.sources),
+                "mru-sources": Variant("a(ss)", self.mru),
+                "per-window": Variant("b", self.per_window),
+                "current": Variant("u", 0),      # deprecated and ignored
+                "xkb-options": Variant("as", [])}
+
+    def dispatch(self, m):
+        if m.path != xkbmap.PORTAL_PATH or m.interface != xkbmap.PORTAL_IFACE:
+            return _FakeService.dispatch(self, m)
+        if m.member != "ReadAll":
+            raise DBusError(ERR + "UnknownMethod", "no %s" % m.member)
+        if self.error:
+            raise DBusError(self.error, "no")
+        if self.answer == "none":
+            return None, None
+        self.answers += 1
+        if self.answer == "s":
+            return "s", ("a layout, probably",)
+        return "a{sa{sv}}", ({self.NS: self.values()},)
+
+
+class ShellName(_FakeService):
+    """`org.gnome.Shell` owning its name and nothing else. The reader checks
+    it before it asks the portal anything, so that a KDE or sway box is one
+    round trip from a permanent no rather than a portal call per keystroke."""
+
+    def __init__(self, address):
+        _FakeService.__init__(self, address, xkbmap.GNOME_BUS_NAME)
+
+
+class TestTheActiveGroupFromGnome(unittest.TestCase):
+    """GNOME publishes what wl_keyboard will not tell an injector, as a
+    setting rather than a method: `org.gnome.desktop.input-sources`, served
+    over the session bus by xdg-desktop-portal. The head of `mru-sources` is
+    the live source, and its index is the keymap group -- with Mutter's
+    appended `us` group and its chunking beyond three sources both folded into
+    that one rule.
+
+    Everything that can go wrong with it has to leave typing exactly as it was
+    before this existed."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mock = MockBus()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.mock.close()
+
+    def setUp(self):
+        self.addCleanup(setattr, xkbmap, "_gnome", xkbmap._gnome)
+        self.addCleanup(setattr, xkbmap, "_kwin", xkbmap._kwin)
+        self.addCleanup(setattr, xkbmap, "GNOME_TIMEOUT", xkbmap.GNOME_TIMEOUT)
+        self.addCleanup(setattr, xkbmap, "_fetch_wayland", xkbmap._fetch_wayland)
+        # KDE's reader shares the one place fetch() asks from; park it.
+        xkbmap._kwin = xkbmap.KwinLayouts()
+        xkbmap._kwin.absent = True
+        self.reader = xkbmap._gnome = xkbmap.GnomeInputSources(self.mock.address)
+
+    def shell(self):
+        svc = ShellName(self.mock.address)
+        self.addCleanup(svc.close, self.mock)
+        return svc
+
+    def portal(self, **kw):
+        self.shell()
+        svc = PortalService(self.mock.address, **kw)
+        self.addCleanup(svc.close, self.mock)
+        return svc
+
+    def snapshot(self, name):
+        xkbmap._fetch_wayland = fake_wayland(name)
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=None, WDOTOOL_LAYOUT=None):
+            return xkbmap.fetch()
+
+    def typed(self, name, daemon_=None, group=None, s="yz@"):
+        d = daemon_ if daemon_ is not None else make_daemon()
+        xkbmap._fetch_wayland = fake_wayland(name)
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=group, WDOTOOL_LAYOUT=None):
+            warns = d.op_type(s, 0, False)
+        return d, warns
+
+    # -- the mapping, which is the part most likely to be subtly wrong ------
+
+    def test_the_head_of_mru_sources_is_the_active_source(self):
+        svc = self.portal()
+        self.assertEqual(xkbmap.gnome_group(text("us_de")), 1)   # never switched
+        svc.switch_to(1)
+        self.assertEqual(xkbmap.gnome_group(text("us_de")), 2)
+        svc.switch_to(0)
+        self.assertEqual(xkbmap.gnome_group(text("us_de")), 1)
+        self.assertEqual(svc.answers, 3)
+
+    def test_one_source_is_group_one_and_it_is_known(self):
+        """The whole reason the 0.4 notice fired on every command of every
+        non-US GNOME desktop: Mutter appends its own `us` group, so `de,us`
+        in the keymap is one German source, not two sources. Only the setting
+        can tell those apart, and it does."""
+        self.portal(sources=(("xkb", "de"),))
+        snap = self.snapshot("de")
+        self.assertEqual((snap.group, snap.group_known), (1, True))
+        self.assertEqual(snap.source, "wayland + gnome input-sources")
+
+    def test_beyond_three_sources_mutter_chunks_the_keymap(self):
+        """XKB allows four groups and Mutter spends one of them on its own
+        `us`, so five sources are compiled three at a time around the one in
+        use. `five_es.xkb` is that session captured: `de,fr,gr,ru,es` with
+        Spanish picked compiles `ru, es, us`, and Spanish -- index 4 -- is
+        group 2. Before this, wdotool assumed group 1 there and typed
+        nothing at all."""
+        five = [("xkb", n) for n in ("de", "fr", "gr", "ru", "es")]
+        svc = self.portal(sources=five)
+        self.assertEqual(xkbmap.group_count(text("five_es")), 3)
+        self.assertEqual(xkbmap.parse(text("five_es")).group_names,
+                         ["Russian", "Spanish", "English (US)"])
+        svc.switch_to(4)
+        snap = self.snapshot("five_es")
+        self.assertEqual((snap.group, snap.group_known), (2, True))
+        self.assertEqual(xkbmap.build(snap.text, snap.group).name, "Spanish")
+
+    def test_the_index_within_the_chunk_is_the_group(self):
+        """The mapping on its own, over every index of a five-source list:
+        0,1,2 are groups 1,2,3 of the chunk `de,fr,gr,us`, and 3,4 are groups
+        1,2 of the chunk `ru,es,us`. One source is always group 1, and so is
+        a list nothing has switched yet."""
+        five = [("xkb", n) for n in ("de", "fr", "gr", "ru", "es")]
+        for i, want in enumerate((1, 2, 3, 1, 2)):
+            mru = [five[i]] + [s for s in five if s != five[i]]
+            self.assertEqual(
+                xkbmap._group_of_sources({"sources": five, "mru-sources": mru}),
+                want, five[i])
+        self.assertEqual(xkbmap._group_of_sources(
+            {"sources": five, "mru-sources": []}), 1)
+        self.assertEqual(xkbmap._group_of_sources(
+            {"sources": [("xkb", "de")], "mru-sources": [("xkb", "de")]}), 1)
+
+    # -- it answers
+
+    def test_the_measured_defect(self):
+        """`us, de` switched to German with Super+Space, `wdotool type 'yz@'`.
+        It arrived as `zy\"` on GNOME 46 and 50 because group 1 was assumed;
+        with the setting read, the keystrokes are the German ones -- and the
+        notice that named the layout it had assumed says nothing."""
+        svc = self.portal()
+        svc.switch_to(1)
+        d, warns = self.typed("us_de")
+        self.assertEqual(taps(d.kb), DE_TAPS)
+        self.assertEqual(warns, [])
+        svc.switch_to(0)                     # the user switches back
+        d2, warns2 = self.typed("us_de")
+        self.assertEqual(taps(d2.kb), US_TAPS)
+        self.assertEqual(warns2, [])
+
+    def test_the_layout_a_login_restored_is_the_first_commands_layout(self):
+        """A session whose mru-sources begins with `de` comes back on German,
+        so the first command of a fresh session was already typing the wrong
+        characters -- before the user had touched anything."""
+        self.portal(mru=(("xkb", "de"), ("xkb", "us")))
+        d, warns = self.typed("us_de")
+        self.assertEqual(taps(d.kb), DE_TAPS)
+        self.assertEqual(warns, [])
+
+    def test_explain_reports_the_real_group_rather_than_an_assumption(self):
+        svc = self.portal()
+        svc.switch_to(1)
+        xkbmap._fetch_wayland = fake_wayland("us_de")
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP=None, WDOTOOL_LAYOUT=None):
+            line = keys_cmds.Layout.load().describe()[0]
+        self.assertEqual(line, "layout: German -- group 2 of 3, from wayland + gnome input-sources")
+        self.assertNotIn("assumed", line)
+
+    def test_a_switch_between_two_commands_on_one_daemon(self):
+        svc = self.portal()
+        d, _ = self.typed("us_de")
+        self.assertEqual(taps(d.kb), US_TAPS)
+        d.kb.events.clear()
+        svc.switch_to(1)                     # Super+Space, as a user does it
+        _, warns = self.typed("us_de", daemon_=d)
+        self.assertEqual(taps(d.kb), DE_TAPS)
+        self.assertEqual(warns, [])
+
+    # -- it is not there
+
+    def test_no_gnome_shell_on_the_bus_leaves_todays_behaviour_exactly(self):
+        """A KDE or wlroots session: nothing owns org.gnome.Shell, so the
+        group is the guess it always was, the notice is printed, and the
+        negative is remembered rather than re-dialled on every keystroke."""
+        snap = self.snapshot("us_de")
+        self.assertEqual((snap.group, snap.group_known, snap.source), (1, False, "wayland"))
+        self.assertTrue(self.reader.absent)
+        self.reader._connect = lambda: self.fail("dialled the bus a second time")
+        d, warns = self.typed("us_de")
+        self.assertEqual(taps(d.kb), US_TAPS)
+        self.assertEqual(len(warns), 1)
+        self.assertIn("assuming 'English (US)'", warns[0])
+
+    def test_a_gnome_with_no_portal_is_not_asked_twice(self):
+        """The shell is there and nothing owns the portal name: a permanent
+        no, not a transient one."""
+        self.shell()
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+        self.assertTrue(self.reader.absent)
+        self.reader._connect = lambda: self.fail("dialled the bus a second time")
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+
+    def test_a_portal_without_the_settings_interface(self):
+        svc = self.portal(error=ERR + "UnknownMethod")
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+        self.assertEqual(len(svc.calls), 1)
+        self.assertTrue(self.reader.absent)
+
+    def test_a_portal_that_will_not_answer_is_waited_for_once(self):
+        xkbmap.GNOME_TIMEOUT = 0.2
+        self.portal(answer="none")
+        t0 = time.monotonic()
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+        self.assertGreaterEqual(time.monotonic() - t0, 0.2)      # it really waited...
+        t0 = time.monotonic()
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+        self.assertLess(time.monotonic() - t0, 0.1)              # ...and then backed off
+        self.assertFalse(self.reader.absent)     # a wedge is not an absence
+
+    # -- it answers nonsense, or an answer that describes no one layout
+
+    def test_the_setting_is_absent_or_nonsense(self):
+        for d in (None, {}, {"sources": [("xkb", "de")]}, {"mru-sources": []},
+                  "", 7, [1, 2],
+                  {"sources": "de", "mru-sources": []},
+                  {"sources": [], "mru-sources": []},
+                  {"sources": [("xkb", "de", "extra")], "mru-sources": []},
+                  {"sources": [["xkb"]], "mru-sources": []},
+                  {"sources": [("xkb", "us"), ("xkb", "de")], "mru-sources": [7]}):
+            self.assertIsNone(xkbmap._group_of_sources(d), d)
+
+    def test_a_portal_answering_something_else_entirely(self):
+        self.portal(answer="s")
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+        self.assertEqual(self.snapshot("us_de").group_known, False)
+
+    def test_a_stale_mru_head_is_not_an_answer(self):
+        """The source list was edited under us and the head names a layout
+        that is no longer in it."""
+        self.portal(mru=(("xkb", "fr"),))
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+        self.assertEqual(self.snapshot("us_de").group_known, False)
+
+    def test_per_window_layouts_are_refused(self):
+        """An ordinary GNOME setting under which the session-wide value
+        describes no window in particular -- measured saying German while a
+        newly opened window was on US."""
+        svc = self.portal(per_window=True)
+        svc.switch_to(1)
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+        svc.per_window = False
+        self.assertEqual(xkbmap.gnome_group(text("us_de")), 2)   # and it recovers
+
+    def test_a_source_that_is_not_an_xkb_layout_is_refused(self):
+        """An IBus engine is the one shape here nothing measured, so it is
+        left alone rather than guessed at."""
+        self.portal(sources=(("xkb", "us"), ("ibus", "anthy")))
+        self.assertIsNone(xkbmap.gnome_group(text("us_de")))
+
+    def test_an_index_the_keymap_cannot_hold_is_not_an_answer(self):
+        """Between the keymap read and the setting read the user edited the
+        list: clamp to what the keymap really has, and where it does not fit,
+        keep the guess."""
+        svc = self.portal(sources=[("xkb", n) for n in ("de", "fr", "gr")])
+        svc.switch_to(2)
+        self.assertIsNone(xkbmap.gnome_group(text("de")))        # 3 of 2
+        self.assertEqual(xkbmap.gnome_group(text("de_fr")), 3)   # and it fits here
+
+    # -- it goes away and comes back
+
+    def test_a_dead_connection_is_redialled_once(self):
+        svc = self.portal()
+        svc.switch_to(1)
+        self.assertEqual(xkbmap.gnome_group(text("us_de")), 2)
+        self.reader.bus.sock.close()             # the bus went away under us
+        self.assertEqual(xkbmap.gnome_group(text("us_de")), 2)
+        self.assertEqual(svc.answers, 2)
+
+    # -- and the sessions that must never pay for any of it
+
+    def test_the_bus_is_not_dialled_when_the_group_is_already_known(self):
+        """The commonest GNOME session there is -- one `us` source, compiled
+        as the two groups `us,us` -- knows its group from the keymap, and so
+        does a pinned one. Neither opens a bus."""
+        svc = self.portal()
+        self.reader._connect = lambda: self.fail("dialled the bus for a group we know")
+        for name in ("us", "us_swapescape", "us_grptoggle", "sway_de"):
+            self.assertTrue(self.snapshot(name).group_known, name)
+        with env(WDOTOOL_XKB_KEYMAP=None, WDOTOOL_XKB_GROUP="2", WDOTOOL_LAYOUT=None):
+            xkbmap._fetch_wayland = fake_wayland("us_de")
+            self.assertEqual(xkbmap.fetch().source, "wayland (group pinned)")
+        self.assertEqual(svc.calls, [])
+        self.assertIsNone(self.reader.bus)
+
+    def test_a_pinned_group_still_beats_the_setting(self):
+        svc = self.portal()
+        svc.switch_to(1)
+        d, warns = self.typed("us_de", group="1")
+        self.assertEqual(taps(d.kb), US_TAPS)
+        self.assertEqual(warns, [])
+
+    # -- root, which is where the daemon usually is on GNOME
+
+    def test_the_read_works_from_a_process_that_forks_and_drops(self):
+        """GNOME typing always goes through /dev/uinput, so the daemon is root
+        under sudo -- and the portal answers the session user only, because it
+        identifies its caller by opening /proc/<pid>/root. The read therefore
+        happens in a live forked child that has dropped to that user and put
+        PR_SET_DUMPABLE back. Dropping to the uid we already are is a no-op,
+        so the whole mechanism runs here without root: fork, connect, call,
+        JSON home over a pipe."""
+        svc = self.portal()
+        svc.switch_to(1)
+        got = xkbmap._read_all_as(os.geteuid(), self.mock.address, 5.0)
+        self.assertEqual(xkbmap._group_of_sources(got), 2)
+        self.assertEqual(svc.answers, 1)
+
+    def test_a_child_that_cannot_read_reports_why_rather_than_hanging(self):
+        with self.assertRaises(DBusError) as caught:
+            xkbmap._read_all_as(os.geteuid(), "unix:path=/nonexistent/bus", 1.0)
+        self.assertTrue(caught.exception.name.startswith(ERR))
 
 if __name__ == "__main__":
     unittest.main()
