@@ -568,7 +568,9 @@ seconds* over a dimmed desktop.
   which disables the extension (as documented under **lock screen** above) —
   the bridge comes back on unlock.
 
-Not exercised live yet: the Looking-Glass probes of §6 of the checklist.
+Everything this document describes has now been exercised on a live desktop, on
+both GNOME releases, including the escape hatch that drives Looking Glass to
+install without a logout and the dialog answering above.
 
 Review fixes re-verified on Ubuntu 24.04 / GNOME Shell 46.0 (fresh instance,
 systemd 255): the uaccess-only rule gives `root:root 0600` plus
