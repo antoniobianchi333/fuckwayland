@@ -1078,8 +1078,11 @@ one, for the GNOME nobody has measured yet. Everything version-specific about th
 route became one record per GNOME release in a table, and GNOME 51 was added to it by
 following the written procedure and nothing else, on an Ubuntu 26.10 desktop that is
 the rig's thirteenth image. Both default installs, every desktop and both LTS
-releases were retested, the package in `release/` is built from this tree rather than
-left at the previous one, and the suite stands at **2619 tests**.
+releases were retested, and the package in `release/` is built from this tree rather
+than left at the previous one. Running that package on a default install found one
+more thing to fix: handing over to a real tool that is not installed said the session
+was an X11 one whoever had asked, and it now names the reason the original was
+wanted. The suite stands at **2619 tests**.
 
 <!-- release-notes: 0.3 -->
 ### 0.3
