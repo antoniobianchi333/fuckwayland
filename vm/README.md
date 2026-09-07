@@ -10,8 +10,11 @@ Ubuntu desktop install" has to rest on, one per supported LTS.
 Each autologins user `test` on a **multi-head virtio-vga** whose monitors are plugged,
 unplugged and resized from the host at runtime, with host-side screenshots of every head.
 This is the rig for testing all six tools against real Wayland *and* X11 sessions, and for
-the X-parity oracles: every golden image also carries the real `xdotool`, `wmctrl`,
-`x11-utils` and `x11-xserver-utils`. What the six tools currently manage on each desktop —
+the X-parity oracles: every *cloud-image* golden also carries the real `xdotool`, `wmctrl`,
+`x11-utils` and `x11-xserver-utils`. The two **ISO** goldens carry what the Ubuntu installer
+installs and nothing else, which is `x11-utils` and `x11-xserver-utils` but **not** `xdotool`
+or `wmctrl` — that is the point of them, and it is also what a reader of the repo README's
+X11 section is told to `apt install`. What the six tools currently manage on each desktop —
 including where they have no backend at all — is written down per flavor under *What the six
 tools do on each flavor*, which is the measurement behind the *Desktop support* matrix in the
 repo README.

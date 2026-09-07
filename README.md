@@ -694,8 +694,11 @@ extension the other tools use and is installed by hand for exactly that reason. 
 exits 1 until the log out and back in it asks for, the same as the bridge installer
 does, so a script that runs these in order stops there on purpose. From the package
 rather than a clone the files are already in `/usr/share/gnome-shell/extensions` and
-the first step is instead `gnome-extensions enable fuckwayland-overlap@fuckwayland`,
-then the same log out and back in: nothing in the package turns this one on for you. The
+the first step is instead `gnome-extensions enable fuckwayland-overlap@fuckwayland`:
+nothing in the package turns this one on for you. That one needs no second log out —
+`gnome-shell` scanned the directory at the login the install itself asks for, so
+enabling it there brings it up at once (measured on 26.04) — and it does need one if
+you enable it in the same session you installed the package in, before that relogin. The
 second prints what the flag does, what it risks and what it saves, runs every check
 against the GNOME that is running, and records what those checks measured, down to
 the build id of the `libmutter` they ran against, because a version number does not
@@ -1131,10 +1134,11 @@ wanted. It was rebuilt once more over the code that reads the layout, and proved
 a single `apt install` on a default Plasma desktop and a default GNOME one, with
 nothing configured and no wdotool on either: a session switched to German typed `yz@`
 byte for byte on both, where the build before it typed `zy""` on KDE and `zy"` on
-GNOME. Both desktops report their active layout there, `wayland + kwin` on one and
+GNOME. Running this README against that install is also what found the last of
+it, an overlap route whose every message spoke only to somebody who had a clone
+rather than the package. Both desktops report their active layout there, `wayland + kwin` on one and
 `wayland + gnome input-sources` on the other, and stderr is silent on both. The suite
 stands at **2668 tests**.
-
 <!-- release-notes: 0.3 -->
 ### 0.3
 

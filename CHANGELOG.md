@@ -172,8 +172,7 @@ by using the tools on one rather than by reading them.
   forked read itself, and a kded landmine on the mock bus that fails the test if
   anything ever calls it -- and the answer to GNOME's display-change dialog: found and
   pressed either way, found by nothing when a second call comes too late, and the two
-  halves of the lookup held to the shell source they were measured against.
-- **The documents were read against the code again**, which is the check this release
+  halves of the lookup held to the shell source they were measured against.- **The documents were read against the code again**, which is the check this release
   exists to keep passing: `scripts/check-docs.py` reads the options out of the source,
   out of every help text each tool prints (the subcommands included) and out of every
   markdown file, and reports where the three disagree. Everything it reports is a real
