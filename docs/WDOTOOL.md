@@ -166,6 +166,11 @@ $ wdotool type 'Grüße, ça va?'      # de, fr, es, dvorak ... all fine
   the fallback whenever the keymap cannot be read at all (no compositor, a locked
   screen, an unparsable keymap): a warning on every command that types through it,
   never a failure.
+  **Which layout is "active" is the read one where it can be read**, so a `us,de`
+  session switched to German stops taking the bypass and runs the reverse map, which
+  is the point: it used to bypass and type US characters. A session that really is on
+  US still bypasses, whatever else is configured, and `--layout us` bypasses without
+  asking anybody anything.
 
 Two things are still on the honest list. **Compose-only characters**: a character the
 layout reaches only through a Compose *sequence* that is not a dead-key pair (`ñ` on

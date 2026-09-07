@@ -592,6 +592,16 @@ exactly as they did.
   layouts, an `mru-sources` head no longer in `sources`, and a source that is not an
   `xkb` layout are refused rather than answered.
 
+Two failures are told apart, because they deserve different answers. An error whose
+*name* describes the session rather than the moment, meaning this compositor has no
+such object, method, interface or property, or this bus will not let us at it, is
+permanent: the answer would be the same next time, so the reader records that this
+desktop cannot answer and never asks again for the life of the process. That is what
+keeps a sway or an X11 session from paying a round trip per command for a question
+with no answer. A name that merely says nobody owns it right now is deliberately not
+in that set, because a compositor restarting is exactly the case that must recover,
+and it is covered by the one reconnect and the ten second backoff instead.
+
 **The GNOME read costs a fork, and the fork is not an optimisation.** Typing goes
 through `/dev/uinput`, so the daemon is root whenever it was started under `sudo`,
 and the portal identifies its caller by opening `/proc/<pid>/root` and answers the
@@ -1285,6 +1295,7 @@ it (`positive-control`). That last one is why the tool prints `mutter's own vali
 on the result: refused: Logical monitors not adjacent` and why that line is not
 decoration: if Mutter's validator accepts what was built, the write did not land on the
 field the validator reads, and nothing is applied.
+
 
 #### The check that could not fire, and what it cost
 
