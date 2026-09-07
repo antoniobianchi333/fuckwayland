@@ -1353,9 +1353,10 @@ class _Daemon:
                 # on its German group is precisely the one that types the wrong characters, and it is the bypass
                 # that takes it (B1). Once per layout state, so a switch is announced again.
                 #
-                # It is a guess in ever fewer places: sway puts the group on the wire and KWin answers for it on
-                # the session bus (xkbmap.kwin_group), so what is left here is GNOME and any compositor that
-                # will neither send nor be asked. Where wdotool knows, it says nothing.
+                # It is a guess in ever fewer places: sway puts the group on the wire, KWin answers for it on
+                # the session bus (xkbmap.kwin_group) and GNOME answers through the desktop portal
+                # (xkbmap.gnome_group), so what is left here is any session that will neither send nor be
+                # asked. Where wdotool knows, it says nothing.
                 name = rmap.name if rmap is not None else xkbmap.group_name(snap.text, snap.group)
                 self._xkb_say_group(
                     key,
