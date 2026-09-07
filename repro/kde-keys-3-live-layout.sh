@@ -77,7 +77,7 @@ $WD __keymap --info 2>&1 | sed 's/^/  /'
 run "$HOME/kde-keys-live.txt" 'yz@'
 
 echo
-echo '== the same session with the group pinned by hand (the 0.4 way out)'
+echo '== the same session with the group pinned by hand (the way out before KWin was asked)'
 reset_daemon
 kate_on "$HOME/kde-keys-live-pinned.txt"
 sudo -n WDOTOOL_XKB_GROUP=2 /usr/local/bin/wdotool type -- 'yz@' 2>&1 | sed 's/^/  stderr : /'

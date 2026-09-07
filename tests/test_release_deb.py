@@ -3,10 +3,10 @@
 
 Every other file in this suite runs the *tree*.  What a user runs is
 `sudo apt install ./release/fuckwayland_<version>_all.deb`, which is a binary in the
-repository -- and nothing in the tree makes that binary agree with the tree.  At 0.4
-HEAD it did not agree: the committed file was the build of the v0.3 tag, put there by
-"Release version 0.3" and never rebuilt, so a user who followed the README got none of
-the release's changes.  Measured on both default GNOME images, from the shipped
+repository -- and nothing in the tree makes that binary agree with the tree.  While 0.4
+was being finished it did not agree: the committed file was the build of the v0.3 tag,
+put there by "Release version 0.3" and never rebuilt, so a user who followed the README
+got none of the release's changes.  Measured on both default GNOME images, from the shipped
 package: the input daemon still outlived a removed socket and then held the lock that
 stops the next one starting, a chord the layout cannot produce was still pressed at its
 US position in silence, the layout notice still reached only the first command, and the

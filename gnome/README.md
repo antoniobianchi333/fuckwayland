@@ -601,7 +601,7 @@ repo can fix; the bugs that *were* fixable have been.
   read from the environment of the **command** and carried to the daemon with
   the text it is to type, so a script that sets it mid-run is obeyed by a
   daemon that is already running. Where the setting cannot be read, or
-  describes no one layout, 0.4's behaviour stands unchanged: group 1,
+  describes no one layout, the old behaviour stands unchanged: group 1,
   the notice on every command that types, and the pin as the answer. Rig
   facts worth having:
   - **`mru-sources` is the live truth and `current` is dead.** The head of
@@ -613,7 +613,7 @@ repo can fix; the bugs that *were* fixable have been.
     org.gnome.desktop.input-sources current` ends "DEPRECATED: This key is
     deprecated and ignored" on both generations, `dconf watch` across a
     session of switching shows the shell writing only `mru-sources`, and
-    `gsettings set ... current 1` moves nothing. (Through 0.4 this file said
+    `gsettings set ... current 1` moves nothing. (This file used to say
     `current` was the index of the active source. It is not, and never was on
     either of these generations.)
   - **dconf is not readable over the bus; the portal is.** `ca.desrt.dconf`

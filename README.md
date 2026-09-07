@@ -1127,7 +1127,13 @@ releases were retested, and the package in `release/` is built from this tree ra
 than left at the previous one. Running that package on a default install found one
 more thing to fix: handing over to a real tool that is not installed said the session
 was an X11 one whoever had asked, and it now names the reason the original was
-wanted. The suite stands at **2661 tests**.
+wanted. It was rebuilt once more over the code that reads the layout, and proved from
+a single `apt install` on a default Plasma desktop and a default GNOME one, with
+nothing configured and no wdotool on either: a session switched to German typed `yz@`
+byte for byte on both, where the build before it typed `zy""` on KDE and `zy"` on
+GNOME. Both desktops report their active layout there, `wayland + kwin` on one and
+`wayland + gnome input-sources` on the other, and stderr is silent on both. The suite
+stands at **2661 tests**.
 
 <!-- release-notes: 0.3 -->
 ### 0.3
