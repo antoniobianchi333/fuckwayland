@@ -135,7 +135,11 @@ by using the tools on one rather than by reading them.
   disagreed with what the tools do; and the package committed in `release/` was still
   the 0.3 build, so a user who installed the way the README says got none of this. The
   package is built from this tree, and was rebuilt again once the overlap extension
-  had a table to read, which is what `tests/test_release_deb.py` noticed.
+  had a table to read, which is what `tests/test_release_deb.py` noticed, and once
+  more over the code that reads the active layout: that last build is the file in
+  `release/`, installed with one `apt-get install` on a default Plasma desktop and a
+  default GNOME one, where a session switched to German typed `yz@` byte for byte on
+  both and said nothing on stderr.
 - **The exit 127 line names the reason that applies.** Handing over to a real tool that
   is not installed said "this is an X11 session" whoever asked, including the two ways
   of asking for the handover on a Wayland desktop (`FUCKWAYLAND_PASSTHROUGH=always` and

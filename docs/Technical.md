@@ -1868,7 +1868,7 @@ hold across all of them and are enforced by tests of their own:
 | `wmirror/` | `test_wmirror_cli`, `test_wmirror_lifetime` | a fake `wl-mirror` binary, and the detach protocol driven for real |
 | `procs.py`, `stdio.py` | `test_wmirror_lifetime`, `test_stdout_gone` | real forks; `>/dev/full`, `\| head -1`, `>&-` |
 | the no-dialog guarantee | `test_no_portal` | nothing — it is a static check that no package here names PolicyKit or any portal interface but `Settings`, the one read with no consent step |
-| what actually ships | `test_release_deb` | nothing — it unpacks the .deb committed in `release/` and compares its payload with the tree, because a binary in the repository is the one thing no other test here runs. It was the v0.3 build at 0.4 HEAD |
+| what actually ships | `test_release_deb` | nothing — it unpacks the .deb committed in `release/` and compares its payload with the tree, because a binary in the repository is the one thing no other test here runs. It caught the v0.3 build still committed while 0.4 was being finished |
 
 Two environments run these. **In the development shell** (`nix develop`), a container
 with no `/dev/uinput`, `WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 sway` gives a

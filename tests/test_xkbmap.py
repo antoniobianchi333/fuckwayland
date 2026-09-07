@@ -1142,7 +1142,7 @@ class TestDiagnosticSubcommand(unittest.TestCase):
 
 
 class TestThePinReachesARunningDaemon(unittest.TestCase):
-    """The 0.4 retest, on GNOME `us,de`: the notice says "Set
+    """The 0.4 retest, on GNOME `us,de`: the notice said "Set
     WDOTOOL_XKB_GROUP=<n> to pin one", and against a daemon that was already
     running that did nothing at all -- the daemon reads its own environment,
     which is the one it was spawned with. `WDOTOOL_XKB_GROUP=2 wdotool type
@@ -2021,7 +2021,7 @@ class TestTheActiveGroupFromGnome(unittest.TestCase):
         self.assertEqual(svc.answers, 3)
 
     def test_one_source_is_group_one_and_it_is_known(self):
-        """The whole reason the 0.4 notice fired on every command of every
+        """The whole reason the notice used to fire on every command of every
         non-US GNOME desktop: Mutter appends its own `us` group, so `de,us`
         in the keymap is one German source, not two sources. Only the setting
         can tell those apart, and it does."""

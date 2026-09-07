@@ -1096,7 +1096,7 @@ def kwin_group(text: str):
 # Mutter compiles the sources in order and ALWAYS appends its own `us` group
 # after them, even when `us` is already a source (`us,de` -> `us, de, us`);
 # that appended group is why a one-layout GNOME session looks exactly like a
-# two-layout one from the keymap alone, and why 0.4 printed its notice on
+# two-layout one from the keymap alone, and why the notice used to fire on
 # every command of every non-US GNOME desktop. XKB allows four groups, so
 # beyond three sources Mutter recompiles around whichever source is in use:
 # with `de,fr,gr,ru,es` the keymap is `de, fr, gr, us` until Spanish is

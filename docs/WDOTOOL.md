@@ -208,13 +208,13 @@ The index of that source is the keymap group, with Mutter's own two habits folde
 It **appends its own `us` group** after your sources, so one German source is the
 two-group keymap `pc_de_us_2_inet` and one Greek source is `pc_gr_us_2_inet` — from
 the keymap alone a session with one layout and a session with two are the same thing,
-which is exactly why 0.4 printed its notice on every command of every non-US GNOME
+which is exactly why the notice used to fire on every command of every non-US GNOME
 desktop. The setting tells them apart, so **a one-layout GNOME session now says
 nothing at all**. And beyond three sources Mutter compiles the keymap in chunks of
 three around the one in use: with `de, fr, gr, ru, es` the keymap is `de, fr, gr, us`
 until Spanish is picked and then it is `ru, es, us`, so the group is the source's index
-*within its chunk*, and Spanish is group 2. (0.4 assumed group 1 there — Russian — and
-`type` typed nothing at all.)
+*within its chunk*, and Spanish is group 2. (The guess said group 1 there — Russian —
+and `type` typed nothing at all.)
 
 Two GNOME states are refused rather than answered, and there the guess and its notice
 stand exactly as they did: **per-window layouts** (Settings ▸ Keyboard ▸ *Let each
@@ -251,7 +251,7 @@ Measured end to end in a real Kate window on Plasma 6.6 and 5.27
 (`repro/kde-keys-3-live-layout.sh`), with `us, de` configured and German switched on:
 
 ```
-wdotool type 'yz@'   ->  arrived 'zy""'   (0.4: group 1 assumed)
+wdotool type 'yz@'   ->  arrived 'zy""'   (before: group 1 assumed)
 wdotool type 'yz@'   ->  arrived 'yz@'    (now: KWin asked)
 ```
 
@@ -260,7 +260,7 @@ byte-exact on both generations, with no notice on stderr at all, and
 Switching layouts under a daemon that is already running is followed command by
 command, because the group is re-read on every one. The one-layout case
 (`repro/kde-keys-1-group-guess.sh`) is unchanged: plain text, AltGr, dead keys and
-chords all arrive byte for byte, as they did in 0.4.
+chords all arrive byte for byte, as they always did.
 
 Measured end to end in a real `gnome-text-editor` window on GNOME 50.1 and 46.0
 (`repro/gnome-keys-1-group-guess.sh`), each case typed once with the build that
@@ -647,8 +647,8 @@ The first line is the layout question above, answered for this session: `(assume
 appears only where the group really was a guess, and the source says how it was
 settled — `wayland` is the keymap alone, `wayland + kwin` is KWin having been asked on
 KDE, `wayland + gnome input-sources` is GNOME's setting having been read (the example
-above is a one-layout German GNOME session, where 0.4 said `group 1 of 2 (assumed)`),
-and on sway the group arrives on the wire and the marker is gone too.
+above is a one-layout German GNOME session, where the guess said `group 1 of 2
+(assumed)`), and on sway the group arrives on the wire and the marker is gone too.
 
 That is the awkward case in full: a dead key that is itself on the third level. `ç`
 on a German keyboard is AltGr held down across the `´` key, both let go of, and
